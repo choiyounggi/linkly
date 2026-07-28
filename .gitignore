@@ -1,0 +1,6 @@
+.orchestration/
+.worktrees/
+.claude/tmp/
+__pycache__/
+*.pyc
+.DS_Store

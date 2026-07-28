@@ -1,0 +1,30 @@
+{
+  "intake": {
+    "kind": "default",
+    "when": "이 레포는 이슈 트래커 미사용 — plans/rfc-suite/plan.md의 Task order가 워크리스트"
+  },
+  "knowledge": {
+    "kind": "cli",
+    "ref": "local docs",
+    "how": "plans/rfc-suite/plan.md(Decisions D1~D20)와 docs/RESEARCH-NOTES.md(외부 근거·링크)를 Read로 로드; 태스크 파일이 wiki/ 페이지를 지명하면 dev-loop 번들 위키(~/.claude/plugins/cache/dev-loop/dev-loop/0.8.0/wiki/)에서 그 페이지만 Read",
+    "when": "설계 결정 근거·외부 표준(RFC 8785, A2A, MLIR 등) 확인 시 — 추측 금지, 반드시 근거 문서 인용"
+  },
+  "tacit": {
+    "kind": "default",
+    "when": "신규 레포 — 과거 사고 이력 없음, 스킵"
+  },
+  "verify": {
+    "kind": "cli",
+    "ref": "task-specific",
+    "how": "각 태스크 파일의 ## Verify 절 명령/체크리스트를 그대로 실행. 실행 가능 명령이 있는 태스크(02·04·09: python3 scripts/validate_ir.py --self-test, grep 게이트)는 exit code로, 문서 태스크는 체크리스트 각 항목을 파일 인용과 함께 .orchestration/verify/<task>.md에 기록",
+    "when": "step 5 — 검증. 체크리스트도 반증 가능하게(항목별 근거 인용 필수)"
+  },
+  "explore": {
+    "kind": "default",
+    "when": "로컬 Read/Grep로 충분 — 외부 레포 없음"
+  },
+  "design": {
+    "kind": "default",
+    "when": "UI 없음 — 스킵"
+  }
+}
