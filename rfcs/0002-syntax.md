@@ -330,6 +330,179 @@ EOL               ::= #xA | #xD #xA
 정의는 RFC-0001이, 실행 의미(가드 평가·병렬 병합·재시도)는 RFC-0003이,
 IR 직렬화는 RFC-0001 부록 A가 소유한다.
 
+### 부록 A: Lowering 매핑
+
+문법 구성 → Semantic IR 노드의 매핑을 확정한다(본문 §경계가 이 부록에 위임한
+항목). 본 부록은 위 본문(EBNF·키워드·블록 규칙)을 변경하지 않으며, IR 쪽
+정의(RFC-0001 노드 카탈로그·`schemas/lir.schema.json`)도 변경하지 않는다 —
+**충돌 시 IR이 정본**이다(plan.md D1).
+
+**A.1 표기 규약.** A.2 표는 3열이다: `문법 생산규칙`(본문 §Full grammar의 이름
+— 안정 계약) · `IR 노드 kind`(생성되는 노드 종별) · `매핑 규칙 비고`. 규칙 1회
+매치당 노드 1개를 생성하는 것이 기본이다. kind 열이 `—`인 규칙은 노드를 만들지
+않으며, 비고의 첫 토큰에 사유 태그를 붙인다:
+
+- `[구문]` — 순수 구문 규칙(선택 분기·구획 키워드·종결자·렉시컬 성분). IR에
+  흔적을 남기지 않거나 다른 값의 일부로만 남는다.
+- `[필드흡수]` — 노드를 만들지 않고 부모 노드의 **필드 값 또는 참조**로 흡수된다.
+- `[공백]` — IR v0.1에 대응 kind가 없다. A.4에 미해소 항목으로 등재한다.
+
+소유·참조의 전역 규칙 4종(각 행이 이를 인용한다):
+
+- **R1(문서)** — 소스 파일 1개 = IR 문서 1개(`{lir_version, module, nodes[]}`),
+  `module` = 소스 파일명 stem(`login.lnpl` → `"login"`).
+- **R2(workflow 귀속)** — `workflow` 선언은 소스에서 가장 가까운 선행 `service`
+  선언의 `children`에 append된다(본문 §Declarations 귀속 규칙 + RFC-0001 구조
+  규칙 2 소유 유일). 선행 service가 없으면 진입 노드다.
+- **R3(capability 요구 — 잠정)** — 모듈 내 각 `capability` 선언은 Capability
+  노드를 만들고, 그 id를 모듈 내 모든 Service의 `requires`에 **선언 순서대로**
+  등재한다. 이 규칙은 Service가 1개인 골든 시나리오로만 실증되었다 — 다중
+  Service 모듈의 귀속은 미해소이므로 **잠정 규칙**이다(A.4-⑧).
+- **R4(제약 참조)** — Policy·Security·Performance 노드는 `children`으로 소유되지
+  않고 소속 Service의 `constraints`로만 참조된다(RFC-0001 구조 규칙 5).
+
+노드 `id`의 **도출 규칙은 이 부록이 규정하지 않는다** — RFC-0001은 id의 형식
+(dot-path 정규식)만 규정하며, A.3의 id는 골든 예제의 실제 값을 대조 대상으로
+인용한 것이다(A.4-⑦).
+
+**A.2 생산규칙 → IR 노드 kind 매핑.** 본문 §Full grammar의 51개 생산규칙 전량이
+행으로 존재한다(행 순서 = EBNF 등장 순서).
+
+| 생산규칙 | IR 노드 kind | 매핑 규칙 비고 |
+|----------|-------------|----------------|
+| `SourceFile` | — | `[구문]` R1 — 파일 1개가 IR 문서 1개에 대응하며 그 자체로는 노드가 아니다 |
+| `Declaration` | — | `[구문]` 5택 선택 규칙 — 노드는 각 하위 규칙이 만든다 |
+| `EntityDecl` | Entity | 노드 1개. `name` = PascalName, `fields` = FieldClause의 내용 |
+| `ServiceDecl` | Service | 노드 1개. `name` = PascalName. 절이 `constraints`(R4)를, 귀속 workflow가 `children`(R2)을, R3가 `requires`를 채운다 |
+| `ServiceClause` | — | `[구문]` 5택 선택 규칙 |
+| `WorkflowDecl` | Workflow | 노드 1개. `name` = PascalName, `children` = 본문 항목이 만든 노드의 소스 순서(RFC-0001 구조 규칙 3). 소유자는 R2 |
+| `EventDecl` | Event | 노드 1개. `name` = PascalName. children 없음 |
+| `EventSource` | — | `[필드흡수]` 부모 Event의 `source = {ref: 대상 Entity 노드 id, on: create\|update\|delete}`. enum 3값은 IR 표기 그대로 |
+| `CapabilityDecl` | Capability | 노드 1개. `name` = CapabilityName, `Version`이 있으면 `version`(문자열). 추가로 R3(**잠정** — A.4-⑧)에 따라 각 Service의 `requires`에 등재 |
+| `FieldClause` | — | `[구문]` 구획 키워드 — 내용은 부모 Entity의 `fields`로 간다 |
+| `FieldLine` | — | `[필드흡수]` `fields[]` 항목 `{name: CamelName, type: TypeName}`. `required` 키를 생략하면 필수(true)로 해석된다(RFC-0001 부록 A.4) |
+| `GoalClause` | — | `[구문]` 구획 키워드 — 생성 노드의 소유자는 소속 Service |
+| `GoalLine` | BusinessRule | 라인 1개 = 노드 1개. `name` = `statement` = 동사구 원문, `expression`은 v0.1에서 미기입(표현식 표기가 Open Questions ②③로 미정). 소속 Service의 `children`에 소스 순서로 append. → 본문 Open Questions ⑤의 해소(A.5) |
+| `PolicyClause` | Policy | 절 1개 = 노드 1개. `rules[]`는 PolicyLine들이 채우고, 소속 Service는 R4로 참조한다 |
+| `PolicyLine` | — | `[필드흡수]` `rules[]` 항목: `retry N` → `{name:"retry", value:N}`(수치), `rollback` → `{name:"rollback"}`(value 없음), `timeout D` → `{name:"timeout", value:"3s"}`(문자열), `parallel` → `{name:"parallel"}` |
+| `SecurityClause` | Security | 절 1개 = 노드 1개. `mechanisms[]`를 SecurityLine이 채우고 R4로 참조된다 |
+| `SecurityLine` | — | `[필드흡수]` `mechanisms[]`의 문자열 항목 — `jwt` → `"jwt"`, `role admin` → `"role admin"`, `encrypt password` → `"encrypt password"`(RFC-0001 초기 카탈로그 표기 그대로) |
+| `PerformanceClause` | Performance | 절 1개 = 노드 1개. `budgets[]`를 PerformanceLine이 채우고 R4로 참조된다 |
+| `PerformanceLine` | — | `[필드흡수]` `budgets[]` 항목: `response < 50ms` → `{metric:"response", value:"<50ms"}`(Comparator와 Duration을 공백 없이 연결), `cache 5m` → `{metric:"cache", value:"5m"}`. 값 없는 `parallel`·`prefetch`·`batch`는 스키마가 `value`를 필수로 요구하므로 v0.1 미해소(A.4-⑤) |
+| `DatabaseClause` | — | `[구문]` 구획 키워드 — 노드를 만들지 않는다 |
+| `DatabaseLine` | — | `[필드흡수]` 소속 Service의 `requires`에 해당 Capability id를 멱등 등재(R3로 이미 있으면 추가하지 않는다). 노드 생성은 `CapabilityDecl`이 소유하며, 선언되지 않은 이름은 dangling 참조 금지(RFC-0001 구조 규칙 6) 위반이다 |
+| `SpecClause` | — | `[공백]` IR 카탈로그 19종에 테스트 명세 노드가 없다. spec은 IR 노드가 아니라 채택 요건 ④ 테스트 스위트 아티팩트(plan.md D20)로 산출된다(A.4-②) |
+| `GivenSection` | — | `[공백]` 사전 조건 — SpecClause와 동일(A.4-②) |
+| `WhenSection` | — | `[공백]` 실행 트리거 — SpecClause와 동일(A.4-②) |
+| `ExpectSection` | — | `[공백]` 기대 결과 — SpecClause와 동일(A.4-②) |
+| `PhraseLine` | — | `[공백]` spec 절 내부 전용 내용 라인(A.4-②) |
+| `PhraseToken` | — | `[구문]` PhraseLine의 토큰 성분 |
+| `WorkflowItem` | — | `[구문]` 4택 선택 규칙 |
+| `GuardedItem` | — | `[구문]` 피가드 항목(StepLine·ParallelBlock·PipelineBlock)만 노드가 되고 가드 자체는 lowering에서 소실된다(A.4-①) |
+| `WhenGuard` | — | `[공백]` 조건을 담을 노드 kind가 없다. Policy 등 다른 kind로의 대체 매핑을 금지한다 — 의미가 달라진다(A.4-①) |
+| `RepeatGuard` | — | `[공백]` `repeat N`(N회 반복)은 Policy `retry N`(실패 시 재시도)과 의미가 다르므로 접지 않는다(A.4-①) |
+| `UntilGuard` | — | `[공백]` 종료 조건 — WhenGuard와 동일(A.4-①) |
+| `ParallelBlock` | Concurrency | 노드 1개, `mode: "parallel"`. 본문의 각 StepLine이 `children`(각 child = 병렬 브랜치, 배열의 끝 = 병합 지점)이며 `merge` 필드는 기본(전 브랜치 완료 대기)을 쓰므로 미기입한다. `merge` 키워드는 종결자로 노드를 만들지 않는다. workflow 본문 직속일 때의 소유 경로는 A.4-⑥ |
+| `PipelineBlock` | Pipeline | 노드 1개. 본문의 StepLine들이 `children`(순서 = 데이터 흐름). 스키마가 `name`을 필수로 요구하는데 문법이 이름 토큰을 제공하지 않는다(A.4-④). 소유 경로는 A.4-⑥ |
+| `StepLine` | WorkflowStep | 라인 1개 = 노드 1개. `name` = 라인 원문(토큰 사이 단일 공백으로 정규화). 소유자는 문맥이 정한다 — workflow 본문 직속이면 Workflow, `parallel` 내부면 Concurrency, `pipeline` 내부면 Pipeline의 `children`에 소스 순서로. step 하위의 Effect·Validation 노드는 문법이 표현하지 않는다(A.4-③) |
+| `Verb` | — | `[구문]` StepLine의 첫 토큰 — `name` 문자열의 일부로만 남는다 |
+| `Condition` | — | `[공백]` 가드 전용 — 대응 kind가 없다(A.4-①) |
+| `Comment` | — | `[구문]` 파서가 무시한다. `meta.source`(선택 필드)는 v0.1에서 미기입 |
+| `BlankLine` | — | `[구문]` 파서가 무시한다 |
+| `PascalName` | — | `[필드흡수]` 선언 노드의 `name` 값, `EventSource`에서는 참조 대상(`source.ref`)의 지시자 |
+| `CamelName` | — | `[필드흡수]` FieldLine의 `name`, Comparison의 좌변, `encrypt <field>`의 필드명 |
+| `CapabilityName` | — | `[필드흡수]` Capability의 `name`, DatabaseLine의 참조 대상 |
+| `Word` | — | `[필드흡수]` step·구·`role <r>`의 토큰 — 문자열 값의 성분 |
+| `Version` | — | `[필드흡수]` Capability의 `version`(문자열) |
+| `TypeName` | — | `[필드흡수]` `fields[].type` 문자열 — v0.1은 Semantic Type명을 문자열로 담는다(RFC-0001 부록 A.6) |
+| `Integer` | — | `[필드흡수]` Policy `retry`의 value(수치), PhraseToken의 성분. RepeatGuard 문맥은 A.4-① |
+| `Duration` | — | `[필드흡수]` Policy `timeout`의 value 문자열(`"3s"`), Performance value의 성분 |
+| `DurationUnit` | — | `[구문]` Duration 리터럴의 단위 성분(`ms`·`s`·`m`) |
+| `Comparator` | — | `[필드흡수]` Performance value 문자열의 접두(`"<50ms"`), Comparison의 성분 |
+| `Comparison` | — | `[필드흡수]` PerformanceLine `response` 예산의 값 문자열. Condition 문맥은 A.4-① |
+| `EOL` | — | `[구문]` 논리 라인의 종결자 |
+
+집계: 노드를 만드는 규칙 12개(EntityDecl · ServiceDecl · WorkflowDecl ·
+EventDecl · CapabilityDecl · GoalLine · PolicyClause · SecurityClause ·
+PerformanceClause · ParallelBlock · PipelineBlock · StepLine) + `—` 39개 = 51.
+
+**A.3 골든 예제 대응표.** `examples/login.lnpl`(위 §Examples 코드 블록을 그대로
+추출한 33줄)의 각 줄과 `examples/login.lir.json`의 노드를 짝지운다. `줄`은
+`.lnpl` 파일의 1-기반 줄 번호다.
+
+| 줄 | 소스 라인 | 생산규칙 | IR 노드 id(kind) 또는 흡수 위치 |
+|----|-----------|----------|--------------------------------|
+| 1 | `# login.lnpl — …` | `Comment` | — |
+| 2 | (공란) | `BlankLine` | — |
+| 3 | `capability postgres` | `CapabilityDecl` | `cap.postgres`(Capability) + `svc.login.requires[0]`(R3) |
+| 4 | `capability redis` | `CapabilityDecl` | `cap.redis`(Capability) + `svc.login.requires[1]`(R3) |
+| 5 | `capability jwt` | `CapabilityDecl` | `cap.jwt`(Capability) + `svc.login.requires[2]`(R3) |
+| 6 | (공란) | `BlankLine` | — |
+| 7 | `entity User` | `EntityDecl` | `entity.user`(Entity) |
+| 8 | `field` | `FieldClause` | — `[구문]` |
+| 9 | `id UUID` | `FieldLine` | `entity.user`.`fields[0]` |
+| 10 | `email Email` | `FieldLine` | `entity.user`.`fields[1]` |
+| 11 | `password Password` | `FieldLine` | `entity.user`.`fields[2]` |
+| 12 | `createdAt DateTime` | `FieldLine` | `entity.user`.`fields[3]` |
+| 13 | (공란) | `BlankLine` | — |
+| 14 | `event UserCreated on User create` | `EventDecl` + `EventSource` | `event.user.created`(Event), `source = {ref: "entity.user", on: "create"}` |
+| 15 | (공란) | `BlankLine` | — |
+| 16 | `service LoginService` | `ServiceDecl` | `svc.login`(Service) |
+| 17 | `policy` | `PolicyClause` | `policy.login`(Policy) = `svc.login.constraints[0]`(R4) |
+| 18 | `retry 3` | `PolicyLine` | `policy.login`.`rules[0]` = `{retry, 3}` |
+| 19 | `rollback` | `PolicyLine` | `policy.login`.`rules[1]` = `{rollback}` |
+| 20 | `timeout 3s` | `PolicyLine` | `policy.login`.`rules[2]` = `{timeout, "3s"}` |
+| 21 | `security` | `SecurityClause` | `security.login`(Security) = `svc.login.constraints[1]`(R4) |
+| 22 | `jwt` | `SecurityLine` | `security.login`.`mechanisms[0]` = `"jwt"` |
+| 23 | `performance` | `PerformanceClause` | `perf.login`(Performance) = `svc.login.constraints[2]`(R4) |
+| 24 | `response < 50ms` | `PerformanceLine` | `perf.login`.`budgets[0]` = `{response, "<50ms"}` |
+| 25 | `cache 5m` | `PerformanceLine` | `perf.login`.`budgets[1]` = `{cache, "5m"}` |
+| 26 | (공란) | `BlankLine` | — |
+| 27 | `workflow Login` | `WorkflowDecl` | `wf.login`(Workflow) = `svc.login.children[0]`(R2 — 16행 service에 귀속) |
+| 28 | `validate input` | `StepLine` | `wf.login.step.1`(WorkflowStep) |
+| 29 | `authenticate` | `StepLine` | `wf.login.step.2` |
+| 30 | `cache user` | `StepLine` | `wf.login.step.3` |
+| 31 | `generate token` | `StepLine` | `wf.login.step.4` |
+| 32 | `audit login` | `StepLine` | `wf.login.step.5` |
+| 33 | `return token` | `StepLine` | `wf.login.step.6` |
+
+workflow 6단계는 소스 28~33행과 `wf.login.children`의 `wf.login.step.1` ~
+`wf.login.step.6`이 **순서까지 1:1**로 대응한다(RFC-0001 구조 규칙 3 — children
+순서 = 실행 순서).
+
+역방향(소스에 대응 줄이 없는 IR 노드) 3개 — 문법 → IR이 **부분사상**임을 보이는
+지점이다:
+
+- `wf.login.step.1.check`(Validation, `target=entity.user.email`, `rule=Email`)
+- `wf.login.step.2.repo`(RepositoryCall, `entity=entity.user`, `operation=read`)
+- `wf.login.step.3.cache`(CacheAccess, `key="user:{id}"`, `operation=set`)
+
+이 3종은 v0.1 문법에 표면 표기가 없어 소스에서 도출되지 않는다(A.4-③).
+집계: 골든 IR 19노드 = 소스 라인 대응 16 + 소스 무대응 파생 3.
+
+**A.4 미해소 lowering 공백.** 아래 8항은 이 부록이 해소하지 못한 항목이며 각각
+해소 소유자를 명시한다. 공백을 감추지 않는 것이 이 표의 검증 가치다(plan.md D6).
+
+| # | 공백 | 해소 소유자 |
+|---|------|-------------|
+| ① | `when`·`repeat`·`until` 가드와 `Condition`에 대응하는 IR kind가 없다(카탈로그 19종). RFC-0003도 가드의 실행 의미를 규정하지 않는다. 결과: 가드는 lowering에서 소실되고 피가드 항목만 노드가 된다 | RFC-0001 개정(조건·가드 kind 신설) + RFC-0003(평가 의미) |
+| ② | `spec`·`given`·`when`·`expect`·`PhraseLine`에 대응 kind가 없다 — 테스트 명세는 IR 노드가 아니라 채택 요건 ④ 테스트 스위트로 산출한다 | ROADMAP Phase 1(`tests/` 신설) |
+| ③ | 골든 IR의 `Validation`·`RepositoryCall`·`CacheAccess`(step 1~3의 자식)에 대응하는 표면 표기가 없다 — 이 3종은 선언된 의도로부터 컴파일러·에이전트가 도출하는 노드다 | RFC-0002 개정(표면 표기 신설) 또는 RFC-0004(도출 패스 규정) |
+| ④ | `PipelineBlock`은 이름 토큰을 갖지 않는데 IR `Pipeline`은 `name`이 필수다 | RFC-0002 개정(이름 인자 추가) 또는 RFC-0001 개정(`name` 선택화) |
+| ⑤ | 값이 없는 Performance metric 3종(`parallel`·`prefetch`·`batch`)은 `budgets[]` 항목이 `value`를 필수로 요구해 직렬화할 수 없다. 골든은 값이 있는 2종만 실증한다 | RFC-0001 부록 A(스키마 개정) |
+| ⑥ | workflow 본문 직속의 `ParallelBlock`·`PipelineBlock`이 만든 Concurrency·Pipeline 노드는 `Workflow`의 children 허용 종별(WorkflowStep만)에 부착할 수 없다 — 소유 경로가 미해소다. 본문 §Guide-level의 `LoadDashboard` 비규범 예제가 이 형태다 | RFC-0001 개정(Workflow children 확장) 또는 RFC-0002 개정(블록을 step 하위로 한정) |
+| ⑦ | 노드 `id`의 도출 규칙이 없다(형식만 규정됨). 골든의 `LoginService` → `svc.login`(접미사 제거), `UserCreated` → `event.user.created`(PascalCase 분해)는 기계 규칙이 자명하지 않다 | RFC-0001 개정 또는 ROADMAP Phase 1 파서 구현 |
+| ⑧ | **R3은 Service 1개 모듈로만 실증된 잠정 규칙이다** — "모듈의 모든 capability를 모든 Service의 `requires`에 등재"는 골든과 정합하는 유일한 규칙이지만, Service가 2개 이상인 모듈에서 어느 Service가 어느 capability를 요구하는지(귀속)는 미해소다 | RFC-0002 개정(명시적 requires 표기 신설) 또는 RFC-0001 |
+
+**A.5 Open Questions ⑤(goal 절의 lowering 대상) 해소.** `GoalLine`은
+**BusinessRule** 노드로 lowering된다(라인 1개 = 노드 1개, `name` = `statement` =
+동사구 원문). 근거: RFC-0001 Service의 children 허용 종별이 {Workflow, Pipeline,
+BusinessRule}이므로 goal 라인을 WorkflowStep으로 Service에 직속시킬 수 없고,
+"goal 절에서 Workflow를 자동 합성"하는 대안은 소스에 없는 실행 순서를 발명하므로
+IR 정본 원칙(plan.md D1)에 반한다. goal 절은 실행 순서가 아니라 달성해야 할
+규칙의 서술이므로 BusinessRule의 `name` + `statement` 계약과 정합한다.
+`expression`(형식 표현)은 표기가 미정이므로 v0.1에서 비운다(Open Questions ②③).
+
 ## Examples
 
 골든 시나리오 "Login"의 완전한 `.lnpl` 소스다(정본: `plans/rfc-suite/plan.md`
