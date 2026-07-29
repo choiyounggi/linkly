@@ -177,6 +177,62 @@ System). 초기셋은 도메인 타입 13종 + 원시 보조 5종(표의 "보조
 문법과 JSON Schema, 검증 스크립트는 이 RFC의 **부록 A**로 후속 태스크(02)가
 추가한다. `.lnpl` 문법 표기는 RFC-0002, 실행 의미는 RFC-0003의 소유다.
 
+### 부록 A: 직렬화
+
+IR 문서의 canonical JSON 직렬화를 확정한다. 본 부록은 위 본문(카탈로그·구조
+규칙·타입 표)을 변경하지 않으며, 본문이 부록에 위임한 항목만 여기서 규정한다.
+
+**A.1 스키마.** 정본 스키마는 `schemas/lir.schema.json`(JSON Schema draft
+2020-12)이다. 골든 예제는 `examples/login.lir.json`, 실행 가능한 검증기는
+`scripts/validate_ir.py`(단일 문서 검증 + `--self-test`)다. 루트 형태는 다음과
+같다:
+
+```json
+{"lir_version": "0.1", "module": "<모듈명>", "nodes": ["<노드>", "..."]}
+```
+
+**A.2 저장 형식.** `.lir.json` 파일의 저장 형식은 **2-space pretty JSON**이다
+— LLM과 사람이 같은 문서를 읽는다(plan.md D4). 키 순서·공백을 저장 형식에서
+규범화하지 않는다.
+
+**A.3 동등성·해시·서명 = RFC 8785 (JCS).** 두 IR 문서의 동등성 비교, 내용
+해시, 서명에 쓰는 canonical form은 **RFC 8785 JSON Canonicalization Scheme**에
+위임한다. 키 정렬·수치 표현·공백 제거 규칙을 자체 발명하지 않는다 — 저장은
+pretty(A.2), 비교·해시는 JCS 변환 후 수행한다.
+
+**A.4 constrained-decoding 호환 부분집합.** 에이전트가 IR 조각을 LLM
+structured output(constrained decoding)으로 직접 생성할 수 있어야 하므로,
+스키마는 OpenAI Structured Outputs 계열이 지원하는 부분집합으로 제한한다
+(docs/RESEARCH-NOTES.md §2):
+
+- 노드 종별 판별은 `anyOf` 19분기 — `oneOf`는 사용하지 않는다(미지원).
+- `default` 키워드를 사용하지 않는다(미지원). 이에 따라 `fields[].required`의
+  "생략 시 참" 의미론은 스키마가 아니라 본 부록이 규정한다: **`required` 키가
+  생략된 필드는 필수(true)로 해석한다.**
+- 루트는 object이며, 스키마의 객체/배열 중첩은 최심 5레벨(root → nodes →
+  노드 → 필드류 배열 → 항목 객체) — 평탄 노드 테이블(D17) 덕에 조합 깊이와
+  무관하게 상한이 고정된다.
+- `pattern`은 `id`·노드 참조 필드에 선언돼 있다. `jsonschema` 검증기는 이를
+  강제하지만 constrained decoding 런타임은 강제하지 않을 수 있다(soft) —
+  기계 수용 전에는 항상 `scripts/validate_ir.py`로 재검증한다.
+
+**A.5 `meta`의 추가 키는 불허한다.** 본문 공통 필드 표가 부록에 위임한 결정을
+다음과 같이 확정한다: `meta`는 정의된 키 `source`(문자열)·`origin`(`human` 또는
+`agent:<이름>`)만 가질 수 있고, 스키마는 `additionalProperties: false`로 이를
+강제한다. 확장 메타데이터가 필요해지면 이 RFC의 개정으로 키를 추가한다.
+
+**A.6 refinement의 직렬화 표기.** v0.1에서 `fields[].type`(payload 포함)과
+`Validation.rule`은 **문자열**이다 — Semantic Type명(예: `"Email"`) 또는
+refinement 표기 문자열을 담는다. 문자열 내부의 refinement 문법은 RFC-0002가
+소유하며, 구조화(객체형) refinement 직렬화는 Open Question으로 남긴다.
+
+**A.7 스키마 검증의 범위.** JSON Schema는 노드 단위 구조·타입(필수 필드,
+kind별 허용 필드, enum 값, id 형식)만 검증한다. 문서 수준 불변식 — id 유일성,
+dangling 참조 금지(구조 규칙 6), 소유 유일(규칙 2), 비순환(규칙 4), kind별
+children 허용 종별 — 은 스키마 표현 범위 밖이며, 컴파일 파이프라인의 검증
+패스(RFC-0004 계열)가 소유한다. `scripts/validate_ir.py`는 스키마 검증까지만
+수행한다.
+
 ## Examples
 
 골든 시나리오 "Login"을 사용한다(정본: `plans/rfc-suite/plan.md` §골든 시나리오
