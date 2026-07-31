@@ -162,6 +162,12 @@ def _steps_in_order(nodes, ids, out):
     return out
 
 
+# `until c` repeats while c is false, so each unrolled round is guarded by the
+# negation of the condition's comparison.
+_NEGATED_CMP = {"<": "sge", "<=": "sgt", ">": "sle", ">=": "slt",
+                "==": "ne", "!=": "eq"}
+
+
 def _workflow_steps(document, workflow_id):
     nodes = {n["id"]: n for n in document["nodes"]}
     wf = nodes.get(workflow_id)
@@ -311,16 +317,42 @@ def emit_mlir(document, workflow_id):
                              "(!llvm.ptr, !llvm.ptr) -> ()" % (idx, idx, cn))
             lines.append("    }")
         elif guard_mode == "until":
-            # RFC-0008 G10: until becomes scf.while (deferred: implement loop with round_cap)
-            # For now, compile as a no-op (condition always true, no loop)
-            lines.append("    %%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
-                         "(!llvm.ptr, i32) -> i32" % (idx, idx, idx))
+            # RFC-0008 G10 / issue #3. `_steps_in_order` has already unrolled the
+            # loop to _UNTIL_ROUND_CAP, so what is left is to make each round obey
+            # the condition instead of running unconditionally — which is what made
+            # mode B behave as though the condition never became true.
+            #
+            # `until c` repeats *while `c` is false*, so each round is guarded by the
+            # negation of c. Nothing in the IR mutates a condition field mid-run, so
+            # c is constant across the workflow and this yields the same two outcomes
+            # mode A can produce: zero rounds, or the cap.
+            extracted = _extract_condition_field(guard_str) if guard_str else None
+            round_guard = None
+            if extracted and len(extracted) == 3:
+                field, op, value = extracted
+                negated = _NEGATED_CMP.get(op)
+                if negated:
+                    round_guard = ("    %%ucond%d = arith.cmpi %s, %%%s, %%c%s_i64 "
+                                   ": i64" % (idx, negated, field, value))
+
+            if round_guard:
+                lines.append(round_guard)
+                lines.append("    scf.if %%ucond%d {" % idx)
+                body, close = "      ", ["    }"]
+            else:
+                # Presence or unparseable: no evaluator, so keep the previous
+                # unconditional emission rather than inventing a decision.
+                body, close = "    ", []
+
+            lines.append("%s%%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
+                         "(!llvm.ptr, i32) -> i32" % (body, idx, idx, idx))
             for cn, child_id in enumerate(step.get("children", [])):
                 ksym = strings[nodes[child_id]["kind"]]
-                lines.append("    %%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
-                             % (idx, cn, ksym))
-                lines.append("    func.call @lnpl_effect(%%p%d, %%k%d_%d) : "
-                             "(!llvm.ptr, !llvm.ptr) -> ()" % (idx, idx, cn))
+                lines.append("%s%%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
+                             % (body, idx, cn, ksym))
+                lines.append("%sfunc.call @lnpl_effect(%%p%d, %%k%d_%d) : "
+                             "(!llvm.ptr, !llvm.ptr) -> ()" % (body, idx, idx, cn))
+            lines.extend(close)
         else:
             # No guard: unconditional step
             lines.append("    %%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
