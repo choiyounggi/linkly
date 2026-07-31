@@ -442,6 +442,7 @@ IR 직렬화는 RFC-0001 부록 A가 소유한다.
 | `ParallelBlock` | Concurrency | 노드 1개, `mode: "parallel"`. 본문의 각 StepLine이 `children`(각 child = 병렬 브랜치, 배열의 끝 = 병합 지점)이며 `merge` 필드는 기본(전 브랜치 완료 대기)을 쓰므로 미기입한다. `merge` 키워드는 종결자로 노드를 만들지 않는다. workflow 본문 직속일 때의 소유 경로는 A.4-⑥ |
 | `PipelineBlock` | Pipeline | 노드 1개. 본문의 StepLine들이 `children`(순서 = 데이터 흐름). 스키마가 `name`을 필수로 요구하는데 문법이 이름 토큰을 제공하지 않는다(A.4-④). 소유 경로는 A.4-⑥ |
 | `StepLine` | WorkflowStep | 라인 1개 = 노드 1개. `name` = 라인 원문(토큰 사이 단일 공백으로 정규화). 소유자는 문맥이 정한다 — workflow 본문 직속이면 Workflow, `parallel` 내부면 Concurrency, `pipeline` 내부면 Pipeline의 `children`에 소스 순서로. step 하위의 Effect·Validation 노드는 문법이 표현하지 않는다(A.4-③) |
+| — (동사 사전) | EventEmit | `emit <eventName>`·`publish <eventName>`: 목적어가 발행할 이벤트를 지목하고, id는 R2 규칙을 이벤트 이름에 적용해 얻는다(`userCreated` → `event.user.created`). 목적어가 없으면 참조할 대상이 없으므로 컴파일 오류다(2026-07-31 구현) |
 | `Verb` | — | `[구문]` StepLine의 첫 토큰 — `name` 문자열의 일부로만 남는다 |
 | `Condition` | — | `[공백]` 가드 전용 — 대응 kind가 없다(A.4-①) |
 | `Comment` | — | `[구문]` 파서가 무시한다. `meta.source`(선택 필드)는 v0.1에서 미기입 |
@@ -539,6 +540,12 @@ BusinessRule}이므로 goal 라인을 WorkflowStep으로 Service에 직속시킬
 IR 정본 원칙(plan.md D1)에 반한다. goal 절은 실행 순서가 아니라 달성해야 할
 규칙의 서술이므로 BusinessRule의 `name` + `statement` 계약과 정합한다.
 `expression`(형식 표현)은 표기가 미정이므로 v0.1에서 비운다(Open Questions ②③).
+
+> **2026-07-31 구현.** 이 매핑은 참조 구현에 반영됐다(`impl/lnpl/lower.py`).
+> 그 전까지 `goal` 절은 파서를 통과한 뒤 lowering에서 조용히 사라졌다 — 명세가
+> 규정한 매핑을 구현이 갖고 있지 않은 상태였고, 선언이 아무 일도 하지 않는 것은
+> 명세와 구현이 어긋나는 방식 중 가장 나쁜 쪽이다. 회귀는
+> `impl/tests/test_lower.py::TestStructure::test_a_goal_clause_becomes_business_rules_owned_by_the_service`가 잡는다.
 
 ## Examples
 

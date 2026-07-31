@@ -271,6 +271,22 @@ All eight gaps that RFC-0002 Appendix A.4 recorded at design time are now closed
 | Value-less `performance` metrics unserializable | `budgets[].value` is optional — a flag has no value |
 | Capability attribution provisional | A rule: the service's own `database` clause, or (single-service module) all of them, or a **compile error** — never a guess |
 
+Three further spec-implementation gaps were closed after the RFCs were accepted, all of
+the same shape — the specification prescribed something the implementation did not do:
+
+- **`goal` clauses silently vanished.** RFC-0002 Appendix A.2 maps `GoalLine` to a
+  `BusinessRule` node; the lowering ignored the clause entirely, so a declaration the
+  author wrote did nothing at all. Now each goal line becomes a `BusinessRule` owned by
+  its service.
+- **Modules were limited to one entity**, refused with a citation to a gap that had
+  since been closed for an unrelated reason. A module may now declare several: the step
+  object names the entity (`load order`), a single-entity module may omit it, and an
+  ambiguous step is an error that **lists the candidates** rather than picking by
+  declaration order.
+- **`emit` refused to lower.** It now takes the event as its object
+  (`emit userCreated` → `event.user.created`) and the interpreter registers the
+  publication with a unique dedupable id and a masked payload, per RFC-0003.
+
 What remains open is recorded in each RFC's `## Open Questions` and tracked as issues:
 
 | Issue | What is deferred |

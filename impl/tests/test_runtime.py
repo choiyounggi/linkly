@@ -185,6 +185,63 @@ class TestGuardExecution(unittest.TestCase):
         self.assertIn("Open Questions 2", str(ctx.exception))
 
 
+class TestEventEmit(unittest.TestCase):
+    """RFC-0003: async publish, at-least-once with a dedupable id, masked payload."""
+
+    SRC = """
+capability postgres
+entity User
+    field
+        id UUID
+        email Email
+        password Password
+event UserCreated on User create
+service SignupService
+workflow Signup
+    create user
+    emit userCreated
+"""
+
+    def _run(self):
+        doc = lower(parse(self.SRC), "signup").to_document()
+        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        return interp, interp.run_workflow("wf.signup", PAYLOAD)
+
+    def test_publication_is_registered_with_a_unique_id(self):
+        interp, result = self._run()
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(interp.outbox), 1)
+        self.assertTrue(interp.outbox[0]["emission_id"].endswith("#1"))
+
+    def test_the_emission_references_the_declared_event(self):
+        interp, _r = self._run()
+        self.assertEqual(interp.outbox[0]["event"], "event.user.created")
+
+    def test_the_transferred_payload_is_masked(self):
+        interp, _r = self._run()
+        self.assertEqual(interp.outbox[0]["payload"]["password"], "***")
+        self.assertNotIn("s3cret", repr(interp.outbox))
+
+    def test_an_undeclared_event_reference_fails(self):
+        doc = lower(parse(self.SRC), "signup").to_document()
+        for node in doc["nodes"]:
+            if node["kind"] == "EventEmit":
+                node["event"] = "event.nope"
+        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        result = interp.run_workflow("wf.signup", PAYLOAD)
+        self.assertEqual(result["failed_step"], "emit userCreated")
+
+    def test_emit_is_not_retried_because_delivery_is_at_least_once(self):
+        # An EventEmit must not be replayed by the retry policy; duplicate
+        # publication is the consumer's dedupe problem, not the runtime's to create.
+        src = self.SRC.replace("service SignupService",
+                               "service SignupService\n    policy\n        retry 3")
+        doc = lower(parse(src), "signup").to_document()
+        interp = Interpreter(doc, repo_rows={})   # create still succeeds
+        result = interp.run_workflow("wf.signup", PAYLOAD)
+        self.assertTrue(all(s["attempts"] == 1 for s in result["steps"]))
+
+
 class TestObservabilityContract(unittest.TestCase):
     def test_metric_labels_outside_the_allowlist_are_rejected(self):
         interp = build()

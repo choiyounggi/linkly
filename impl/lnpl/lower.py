@@ -15,6 +15,8 @@ R1 — Effect derivation (A.4-3). A step line's first token is a Verb (the gramm
   A verb outside the lexicon derives no Effect — silence, never a guess.
 """
 
+import re
+
 from .lexer import COMPARATORS, is_duration
 
 KIND_PREFIX = {
@@ -204,21 +206,22 @@ def lower(decls, module_name):
     for d in decls:
         by_kind[d.kind].append(d)
 
-    entities = by_kind["entity"]
-    if len(entities) > 1:
-        raise LowerError(
-            "Phase 1 lowers a single-entity module; found %d entities. "
-            "Multi-entity scope resolution is unresolved (RFC-0002 A.4-8)." % len(entities))
-    entity_decl = entities[0] if entities else None
-    entity_id = derive_id(entity_decl.name, "Entity") if entity_decl else None
-    entity_fields = []
-    if entity_decl:
-        for line in entity_decl.clauses.get("field", []):
+    # Entity registry. A module may declare several entities; a step selects one
+    # by naming it as its object (`load order`), which the grammar already gives us.
+    # With a single entity the object may be omitted, as the golden scenario does.
+    registry = {}
+    for decl in by_kind["entity"]:
+        fields = []
+        for line in decl.clauses.get("field", []):
             if len(line.tokens) != 2:
                 raise LowerError("line %d: field must be `<name> <Type>`" % line.lineno)
-            entity_fields.append({"name": line.tokens[0], "type": line.tokens[1]})
-        if not entity_fields:
-            raise LowerError("entity %s declares no fields" % entity_decl.name)
+            fields.append({"name": line.tokens[0], "type": line.tokens[1]})
+        if not fields:
+            raise LowerError("entity %s declares no fields" % decl.name)
+        eid = derive_id(decl.name, "Entity")
+        if eid in registry:
+            raise LowerError("two entities derive the same id %r" % eid)
+        registry[eid] = {"decl": decl, "id": eid, "name": decl.name, "fields": fields}
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
     cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
@@ -282,19 +285,31 @@ def lower(decls, module_name):
         else:
             requires = []
 
-        children = [derive_id(w.name, "Workflow")
-                    for w in by_kind["workflow"] if owner_of.get(id(w)) is d]
+        # `goal` lines become BusinessRule nodes owned by this Service (RFC-0002
+        # Appendix A.2: GoalLine -> BusinessRule). Until this existed the clause
+        # parsed and then vanished — the worst kind of gap, a declaration that
+        # silently does nothing.
+        goal_nodes = []
+        for n, line in enumerate(d.clauses.get("goal", []), start=1):
+            statement = " ".join(line.tokens)
+            goal_nodes.append(_node("BusinessRule", "%s.goal.%d" % (sid, n),
+                                    name=statement, statement=statement))
+
+        children = [g["id"] for g in goal_nodes]
+        children += [derive_id(w.name, "Workflow")
+                     for w in by_kind["workflow"] if owner_of.get(id(w)) is d]
         service_nodes.append(_node(
             "Service", sid, name=d.name,
             requires=requires or None,
             constraints=constraints or None,
             children=children or None))
+        service_nodes.extend(goal_nodes)
 
     for n in service_nodes:
         mod.add(n)
 
-    if entity_decl:
-        mod.add(_node("Entity", entity_id, name=entity_decl.name, fields=entity_fields))
+    for ent in registry.values():
+        mod.add(_node("Entity", ent["id"], name=ent["name"], fields=ent["fields"]))
 
     for d in by_kind["event"]:
         eid = derive_id(d.name, "Event")
@@ -312,7 +327,7 @@ def lower(decls, module_name):
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, entity_id, entity_fields)
+        ctx = _WfContext(wid, registry)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None))
         for node in ctx.emitted:
@@ -331,10 +346,9 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, entity_id, entity_fields):
+    def __init__(self, wid, registry):
         self.wid = wid
-        self.entity_id = entity_id
-        self.entity_fields = entity_fields
+        self.registry = registry
         self.emitted = []
         self._step_n = 0
         self._guard_n = 0
@@ -358,8 +372,7 @@ class _WfContext:
         step_id = self._next_step_id()
         verb = line.tokens[0]
         obj = line.tokens[1] if len(line.tokens) > 1 else None
-        derived = _derive_effect(step_id, verb, obj, self.entity_id,
-                                self.entity_fields, line.lineno)
+        derived = _derive_effect(step_id, verb, obj, self.registry, line.lineno)
         self.emitted.append(_node("WorkflowStep", step_id,
                                   name=" ".join(line.tokens),
                                   children=[derived["id"]] if derived else None))
@@ -399,7 +412,7 @@ class _WfContext:
         return node_id
 
 
-def _derive_effect(step_id, verb, obj, entity_id, entity_fields, lineno):
+def _derive_effect(step_id, verb, obj, registry, lineno):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None."""
     entry = VERB_LEXICON.get(verb)
     if entry is None:
@@ -408,23 +421,24 @@ def _derive_effect(step_id, verb, obj, entity_id, entity_fields, lineno):
     eid = "%s.%s" % (step_id, EFFECT_SLUG[kind])
 
     if kind == "Validation":
-        if entity_id is None:
-            raise LowerError("line %d: `%s` needs an entity in scope" % (lineno, verb))
-        field_names = [f["name"] for f in entity_fields]
+        ent = _resolve_entity(registry, obj, verb, lineno)
+        field_names = [f["name"] for f in ent["fields"]]
         if obj and obj in field_names:
-            ftype = next(f["type"] for f in entity_fields if f["name"] == obj)
-            return _node(kind, eid, target="%s.%s" % (entity_id, obj), rule=ftype)
+            ftype = next(f["type"] for f in ent["fields"] if f["name"] == obj)
+            return _node(kind, eid, target="%s.%s" % (ent["id"], obj), rule=ftype)
         # `input` (or no object) validates the workflow's input payload: every
         # declared field is checked by its semantic type's built-in rule.
-        return _node(kind, eid, target=entity_id, rule="semantic-types")
+        return _node(kind, eid, target=ent["id"], rule="semantic-types")
 
     if kind == "RepositoryCall":
-        if entity_id is None:
-            raise LowerError("line %d: `%s` needs an entity in scope" % (lineno, verb))
-        return _node(kind, eid, entity=entity_id, operation=fixed["operation"])
+        ent = _resolve_entity(registry, obj, verb, lineno)
+        return _node(kind, eid, entity=ent["id"], operation=fixed["operation"])
 
     if kind == "CacheAccess":
-        base = obj or (entity_fields and entity_id.split(".")[-1]) or "value"
+        base = obj
+        if base is None:
+            ent = _resolve_entity(registry, None, verb, lineno)
+            base = ent["id"].split(".")[-1]
         return _node(kind, eid, key="%s:{id}" % base, operation=fixed["operation"])
 
     if kind == "NetworkCall":
@@ -434,9 +448,46 @@ def _derive_effect(step_id, verb, obj, entity_id, entity_fields, lineno):
         return _node(kind, eid, requirement=obj or "unspecified")
 
     if kind == "EventEmit":
-        raise LowerError(
-            "line %d: `%s` derives an EventEmit, which must reference a declared "
-            "event; surface notation for that reference is unresolved "
-            "(RFC-0002 A.4-3)" % (lineno, verb))
+        # `emit <Event>`: the object names a declared event. Without one there is
+        # nothing to reference, and RFC-0001 makes `event` required on EventEmit.
+        if obj is None:
+            raise LowerError(
+                "line %d: `%s` needs the event to emit as its object "
+                "(e.g. `emit userCreated`)" % (lineno, verb))
+        return _node(kind, eid, event=_event_ref(obj, lineno))
 
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
+
+
+def _resolve_entity(registry, obj, verb, lineno):
+    """Pick the entity a step operates on.
+
+    The object names it when there is a choice; with exactly one entity declared
+    the object may be omitted. Ambiguity is an error that lists the candidates —
+    picking one would make the program's meaning depend on declaration order.
+    """
+    if not registry:
+        raise LowerError("line %d: `%s` needs an entity in scope, and the module "
+                         "declares none" % (lineno, verb))
+    if obj:
+        for ent in registry.values():
+            if obj == ent["id"].split(".", 1)[1].replace(".", "") \
+               or obj == "".join(split_pascal(ent["name"])):
+                return ent
+            if obj in [f["name"] for f in ent["fields"]]:
+                return ent
+    if len(registry) == 1:
+        return next(iter(registry.values()))
+    raise LowerError(
+        "line %d: `%s %s` does not say which entity it means, and this module "
+        "declares %d (%s). Name the entity as the step's object."
+        % (lineno, verb, obj or "", len(registry),
+           ", ".join(sorted(e["name"] for e in registry.values()))))
+
+
+def _event_ref(obj, lineno):
+    """`userCreated` -> `event.user.created` (the R2 id rule, applied to an event)."""
+    pascal = obj[0].upper() + obj[1:] if obj else obj
+    if not re.match(r"^[A-Za-z][A-Za-z0-9]*$", obj or ""):
+        raise LowerError("line %d: %r is not a valid event name" % (lineno, obj))
+    return derive_id(pascal, "Event")

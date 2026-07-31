@@ -95,10 +95,16 @@ class TestVerbLexicon(unittest.TestCase):
         self.assertEqual(step["name"], "ponder existence")
         self.assertNotIn("children", step)   # silence, never a guess
 
-    def test_emit_without_a_referencable_event_is_a_declared_gap(self):
+    def test_emit_references_the_event_named_as_its_object(self):
+        doc = ir(GOLDEN + "    emit userCreated\n")
+        node = by_id(doc)["wf.login.step.4.emit"]
+        self.assertEqual(node["kind"], "EventEmit")
+        self.assertEqual(node["event"], "event.user.created")
+
+    def test_emit_without_an_object_is_refused(self):
         with self.assertRaises(LowerError) as ctx:
-            ir(GOLDEN + "    emit something\n")
-        self.assertIn("A.4-3", str(ctx.exception))
+            ir(GOLDEN + "    emit\n")
+        self.assertIn("needs the event to emit", str(ctx.exception))
 
 
 class TestControlFlow(unittest.TestCase):
@@ -160,6 +166,57 @@ workflow LoadDashboard
         with self.assertRaises(LowerError) as ctx:
             ir(src)
         self.assertIn("no steps", str(ctx.exception))
+
+
+class TestMultiEntity(unittest.TestCase):
+    """A module may declare several entities; the step object selects one."""
+
+    TWO = """
+capability postgres
+entity User
+    field
+        id UUID
+        email Email
+entity Order
+    field
+        id UUID
+        total Money
+service S
+workflow W
+    load user
+    find order
+"""
+
+    def test_both_entities_are_emitted(self):
+        nodes = by_id(ir(self.TWO))
+        self.assertEqual(nodes["entity.user"]["name"], "User")
+        self.assertEqual(nodes["entity.order"]["name"], "Order")
+
+    def test_the_step_object_selects_the_entity(self):
+        nodes = by_id(ir(self.TWO))
+        self.assertEqual(nodes["wf.w.step.1.repo"]["entity"], "entity.user")
+        self.assertEqual(nodes["wf.w.step.2.repo"]["entity"], "entity.order")
+
+    def test_an_ambiguous_step_lists_the_candidates_instead_of_picking_one(self):
+        src = self.TWO.replace("    load user\n    find order\n", "    load\n")
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        msg = str(ctx.exception)
+        self.assertIn("does not say which entity", msg)
+        self.assertIn("Order", msg)
+        self.assertIn("User", msg)
+
+    def test_a_single_entity_module_still_allows_an_omitted_object(self):
+        # The golden scenario relies on this: `authenticate` has no object.
+        node = by_id(ir(GOLDEN))["wf.login.step.2.repo"]
+        self.assertEqual(node["entity"], "entity.user")
+
+    def test_two_entities_deriving_the_same_id_is_refused(self):
+        src = self.TWO.replace("entity Order", "entity UserEntity")
+        # `UserEntity` as an Entity strips the redundant `entity` -> entity.user
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        self.assertIn("derive the same id", str(ctx.exception))
 
 
 class TestCapabilityAttribution(unittest.TestCase):
@@ -238,10 +295,16 @@ class TestStructure(unittest.TestCase):
             ir(src)
         self.assertIn("takes no value", str(ctx.exception))
 
-    def test_multi_entity_module_is_out_of_phase_1_scope(self):
-        with self.assertRaises(LowerError) as ctx:
-            ir(GOLDEN + "entity Order\n    field\n        id UUID\n")
-        self.assertIn("single-entity", str(ctx.exception))
+    def test_a_goal_clause_becomes_business_rules_owned_by_the_service(self):
+        src = GOLDEN.replace("    policy\n        retry 3",
+                             "    goal\n        authenticate user\n        cache profile")
+        nodes = by_id(ir(src))
+        rules = [n for n in nodes.values() if n["kind"] == "BusinessRule"]
+        self.assertEqual([r["statement"] for r in rules],
+                         ["authenticate user", "cache profile"])
+        # and they are owned, not orphaned
+        for rule in rules:
+            self.assertIn(rule["id"], nodes["svc.login"]["children"])
 
 
 if __name__ == "__main__":

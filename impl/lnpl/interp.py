@@ -222,6 +222,10 @@ class Interpreter:
         self.repo = FakeRepository(repo_rows)
         self.cache = FakeCache(self.clock)
         self.trace = Trace(correlation_id)
+        # Registered event publications. RFC-0003 leaves the *mechanism* open
+        # (§Open Questions 3 — transactional outbox or otherwise); the contract it
+        # fixes is at-least-once with a dedupable id, which is what this records.
+        self.outbox = []
 
     # ---- constraint lookup -------------------------------------------------
     def _service_for(self, workflow_id):
@@ -372,6 +376,25 @@ class Interpreter:
             child.attrs["requirement"] = effect.get("requirement")
         elif kind == "NetworkCall":
             child.attrs["target"] = effect.get("target")
+        elif kind == "EventEmit":
+            # RFC-0003: the step's synchronous part ends at *registering* the
+            # publish. Delivery is at-least-once, so every emission carries a
+            # unique id the consumer can dedupe on. The payload crosses a declared
+            # transfer boundary, so it is copied out of the arena — and masked,
+            # because an event leaves the process.
+            event_ref = effect.get("event")
+            if event_ref is None:
+                raise RunError("EventEmit has no event reference")
+            if event_ref not in self.nodes:
+                raise RunError("EventEmit references undeclared event %r" % event_ref)
+            emission = {"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1),
+                        "event": event_ref,
+                        "payload": mask_payload(payload, self._entity_node())}
+            self.outbox.append(emission)
+            child.attrs["event"] = event_ref
+            child.attrs["emission_id"] = emission["emission_id"]
+            self.trace.log("INFO", "event publish registered",
+                           event=event_ref, emission_id=emission["emission_id"])
         else:
             raise RunError("Phase 1 interpreter does not execute %s" % kind)
 
