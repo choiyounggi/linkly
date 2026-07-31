@@ -3,7 +3,7 @@ capability postgres
 entity Workflow
     field
         id UUID
-        flag String
+        flag Integer
         counter Integer
         doneAt DateTime
 
@@ -15,7 +15,7 @@ service GuardedService
 
 workflow Guarded
     step Start
-    when flag exists
+    when flag > 0
     step OnlyIfFlagPresent
     until counter >= 10
     step LoopUntilCounter

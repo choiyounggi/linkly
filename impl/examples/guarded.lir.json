@@ -28,7 +28,7 @@
         },
         {
           "name": "flag",
-          "type": "String"
+          "type": "Integer"
         },
         {
           "name": "counter",
@@ -71,7 +71,7 @@
         "wf.guarded.step.2"
       ],
       "mode": "when",
-      "condition": "flag exists"
+      "condition": "flag > 0"
     },
     {
       "kind": "WorkflowStep",

@@ -57,29 +57,61 @@ def toolchain_available():
     return True
 
 
-def _compile_condition(cond_str):
-    """RFC-0008 G8-G10: Compile condition to MLIR predicate.
+def _extract_condition_field(cond_str):
+    """RFC-0008 G8: Extract field name from condition string.
 
-    Returns (mlir_predicate_code, uses_condition_var).
-    For now, Presence returns "constant 1" and Comparison returns constant.
-    Full runtime condition checks deferred (G8: condition fields as parameters).
+    Returns (field_name, op, value) for Comparison or (field_name, 'exists'|'missing') for Presence.
+    Used to populate lnpl_run parameter list and generate arith.cmpi code.
     """
     try:
         cond = parse_condition(cond_str)
     except Exception:
-        # Unparseable condition — fail safe with constant 1 (true)
-        return "%c1", False
+        return None
 
     if isinstance(cond, Presence):
-        # RFC-0008 Presence: field exists. Deferred to runtime (return constant true for now).
-        return "%c1", True
+        return (cond.field, cond.kind)  # (field, 'exists'|'missing')
     elif isinstance(cond, Comparison):
-        # RFC-0008 Comparison: field op value.
-        # Deferred: full implementation requires field values as parameters.
-        # For now, return constant 1 (true) to allow compilation.
-        return "%c1", True
-    else:
-        return "%c1", False
+        return (cond.field, cond.op, cond.value)  # (field, op, value_ms)
+    return None
+
+
+def _compile_condition(cond_str, field_var_name):
+    """RFC-0008 G8: Compile condition to MLIR i1 predicate using field parameter.
+
+    Args:
+        cond_str: condition string (e.g., "counter >= 10")
+        field_var_name: MLIR variable name for the field (e.g., "%counter")
+
+    Returns:
+        MLIR code that evaluates the condition (e.g., "%cond = arith.cmpi sge, %counter, %c10 : i64")
+    """
+    extracted = _extract_condition_field(cond_str)
+    if not extracted:
+        return None
+
+    if len(extracted) == 2:  # Presence
+        field, kind = extracted
+        # Presence: check if field is not null/zero
+        # For now, field existence is assumed true (parameter presence means it exists)
+        return "%c1"
+    elif len(extracted) == 3:  # Comparison
+        field, op, value = extracted
+        # Comparison: field op value (value is already in milliseconds if Duration)
+        # Convert op to arith.cmpi predicate
+        op_map = {
+            '<': 'slt',
+            '<=': 'sle',
+            '>': 'sgt',
+            '>=': 'sge',
+            '==': 'eq',
+            '!=': 'ne',
+        }
+        pred = op_map.get(op)
+        if not pred:
+            return "%c1"
+        # Generate: %cond = arith.cmpi <pred>, %field, %const : i64
+        return f"arith.cmpi {pred}, {field_var_name}, %c{value} : i64"
+    return "%c1"
 
 
 # ---- S4: Semantic IR -> MLIR (standard dialects) ---------------------------
@@ -165,9 +197,42 @@ def emit_mlir(document, workflow_id):
         lines.append('  llvm.mlir.global internal constant @%s("%s\\00")'
                      % (sym, encoded))
     lines.append("")
-    lines.append("  func.func @lnpl_run(%skip : i32) -> i32 {")
+
+    # RFC-0008 G8: Extract condition fields for function parameters
+    condition_fields = {}  # {field_name: index}
+    for step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 2:
+            mode, cond_str = cond
+            extracted = _extract_condition_field(cond_str)
+            if extracted and len(extracted) >= 1:
+                field = extracted[0]
+                if field not in condition_fields:
+                    condition_fields[field] = len(condition_fields)
+
+    # Build lnpl_run signature with condition fields
+    params = ["%skip : i32"]
+    for field in sorted(condition_fields.keys()):
+        params.append(f"%{field} : i64")
+    params_str = ", ".join(params)
+
+    lines.append(f"  func.func @lnpl_run({params_str}) -> i32 {{")
     lines.append("    %c0 = arith.constant 0 : i32")
     lines.append("    %c1 = arith.constant 1 : i32")
+
+    # Declare i64 constants for condition comparisons
+    # Collect all i64 values used in condition comparisons
+    cond_i64_values = set()
+    for step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 2:
+            mode, cond_str = cond
+            extracted = _extract_condition_field(cond_str)
+            if extracted and len(extracted) == 3:  # Comparison
+                field, op, value = extracted
+                cond_i64_values.add(value)
+
+    # Declare all i64 constants upfront
+    for value in sorted(cond_i64_values):
+        lines.append(f"    %c{value}_i64 = arith.constant {value} : i64")
 
     for idx, (step, cond) in enumerate(steps, start=1):
         sym = strings[step["name"]]
@@ -187,9 +252,22 @@ def emit_mlir(document, workflow_id):
         lines.append("    %%i%d = arith.constant %d : i32" % (idx, idx))
 
         if guard_mode == "when":
-            # RFC-0008 G9: when becomes scf.if with condition evaluation
-            lines.append("    %%skip%d = arith.cmpi eq, %%skip, %%c1 : i32" % idx)
-            lines.append("    scf.if %%skip%d {" % idx)
+            # RFC-0008 G8-G9: when becomes scf.if with condition evaluation
+            extracted = _extract_condition_field(guard_str) if guard_str else None
+
+            if extracted and len(extracted) == 3:  # Comparison
+                field, op, value = extracted
+                op_map = {'<': 'slt', '<=': 'sle', '>': 'sgt', '>=': 'sge', '==': 'eq', '!=': 'ne'}
+                pred = op_map.get(op, 'eq')
+                # Generate comparison: %cond_idx = arith.cmpi pred, %field, %const : i64
+                # Use pre-declared constant %c<value>_i64
+                lines.append(f"    %cond{idx} = arith.cmpi {pred}, %{field}, %c{value}_i64 : i64")
+                lines.append(f"    scf.if %cond{idx} {{")
+            else:
+                # Presence or unparseable: use caller-supplied skip flag
+                lines.append("    %%skip%d = arith.cmpi eq, %%skip, %%c1 : i32" % idx)
+                lines.append("    scf.if %%skip%d {" % idx)
+
             lines.append("    } else {")
             lines.append("      %%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
                          "(!llvm.ptr, i32) -> i32" % (idx, idx, idx))
