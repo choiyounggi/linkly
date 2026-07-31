@@ -1359,3 +1359,14 @@ RFC-0001 구조 규칙 5는 비소유 참조 필드로 `requires`, `constraints`
 
 `Accepted` RFC의 실질 변경은 수정이 아니라 **새 RFC로 대체(Supersede)** 한다
 (RFC-0000 §2). 오탈자·서식·인용 경로 수정은 그대로 편집한다.
+
+**2026-07-31 확정 — 예외를 두지 않는다.** 첫 개정 요구가 들어왔을 때 "해당 RFC를 Draft로
+되돌려 편집한다"를 대안으로 검토했고 기각했다: 이 레포의 주장 자체가 "Accepted는 편집하지
+않는다"이므로, 첫 개정에서 예외를 만들면 그 규율이 곧 무의미해진다. 아래가 현재 대기 중인
+대체 대상이며, 각각 **새 RFC 번호로** 나간다(원본은 `Superseded by`로 표시).
+
+| 대체 대상 | 사유 | 추적 |
+|---|---|---|
+| RFC-0002 (Syntax) | Open Questions ② 가드 조건식 문법 확정 + 평가기 없는 `Word Word? Word? Word?` 생산 규칙 제거 | 이슈 #3 |
+| RFC-0003 (Runtime) | §Guard의 "평가할 수 없는 조건은 거부한다"를 새로 평가 가능한 범위로 갱신, `until` 종료 한계 재서술 | 이슈 #3 |
+| RFC-0006 (Agent Protocol) | ① 역할표 권한 구멍 — Constraint를 제안할 수 있는 역할이 그것을 Service/Workflow의 `constraints`에 붙일 권한이 없다 ② 의도적·검토 가능한 노드 제거 표현(RefactoringAgent의 전제) | 이슈 #2 |
