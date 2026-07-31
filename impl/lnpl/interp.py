@@ -172,19 +172,25 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload):
                                                 root, con, payload):
                         yield inner
             elif mode == "until":
-                # A bounded loop: the workflow deadline is the only stop condition
-                # the interpreter can rely on, so `until` runs at most once per
-                # remaining budget slice and reports when it gave up.
+                # RFC-0003 §Guard: bounded loop with two stop conditions.
+                # Both apply always: (1) deadline if timeout declared, (2) round cap.
+                # Whichever hits first causes termination; reason is logged separately.
                 rounds = 0
+                deadline = None if con["timeout_ms"] is None else interp.clock.now + con["timeout_ms"]
                 while not _condition_holds(node.get("condition"), payload):
+                    # Check both boundaries before iteration
+                    if deadline is not None and interp.clock.now >= deadline:
+                        interp.trace.log("WARN", "until loop hit deadline",
+                                         guard=node_id, rounds=rounds, reason="deadline")
+                        break
+                    if rounds >= _UNTIL_ROUND_CAP:
+                        interp.trace.log("WARN", "until loop hit round cap",
+                                         guard=node_id, rounds=rounds, reason="round_cap")
+                        break
                     rounds += 1
                     for inner in _flatten_items(nodes, inner_ids, interp, result,
                                                 root, con, payload):
                         yield inner
-                    if con["timeout_ms"] is None or rounds >= _UNTIL_ROUND_CAP:
-                        interp.trace.log("WARN", "until loop hit its round cap",
-                                         guard=node_id, rounds=rounds)
-                        break
             else:
                 raise RunError("unknown guard mode %r" % mode)
         else:
