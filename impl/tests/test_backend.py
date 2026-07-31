@@ -200,6 +200,70 @@ class TestDivergenceIsDetected(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any("FAIL 3/4" in line for line in report), report)
 
+    def test_when_guard_removed_diverges(self):
+        """RFC-0008: Removing when guard → always executes → diverges from conditional."""
+        original = self.original
+
+        def without_when(nodes, ids, out):
+            got = original(nodes, ids, [])
+            # Strip when guards (replace tuple cond with None)
+            for step, cond in got:
+                if isinstance(cond, tuple) and cond[0] == "when":
+                    out.append((step, None))
+                else:
+                    out.append((step, cond))
+            return out
+
+        backend._steps_in_order = without_when
+        doc = lower(parse(GUARDED), "t").to_document()
+        ok, report = differential.verify(doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)},
+                                         self.workdir)
+        self.assertFalse(ok, "removing when guard must diverge")
+        self.assertTrue(any("FAIL" in line for line in report), report)
+
+    def test_until_guard_removed_diverges(self):
+        """RFC-0008: Removing until guard → single execution → diverges from loop."""
+        original = self.original
+
+        def without_until(nodes, ids, out):
+            got = original(nodes, ids, [])
+            # Strip until guards (replace tuple cond with None)
+            for step, cond in got:
+                if isinstance(cond, tuple) and cond[0] == "until":
+                    out.append((step, None))
+                else:
+                    out.append((step, cond))
+            return out
+
+        backend._steps_in_order = without_until
+        doc = lower(parse(GUARDED), "t").to_document()
+        ok, report = differential.verify(doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)},
+                                         self.workdir)
+        self.assertFalse(ok, "removing until guard must diverge")
+        self.assertTrue(any("FAIL" in line for line in report), report)
+
+    def test_until_round_cap_violation_diverges(self):
+        """RFC-0008 G7: Violating round_cap → step count mismatch."""
+        original = self.original
+
+        def with_wrong_cap(nodes, ids, out):
+            # Patch _UNTIL_ROUND_CAP to 8 instead of 16
+            old_cap = backend._UNTIL_ROUND_CAP
+            backend._UNTIL_ROUND_CAP = 8
+            try:
+                got = original(nodes, ids, [])
+                out.extend(got)
+            finally:
+                backend._UNTIL_ROUND_CAP = old_cap
+            return out
+
+        backend._steps_in_order = with_wrong_cap
+        doc = lower(parse(GUARDED), "t").to_document()
+        ok, report = differential.verify(doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)},
+                                         self.workdir)
+        self.assertFalse(ok, "wrong round_cap must diverge")
+        self.assertTrue(any("FAIL" in line for line in report), report)
+
 
 class TestToolchainHonesty(unittest.TestCase):
     def test_missing_toolchain_raises_instead_of_silently_skipping(self):

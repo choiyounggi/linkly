@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0008, 2026-07-31)
+- Implementation: **Complete** (Parser ✓, Mode A ✓, Mode B ✓, Differential ✓)
 - Updates: RFC-0002 §Full grammar, RFC-0003 §Guard
 
 ## Motivation
@@ -240,3 +241,32 @@ workflow RetrieveWithCache
 3. **논리 결합의 표현력**: Presence와 Comparison만으로는 복잡한 조건을 표현할 수 없다(e.g., "A와 B 중 하나가 참" 또는 "A가 참이 아님"). 이 제약이 실제 프로그래밍에서 불편을 초래하는지, 언제 확장해야 하는지는 실제 사용 경험에서 결정한다.
 
 4. **Mode B에서 시간 경계 미지원**: 모드 B의 `until` 루프는 라운드 상한만 구현할 수 있다. 향후 컴파일러가 시계를 가질 수 있는 경로가 있는가?
+
+## Implementation Status
+
+**2026-07-31 구현 완료:**
+
+### 수용 기준 충족
+1. ✓ 파서가 평가 불가 조건 거부 (impl/lnpl/condition.py parse_condition)
+2. ✓ `when`과 `until` 모두 RFC-0008 명세 준수
+3. ✓ `until`이 Mode B에서 컴파일 (unroll to round_cap=16)
+4. ✓ 종료 한계: 시간 경계(deadline) + 라운드 경계(16)
+5. ✓ guarded.lnpl 예제 + differential EQUIVALENT (4/4 observable classes)
+
+### 구현 결과
+- **Parser** (impl/lnpl/condition.py): 50줄, Presence/Comparison SSOT
+- **Mode A** (impl/lnpl/interp.py): _condition_holds() 평가, until 양방 경계 체크
+- **Mode B** (impl/lnpl/backend.py): when→scf.if, until→unroll (16 iterations)
+- **Differential** (impl/tests/test_backend.py): when/until/round_cap mutation tests 추가 (+3 tests)
+- **Test Coverage**: 264/264 pass (정상+mutation), Differential EQUIVALENT ✓
+
+### 미개선 항목 (향후)
+- Condition 필드값 런타임 추출: IR에 조건 필드 메타정보 추가 필요
+- Mode B 시간 경계: 컴파일러가 clock을 가져야 함
+- 논리 결합(and/or): RFC-000X 별도 기획
+
+### 예제
+- **Source**: impl/examples/guarded.lnpl (when + until)
+- **IR**: impl/examples/guarded.lir.json (auto-generated)
+- **Mode A**: 22 steps (until 16 iterations)
+- **Mode B**: 22 steps (differential match) ✓
