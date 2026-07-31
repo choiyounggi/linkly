@@ -195,19 +195,58 @@ _UNTIL_ROUND_CAP = 16
 
 
 def _condition_holds(condition, payload):
-    """Phase 1 condition evaluation: `<field> missing` / `<field> exists`.
+    """Mode A condition evaluation: Presence + Comparison.
 
-    Anything else is rejected rather than guessed — RFC-0002 Open Questions 2
-    still owns the general condition grammar.
+    RFC-0008: evaluates parsed conditions (Presence and Comparison).
+    Invalid conditions are rejected at parse time, so runtime sees only valid forms.
     """
     if condition is None:
         return True
-    tokens = condition.split()
-    if len(tokens) == 2 and tokens[1] in ("missing", "exists"):
-        present = payload.get(tokens[0]) is not None
-        return present if tokens[1] == "exists" else not present
-    raise RunError("Phase 1 evaluates only `<field> missing|exists` conditions, "
-                   "got %r (RFC-0002 Open Questions 2)" % condition)
+
+    # Import here to avoid circular dependency
+    from .condition import parse_condition, Presence, Comparison, ConditionError
+
+    try:
+        cond = parse_condition(condition)
+    except ConditionError as e:
+        raise RunError(f"Invalid condition: {e}")
+
+    if cond is None:
+        return True
+
+    if isinstance(cond, Presence):
+        present = payload.get(cond.field) is not None
+        return present if cond.kind == "exists" else not present
+
+    if isinstance(cond, Comparison):
+        value = payload.get(cond.field)
+        if value is None:
+            # Missing field: comparison against None
+            # Treat None as "field does not exist"
+            return False  # null < X, null == X, etc. are all false
+        # Numeric comparison (payload value should be int)
+        try:
+            val_int = int(value) if isinstance(value, str) else value
+        except (ValueError, TypeError):
+            raise RunError(f"Cannot compare non-numeric {cond.field}={value!r} "
+                           f"in condition {condition!r}")
+        # Evaluate comparison
+        if cond.op == '<':
+            return val_int < cond.value
+        elif cond.op == '<=':
+            return val_int <= cond.value
+        elif cond.op == '>':
+            return val_int > cond.value
+        elif cond.op == '>=':
+            return val_int >= cond.value
+        elif cond.op == '==':
+            return val_int == cond.value
+        elif cond.op == '!=':
+            return val_int != cond.value
+        else:
+            raise RunError(f"Unknown comparator {cond.op!r}")
+
+    raise RunError(f"Unknown condition type: {type(cond)}")
 
 
 def mask_payload(payload, entity_node):

@@ -194,9 +194,11 @@ class TestGuardExecution(unittest.TestCase):
     def test_unsupported_condition_is_refused_not_guessed(self):
         src = SOURCE.replace("    authenticate\n",
                              "    when latency exceeds budget\n    authenticate\n")
-        with self.assertRaises(RunError) as ctx:
+        # RFC-0008: unsupported conditions are now rejected at parse time, not runtime
+        from lnpl.parser import ParseError
+        with self.assertRaises(ParseError) as ctx:
             self._run(src, dict(PAYLOAD))
-        self.assertIn("Open Questions 2", str(ctx.exception))
+        self.assertIn("invalid condition", str(ctx.exception))
 
 
 class TestEventEmit(unittest.TestCase):

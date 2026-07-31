@@ -6,6 +6,7 @@ sub-section that closes at the next clause or top-level keyword.
 """
 
 from .lexer import KEYWORDS_CLAUSE, KEYWORDS_TOP, tokenize
+from .condition import parse_condition, ConditionError
 
 SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database")
 
@@ -79,6 +80,13 @@ def _append_workflow_item(decl, line):
                                 "a count" if head == "repeat" else "a condition"))
         if head == "repeat" and not line.tokens[1].isdigit():
             raise ParseError("line %d: `repeat` needs an integer count" % line.lineno)
+        # RFC-0008: validate condition syntax at parse time
+        if head in ("when", "until"):
+            cond_str = " ".join(line.tokens[1:])
+            try:
+                parse_condition(cond_str)  # validate; raise ConditionError if invalid
+            except ConditionError as e:
+                raise ParseError("line %d: invalid condition: %s" % (line.lineno, e))
         if open_block is not None and open_block["type"] == "parallel":
             raise ParseError("line %d: a guard cannot appear inside a `parallel` block "
                              "(close it with `merge` first)" % line.lineno)
