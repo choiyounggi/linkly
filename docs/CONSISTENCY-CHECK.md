@@ -1163,10 +1163,15 @@ $ wc -l rfcs/0004-compiler.md
 444                        # 줄 수 보존
 ```
 
-**회귀 검사** — Task 06의 컴파일러 검사 하네스를 워크트리에서 실행했다:
+**회귀 검사** — Task 06의 컴파일러 검사 하네스를 워크트리에서 실행했다.
+
+> **주의 — 이 하네스는 이 레포에 포함돼 있지 않다.** `.orchestration/`은 이 스위트를 만든
+> 오케스트레이션의 작업 스캐폴딩(브리프·계획·검증 기록·태스크별 하네스)이며 `.gitignore`
+> 대상이다. 아래 출력은 작성 당시 실행한 기록이고, 레포를 클론한 사람은 이 경로를 갖지
+> 않는다. 레포에 포함된 재현 가능한 검사는 `scripts/validate_ir.py`(C7)다.
 
 ```sh
-$ bash .orchestration/verify/06-compiler-check.sh
+$ bash .orchestration/verify/06-compiler-check.sh   # (오케스트레이션 로컬 — 레포 미포함)
 PASS  A4l [음성] RFC-0003 프리미티브 재정의 문장
 PASS  A5c [앵커] 동등성 비대상 명시(>=3항목)
 PASS  A10i [구조] 두 모드 관측 문단이 배치 불변을 주장(모드별 배치 상이 주장 부재)

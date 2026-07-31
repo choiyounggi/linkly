@@ -196,3 +196,9 @@ docs/CONSISTENCY-CHECK.md   Cross-consistency verdicts (C1–C9)
 docs/ROADMAP.md             Three phases + risks
 plans/rfc-suite/            The plan that produced this suite (20 decisions, 10 tasks)
 ```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -187,3 +187,9 @@ docs/CONSISTENCY-CHECK.md   교차 정합성 판정(C1~C9)
 docs/ROADMAP.md             3 Phase + 리스크
 plans/rfc-suite/            이 스위트를 만든 계획(결정 20건, 태스크 10개)
 ```
+
+---
+
+## 라이선스
+
+MIT — [LICENSE](LICENSE) 참조.

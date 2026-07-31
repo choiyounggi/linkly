@@ -70,3 +70,35 @@ plan.md의 `[ext]` 표기 결정들이 참조하는 근거 모음. RFC 본문에
   → https://github.com/WebAssembly/spec ,
   https://github.com/WebAssembly/spec/blob/main/interpreter/README.md
 - LNPP Phase 1 인터프리터의 목적 규정(D14)과 채택 게이트(D20)의 직접 근거.
+
+## 7. 플랫폼 층위 선행 사례 (2026-07-31 조사 — RFC-0002 §Prior Art 근거)
+
+세 프로젝트를 직접 읽고 대조했다. 요약표와 갈림점 분석은 `rfcs/0002-syntax.md`
+§Prior Art의 "플랫폼 층위 선행 사례와 갈림점"에 있다(정본). 여기에는 조사 원문과
+수치만 남긴다.
+
+- **[lhaig/intent](https://github.com/lhaig/intent)** — "AI 코드 어시스턴트가
+  쓰도록 설계된 언어, 여러 타깃으로 컴파일". 설계 3원칙: 명시적 계약(함수마다
+  사전·사후조건, 엔티티 불변식) / 선언된 의도(자연어 목표를 형식 검증 지점에
+  연결) / 검증 가능한 정확성(Z3 SMT + 런타임 계약 집행). IR 레이어
+  `internal/ir/` 보유, 툴체인 self-hosting, 산출 = Rust·JavaScript·WebAssembly.
+  `AGENTS.md`로 멀티에이전트 워크플로, `HARNESS.md`로 검증 계약, ADR 33건+.
+  성숙도: 별 5, 커밋 339.
+- **[l3yx/intentlang](https://github.com/l3yx/intentlang)** — "Python에 직접
+  임베드된 실행 가능한 자연어"("Python을 쓸 수 있으면 IntentLang을 이미 안다").
+  신규 문법 없음 — `Intent` 객체 메서드 체이닝 + `MagicIntent.hack_str()`.
+  IR은 **프롬프트 구조화용** XML Intent IR(Goal·Contexts·Tools·Input·Strategy·
+  Constraints·Output을 형식화해 LLM 생성을 유도). 실행 모델 = Intent → 프롬프트 →
+  LLM이 Python 코드 생성 → 런타임 실행 → 관측/예외 포착 → LLM 재투입(최대 30회).
+  타깃 = Python 바이트코드(네이티브 아님). 성숙도: 별 92, 커밋 17.
+- **[pboueri/intentc](https://github.com/pboueri/intentc)** — "의도의 컴파일러".
+  입력 = `.ic`(마크다운 + YAML frontmatter)로 피처와 의존을 기술해 DAG 구성.
+  빌드 = 미처리 피처를 토폴로지 정렬 → 피처당 에이전트(Claude Code 등) 호출 →
+  `.icv` 검증 실행 → 성공분만 git 커밋(실패는 미커밋 상태로 보존). 산출 = 타깃
+  언어 소스 코드(네이티브 아님), 언어 비종속("새 모델·새 언어가 나오면 새 타깃으로
+  재빌드"). 성숙도: 별 1, 커밋 85.
+
+**LNPP에 미친 영향 2건**: ① `spec` 절을 IR 노드가 아니라 테스트 스위트
+아티팩트로 산출한다는 판단(RFC-0002 부록 A.4-②)은 intentc의 `.icv` 선례로 보강
+② "합성(synthesis) vs 결정적 lowering" 대비가 RFC-0004 파이프라인의 설계 의도를
+명문화하는 근거가 됐다(에이전트는 소스가 아니라 IR을 제안한다).
