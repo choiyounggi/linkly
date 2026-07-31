@@ -43,21 +43,19 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
 def observe_mode_b(document, workflow_id, workdir, payload=None, skip=False):
     """Build and run the native binary, reducing its output to the same shape.
 
-    RFC-0008 G8: Extracts condition field values from payload and passes them
-    to the binary via environment variables.
+    RFC-0008 G8: condition field values come from the payload. Selection is by
+    the workflow's own condition fields, not by the payload's shape — picking
+    every int in the payload would let an unrelated field displace a real one,
+    because the values are forwarded positionally.
     """
     bin_path = backend.build(document, workflow_id, workdir)
 
-    # RFC-0008 G8: Extract condition field values from payload
-    condition_fields = {}
-    if payload:
-        # Extract all non-reserved fields as potential condition fields
-        # (skip, counter, flag, etc.)
-        for key, value in payload.items():
-            if key not in ("id", "doneAt") and isinstance(value, int):
-                condition_fields[key] = value
+    values = {}
+    for name in backend.condition_field_names(document, workflow_id):
+        raw = (payload or {}).get(name, 0)
+        values[name] = raw if isinstance(raw, int) else 0
 
-    rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=condition_fields)
+    rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=values)
     order, effects, status = [], {}, None
     for line in lines:
         parts = line.split(" ", 2)
