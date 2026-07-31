@@ -3,6 +3,7 @@
 ## Status
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
+- Updated-by: RFC-0008 (§Guard)
 
 ## Motivation
 
@@ -96,6 +97,8 @@ await 지점이므로, 실행 타임라인은 IR에서 정적으로 읽힌다.
 | EventEmit | 비동기 발행 — step의 동기 구간은 발행 요청 등록까지다. Transaction의 children으로 소유된 EventEmit은 **커밋 성공 후에만** 발행된다(롤백된 트랜잭션의 이벤트 유출 금지). 전달 보장은 at-least-once이며, 소비자가 event id로 dedupe할 수 있도록 발행마다 유일한 event id를 부여한다(발행 메커니즘의 구현은 §Open Questions ③) |
 
 ### Guard
+
+> 갱신됨: RFC-0008
 
 RFC-0001의 `Guard` 노드(2026-07-31 신설)는 피가드 항목 하나를 감싸며, `mode`에 따라
 실행 의미가 갈린다. 세 모드 모두 **피가드 항목의 실행 여부·횟수만** 바꾸고, 그 항목

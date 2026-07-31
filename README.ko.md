@@ -92,8 +92,9 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 | [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering 7단계, 패스 불변조건, Optimizer 3종 책임 축 |
 | [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 카테고리, 3단 progressive disclosure 라우팅, 소비 인터페이스 |
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 역할 9종, JSON-RPC 메서드 8종, 구조화 오류, 멱등, 태스크 수명주기 |
+| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | *Draft* — 가드 조건식: 존재 검사·비교식 2형태, 명세 정정, 모드 B 컴파일 |
 
-7편 전부 2026-07-31자로 `Accepted`다 — 교차 정합성 전항 통과와 소유자 승인이 모두
+0001~0007은 2026-07-31자로 `Accepted` — 교차 정합성 전항 통과와 소유자 승인이 모두
 충족됐다. 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
 **Updates**는 지목한 **절**만 갱신하고 대상은 `Accepted`를 유지한다. 두 번째 관계를 둔
@@ -335,7 +336,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000..0006             RFC 7편
+rfcs/0000~0008              RFC (0000은 Superseded, 0001~0007은 Accepted, 0008은 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR

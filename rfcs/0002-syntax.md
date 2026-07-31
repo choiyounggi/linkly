@@ -3,6 +3,7 @@
 ## Status
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
+- Updated-by: RFC-0008 (§Full grammar)
 
 ## Motivation
 
@@ -285,6 +286,8 @@ workflow 본문의 각 라인은 step이거나 제어 구조다:
   흐름 순서의 스테이지가 된다. 다음 키워드(제어·절·최상위)에서 닫힌다.
 
 ### Full grammar (W3C-style EBNF)
+
+> 갱신됨: RFC-0008
 
 ```
 /* ---- 구조 ---- */

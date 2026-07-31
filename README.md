@@ -98,8 +98,9 @@ prefixes stay reusable.
 | [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering (7 stages), pass invariants, three optimizer responsibility axes |
 | [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 categories, 3-tier progressive-disclosure routing, consumption interface |
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 9 roles, 8 JSON-RPC methods, structured errors, idempotency, task lifecycle |
+| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | *Draft* — guard conditions: presence check & comparison (2 forms), spec correction, mode B compilation |
 
-All seven are `Accepted` as of 2026-07-31: every cross-consistency check passes and the
+0001–0007 are `Accepted` as of 2026-07-31: every cross-consistency check passes and the
 owner approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
 replaces an RFC whole and closes it; **Updates** revises named *sections* while the RFC
@@ -357,7 +358,7 @@ nodes), its lowering path is **MLIR → native**, the knowledge base is a
 
 ```
 CHARTER.md                  Stage-0 vision document (preserved verbatim — the RFCs are canonical)
-rfcs/0000..0006             The seven RFCs
+rfcs/0000~0008              The RFCs (0000 Superseded, 0001–0007 Accepted, 0008 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR
