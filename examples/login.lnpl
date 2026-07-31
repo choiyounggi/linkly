@@ -31,3 +31,13 @@ workflow Login
     generate token
     audit login
     return token
+    spec
+        given
+            valid account
+        when
+            login
+        expect
+            completed
+            steps 6
+            slo met
+            cache written

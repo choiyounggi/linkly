@@ -13,6 +13,7 @@ from .interp import Interpreter, RunError
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
+from .spec import SpecError, extract, run_manifest
 
 DEFAULT_PAYLOAD = {
     "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
@@ -23,10 +24,16 @@ DEFAULT_PAYLOAD = {
 
 
 def compile_source(path):
+    return _compile(path)[0]
+
+
+def _compile(path):
+    """Returns (ir_document, decls, module_name)."""
     with open(path, encoding="utf-8") as fh:
         source = fh.read()
     module_name = os.path.splitext(os.path.basename(path))[0]
-    return lower(parse(source), module_name).to_document()
+    decls = parse(source)
+    return lower(decls, module_name).to_document(), decls, module_name
 
 
 def _dump(document):
@@ -96,6 +103,29 @@ def _print_human(result, interp):
             print("  %-5s %s" % (entry["level"], entry["message"]))
 
 
+def cmd_spec(args):
+    doc, decls, module_name = _compile(args.source)
+    manifest = extract(decls, module_name)
+    if not manifest["cases"]:
+        print("no `spec` block found in %s" % args.source, file=sys.stderr)
+        return 1
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(_dump(manifest))
+        print("wrote %s (%d case(s))" % (args.output, len(manifest["cases"])))
+        if not args.run:
+            return 0
+    elif not args.run:
+        sys.stdout.write(_dump(manifest))
+        return 0
+
+    passed, failed, lines = run_manifest(manifest, doc)
+    for line in lines:
+        print(line)
+    print("spec: %d passed, %d failed" % (passed, failed))
+    return 0 if failed == 0 else 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="lnpl", description="compile and run LNPL sources")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -114,10 +144,16 @@ def main(argv=None):
                    help="start with an empty repository (exercises retry)")
     r.set_defaults(func=cmd_run)
 
+    sp = sub.add_parser("spec", help="extract `spec` blocks as a test manifest")
+    sp.add_argument("source")
+    sp.add_argument("-o", "--output", help="write the manifest to this path")
+    sp.add_argument("--run", action="store_true", help="execute the manifest")
+    sp.set_defaults(func=cmd_spec)
+
     args = ap.parse_args(argv)
     try:
         return args.func(args)
-    except (LexError, ParseError, LowerError) as exc:
+    except (LexError, ParseError, LowerError, SpecError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)
         return 2
     except RunError as exc:

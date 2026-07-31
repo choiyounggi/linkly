@@ -1,6 +1,6 @@
 # RFC-0000: RFC Process
 
-> Status: Draft — 이 문서 자체의 수명주기 상태. Task 09 교차 정합성 검토 통과 시 Accepted로 승격.
+> Status: Accepted (2026-07-31) — 교차 정합성 전항 통과 + 소유자 승인.
 
 ## 1. 목적
 

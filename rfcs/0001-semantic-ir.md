@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft <!-- Draft | Review | Accepted | Superseded -->
+- Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 
 ## Motivation
 
@@ -99,7 +99,7 @@ rule을 내장해 검증·OpenAPI·프런트엔드 검증 코드 자동 생성�
 |------|----------|----------|--------------|
 | Entity | `name`, `fields`(배열: `{name, type(Semantic Type명 또는 refinement), required(기본 true)}`) | `constraints`(Constraint id[]) | Validation(엔티티 불변식) |
 | Service | `name` | `requires`(Capability id[]), `constraints` | Workflow, Pipeline, BusinessRule |
-| Workflow | `name` | `constraints` | WorkflowStep(순서=실행 순서) |
+| Workflow | `name` | `constraints` | WorkflowStep, Guard, Concurrency, Pipeline (순서=실행 순서) — 2026-07-31 개정: 본문에 가드·블록이 직접 올 수 있다는 문법 사실을 반영(RFC-0002 부록 A.4-⑥ 해소) |
 | Event | `name` | `payload`(Entity.fields와 동형 배열), `source`(`{ref: <노드 id>, on: create\|update\|delete}`) | (없음) |
 | Capability | `name`(예: `postgres`) | `version`(요구 버전 표기) | (없음) |
 
@@ -110,6 +110,7 @@ rule을 내장해 검증·OpenAPI·프런트엔드 검증 코드 자동 생성�
 | BusinessRule | `name`, `statement`(규칙의 산문 서술) | `expression`(형식 표현 — 표기는 RFC-0002) | (없음) |
 | Validation | `target`(노드 id 또는 `<entity id>.<field name>` 경로), `rule`(타입 내장 rule 참조 또는 refinement 제약) | `message`(실패 메시지) | (없음) |
 | WorkflowStep | `name`(동사구 — 예: `validate input`) | `constraints` | Validation, BusinessRule, NetworkCall, RepositoryCall, CacheAccess, Transaction, Authorization, EventEmit, Concurrency, Pipeline |
+| Guard | `mode`(`when`\|`until`\|`repeat` — 닫힌 enum) | `condition`(`when`·`until` 전용 — 조건 서술), `count`(`repeat` 전용 — 1 이상 정수) | 피가드 항목 1개(WorkflowStep, Concurrency, Pipeline 중 하나). 실행 의미는 RFC-0003 §Guard. 2026-07-31 신설(RFC-0002 부록 A.4-① 해소) |
 | Pipeline | `name` | `constraints` | WorkflowStep(순서=데이터 흐름 순서) |
 | Concurrency | `mode`(초기 허용값 `parallel` 하나 — CHARTER §Concurrency) | `merge`(병합 방식 서술 — 기본: 전 브랜치 완료 대기) | WorkflowStep(각 child = 병렬 브랜치, 배열 끝 = 병합 지점) |
 

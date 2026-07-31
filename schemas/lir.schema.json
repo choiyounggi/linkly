@@ -3,36 +3,87 @@
   "title": "LNPP Semantic IR (LIR) document",
   "type": "object",
   "properties": {
-    "lir_version": { "enum": ["0.1"] },
-    "module": { "type": "string" },
+    "lir_version": {
+      "enum": [
+        "0.1"
+      ]
+    },
+    "module": {
+      "type": "string"
+    },
     "nodes": {
       "type": "array",
       "items": {
         "anyOf": [
-          { "$ref": "#/$defs/nodeEntity" },
-          { "$ref": "#/$defs/nodeService" },
-          { "$ref": "#/$defs/nodeWorkflow" },
-          { "$ref": "#/$defs/nodeEvent" },
-          { "$ref": "#/$defs/nodeCapability" },
-          { "$ref": "#/$defs/nodeBusinessRule" },
-          { "$ref": "#/$defs/nodeValidation" },
-          { "$ref": "#/$defs/nodeWorkflowStep" },
-          { "$ref": "#/$defs/nodePipeline" },
-          { "$ref": "#/$defs/nodeConcurrency" },
-          { "$ref": "#/$defs/nodeNetworkCall" },
-          { "$ref": "#/$defs/nodeRepositoryCall" },
-          { "$ref": "#/$defs/nodeCacheAccess" },
-          { "$ref": "#/$defs/nodeTransaction" },
-          { "$ref": "#/$defs/nodeAuthorization" },
-          { "$ref": "#/$defs/nodeEventEmit" },
-          { "$ref": "#/$defs/nodePolicy" },
-          { "$ref": "#/$defs/nodeSecurity" },
-          { "$ref": "#/$defs/nodePerformance" }
+          {
+            "$ref": "#/$defs/nodeEntity"
+          },
+          {
+            "$ref": "#/$defs/nodeService"
+          },
+          {
+            "$ref": "#/$defs/nodeWorkflow"
+          },
+          {
+            "$ref": "#/$defs/nodeEvent"
+          },
+          {
+            "$ref": "#/$defs/nodeCapability"
+          },
+          {
+            "$ref": "#/$defs/nodeBusinessRule"
+          },
+          {
+            "$ref": "#/$defs/nodeValidation"
+          },
+          {
+            "$ref": "#/$defs/nodeWorkflowStep"
+          },
+          {
+            "$ref": "#/$defs/nodePipeline"
+          },
+          {
+            "$ref": "#/$defs/nodeConcurrency"
+          },
+          {
+            "$ref": "#/$defs/nodeGuard"
+          },
+          {
+            "$ref": "#/$defs/nodeNetworkCall"
+          },
+          {
+            "$ref": "#/$defs/nodeRepositoryCall"
+          },
+          {
+            "$ref": "#/$defs/nodeCacheAccess"
+          },
+          {
+            "$ref": "#/$defs/nodeTransaction"
+          },
+          {
+            "$ref": "#/$defs/nodeAuthorization"
+          },
+          {
+            "$ref": "#/$defs/nodeEventEmit"
+          },
+          {
+            "$ref": "#/$defs/nodePolicy"
+          },
+          {
+            "$ref": "#/$defs/nodeSecurity"
+          },
+          {
+            "$ref": "#/$defs/nodePerformance"
+          }
         ]
       }
     }
   },
-  "required": ["lir_version", "module", "nodes"],
+  "required": [
+    "lir_version",
+    "module",
+    "nodes"
+  ],
   "additionalProperties": false,
   "$defs": {
     "nodeId": {
@@ -41,13 +92,20 @@
     },
     "nodeIdArray": {
       "type": "array",
-      "items": { "$ref": "#/$defs/nodeId" }
+      "items": {
+        "$ref": "#/$defs/nodeId"
+      }
     },
     "meta": {
       "type": "object",
       "properties": {
-        "source": { "type": "string" },
-        "origin": { "type": "string", "pattern": "^(human|agent:.+)$" }
+        "source": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string",
+          "pattern": "^(human|agent:.+)$"
+        }
       },
       "additionalProperties": false
     },
@@ -56,284 +114,709 @@
       "items": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "type": { "type": "string" },
-          "required": { "type": "boolean" }
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
         },
-        "required": ["name", "type"],
+        "required": [
+          "name",
+          "type"
+        ],
         "additionalProperties": false
       }
     },
-    "valueScalar": { "type": ["string", "number"] },
+    "valueScalar": {
+      "type": [
+        "string",
+        "number"
+      ]
+    },
     "nodeEntity": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Entity"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "children": { "$ref": "#/$defs/nodeIdArray" },
-        "name": { "type": "string" },
-        "fields": { "$ref": "#/$defs/fieldList" },
-        "constraints": { "$ref": "#/$defs/nodeIdArray" }
+        "kind": {
+          "enum": [
+            "Entity"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "name": {
+          "type": "string"
+        },
+        "fields": {
+          "$ref": "#/$defs/fieldList"
+        },
+        "constraints": {
+          "$ref": "#/$defs/nodeIdArray"
+        }
       },
-      "required": ["kind", "id", "name", "fields"],
+      "required": [
+        "kind",
+        "id",
+        "name",
+        "fields"
+      ],
       "additionalProperties": false
     },
     "nodeService": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Service"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "children": { "$ref": "#/$defs/nodeIdArray" },
-        "name": { "type": "string" },
-        "requires": { "$ref": "#/$defs/nodeIdArray" },
-        "constraints": { "$ref": "#/$defs/nodeIdArray" }
+        "kind": {
+          "enum": [
+            "Service"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "name": {
+          "type": "string"
+        },
+        "requires": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "constraints": {
+          "$ref": "#/$defs/nodeIdArray"
+        }
       },
-      "required": ["kind", "id", "name"],
+      "required": [
+        "kind",
+        "id",
+        "name"
+      ],
       "additionalProperties": false
     },
     "nodeWorkflow": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Workflow"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "children": { "$ref": "#/$defs/nodeIdArray" },
-        "name": { "type": "string" },
-        "constraints": { "$ref": "#/$defs/nodeIdArray" }
+        "kind": {
+          "enum": [
+            "Workflow"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "name": {
+          "type": "string"
+        },
+        "constraints": {
+          "$ref": "#/$defs/nodeIdArray"
+        }
       },
-      "required": ["kind", "id", "name"],
+      "required": [
+        "kind",
+        "id",
+        "name"
+      ],
       "additionalProperties": false
     },
     "nodeEvent": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Event"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "name": { "type": "string" },
-        "payload": { "$ref": "#/$defs/fieldList" },
+        "kind": {
+          "enum": [
+            "Event"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "name": {
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/fieldList"
+        },
         "source": {
           "type": "object",
           "properties": {
-            "ref": { "$ref": "#/$defs/nodeId" },
-            "on": { "enum": ["create", "update", "delete"] }
+            "ref": {
+              "$ref": "#/$defs/nodeId"
+            },
+            "on": {
+              "enum": [
+                "create",
+                "update",
+                "delete"
+              ]
+            }
           },
-          "required": ["ref", "on"],
+          "required": [
+            "ref",
+            "on"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["kind", "id", "name"],
+      "required": [
+        "kind",
+        "id",
+        "name"
+      ],
       "additionalProperties": false
     },
     "nodeCapability": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Capability"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "name": { "type": "string" },
-        "version": { "type": "string" }
+        "kind": {
+          "enum": [
+            "Capability"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "name"],
+      "required": [
+        "kind",
+        "id",
+        "name"
+      ],
       "additionalProperties": false
     },
     "nodeBusinessRule": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["BusinessRule"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "name": { "type": "string" },
-        "statement": { "type": "string" },
-        "expression": { "type": "string" }
+        "kind": {
+          "enum": [
+            "BusinessRule"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "name": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "expression": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "name", "statement"],
+      "required": [
+        "kind",
+        "id",
+        "name",
+        "statement"
+      ],
       "additionalProperties": false
     },
     "nodeValidation": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Validation"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "target": { "type": "string" },
-        "rule": { "type": "string" },
-        "message": { "type": "string" }
+        "kind": {
+          "enum": [
+            "Validation"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "target": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "target", "rule"],
+      "required": [
+        "kind",
+        "id",
+        "target",
+        "rule"
+      ],
       "additionalProperties": false
     },
     "nodeWorkflowStep": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["WorkflowStep"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "children": { "$ref": "#/$defs/nodeIdArray" },
-        "name": { "type": "string" },
-        "constraints": { "$ref": "#/$defs/nodeIdArray" }
+        "kind": {
+          "enum": [
+            "WorkflowStep"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "name": {
+          "type": "string"
+        },
+        "constraints": {
+          "$ref": "#/$defs/nodeIdArray"
+        }
       },
-      "required": ["kind", "id", "name"],
+      "required": [
+        "kind",
+        "id",
+        "name"
+      ],
       "additionalProperties": false
     },
     "nodePipeline": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Pipeline"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "children": { "$ref": "#/$defs/nodeIdArray" },
-        "name": { "type": "string" },
-        "constraints": { "$ref": "#/$defs/nodeIdArray" }
+        "kind": {
+          "enum": [
+            "Pipeline"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "name": {
+          "type": "string"
+        },
+        "constraints": {
+          "$ref": "#/$defs/nodeIdArray"
+        }
       },
-      "required": ["kind", "id", "name"],
+      "required": [
+        "kind",
+        "id",
+        "name"
+      ],
       "additionalProperties": false
     },
     "nodeConcurrency": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Concurrency"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "children": { "$ref": "#/$defs/nodeIdArray" },
-        "mode": { "enum": ["parallel"] },
-        "merge": { "type": "string" }
+        "kind": {
+          "enum": [
+            "Concurrency"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "mode": {
+          "enum": [
+            "parallel"
+          ]
+        },
+        "merge": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "mode"],
+      "required": [
+        "kind",
+        "id",
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "nodeGuard": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Guard"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "mode": {
+          "enum": [
+            "when",
+            "until",
+            "repeat"
+          ]
+        },
+        "condition": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "mode"
+      ],
       "additionalProperties": false
     },
     "nodeNetworkCall": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["NetworkCall"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "target": { "type": "string" },
-        "protocol": { "enum": ["http", "grpc", "graphql"] },
-        "operation": { "type": "string" }
+        "kind": {
+          "enum": [
+            "NetworkCall"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "target": {
+          "type": "string"
+        },
+        "protocol": {
+          "enum": [
+            "http",
+            "grpc",
+            "graphql"
+          ]
+        },
+        "operation": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "target"],
+      "required": [
+        "kind",
+        "id",
+        "target"
+      ],
       "additionalProperties": false
     },
     "nodeRepositoryCall": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["RepositoryCall"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "entity": { "$ref": "#/$defs/nodeId" },
-        "operation": { "enum": ["create", "read", "update", "delete", "query"] },
-        "query": { "type": "string" }
+        "kind": {
+          "enum": [
+            "RepositoryCall"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "entity": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "operation": {
+          "enum": [
+            "create",
+            "read",
+            "update",
+            "delete",
+            "query"
+          ]
+        },
+        "query": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "entity", "operation"],
+      "required": [
+        "kind",
+        "id",
+        "entity",
+        "operation"
+      ],
       "additionalProperties": false
     },
     "nodeCacheAccess": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["CacheAccess"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "key": { "type": "string" },
-        "operation": { "enum": ["get", "set", "invalidate"] }
+        "kind": {
+          "enum": [
+            "CacheAccess"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "key": {
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "get",
+            "set",
+            "invalidate"
+          ]
+        }
       },
-      "required": ["kind", "id", "key", "operation"],
+      "required": [
+        "kind",
+        "id",
+        "key",
+        "operation"
+      ],
       "additionalProperties": false
     },
     "nodeTransaction": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Transaction"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "children": { "$ref": "#/$defs/nodeIdArray" },
-        "isolation": { "type": "string" }
+        "kind": {
+          "enum": [
+            "Transaction"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "children": {
+          "$ref": "#/$defs/nodeIdArray"
+        },
+        "isolation": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id"],
+      "required": [
+        "kind",
+        "id"
+      ],
       "additionalProperties": false
     },
     "nodeAuthorization": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Authorization"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "requirement": { "type": "string" },
-        "subject": { "type": "string" }
+        "kind": {
+          "enum": [
+            "Authorization"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "requirement": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "requirement"],
+      "required": [
+        "kind",
+        "id",
+        "requirement"
+      ],
       "additionalProperties": false
     },
     "nodeEventEmit": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["EventEmit"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
-        "event": { "$ref": "#/$defs/nodeId" },
-        "payloadMap": { "type": "string" }
+        "kind": {
+          "enum": [
+            "EventEmit"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "event": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "payloadMap": {
+          "type": "string"
+        }
       },
-      "required": ["kind", "id", "event"],
+      "required": [
+        "kind",
+        "id",
+        "event"
+      ],
       "additionalProperties": false
     },
     "nodePolicy": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Policy"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
+        "kind": {
+          "enum": [
+            "Policy"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
         "rules": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "name": { "enum": ["retry", "rollback", "timeout", "parallel"] },
-              "value": { "$ref": "#/$defs/valueScalar" }
+              "name": {
+                "enum": [
+                  "retry",
+                  "rollback",
+                  "timeout",
+                  "parallel"
+                ]
+              },
+              "value": {
+                "$ref": "#/$defs/valueScalar"
+              }
             },
-            "required": ["name"],
+            "required": [
+              "name"
+            ],
             "additionalProperties": false
           }
         }
       },
-      "required": ["kind", "id", "rules"],
+      "required": [
+        "kind",
+        "id",
+        "rules"
+      ],
       "additionalProperties": false
     },
     "nodeSecurity": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Security"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
+        "kind": {
+          "enum": [
+            "Security"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
         "mechanisms": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       },
-      "required": ["kind", "id", "mechanisms"],
+      "required": [
+        "kind",
+        "id",
+        "mechanisms"
+      ],
       "additionalProperties": false
     },
     "nodePerformance": {
       "type": "object",
       "properties": {
-        "kind": { "enum": ["Performance"] },
-        "id": { "$ref": "#/$defs/nodeId" },
-        "meta": { "$ref": "#/$defs/meta" },
+        "kind": {
+          "enum": [
+            "Performance"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
         "budgets": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "metric": { "enum": ["response", "cache", "parallel", "prefetch", "batch"] },
-              "value": { "$ref": "#/$defs/valueScalar" }
+              "metric": {
+                "enum": [
+                  "response",
+                  "cache",
+                  "parallel",
+                  "prefetch",
+                  "batch"
+                ]
+              },
+              "value": {
+                "$ref": "#/$defs/valueScalar"
+              }
             },
-            "required": ["metric", "value"],
+            "required": [
+              "metric"
+            ],
             "additionalProperties": false
           }
         }
       },
-      "required": ["kind", "id", "budgets"],
+      "required": [
+        "kind",
+        "id",
+        "budgets"
+      ],
       "additionalProperties": false
     }
   }

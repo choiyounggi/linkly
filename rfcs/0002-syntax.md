@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft <!-- Draft | Review | Accepted | Superseded -->
+- Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 
 ## Motivation
 
@@ -428,7 +428,7 @@ IR 직렬화는 RFC-0001 부록 A가 소유한다.
 | `PerformanceLine` | — | `[필드흡수]` `budgets[]` 항목: `response < 50ms` → `{metric:"response", value:"<50ms"}`(Comparator와 Duration을 공백 없이 연결), `cache 5m` → `{metric:"cache", value:"5m"}`. 값 없는 `parallel`·`prefetch`·`batch`는 스키마가 `value`를 필수로 요구하므로 v0.1 미해소(A.4-⑤) |
 | `DatabaseClause` | — | `[구문]` 구획 키워드 — 노드를 만들지 않는다 |
 | `DatabaseLine` | — | `[필드흡수]` 소속 Service의 `requires`에 해당 Capability id를 멱등 등재(R3로 이미 있으면 추가하지 않는다). 노드 생성은 `CapabilityDecl`이 소유하며, 선언되지 않은 이름은 dangling 참조 금지(RFC-0001 구조 규칙 6) 위반이다 |
-| `SpecClause` | — | `[공백]` IR 카탈로그 19종에 테스트 명세 노드가 없다. spec은 IR 노드가 아니라 채택 요건 ④ 테스트 스위트 아티팩트(plan.md D20)로 산출된다(A.4-②) |
+| `SpecClause` | — | `[공백]` IR 카탈로그 20종에 테스트 명세 노드가 없다. spec은 IR 노드가 아니라 채택 요건 ④ 테스트 스위트 아티팩트(plan.md D20)로 산출된다(A.4-②) |
 | `GivenSection` | — | `[공백]` 사전 조건 — SpecClause와 동일(A.4-②) |
 | `WhenSection` | — | `[공백]` 실행 트리거 — SpecClause와 동일(A.4-②) |
 | `ExpectSection` | — | `[공백]` 기대 결과 — SpecClause와 동일(A.4-②) |
@@ -522,14 +522,14 @@ workflow 6단계는 소스 28~33행과 `wf.login.children`의 `wf.login.step.1` 
 
 | # | 공백 | 해소 소유자 |
 |---|------|-------------|
-| ① | `when`·`repeat`·`until` 가드와 `Condition`에 대응하는 IR kind가 없다(카탈로그 19종). RFC-0003도 가드의 실행 의미를 규정하지 않는다. 결과: 가드는 lowering에서 소실되고 피가드 항목만 노드가 된다 | RFC-0001 개정(조건·가드 kind 신설) + RFC-0003(평가 의미) |
-| ② | `spec`·`given`·`when`·`expect`·`PhraseLine`에 대응 kind가 없다 — 테스트 명세는 IR 노드가 아니라 채택 요건 ④ 테스트 스위트로 산출한다 | ROADMAP Phase 1(`tests/` 신설) |
+| ① | ~~`when`·`repeat`·`until` 가드와 `Condition`에 대응하는 IR kind가 없다~~ → **해소(2026-07-31)**: 3개 kind가 아니라 **`Guard` 하나**를 신설했다(RFC-0001 노드 카탈로그 20번째 kind). 필드는 `mode`(`when`\|`until`\|`repeat` 닫힌 enum) + `condition`(when·until) 또는 `count`(repeat) + `children`(피가드 항목 1개). 실행 의미는 RFC-0003 §Guard: `when`=조건 1회 평가 후 거짓이면 건너뜀, `repeat`=count회 반복, `until`=조건 성립까지 반복(데드라인·라운드 상한으로 유계). 조건식 문법 자체는 여전히 Open Questions ②가 소유하며, 참조 구현은 `<필드> missing\|exists`만 평가하고 그 밖은 **거부한다**(추측 금지) | 해소됨 — 조건식 확장은 OQ② |
+| ② | ~~`spec`·`given`·`when`·`expect`·`PhraseLine`에 대응 kind가 없다~~ → **해소(2026-07-31)**: 의도대로 IR 노드를 만들지 않고 **테스트 스위트 아티팩트**로 산출한다(D20 ④). 산출물은 생성된 코드가 아니라 **선언적 매니페스트**(`.spec.json`)이며 별도 러너가 인터프리터에 대해 실행한다 — 코드 생성을 끼우면 선언과 실행 사이에 합성 단계가 들어가고, 그것은 이 플랫폼이 기각한 노선이다(§Prior Art). 기대 어휘는 동사 사전처럼 **닫힌 집합**이고, 평가할 수 없는 기대는 조용히 통과하지 않고 실패한다. 참조 구현 `impl/lnpl/spec.py`, 골든 매니페스트 `examples/login.spec.json` | 해소됨 |
 | ③ | ~~골든 IR의 `Validation`·`RepositoryCall`·`CacheAccess`에 대응하는 표면 표기가 없다~~ → **해소(R1, 2026-07-31)**: 표면 표기를 신설하지 않고 **닫힌 동사 사전**으로 결정적 도출한다. StepLine의 첫 토큰은 문법이 Verb로 강제하므로 도출은 추론이 아니라 조회다 — `validate`→Validation, `authenticate`/`load`/`find`/`read`→RepositoryCall(read), `create`/`insert`→RepositoryCall(create), `update`→(update), `delete`→(delete), `cache`→CacheAccess(set), `invalidate`→(invalidate), `call`/`request`→NetworkCall, `authorize`→Authorization. **사전에 없는 동사는 Effect를 도출하지 않는다**(침묵하되 추측하지 않는다). 필드값은 선언 스코프에서 해소한다: 목적어가 필드명이면 그 필드를 target으로, `input`(또는 목적어 없음)이면 엔티티 전체를 target·rule=`semantic-types`로. 참조 구현: `impl/lnpl/lower.py` `VERB_LEXICON` | 해소됨 — 사전 확장은 이 RFC 개정 사항 |
-| ④ | `PipelineBlock`은 이름 토큰을 갖지 않는데 IR `Pipeline`은 `name`이 필수다 | RFC-0002 개정(이름 인자 추가) 또는 RFC-0001 개정(`name` 선택화) |
-| ⑤ | 값이 없는 Performance metric 3종(`parallel`·`prefetch`·`batch`)은 `budgets[]` 항목이 `value`를 필수로 요구해 직렬화할 수 없다. 골든은 값이 있는 2종만 실증한다 | RFC-0001 부록 A(스키마 개정) |
-| ⑥ | workflow 본문 직속의 `ParallelBlock`·`PipelineBlock`이 만든 Concurrency·Pipeline 노드는 `Workflow`의 children 허용 종별(WorkflowStep만)에 부착할 수 없다 — 소유 경로가 미해소다. 본문 §Guide-level의 `LoadDashboard` 비규범 예제가 이 형태다 | RFC-0001 개정(Workflow children 확장) 또는 RFC-0002 개정(블록을 step 하위로 한정) |
+| ④ | ~~`PipelineBlock`은 이름 토큰을 갖지 않는데 IR `Pipeline`은 `name`이 필수다~~ → **해소(2026-07-31)**: 문법이 **선택적 이름**을 받는다(`pipeline Enrich`). 이름이 없으면 lowering이 `pipeline.<n>`으로 파생하므로 RFC-0001의 `name` 필수 제약은 그대로 유지된다(스키마 무변경) | 해소됨 |
+| ⑤ | ~~값이 없는 Performance metric 3종(`parallel`·`prefetch`·`batch`)은 `budgets[]`가 `value`를 필수로 요구해 직렬화가 불가능하다~~ → **해소(2026-07-31)**: 플래그에 값을 요구한 것이 스키마 결함이었다. `budgets[].value`를 **선택**으로 바꿨다 — `Policy.rules[].value`가 이미 같은 이유로 선택이었다(`rollback`은 값이 없다). 값을 주면 오히려 오류다 | 해소됨 |
+| ⑥ | ~~workflow 본문 직속의 `ParallelBlock`·`PipelineBlock`이 만든 Concurrency·Pipeline 노드를 `Workflow.children`(WorkflowStep만 허용)에 부착할 수 없다~~ → **해소(2026-07-31)**: RFC-0001을 개정해 `Workflow.children`이 WorkflowStep·Guard·Concurrency·Pipeline을 허용한다. 문법이 본문에 가드·블록을 직접 허용하므로 IR 쪽이 그 사실을 담는 것이 맞다(IR 정본 원칙은 *충돌 시 IR 정의를 따른다*는 것이지, IR을 고치지 않는다는 뜻이 아니다) | 해소됨 |
 | ⑦ | ~~노드 `id`의 도출 규칙이 없다~~ → **해소(R2, 2026-07-31)**: 균일 규칙 하나. `id = <kind 접두>.<이름을 PascalCase 경계로 분해·소문자화·`.`으로 연결>`이며, **kind 자신의 낱말을 중복하는 후행 세그먼트는 제거**한다(세그먼트가 2개 이상일 때만). 그래서 Service인 `LoginService`는 `svc.login`이 되고, Event인 `UserCreated`는 `created`가 `event`와 다르므로 `event.user.created`가 된다. kind 접두: entity/svc/wf/event/cap/policy/security/perf. step은 `<workflow id>.step.<1기반 순번>`, 파생 Effect는 `<step id>.<kind 슬러그>`(Validation→check, RepositoryCall→repo, CacheAccess→cache, NetworkCall→net, Transaction→tx, Authorization→authz, EventEmit→emit, BusinessRule→rule), Constraint는 `<접두>.<소유 Service 세그먼트>`. 이 규칙은 골든 19노드의 id와 순서를 전량 재현한다(참조 구현 `impl/lnpl/lower.py` `derive_id`, 회귀 `impl/tests/test_golden.py`) | 해소됨 |
-| ⑧ | **R3은 Service 1개 모듈로만 실증된 잠정 규칙이다** — "모듈의 모든 capability를 모든 Service의 `requires`에 등재"는 골든과 정합하는 유일한 규칙이지만, Service가 2개 이상인 모듈에서 어느 Service가 어느 capability를 요구하는지(귀속)는 미해소다 | RFC-0002 개정(명시적 requires 표기 신설) 또는 RFC-0001 |
+| ⑧ | ~~R3은 Service 1개 모듈로만 실증된 잠정 규칙이다~~ → **해소(2026-07-31)**: 규칙으로 확정했다. 서비스는 **자기 `database` 절이 지명한 capability**를 `requires`로 가진다. `database` 절이 없으면 — 모듈에 서비스가 **1개일 때만** 모듈 전체 capability를 귀속하고, **2개 이상이면 컴파일 오류**다(추측하지 않는다). 골든은 서비스 1개이므로 기존 결과가 유지된다 | 해소됨 |
 
 **A.5 Open Questions ⑤(goal 절의 lowering 대상) 해소.** `GoalLine`은
 **BusinessRule** 노드로 lowering된다(라인 1개 = 노드 1개, `name` = `statement` =

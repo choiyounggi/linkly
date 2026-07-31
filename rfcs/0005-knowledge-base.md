@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: Accepted (2026-07-31)
 
 ## Motivation
 

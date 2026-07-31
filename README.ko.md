@@ -18,7 +18,7 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 개발자는 구현을 쓰지 않는다. 목표와 비즈니스 규칙(*무엇을*)만 선언하고, 컴파일러와 AI
 에이전트 파이프라인이 나머지(*어떻게*)를 설계·구현·검증·최적화·배포한다.
 
-> **상태: RFC 7편(`Draft`) + 동작하는 Phase 1 참조 구현.**
+> **상태: RFC 7편 전부 `Accepted`(2026-07-31) + 동작하는 Phase 1 참조 구현.**
 > `.lnpl`이 파싱되고 Semantic IR로 lowering되며 IR 인터프리터에서 실행된다. 골든
 > 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다. Phase 2(네이티브
 > 백엔드)는 미착수 — [로드맵](docs/ROADMAP.md) 참조. RFC 본문은 한국어이고,
@@ -90,7 +90,9 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 | [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 카테고리, 3단 progressive disclosure 라우팅, 소비 인터페이스 |
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 역할 9종, JSON-RPC 메서드 8종, 구조화 오류, 멱등, 태스크 수명주기 |
 
-`Accepted` 승격에는 교차 정합성 전항 통과 **그리고** 소유자 승인이 필요하다(RFC-0000 §2).
+7편 전부 2026-07-31자로 `Accepted`다 — 교차 정합성 전항 통과와 소유자 승인이 모두
+충족됐다(RFC-0000 §2). 이후 실질 변경은 편집이 아니라 **대체(Supersede)** 로 한다.
+승격 근거는 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md)에 기록돼 있다.
 
 ---
 
@@ -122,6 +124,9 @@ python3 -m lnpl compile examples/login.lnpl | head -20
 
 # 그리고 IR 인터프리터(모드 A)로 실행
 python3 -m lnpl run examples/login.lnpl
+
+# `spec` 블록은 테스트 매니페스트가 되고, 러너가 실행한다
+python3 -m lnpl spec examples/login.lnpl --run
 ```
 
 ```
@@ -179,22 +184,26 @@ python3 impl/tests/mutation_check.py
 
 ---
 
-## 알려진 공백 (숨기지 않는다)
+## 해소된 공백과 아직 열린 것
 
-설계 단계 스위트이므로 미해소 항목이 있다. 각각 **해소 소유자**와 인용 위치를 갖는다:
+RFC-0002 부록 A.4가 설계 시점에 기록한 공백 8항이 전부 해소됐다:
 
-- **가드(`when` / `repeat` / `until`)에 대응하는 IR kind가 없어** lowering에서
-  소실된다 — 문법은 받아들이지만 IR에 담을 곳이 없다.
-- **`spec` 블록도 대응 IR kind가 없다.** 테스트 스위트 아티팩트로 산출할 계획이지만
-  그 생성기가 아직 없다.
-- **`Pipeline`은 `name`이 필수인데 문법이 이름을 주지 않고**, 값 없는 `performance`
-  metric(`parallel`·`prefetch`·`batch`)은 직렬화가 불가능하다 — 컴파일러는 추측하지
-  않고 인용과 함께 거부한다.
-- **capability 귀속은 잠정 규칙이다**: 모듈의 모든 capability가 모든 service의
-  `requires`에 들어가는데, 이는 service 1개 골든과 정합하는 유일한 규칙일 뿐이다.
+| 공백 | 해소 |
+|------|------|
+| Effect 노드에 표면 표기가 없었다 | **닫힌 동사 사전**으로 결정적 도출. 사전에 없는 동사는 아무것도 만들지 않는다 |
+| 노드 `id` 도출 규칙이 없었다 | 균일 규칙 하나(kind 접두 + PascalCase 분해 + kind 중복 세그먼트 제거)로 골든 id 전량 재현 |
+| heap 프리미티브 계약이 없었다 | RFC-0003의 **`transfer`**: 선언된 이전 경계에서만 생성, 참조 카운트, GC 스캔 없음 |
+| 가드에 IR kind가 없었다 | 3개가 아니라 **`Guard` 하나** + `mode`(`when`/`until`/`repeat`) |
+| `spec`에 IR kind가 없었다 | 있어야 하는 게 아니었다 — `spec`은 **선언적 테스트 매니페스트**가 되고 러너가 실행한다 |
+| 문법이 `Pipeline.name`을 주지 않았다 | 문법에 선택적 이름 + 없으면 lowering이 파생 |
+| 값 없는 `performance` metric 직렬화 불가 | `budgets[].value`를 선택으로 — 플래그에는 값이 없다 |
+| capability 귀속이 잠정이었다 | 규칙으로 확정: 서비스 자기 `database` 절, 또는 (단일 서비스 모듈) 전체, 또는 **컴파일 오류** — 추측은 없다 |
 
-설계 시점에 열려 있던 공백 3건은 해소됐다: Effect 도출(닫힌 동사 사전), 노드 `id`
-도출(균일 규칙 하나), heap 계약 부재(RFC-0003의 `transfer` 프리미티브).
+남은 미결은 각 RFC의 `## Open Questions`에 있다. 그것들은 *유보한 결정*이지 계약의
+구멍이 아니다 — 조건식의 일반 문법, refinement 타입 표기, MLIR Location API 표기,
+에이전트 인증. 참조 구현은 결정할 수 없는 것을 추측하지 않고 거부한다: 미등록 동사,
+평가 불가 조건, 귀속 불가 capability, 미지원 spec 기대 — 전부 그 질문을 소유한 RFC
+조항을 인용하며 오류를 낸다.
 
 전량은 RFC-0002 부록 A.4(8항)와 [로드맵](docs/ROADMAP.md)의 Phase 1 리스크 R1~R6에
 색인돼 있다.

@@ -129,6 +129,82 @@ class Trace:
                 "logs": self.logs}
 
 
+def _flatten_items(nodes, ids, interp, result, root, con, payload):
+    """Yield the WorkflowStep ids to execute, applying Guard/Concurrency/Pipeline.
+
+    RFC-0003 evaluation semantics for the Guard kind:
+      when   — evaluate the condition once; skip the guarded item if it is false
+      until  — run the guarded item until the condition holds (deadline-bounded)
+      repeat — run the guarded item `count` times
+    Concurrency and Pipeline both expand to their children in declared order: this
+    interpreter is single-threaded by design (mode A), and RFC-0004 requires only
+    *observable* equivalence with mode B, which does not include scheduler shape.
+    """
+    for node_id in ids:
+        node = nodes[node_id]
+        kind = node["kind"]
+        if kind == "WorkflowStep":
+            yield node_id
+        elif kind in ("Concurrency", "Pipeline"):
+            for inner in _flatten_items(nodes, node.get("children", []), interp,
+                                        result, root, con, payload):
+                yield inner
+        elif kind == "Guard":
+            mode = node["mode"]
+            inner_ids = node.get("children", [])
+            if mode == "when":
+                if not _condition_holds(node.get("condition"), payload):
+                    result["skipped"].append(node_id)
+                    interp.trace.log("INFO", "guard skipped the guarded item",
+                                     guard=node_id, condition=node.get("condition"))
+                    continue
+                for inner in _flatten_items(nodes, inner_ids, interp, result, root,
+                                            con, payload):
+                    yield inner
+            elif mode == "repeat":
+                for _ in range(int(node["count"])):
+                    for inner in _flatten_items(nodes, inner_ids, interp, result,
+                                                root, con, payload):
+                        yield inner
+            elif mode == "until":
+                # A bounded loop: the workflow deadline is the only stop condition
+                # the interpreter can rely on, so `until` runs at most once per
+                # remaining budget slice and reports when it gave up.
+                rounds = 0
+                while not _condition_holds(node.get("condition"), payload):
+                    rounds += 1
+                    for inner in _flatten_items(nodes, inner_ids, interp, result,
+                                                root, con, payload):
+                        yield inner
+                    if con["timeout_ms"] is None or rounds >= _UNTIL_ROUND_CAP:
+                        interp.trace.log("WARN", "until loop hit its round cap",
+                                         guard=node_id, rounds=rounds)
+                        break
+            else:
+                raise RunError("unknown guard mode %r" % mode)
+        else:
+            raise RunError("workflow body cannot contain %s" % kind)
+
+
+_UNTIL_ROUND_CAP = 16
+
+
+def _condition_holds(condition, payload):
+    """Phase 1 condition evaluation: `<field> missing` / `<field> exists`.
+
+    Anything else is rejected rather than guessed — RFC-0002 Open Questions 2
+    still owns the general condition grammar.
+    """
+    if condition is None:
+        return True
+    tokens = condition.split()
+    if len(tokens) == 2 and tokens[1] in ("missing", "exists"):
+        present = payload.get(tokens[0]) is not None
+        return present if tokens[1] == "exists" else not present
+    raise RunError("Phase 1 evaluates only `<field> missing|exists` conditions, "
+                   "got %r (RFC-0002 Open Questions 2)" % condition)
+
+
 def mask_payload(payload, entity_node):
     """Replace values whose declared semantic type is masked (RFC-0003 §Observability)."""
     if not isinstance(payload, dict) or entity_node is None:
@@ -203,9 +279,11 @@ class Interpreter:
         self.trace.log("INFO", "workflow start",
                        workflow=wf["name"], payload=mask_payload(payload, entity))
 
-        result = {"status": "completed", "steps": [], "failed_step": None}
-        for step_id in wf.get("children", []):
-            step = self.nodes[step_id]
+        result = {"status": "completed", "steps": [], "failed_step": None,
+                  "skipped": []}
+        for item_id in _flatten_items(self.nodes, wf.get("children", []), self, result,
+                                     root, con, payload):
+            step = self.nodes[item_id]
             span = Span(step["name"], "WorkflowStep", self.clock.now)
             root.children.append(span)
             attempts = 0

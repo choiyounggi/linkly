@@ -1,0 +1,22 @@
+{
+  "spec_version": "0.1",
+  "module": "login",
+  "cases": [
+    {
+      "name": "Login spec",
+      "workflow": "wf.login",
+      "given": [
+        "valid account"
+      ],
+      "when": [
+        "login"
+      ],
+      "expect": [
+        "completed",
+        "steps 6",
+        "slo met",
+        "cache written"
+      ]
+    }
+  ]
+}

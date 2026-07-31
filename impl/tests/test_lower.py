@@ -101,6 +101,110 @@ class TestVerbLexicon(unittest.TestCase):
         self.assertIn("A.4-3", str(ctx.exception))
 
 
+class TestControlFlow(unittest.TestCase):
+    """Guards and blocks: one Guard kind with a mode, not three kinds."""
+
+    SRC = """
+capability postgres
+entity User
+    field
+        id UUID
+        email Email
+service Dash
+workflow LoadDashboard
+    when profile missing
+    load user
+    repeat 3
+    cache user
+    parallel
+        read user
+        find user
+    merge
+    pipeline Enrich
+        validate email
+"""
+
+    def setUp(self):
+        self.nodes = by_id(ir(self.SRC))
+
+    def test_when_guard_becomes_one_guard_node(self):
+        node = self.nodes["wf.load.dashboard.guard.1"]
+        self.assertEqual(node["kind"], "Guard")
+        self.assertEqual(node["mode"], "when")
+        self.assertEqual(node["condition"], "profile missing")
+        self.assertEqual(len(node["children"]), 1)
+
+    def test_repeat_guard_carries_a_count_not_a_condition(self):
+        node = self.nodes["wf.load.dashboard.guard.2"]
+        self.assertEqual(node["mode"], "repeat")
+        self.assertEqual(node["count"], 3)
+        self.assertNotIn("condition", node)
+
+    def test_parallel_becomes_concurrency(self):
+        node = self.nodes["wf.load.dashboard.parallel.1"]
+        self.assertEqual(node["kind"], "Concurrency")
+        self.assertEqual(node["mode"], "parallel")
+        self.assertEqual(len(node["children"]), 2)
+
+    def test_named_pipeline_keeps_its_name(self):
+        self.assertEqual(self.nodes["wf.load.dashboard.pipeline.1"]["name"], "Enrich")
+
+    def test_unnamed_pipeline_gets_a_derived_name(self):
+        src = self.SRC.replace("pipeline Enrich", "pipeline")
+        node = by_id(ir(src))["wf.load.dashboard.pipeline.1"]
+        self.assertEqual(node["name"], "pipeline.1")
+
+    def test_empty_block_is_rejected(self):
+        src = self.SRC.replace("    pipeline Enrich\n        validate email\n",
+                               "    pipeline Enrich\n")
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        self.assertIn("no steps", str(ctx.exception))
+
+
+class TestCapabilityAttribution(unittest.TestCase):
+    """Formerly the provisional R3 — now a rule with a defined multi-service case."""
+
+    TWO = """
+capability postgres
+capability redis
+entity User
+    field
+        id UUID
+service Alpha
+    database
+        postgres
+workflow A
+    load user
+service Beta
+    database
+        redis
+workflow B
+    load user
+"""
+
+    def test_single_service_module_takes_every_capability(self):
+        node = by_id(ir(GOLDEN))["svc.login"]
+        self.assertEqual(node["requires"], ["cap.postgres"])
+
+    def test_database_clause_attributes_per_service(self):
+        nodes = by_id(ir(self.TWO))
+        self.assertEqual(nodes["svc.alpha"]["requires"], ["cap.postgres"])
+        self.assertEqual(nodes["svc.beta"]["requires"], ["cap.redis"])
+
+    def test_multi_service_without_a_database_clause_is_an_error_not_a_guess(self):
+        src = self.TWO.replace("    database\n        redis\n", "")
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        self.assertIn("would be a guess", str(ctx.exception))
+
+    def test_database_clause_naming_an_undeclared_capability_is_rejected(self):
+        src = self.TWO.replace("        redis", "        kafka")
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        self.assertIn("not a declared capability", str(ctx.exception))
+
+
 class TestStructure(unittest.TestCase):
     def test_flat_table_children_are_id_strings(self):
         doc = ir(GOLDEN)
@@ -121,12 +225,18 @@ class TestStructure(unittest.TestCase):
             ir(GOLDEN + "event Ghost on Missing create\n")
         self.assertIn("dangling", str(ctx.exception))
 
-    def test_valueless_performance_metric_reports_the_known_gap(self):
+    def test_flag_performance_metric_serializes_without_a_value(self):
         src = GOLDEN.replace("    policy\n        retry 3",
                              "    performance\n        prefetch")
+        node = by_id(ir(src))["perf.login"]
+        self.assertEqual(node["budgets"], [{"metric": "prefetch"}])
+
+    def test_flag_performance_metric_rejects_a_value(self):
+        src = GOLDEN.replace("    policy\n        retry 3",
+                             "    performance\n        prefetch 5m")
         with self.assertRaises(LowerError) as ctx:
             ir(src)
-        self.assertIn("A.4-5", str(ctx.exception))
+        self.assertIn("takes no value", str(ctx.exception))
 
     def test_multi_entity_module_is_out_of_phase_1_scope(self):
         with self.assertRaises(LowerError) as ctx:

@@ -37,6 +37,72 @@ def _require_name(line):
     return line.tokens[1]
 
 
+def _append_workflow_item(decl, line):
+    """Build the workflow body as a list of items.
+
+    An item is either a plain step line, a guard (which owns the item that
+    follows it), or a block (`parallel` ... `merge`, `pipeline` ...). Blocks are
+    closed by their own keyword, never by indentation (RFC-0002 §Block structure).
+    """
+    head = line.head
+    open_block = decl.extra.get("_open_block")
+
+    if head == "merge":
+        if open_block is None or open_block["type"] != "parallel":
+            raise ParseError("line %d: `merge` closes a `parallel` block, but none is open"
+                             % line.lineno)
+        decl.extra.pop("_open_block")
+        return
+
+    if head in ("parallel", "pipeline"):
+        # `parallel` waits for `merge`; `pipeline` closes at the next keyword, so a
+        # new block only conflicts with an open `parallel`.
+        if open_block is not None and open_block["type"] == "parallel":
+            raise ParseError("line %d: `%s` cannot nest inside `parallel` "
+                             "(nesting depth is capped at 2 — RFC-0002 §Block structure)"
+                             % (line.lineno, head))
+        if head == "pipeline" and len(line.tokens) > 2:
+            raise ParseError("line %d: `pipeline` takes at most one name" % line.lineno)
+        if head == "parallel" and len(line.tokens) > 1:
+            raise ParseError("line %d: `parallel` takes no name" % line.lineno)
+        decl.extra.pop("_open_block", None)      # an open pipeline ends here
+        block = {"type": head, "lineno": line.lineno, "steps": [],
+                 "name": line.tokens[1] if len(line.tokens) > 1 else None}
+        _attach(decl, {"item": "block", "block": block}, line)
+        decl.extra["_open_block"] = block
+        return
+
+    if head in ("when", "until", "repeat"):
+        if len(line.tokens) < 2:
+            raise ParseError("line %d: `%s` needs %s"
+                             % (line.lineno, head,
+                                "a count" if head == "repeat" else "a condition"))
+        if head == "repeat" and not line.tokens[1].isdigit():
+            raise ParseError("line %d: `repeat` needs an integer count" % line.lineno)
+        if open_block is not None and open_block["type"] == "parallel":
+            raise ParseError("line %d: a guard cannot appear inside a `parallel` block "
+                             "(close it with `merge` first)" % line.lineno)
+        decl.extra.pop("_open_block", None)      # an open pipeline ends here
+        decl.extra["_pending_guard"] = {"mode": head,
+                                        "arg": " ".join(line.tokens[1:]),
+                                        "lineno": line.lineno}
+        return
+
+    _attach(decl, {"item": "step", "line": line}, line)
+
+
+def _attach(decl, item, line):
+    """Place an item: inside an open block, under a pending guard, or at top level."""
+    open_block = decl.extra.get("_open_block")
+    if open_block is not None and item["item"] == "step":
+        open_block["steps"].append(line)
+        return
+    guard = decl.extra.pop("_pending_guard", None)
+    if guard is not None:
+        item = {"item": "guard", "guard": guard, "guarded": item}
+    decl.items.append(item)
+
+
 def parse(source):
     """source text -> [Decl] in source order."""
     lines = tokenize(source)
@@ -97,7 +163,7 @@ def parse(source):
             continue
 
         if cur.kind == "workflow" and cur_clause is None:
-            cur.items.append(line)
+            _append_workflow_item(cur, line)
             continue
 
         if cur_clause is None:
@@ -106,4 +172,12 @@ def parse(source):
 
         cur.clauses[cur_clause].append(line)
 
+    for d in decls:
+        open_block = d.extra.pop("_open_block", None)
+        if open_block is not None and open_block["type"] == "parallel":
+            raise ParseError("declaration %s ends with an unclosed `parallel` block "
+                             "(missing `merge`)" % d.name)
+        if d.extra.pop("_pending_guard", None) is not None:
+            raise ParseError("declaration %s ends with a guard that guards nothing"
+                             % d.name)
     return decls

@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft <!-- Draft | Review | Accepted | Superseded -->
+- Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 
 ## Motivation
 

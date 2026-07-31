@@ -19,7 +19,8 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: seven RFCs (`Draft`) + a working Phase 1 reference implementation.**
+> **Status: seven RFCs, all `Accepted` (2026-07-31) + a working Phase 1 reference
+> implementation.**
 > `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter; the golden
 > scenario is *generated* by the compiler rather than hand-maintained. Phase 2 (native
 > backend) is not started — see the [roadmap](docs/ROADMAP.md). RFC bodies are written
@@ -94,8 +95,10 @@ prefixes stay reusable.
 | [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 categories, 3-tier progressive-disclosure routing, consumption interface |
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 9 roles, 8 JSON-RPC methods, structured errors, idempotency, task lifecycle |
 
-Promotion to `Accepted` requires every cross-consistency check to pass **and** owner
-approval (RFC-0000 §2).
+All seven are `Accepted` as of 2026-07-31: every cross-consistency check passes and the
+owner approved (RFC-0000 §2). From here a substantive change is made by **superseding**
+an RFC, not by editing it. The promotion basis is recorded in
+[docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md).
 
 ---
 
@@ -127,6 +130,9 @@ python3 -m lnpl compile examples/login.lnpl | head -20
 
 # and run it on the IR interpreter (mode A)
 python3 -m lnpl run examples/login.lnpl
+
+# `spec` blocks become a test manifest, and the runner executes it
+python3 -m lnpl spec examples/login.lnpl --run
 ```
 
 ```
@@ -187,24 +193,27 @@ Cross-consistency verdicts (C1–C9, each with a negative control) live in
 
 ---
 
-## Known gaps (not hidden)
+## Closed gaps, and what is still open
 
-This is a design-stage suite, so open items exist. Each one carries a **resolution
-owner** and a citation:
+All eight gaps that RFC-0002 Appendix A.4 recorded at design time are now closed:
 
-- **Guards (`when` / `repeat` / `until`) have no corresponding IR kind** and are lost
-  during lowering — the grammar accepts them, the IR has nowhere to put them.
-- **`spec` blocks have no IR kind either**; they are meant to become test-suite
-  artifacts, and that generator does not exist yet.
-- **`Pipeline` requires a `name` the grammar never supplies**, and value-less
-  `performance` metrics (`parallel` / `prefetch` / `batch`) cannot be serialized —
-  the compiler refuses them with a citation rather than guessing.
-- **Capability attribution is provisional**: every module capability lands in every
-  service's `requires`, which is the only rule consistent with a one-service golden.
+| Gap | Resolution |
+|-----|-----------|
+| Effect nodes had no surface notation | A **closed verb lexicon** derives them deterministically; an unlisted verb derives nothing |
+| No node `id` derivation rule | One uniform rule (kind prefix + PascalCase split + redundant-kind-word strip) that reproduces every golden id |
+| No heap primitive contract | RFC-0003's **`transfer`** primitive: created only at declared transfer boundaries, reference-counted, no GC scan |
+| Guards had no IR kind | One **`Guard`** kind with a `mode` (`when`/`until`/`repeat`), not three kinds |
+| `spec` had no IR kind | It is not meant to have one: `spec` becomes a **declarative test manifest**, executed by a runner |
+| `Pipeline.name` unsupplied by the grammar | Optional name in the grammar; lowering derives one when absent |
+| Value-less `performance` metrics unserializable | `budgets[].value` is optional — a flag has no value |
+| Capability attribution provisional | A rule: the service's own `database` clause, or (single-service module) all of them, or a **compile error** — never a guess |
 
-Three gaps that were open at design time are now closed: Effect derivation
-(a closed verb lexicon), node `id` derivation (one uniform rule), and the missing
-heap contract (RFC-0003's `transfer` primitive).
+What remains open is recorded in each RFC's `## Open Questions`. Those are *deferred
+decisions*, not holes in a contract — the general condition grammar, refinement-type
+notation, the MLIR Location API spelling, agent authentication. The reference
+implementation refuses what it cannot decide instead of guessing: an unknown verb, an
+unevaluable condition, an unattributable capability, and an unsupported spec
+expectation all produce an error that cites the RFC clause that owns the question.
 
 The full set is indexed in RFC-0002 Appendix A.4 (8 items) and as Phase 1 risks
 R1–R6 in the [roadmap](docs/ROADMAP.md).

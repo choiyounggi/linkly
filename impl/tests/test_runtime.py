@@ -147,6 +147,44 @@ class TestValidationAndMasking(unittest.TestCase):
         self.assertEqual(out["password"], "***")
 
 
+class TestGuardExecution(unittest.TestCase):
+    """RFC-0003 Guard semantics: when skips, repeat multiplies, until loops."""
+
+    GUARDED = SOURCE.replace("workflow Login\n    validate input\n    authenticate\n    cache user\n",
+                             "workflow Login\n    validate input\n"
+                             "    when token missing\n    authenticate\n")
+
+    def _run(self, src, payload):
+        doc = lower(parse(src), "login").to_document()
+        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        return interp, interp.run_workflow("wf.login", payload)
+
+    def test_when_false_skips_the_guarded_step(self):
+        # `token` present -> `token missing` is false -> authenticate is skipped
+        interp, result = self._run(self.GUARDED, dict(PAYLOAD, token="t"))
+        self.assertEqual([s["step"] for s in result["steps"]], ["validate input"])
+        self.assertEqual(len(result["skipped"]), 1)
+
+    def test_when_true_runs_the_guarded_step(self):
+        interp, result = self._run(self.GUARDED, dict(PAYLOAD))
+        self.assertEqual([s["step"] for s in result["steps"]],
+                         ["validate input", "authenticate"])
+        self.assertEqual(result["skipped"], [])
+
+    def test_repeat_runs_the_guarded_step_n_times(self):
+        src = SOURCE.replace("    authenticate\n", "    repeat 3\n    authenticate\n")
+        _interp, result = self._run(src, dict(PAYLOAD))
+        names = [s["step"] for s in result["steps"]]
+        self.assertEqual(names.count("authenticate"), 3)
+
+    def test_unsupported_condition_is_refused_not_guessed(self):
+        src = SOURCE.replace("    authenticate\n",
+                             "    when latency exceeds budget\n    authenticate\n")
+        with self.assertRaises(RunError) as ctx:
+            self._run(src, dict(PAYLOAD))
+        self.assertIn("Open Questions 2", str(ctx.exception))
+
+
 class TestObservabilityContract(unittest.TestCase):
     def test_metric_labels_outside_the_allowlist_are_rejected(self):
         interp = build()

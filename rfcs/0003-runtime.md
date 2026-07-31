@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft <!-- Draft | Review | Accepted | Superseded -->
+- Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 
 ## Motivation
 
@@ -94,6 +94,32 @@ await 지점이므로, 실행 타임라인은 IR에서 정적으로 읽힌다.
 | Transaction | 원자적 스코프 노드: children 전부 성공 시 커밋, 하나라도 실패 시 abort — 부분 쓰기는 관측되지 않는다. `isolation` 서술은 힌트이며 집행 수준은 해당 capability가 결정한다. Policy `rollback`의 보상 경계가 이 노드다(§Policy Enforcement) |
 | Authorization | 소유 step의 다른 Effect보다 먼저 평가되는 게이트. **거부(deny)는 비재시도 실패다** — 같은 요청은 다시 보내도 같은 결과이므로 재시도 대상이 아니다. 검사 서비스 불가용(전송 실패)과 거부는 구분되며, 전자만 재시도 판정 대상이다 |
 | EventEmit | 비동기 발행 — step의 동기 구간은 발행 요청 등록까지다. Transaction의 children으로 소유된 EventEmit은 **커밋 성공 후에만** 발행된다(롤백된 트랜잭션의 이벤트 유출 금지). 전달 보장은 at-least-once이며, 소비자가 event id로 dedupe할 수 있도록 발행마다 유일한 event id를 부여한다(발행 메커니즘의 구현은 §Open Questions ③) |
+
+### Guard
+
+RFC-0001의 `Guard` 노드(2026-07-31 신설)는 피가드 항목 하나를 감싸며, `mode`에 따라
+실행 의미가 갈린다. 세 모드 모두 **피가드 항목의 실행 여부·횟수만** 바꾸고, 그 항목
+자체의 의미(step의 Effect, 블록의 구조)는 건드리지 않는다.
+
+| mode | 실행 의미 | 종료 보장 |
+|------|----------|-----------|
+| `when` | `condition`을 **1회** 평가한다. 참이면 피가드 항목을 실행하고, 거짓이면 건너뛴다(건너뛴 사실은 trace에 남긴다 — 조용한 생략은 관측 불가능한 분기를 만든다) | 자명(반복 없음) |
+| `repeat` | 피가드 항목을 `count`회 실행한다. `count`는 1 이상 정수이며 런타임이 아니라 선언에서 온다 | 자명(유한 상수) |
+| `until` | `condition`이 성립할 때까지 피가드 항목을 반복한다. 첫 평가가 이미 참이면 한 번도 실행하지 않는다 | **두 경계로 유계**: ① workflow 데드라인(§Policy Enforcement `timeout`) ② 라운드 상한. 어느 쪽이든 먼저 닿으면 반복을 중단하고 그 사실을 `WARN`으로 남긴다 |
+
+`until`에 종료 경계를 둘 부여하는 이유는 조건이 부작용 없이 참이 되지 않을 수 있기
+때문이다 — 데드라인만으로는 데드라인이 선언되지 않은 workflow에서 무한 루프가 되고,
+라운드 상한만으로는 상한 안에서 데드라인을 초과할 수 있다. 둘 중 하나라도 없으면
+종료가 보장되지 않는다.
+
+**`repeat`와 `Policy.retry`는 다르다.** `repeat N`은 성공하든 실패하든 N회 실행하는
+선언이고, `retry N`은 실패한 step을 최대 N회 다시 시도하는 정책이다. 하나를 다른
+하나로 접으면 IR의 의미가 왜곡된다(RFC-0002 부록 A.2 P10).
+
+**조건식의 표현력.** `condition`의 문법은 RFC-0002 Open Questions ②가 소유한다. 런타임
+계약은 "평가할 수 없는 조건은 **거부한다**"는 것뿐이다 — 참으로 간주하고 진행하면
+선언된 가드가 조용히 사라지고, 거짓으로 간주하면 선언된 작업이 조용히 사라진다. 어느
+쪽도 관측 가능한 실패보다 나쁘다.
 
 ### Policy Enforcement
 

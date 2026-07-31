@@ -52,7 +52,13 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 > - **골든 예제가 기계 생성으로 전환됐다**: `examples/login.lir.json`은 이제 손으로
 >   유지하는 파일이 아니라 `examples/login.lnpl`을 컴파일한 산출물이며, 그 일치를
 >   `impl/tests/test_golden.py`가 회귀로 잡는다.
-> - 남은 Phase 1 리스크: R3(spec 절 산출물)·R4(가드 소실)·R5(문법 전량 파싱 시 4공백).
+> - **R3·R4·R5도 해소됐다**(2026-07-31 2차): `spec` 매니페스트 생성기 + 러너 신설(R3),
+>   `Guard` kind 신설로 가드가 IR에 담김(R4), `Pipeline` 이름 파생·플래그 metric 직렬화·
+>   `Workflow.children` 확장·capability 귀속 규칙 확정으로 4공백 해소(R5).
+>   **RFC-0002 부록 A.4의 8항이 전부 해소됐고, 전 RFC가 `Accepted`로 승격됐다**
+>   (승격 근거: `docs/CONSISTENCY-CHECK.md` §승격 기록).
+> - Phase 1 완료 기준 재확인: 골든이 컴파일→실행되고(6 step, SLO 충족), `spec` 4기대
+>   전부 통과, 단위 87건 통과, 뮤테이션 14종 전부 RED로 잡힘.
 
 ## Phase 1 — MVP: 파서 + IR 인터프리터
 

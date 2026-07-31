@@ -73,8 +73,43 @@ class TestParser(unittest.TestCase):
 
     def test_workflow_body_lines_need_no_clause(self):
         decls = parse("workflow Login\n    validate input\n    authenticate\n")
-        self.assertEqual([l.tokens for l in decls[0].items],
+        self.assertEqual([i["line"].tokens for i in decls[0].items],
                          [["validate", "input"], ["authenticate"]])
+
+    def test_guard_owns_the_item_that_follows_it(self):
+        decls = parse("workflow W\n    when profile missing\n    load user\n")
+        item = decls[0].items[0]
+        self.assertEqual(item["item"], "guard")
+        self.assertEqual(item["guard"]["mode"], "when")
+        self.assertEqual(item["guard"]["arg"], "profile missing")
+        self.assertEqual(item["guarded"]["line"].tokens, ["load", "user"])
+
+    def test_parallel_needs_merge(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("workflow W\n    parallel\n        read user\n")
+        self.assertIn("merge", str(ctx.exception))
+
+    def test_pipeline_closes_at_the_next_keyword_without_merge(self):
+        decls = parse("workflow W\n    pipeline Enrich\n        read user\n"
+                      "    when x exists\n    load user\n")
+        kinds = [i["item"] for i in decls[0].items]
+        self.assertEqual(kinds, ["block", "guard"])
+        self.assertEqual(decls[0].items[0]["block"]["name"], "Enrich")
+
+    def test_repeat_needs_an_integer(self):
+        with self.assertRaises(ParseError):
+            parse("workflow W\n    repeat often\n    load user\n")
+
+    def test_guard_with_nothing_to_guard_is_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("workflow W\n    when x exists\n")
+        self.assertIn("guards nothing", str(ctx.exception))
+
+    def test_blocks_do_not_nest(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("workflow W\n    parallel\n        read user\n"
+                  "        pipeline P\n            load user\n")
+        self.assertIn("nesting depth", str(ctx.exception))
 
 
 if __name__ == "__main__":

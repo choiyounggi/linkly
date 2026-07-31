@@ -39,6 +39,8 @@ KIND_WORD = {
 }
 
 # Short slug per derived Effect kind, used as the last id segment (R2).
+GUARD_SLUG = {"when": "when", "until": "until", "repeat": "repeat"}
+
 EFFECT_SLUG = {
     "Validation": "check",
     "RepositoryCall": "repo",
@@ -165,9 +167,12 @@ def _parse_perf_line(tokens, lineno):
         raise LowerError("line %d: unknown performance metric %r (allowed: %s)"
                          % (lineno, metric, ", ".join(PERF_METRICS)))
     if metric in VALUELESS_PERF:
-        raise LowerError(
-            "line %d: `%s` carries no value, but Performance.budgets requires one "
-            "— unresolved gap RFC-0002 A.4-5" % (lineno, metric))
+        # A flag metric carries no value; `budgets[].value` is optional for exactly
+        # this reason (schema revision 2026-07-31, formerly gap A.4-5).
+        if len(tokens) != 1:
+            raise LowerError("line %d: `%s` is a flag and takes no value"
+                             % (lineno, metric))
+        return {"metric": metric}
     if metric == "response":
         if len(tokens) != 3 or tokens[1] not in COMPARATORS:
             raise LowerError("line %d: `response` needs <comparator> <duration>" % lineno)
@@ -216,6 +221,7 @@ def lower(decls, module_name):
             raise LowerError("entity %s declares no fields" % entity_decl.name)
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
+    cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
 
     # ---- workflow ownership: nearest preceding service (RFC-0002 A.2 R2) ----
     owner_of = {}
@@ -247,11 +253,40 @@ def lower(decls, module_name):
             budgets = [_parse_perf_line(l.tokens, l.lineno) for l in d.clauses["performance"]]
             constraint_nodes.append(_node("Performance", perfid, budgets=budgets))
             constraints.append(perfid)
+        # Capability attribution (formerly the provisional R3). A service takes the
+        # capabilities its own `database` clause names; with no such clause, a
+        # single-service module attributes all of them, and a multi-service module
+        # is a compile error rather than a guess.
+        declared = []
+        for line in d.clauses.get("database", []):
+            if len(line.tokens) != 1:
+                raise LowerError("line %d: a database line names one capability"
+                                 % line.lineno)
+            capname = line.tokens[0]
+            if capname not in cap_by_name:
+                raise LowerError("line %d: %r is not a declared capability "
+                                 "(dangling reference — RFC-0001 structure rule 6)"
+                                 % (line.lineno, capname))
+            if cap_by_name[capname] not in declared:
+                declared.append(cap_by_name[capname])
+        if declared:
+            requires = declared
+        elif len(by_kind["service"]) == 1:
+            requires = list(cap_ids)
+        elif cap_ids:
+            raise LowerError(
+                "service %s declares no `database` clause, and this module has %d "
+                "services — capability attribution would be a guess. Name the "
+                "capabilities each service requires in its `database` clause."
+                % (d.name, len(by_kind["service"])))
+        else:
+            requires = []
+
         children = [derive_id(w.name, "Workflow")
                     for w in by_kind["workflow"] if owner_of.get(id(w)) is d]
         service_nodes.append(_node(
             "Service", sid, name=d.name,
-            requires=cap_ids or None,
+            requires=requires or None,
             constraints=constraints or None,
             children=children or None))
 
@@ -274,21 +309,14 @@ def lower(decls, module_name):
             source = {"ref": ref, "on": trigger}
         mod.add(_node("Event", eid, name=d.name, source=source))
 
-    # ---- Workflows: step nodes + derived Effects (R1) ----
+    # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        step_ids = ["%s.step.%d" % (wid, i) for i in range(1, len(d.items) + 1)]
-        mod.add(_node("Workflow", wid, name=d.name, children=step_ids or None))
-        for idx, line in enumerate(d.items, start=1):
-            step_id = "%s.step.%d" % (wid, idx)
-            verb = line.tokens[0]
-            obj = line.tokens[1] if len(line.tokens) > 1 else None
-            derived = _derive_effect(step_id, verb, obj, entity_id, entity_fields, line.lineno)
-            mod.add(_node("WorkflowStep", step_id,
-                          name=" ".join(line.tokens),
-                          children=[derived["id"]] if derived else None))
-            if derived:
-                mod.add(derived)
+        ctx = _WfContext(wid, entity_id, entity_fields)
+        top_ids = [ctx.plan(item) for item in d.items]
+        mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None))
+        for node in ctx.emitted:
+            mod.add(node)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -298,6 +326,77 @@ def lower(decls, module_name):
                       name=d.name, version=d.extra.get("version")))
 
     return mod
+
+
+class _WfContext:
+    """Turns one workflow body into nodes, numbering ids as it goes."""
+
+    def __init__(self, wid, entity_id, entity_fields):
+        self.wid = wid
+        self.entity_id = entity_id
+        self.entity_fields = entity_fields
+        self.emitted = []
+        self._step_n = 0
+        self._guard_n = 0
+        self._block_n = {"parallel": 0, "pipeline": 0}
+
+    def plan(self, item):
+        """Emit the nodes for one body item; returns the id the parent should own."""
+        if item["item"] == "step":
+            return self._step(item["line"])
+        if item["item"] == "block":
+            return self._block(item["block"])
+        if item["item"] == "guard":
+            return self._guard(item["guard"], item["guarded"])
+        raise LowerError("unknown body item %r" % item["item"])
+
+    def _next_step_id(self):
+        self._step_n += 1
+        return "%s.step.%d" % (self.wid, self._step_n)
+
+    def _step(self, line):
+        step_id = self._next_step_id()
+        verb = line.tokens[0]
+        obj = line.tokens[1] if len(line.tokens) > 1 else None
+        derived = _derive_effect(step_id, verb, obj, self.entity_id,
+                                self.entity_fields, line.lineno)
+        self.emitted.append(_node("WorkflowStep", step_id,
+                                  name=" ".join(line.tokens),
+                                  children=[derived["id"]] if derived else None))
+        if derived:
+            self.emitted.append(derived)
+        return step_id
+
+    def _block(self, block):
+        kind = "Concurrency" if block["type"] == "parallel" else "Pipeline"
+        self._block_n[block["type"]] += 1
+        slug = "%s.%d" % (block["type"], self._block_n[block["type"]])
+        node_id = "%s.%s" % (self.wid, slug)
+        child_ids = [self._step(line) for line in block["steps"]]
+        if not child_ids:
+            raise LowerError("line %d: `%s` block has no steps"
+                             % (block["lineno"], block["type"]))
+        if kind == "Concurrency":
+            self.emitted.append(_node(kind, node_id, mode="parallel",
+                                      children=child_ids))
+        else:
+            # RFC-0001 requires Pipeline.name; the grammar makes the name optional,
+            # so an unnamed pipeline gets a derived one (formerly gap A.4-4).
+            name = block["name"] or slug
+            self.emitted.append(_node(kind, node_id, name=name, children=child_ids))
+        return node_id
+
+    def _guard(self, guard, guarded):
+        self._guard_n += 1
+        node_id = "%s.guard.%d" % (self.wid, self._guard_n)
+        inner_id = self.plan(guarded)
+        fields = {"mode": guard["mode"]}
+        if guard["mode"] == "repeat":
+            fields["count"] = int(guard["arg"])
+        else:
+            fields["condition"] = guard["arg"]
+        self.emitted.append(_node("Guard", node_id, children=[inner_id], **fields))
+        return node_id
 
 
 def _derive_effect(step_id, verb, obj, entity_id, entity_fields, lineno):
