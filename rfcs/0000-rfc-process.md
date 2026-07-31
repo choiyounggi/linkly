@@ -1,6 +1,10 @@
 # RFC-0000: RFC Process
 
-> Status: Accepted (2026-07-31) — 교차 정합성 전항 통과 + 소유자 승인.
+> Status: Superseded (2026-07-31)
+> Superseded-by: RFC-0007
+>
+> 전면 대체됨 — 효력 있는 프로세스는 `rfcs/0007-rfc-process-v2.md`다. 이 문서의
+> 본문은 이력으로 보존하며 편집하지 않는다. 차이는 RFC-0007 §8에 전수 열거돼 있다.
 
 ## 1. 목적
 

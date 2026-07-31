@@ -90,7 +90,8 @@ prefixes stay reusable.
 
 | RFC | Contents |
 |-----|----------|
-| [0000 RFC Process](rfcs/0000-rfc-process.md) | Lifecycle, numbering, the fixed 7-section template |
+| [0000 RFC Process](rfcs/0000-rfc-process.md) | *Superseded by 0007* — lifecycle, numbering, the fixed 7-section template |
+| [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | Adds the `Updates` relation: revise a named *section* without replacing the RFC |
 | [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 19 node kinds, 18 semantic types, flat structure, canonical JSON serialization |
 | [0002 Syntax](rfcs/0002-syntax.md) | Line-oriented, keyword-delimited EBNF (51 productions) + grammar→IR lowering map |
 | [0003 Runtime](rfcs/0003-runtime.md) | Actors, structured concurrency, policy enforcement, memory primitives, observability contract |
@@ -99,8 +100,12 @@ prefixes stay reusable.
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 9 roles, 8 JSON-RPC methods, structured errors, idempotency, task lifecycle |
 
 All seven are `Accepted` as of 2026-07-31: every cross-consistency check passes and the
-owner approved (RFC-0000 §2). From here a substantive change is made by **superseding**
-an RFC, not by editing it. The promotion basis is recorded in
+owner approved. From here a substantive change is never made by editing an RFC. There are
+two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
+replaces an RFC whole and closes it; **Updates** revises named *sections* while the RFC
+stays `Accepted`. The second relation exists because the first one alone made a one-line
+revision cost a full restatement — and a cost that high is what turns "don't edit an
+Accepted RFC" into a rule people break. The promotion basis is recorded in
 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md).
 
 ---

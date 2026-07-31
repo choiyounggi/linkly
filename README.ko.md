@@ -84,7 +84,8 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 
 | RFC | 내용 |
 |-----|------|
-| [0000 RFC Process](rfcs/0000-rfc-process.md) | 수명주기, 번호 체계, 고정 7섹션 템플릿 |
+| [0000 RFC Process](rfcs/0000-rfc-process.md) | *0007로 대체됨* — 수명주기, 번호 체계, 고정 7섹션 템플릿 |
+| [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | `Updates` 관계 신설 — RFC를 대체하지 않고 지목한 **절**만 갱신 |
 | [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 노드 19종, Semantic Type 18종, 평탄 구조, canonical JSON 직렬화 |
 | [0002 Syntax](rfcs/0002-syntax.md) | 라인 지향·키워드 구획 EBNF(51 생산규칙) + 문법→IR lowering 매핑 |
 | [0003 Runtime](rfcs/0003-runtime.md) | actor, structured concurrency, 정책 집행, 메모리 프리미티브, 관측성 계약 |
@@ -93,8 +94,12 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 역할 9종, JSON-RPC 메서드 8종, 구조화 오류, 멱등, 태스크 수명주기 |
 
 7편 전부 2026-07-31자로 `Accepted`다 — 교차 정합성 전항 통과와 소유자 승인이 모두
-충족됐다(RFC-0000 §2). 이후 실질 변경은 편집이 아니라 **대체(Supersede)** 로 한다.
-승격 근거는 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md)에 기록돼 있다.
+충족됐다. 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
+범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
+**Updates**는 지목한 **절**만 갱신하고 대상은 `Accepted`를 유지한다. 두 번째 관계를 둔
+이유는, 전면 대체만 있으면 한 줄 개정에 전체 재서술이 필요해지고 — 그만큼 비싼 규율은
+결국 사람이 어기는 규율이 되기 때문이다. 승격 근거는
+[docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md)에 기록돼 있다.
 
 ---
 
