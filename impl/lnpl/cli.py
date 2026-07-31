@@ -14,6 +14,21 @@ from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
 from .backend import BackendError, build as build_native, run_binary
+
+
+def _parse_fields(specs):
+    """Parse repeated --field NAME=VALUE into {name: int}."""
+    out = {}
+    for spec in specs or []:
+        name, sep, raw = spec.partition("=")
+        if not sep or not name.strip():
+            raise ValueError("--field expects NAME=VALUE, got %r" % spec)
+        try:
+            out[name.strip()] = int(raw)
+        except ValueError:
+            raise ValueError("--field %s: value must be an integer, got %r"
+                             % (name.strip(), raw))
+    return out
 from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
@@ -160,7 +175,12 @@ def cmd_build(args):
     path = build_native(doc, target, args.workdir)
     print("native binary: %s" % path)
     if args.run:
-        rc, lines = run_binary(path, skip=args.skip)
+        try:
+            fields = _parse_fields(args.field)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        rc, lines = run_binary(path, skip=args.skip, condition_fields=fields)
         print("\n".join(lines))
         print("exit=%d" % rc)
     return 0
@@ -272,8 +292,15 @@ def main(argv=None):
     bd.add_argument("--workflow")
     bd.add_argument("--workdir", default=".claude/tmp/lnpl-build")
     bd.add_argument("--run", action="store_true")
+    bd.add_argument("--field", action="append", metavar="NAME=VALUE", default=[],
+                    help="condition field value for a `when`/`until` comparison "
+                         "guard, e.g. --field counter=12 (repeatable). Fields the "
+                         "workflow does not compare on are ignored; omitted ones "
+                         "default to 0.")
     bd.add_argument("--skip", action="store_true",
-                    help="set the `when` guard flag so guarded steps are skipped")
+                    help="set the Presence `when` guard flag so steps guarded by "
+                         "an exists/missing check are skipped. Comparison guards "
+                         "are driven by --field, not by this flag.")
     bd.set_defaults(func=cmd_build)
 
     df = sub.add_parser("diff", help="differential check: mode A vs mode B")
