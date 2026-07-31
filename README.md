@@ -19,9 +19,11 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: design stage.** Seven RFCs, all `Draft`. No implementation yet —
-> see the [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean; identifiers,
-> keywords, and schema fields are English.
+> **Status: seven RFCs (`Draft`) + a working Phase 1 reference implementation.**
+> `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter; the golden
+> scenario is *generated* by the compiler rather than hand-maintained. Phase 2 (native
+> backend) is not started — see the [roadmap](docs/ROADMAP.md). RFC bodies are written
+> in Korean; identifiers, keywords, and schema fields are English.
 
 ---
 
@@ -115,6 +117,35 @@ Grounded in external evidence, not intuition. Full sourcing in
 
 ---
 
+## Try it
+
+```bash
+export PYTHONPATH=impl
+
+# intent -> Semantic IR
+python3 -m lnpl compile examples/login.lnpl | head -20
+
+# and run it on the IR interpreter (mode A)
+python3 -m lnpl run examples/login.lnpl
+```
+
+```
+workflow Login -> completed  (33ms, correlation_id=cid-0001)
+  step validate input     6ms attempts=1 [Validation -]
+  step authenticate       6ms attempts=1 [RepositoryCall found=True]
+  step cache user         6ms attempts=1 [CacheAccess ttl_ms=300000]
+  step generate token     5ms attempts=1
+  step audit login        5ms attempts=1
+  step return token       5ms attempts=1
+  response SLO 50ms: met (measured, not enforced)
+```
+
+Nothing in that source says *how* to validate, read, or cache. The `retry 3`,
+`timeout 3s`, and `cache 5m` declarations become real runtime behaviour — start with
+an empty repository (`--no-row`) and you see `attempts=4` (one try plus `retry 3`),
+capped exponential backoff, and the response SLO reported as exceeded but **not**
+enforced, exactly as RFC-0003 specifies.
+
 ## Verification
 
 The specification is not prose alone. One golden scenario, "Login", runs through all
@@ -136,6 +167,21 @@ deliberate corruptions — a required field removed, an undefined `kind` injecte
 undefined extra field injected — must **all be rejected** for it to exit 0. A check
 that only ever confirms success is not a check.
 
+```bash
+# the implementation's own suite
+PYTHONPATH=impl python3 -m unittest discover -s impl/tests -t impl
+
+# and a mutation check: can that suite actually fail?
+python3 impl/tests/mutation_check.py
+```
+
+`mutation_check.py` removes one specification rule at a time — the id-derivation
+strip, a verb from the lexicon, the retry cap, Password masking, the metric-label
+allowlist, the cache TTL requirement, SLO-measurement-not-enforcement — and requires
+the suite to go red for each. It found a real defect while being written: retries
+were bounded only by the attempt cap, not by the workflow deadline that RFC-0003
+requires, so a runtime that lost its cap would spin instead of failing.
+
 Cross-consistency verdicts (C1–C9, each with a negative control) live in
 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md).
 
@@ -146,13 +192,19 @@ Cross-consistency verdicts (C1–C9, each with a negative control) live in
 This is a design-stage suite, so open items exist. Each one carries a **resolution
 owner** and a citation:
 
-- **Grammar → IR is a partial map.** Three of the golden IR's 19 nodes
-  (`Validation`, `RepositoryCall`, `CacheAccess`) have no surface notation — they are
-  **derived** by the compiler and agents from declared intent. Parsing alone yields
-  16 nodes.
-- **There is no node `id` derivation rule.** Only the format (a dot-path regex) is specified.
-- **There is no runtime contract for a heap primitive.** RFC-0003 defines only two: arena and pool.
-- **Guards (`when` / `repeat` / `until`) have no corresponding IR kind** and are lost during lowering.
+- **Guards (`when` / `repeat` / `until`) have no corresponding IR kind** and are lost
+  during lowering — the grammar accepts them, the IR has nowhere to put them.
+- **`spec` blocks have no IR kind either**; they are meant to become test-suite
+  artifacts, and that generator does not exist yet.
+- **`Pipeline` requires a `name` the grammar never supplies**, and value-less
+  `performance` metrics (`parallel` / `prefetch` / `batch`) cannot be serialized —
+  the compiler refuses them with a citation rather than guessing.
+- **Capability attribution is provisional**: every module capability lands in every
+  service's `requires`, which is the only rule consistent with a one-service golden.
+
+Three gaps that were open at design time are now closed: Effect derivation
+(a closed verb lexicon), node `id` derivation (one uniform rule), and the missing
+heap contract (RFC-0003's `transfer` primitive).
 
 The full set is indexed in RFC-0002 Appendix A.4 (8 items) and as Phase 1 risks
 R1–R6 in the [roadmap](docs/ROADMAP.md).
@@ -195,6 +247,8 @@ docs/RESEARCH-NOTES.md      External basis for design decisions
 docs/CONSISTENCY-CHECK.md   Cross-consistency verdicts (C1–C9)
 docs/ROADMAP.md             Three phases + risks
 plans/rfc-suite/            The plan that produced this suite (20 decisions, 10 tasks)
+impl/lnpl/                  Phase 1 reference implementation (lexer, parser, lowering, interpreter)
+impl/tests/                 Unit suite + mutation_check.py (proves the suite can fail)
 ```
 
 ---

@@ -149,9 +149,17 @@ Pool은 컴파일러가 자동 선택). 이 절은 그 선택이 전제할 수 �
 | **arena** | workflow 실행 1회당 하나 생성된다. 수명 = **workflow 실행 수명**: 실행 시작 시 생성되고, 실행 종결 시 — 성공·실패·취소를 불문하고 — 일괄 해제된다. step 사이를 흐르는 중간 데이터의 기본 거처이며, 개별 해제·GC 추적이 없다(CHARTER §Runtime "GC 최소화"의 이행 수단) |
 | **pool** | capability 커넥션(postgres·redis 등) 전용 자원 풀. ① 크기는 다운스트림 용량 기준으로 정한다 — 유입 부하 기준이 아니다(다운스트림 용량을 넘는 커넥션은 대기열을 다운스트림 안으로 옮겨 처리량을 낮춘다). ② bounded — 고갈 시 무한 대기가 아니라 fail-fast로 거부한다(무한 대기열은 피크 시점의 메모리 붕괴를 유예한 것일 뿐이다). ③ 획득은 operation당 1회, 다른 자원 획득 전 반환 — 중첩 획득 금지(§Execution Model RepositoryCall 행과 동일 규칙) |
 
-이 두 계약이 있으면 컴파일러는 "step 간 전달 값은 arena, capability I/O는
-pool"이라는 전제 위에서 Stack/Heap 승격·탈출 분석을 수행할 수 있다. 그 결정
-자체(escape analysis, 배치 선택)는 RFC-0004의 최적화 패스가 소유한다.
+| **transfer** | arena 수명을 넘겨 생존해야 하는 값 전용. **선언된 이전 경계에서만 생성된다** — 현재 두 곳뿐이다: EventEmit의 페이로드, workflow의 반환값. 참조 카운트로 관리하며 마지막 참조가 사라질 때 해제된다. GC 스캔은 없다(CHARTER §Runtime "GC 최소화"). 이전 경계 밖에서 arena를 탈출하는 값은 문법적으로 만들 수 없으므로, 탈출 분석의 판정은 "이 값이 선언된 이전 경계를 지나는가"라는 이진 질문으로 축소된다 |
+
+세 계약이 있으면 컴파일러는 "step 간 전달 값은 arena, capability I/O는 pool,
+이전 경계를 지나는 값은 transfer"라는 전제 위에서 Stack 승격·탈출 분석을
+수행할 수 있다. 그 결정 자체(escape analysis, 배치 선택)는 RFC-0004의 최적화
+패스가 소유한다.
+
+> **transfer는 2026-07-31 개정으로 추가됐다**(교차 정합성 C8 — `docs/CONSISTENCY-CHECK.md`).
+> 그 전까지 이 절은 arena·pool 2종만 정의했는데 RFC-0004는 배치 대상으로 Heap을
+> 선택하고 있었다 — 즉 arena 수명을 넘기는 값의 할당·해제 책임이 어느 RFC에도
+> 없었다. `transfer`가 RFC-0004의 Heap 행에 대응하는 런타임 계약이다.
 
 ### Observability
 

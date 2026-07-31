@@ -18,9 +18,11 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 개발자는 구현을 쓰지 않는다. 목표와 비즈니스 규칙(*무엇을*)만 선언하고, 컴파일러와 AI
 에이전트 파이프라인이 나머지(*어떻게*)를 설계·구현·검증·최적화·배포한다.
 
-> **상태: 설계 단계.** RFC 7편, 전부 `Draft`. 구현은 아직 없다 —
-> [로드맵](docs/ROADMAP.md) 참조. RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은
-> 영어다.
+> **상태: RFC 7편(`Draft`) + 동작하는 Phase 1 참조 구현.**
+> `.lnpl`이 파싱되고 Semantic IR로 lowering되며 IR 인터프리터에서 실행된다. 골든
+> 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다. Phase 2(네이티브
+> 백엔드)는 미착수 — [로드맵](docs/ROADMAP.md) 참조. RFC 본문은 한국어이고,
+> 식별자·키워드·스키마 필드명은 영어다.
 
 ---
 
@@ -110,6 +112,34 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 
 ---
 
+## 실행해보기
+
+```bash
+export PYTHONPATH=impl
+
+# 의도 -> Semantic IR
+python3 -m lnpl compile examples/login.lnpl | head -20
+
+# 그리고 IR 인터프리터(모드 A)로 실행
+python3 -m lnpl run examples/login.lnpl
+```
+
+```
+workflow Login -> completed  (33ms, correlation_id=cid-0001)
+  step validate input     6ms attempts=1 [Validation -]
+  step authenticate       6ms attempts=1 [RepositoryCall found=True]
+  step cache user         6ms attempts=1 [CacheAccess ttl_ms=300000]
+  step generate token     5ms attempts=1
+  step audit login        5ms attempts=1
+  step return token       5ms attempts=1
+  response SLO 50ms: met (measured, not enforced)
+```
+
+소스 어디에도 *어떻게* 검증하고 읽고 캐시할지는 없다. `retry 3`·`timeout 3s`·
+`cache 5m` 선언이 실제 런타임 동작이 된다 — 저장소를 비운 채 실행하면(`--no-row`)
+`attempts=4`(초기 1회 + `retry 3`), 상한 있는 지수 백오프, 그리고 초과했지만
+**집행되지 않는** response SLO 보고를 볼 수 있다. RFC-0003이 규정한 그대로다.
+
 ## 검증
 
 명세가 산문만은 아니다. 골든 시나리오 "Login" 하나가 7개 문서를 관통하고(문법 → IR →
@@ -129,6 +159,21 @@ python3 scripts/validate_ir.py --self-test
 삭제, 미정의 `kind` 주입, 미정의 추가 필드 주입 — 이 **모두 거부돼야** exit 0이다. 성공만
 확인하는 검사는 검사가 아니다.
 
+```bash
+# 구현 자체의 테스트 스위트
+PYTHONPATH=impl python3 -m unittest discover -s impl/tests -t impl
+
+# 그리고 뮤테이션 검사: 저 스위트가 실제로 실패할 수 있는가?
+python3 impl/tests/mutation_check.py
+```
+
+`mutation_check.py`는 명세 규칙을 하나씩 제거한다 — id 도출의 후행 세그먼트 제거,
+동사 사전의 항목, 재시도 상한, Password 마스킹, 메트릭 라벨 allowlist, 캐시 TTL
+필수, SLO를 집행하지 않는다는 규칙 — 그리고 각각에 대해 스위트가 빨간불이 되기를
+요구한다. 이 검사가 작성 중 실제 결함을 찾았다: 재시도가 시도 횟수 상한만으로
+묶여 있고 RFC-0003이 요구하는 workflow 데드라인을 보지 않아서, 상한을 잃은
+런타임은 실패하는 대신 무한히 도는 상태였다.
+
 교차 정합성 판정(C1~C9, 각 항목에 음성 대조 포함)은
 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md)에 있다.
 
@@ -138,12 +183,18 @@ python3 scripts/validate_ir.py --self-test
 
 설계 단계 스위트이므로 미해소 항목이 있다. 각각 **해소 소유자**와 인용 위치를 갖는다:
 
-- **문법 → IR은 부분사상이다.** 골든 IR의 19노드 중 3노드(`Validation`,
-  `RepositoryCall`, `CacheAccess`)에 대응하는 표면 표기가 없다 — 이 3종은 선언된
-  의도로부터 컴파일러와 에이전트가 **도출**하는 노드다. 파싱만으로는 16노드까지다.
-- **노드 `id` 도출 규칙이 없다.** 형식(dot-path 정규식)만 규정돼 있다.
-- **heap 프리미티브의 런타임 계약이 없다.** RFC-0003은 arena와 pool 2종만 정의한다.
-- **가드(`when` / `repeat` / `until`)에 대응하는 IR kind가 없어** lowering에서 소실된다.
+- **가드(`when` / `repeat` / `until`)에 대응하는 IR kind가 없어** lowering에서
+  소실된다 — 문법은 받아들이지만 IR에 담을 곳이 없다.
+- **`spec` 블록도 대응 IR kind가 없다.** 테스트 스위트 아티팩트로 산출할 계획이지만
+  그 생성기가 아직 없다.
+- **`Pipeline`은 `name`이 필수인데 문법이 이름을 주지 않고**, 값 없는 `performance`
+  metric(`parallel`·`prefetch`·`batch`)은 직렬화가 불가능하다 — 컴파일러는 추측하지
+  않고 인용과 함께 거부한다.
+- **capability 귀속은 잠정 규칙이다**: 모듈의 모든 capability가 모든 service의
+  `requires`에 들어가는데, 이는 service 1개 골든과 정합하는 유일한 규칙일 뿐이다.
+
+설계 시점에 열려 있던 공백 3건은 해소됐다: Effect 도출(닫힌 동사 사전), 노드 `id`
+도출(균일 규칙 하나), heap 계약 부재(RFC-0003의 `transfer` 프리미티브).
 
 전량은 RFC-0002 부록 A.4(8항)와 [로드맵](docs/ROADMAP.md)의 Phase 1 리스크 R1~R6에
 색인돼 있다.
@@ -186,6 +237,8 @@ docs/RESEARCH-NOTES.md      설계 결정의 외부 근거
 docs/CONSISTENCY-CHECK.md   교차 정합성 판정(C1~C9)
 docs/ROADMAP.md             3 Phase + 리스크
 plans/rfc-suite/            이 스위트를 만든 계획(결정 20건, 태스크 10개)
+impl/lnpl/                  Phase 1 참조 구현(렉서·파서·lowering·인터프리터)
+impl/tests/                 단위 스위트 + mutation_check.py(스위트가 실패할 수 있음을 증명)
 ```
 
 ---

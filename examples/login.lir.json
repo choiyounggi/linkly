@@ -6,26 +6,51 @@
       "kind": "Service",
       "id": "svc.login",
       "name": "LoginService",
-      "requires": ["cap.postgres", "cap.redis", "cap.jwt"],
-      "constraints": ["policy.login", "security.login", "perf.login"],
-      "children": ["wf.login"]
+      "requires": [
+        "cap.postgres",
+        "cap.redis",
+        "cap.jwt"
+      ],
+      "constraints": [
+        "policy.login",
+        "security.login",
+        "perf.login"
+      ],
+      "children": [
+        "wf.login"
+      ]
     },
     {
       "kind": "Entity",
       "id": "entity.user",
       "name": "User",
       "fields": [
-        { "name": "id", "type": "UUID" },
-        { "name": "email", "type": "Email" },
-        { "name": "password", "type": "Password" },
-        { "name": "createdAt", "type": "DateTime" }
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "email",
+          "type": "Email"
+        },
+        {
+          "name": "password",
+          "type": "Password"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        }
       ]
     },
     {
       "kind": "Event",
       "id": "event.user.created",
       "name": "UserCreated",
-      "source": { "ref": "entity.user", "on": "create" }
+      "source": {
+        "ref": "entity.user",
+        "on": "create"
+      }
     },
     {
       "kind": "Workflow",
@@ -44,19 +69,23 @@
       "kind": "WorkflowStep",
       "id": "wf.login.step.1",
       "name": "validate input",
-      "children": ["wf.login.step.1.check"]
+      "children": [
+        "wf.login.step.1.check"
+      ]
     },
     {
       "kind": "Validation",
       "id": "wf.login.step.1.check",
-      "target": "entity.user.email",
-      "rule": "Email"
+      "target": "entity.user",
+      "rule": "semantic-types"
     },
     {
       "kind": "WorkflowStep",
       "id": "wf.login.step.2",
       "name": "authenticate",
-      "children": ["wf.login.step.2.repo"]
+      "children": [
+        "wf.login.step.2.repo"
+      ]
     },
     {
       "kind": "RepositoryCall",
@@ -68,7 +97,9 @@
       "kind": "WorkflowStep",
       "id": "wf.login.step.3",
       "name": "cache user",
-      "children": ["wf.login.step.3.cache"]
+      "children": [
+        "wf.login.step.3.cache"
+      ]
     },
     {
       "kind": "CacheAccess",
@@ -95,22 +126,38 @@
       "kind": "Policy",
       "id": "policy.login",
       "rules": [
-        { "name": "retry", "value": 3 },
-        { "name": "rollback" },
-        { "name": "timeout", "value": "3s" }
+        {
+          "name": "retry",
+          "value": 3
+        },
+        {
+          "name": "rollback"
+        },
+        {
+          "name": "timeout",
+          "value": "3s"
+        }
       ]
     },
     {
       "kind": "Security",
       "id": "security.login",
-      "mechanisms": ["jwt"]
+      "mechanisms": [
+        "jwt"
+      ]
     },
     {
       "kind": "Performance",
       "id": "perf.login",
       "budgets": [
-        { "metric": "response", "value": "<50ms" },
-        { "metric": "cache", "value": "5m" }
+        {
+          "metric": "response",
+          "value": "<50ms"
+        },
+        {
+          "metric": "cache",
+          "value": "5m"
+        }
       ]
     },
     {

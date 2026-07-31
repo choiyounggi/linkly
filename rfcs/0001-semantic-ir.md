@@ -246,7 +246,7 @@ children 허용 종별 — 은 스키마 표현 범위 밖이며, 컴파일 파�
 | event.user.created | Event | name=UserCreated, source={ref: entity.user, on: create} | [] |
 | wf.login | Workflow | name=Login | [wf.login.step.1, wf.login.step.2, wf.login.step.3, wf.login.step.4, wf.login.step.5, wf.login.step.6] |
 | wf.login.step.1 | WorkflowStep | name="validate input" | [wf.login.step.1.check] |
-| wf.login.step.1.check | Validation | target=entity.user.email, rule=Email(타입 내장) | [] |
+| wf.login.step.1.check | Validation | target=entity.user, rule=semantic-types | [] |
 | wf.login.step.2 | WorkflowStep | name="authenticate" | [wf.login.step.2.repo] |
 | wf.login.step.2.repo | RepositoryCall | entity=entity.user, operation=read | [] |
 | wf.login.step.3 | WorkflowStep | name="cache user" | [wf.login.step.3.cache] |
@@ -264,7 +264,7 @@ children 허용 종별 — 은 스키마 표현 범위 밖이며, 컴파일 파�
 참조 관계(화살표 목록):
 
 - 소유(children): `svc.login → wf.login` / `wf.login → wf.login.step.1 ~ wf.login.step.6`(6단계, 순서 고정) / `wf.login.step.1 → wf.login.step.1.check` / `wf.login.step.2 → wf.login.step.2.repo` / `wf.login.step.3 → wf.login.step.3.cache`
-- 비소유(명명 참조): `svc.login -requires→ cap.postgres, cap.redis, cap.jwt` / `svc.login -constraints→ policy.login, security.login, perf.login` / `wf.login.step.2.repo -entity→ entity.user` / `wf.login.step.1.check -target→ entity.user.email` / `event.user.created -source→ entity.user`
+- 비소유(명명 참조): `svc.login -requires→ cap.postgres, cap.redis, cap.jwt` / `svc.login -constraints→ policy.login, security.login, perf.login` / `wf.login.step.2.repo -entity→ entity.user` / `wf.login.step.1.check -target→ entity.user` / `event.user.created -source→ entity.user`
 
 주: step 4~6(generate token / audit login / return token)은 children이 없는
 순수 단계다 — 토큰 생성의 구현은 `cap.jwt`와 `security.login`(jwt) 제약을 보고

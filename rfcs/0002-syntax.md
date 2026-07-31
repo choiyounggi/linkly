@@ -510,7 +510,7 @@ workflow 6단계는 소스 28~33행과 `wf.login.children`의 `wf.login.step.1` 
 역방향(소스에 대응 줄이 없는 IR 노드) 3개 — 문법 → IR이 **부분사상**임을 보이는
 지점이다:
 
-- `wf.login.step.1.check`(Validation, `target=entity.user.email`, `rule=Email`)
+- `wf.login.step.1.check`(Validation, `target=entity.user`, `rule=semantic-types`)
 - `wf.login.step.2.repo`(RepositoryCall, `entity=entity.user`, `operation=read`)
 - `wf.login.step.3.cache`(CacheAccess, `key="user:{id}"`, `operation=set`)
 
@@ -524,11 +524,11 @@ workflow 6단계는 소스 28~33행과 `wf.login.children`의 `wf.login.step.1` 
 |---|------|-------------|
 | ① | `when`·`repeat`·`until` 가드와 `Condition`에 대응하는 IR kind가 없다(카탈로그 19종). RFC-0003도 가드의 실행 의미를 규정하지 않는다. 결과: 가드는 lowering에서 소실되고 피가드 항목만 노드가 된다 | RFC-0001 개정(조건·가드 kind 신설) + RFC-0003(평가 의미) |
 | ② | `spec`·`given`·`when`·`expect`·`PhraseLine`에 대응 kind가 없다 — 테스트 명세는 IR 노드가 아니라 채택 요건 ④ 테스트 스위트로 산출한다 | ROADMAP Phase 1(`tests/` 신설) |
-| ③ | 골든 IR의 `Validation`·`RepositoryCall`·`CacheAccess`(step 1~3의 자식)에 대응하는 표면 표기가 없다 — 이 3종은 선언된 의도로부터 컴파일러·에이전트가 도출하는 노드다 | RFC-0002 개정(표면 표기 신설) 또는 RFC-0004(도출 패스 규정) |
+| ③ | ~~골든 IR의 `Validation`·`RepositoryCall`·`CacheAccess`에 대응하는 표면 표기가 없다~~ → **해소(R1, 2026-07-31)**: 표면 표기를 신설하지 않고 **닫힌 동사 사전**으로 결정적 도출한다. StepLine의 첫 토큰은 문법이 Verb로 강제하므로 도출은 추론이 아니라 조회다 — `validate`→Validation, `authenticate`/`load`/`find`/`read`→RepositoryCall(read), `create`/`insert`→RepositoryCall(create), `update`→(update), `delete`→(delete), `cache`→CacheAccess(set), `invalidate`→(invalidate), `call`/`request`→NetworkCall, `authorize`→Authorization. **사전에 없는 동사는 Effect를 도출하지 않는다**(침묵하되 추측하지 않는다). 필드값은 선언 스코프에서 해소한다: 목적어가 필드명이면 그 필드를 target으로, `input`(또는 목적어 없음)이면 엔티티 전체를 target·rule=`semantic-types`로. 참조 구현: `impl/lnpl/lower.py` `VERB_LEXICON` | 해소됨 — 사전 확장은 이 RFC 개정 사항 |
 | ④ | `PipelineBlock`은 이름 토큰을 갖지 않는데 IR `Pipeline`은 `name`이 필수다 | RFC-0002 개정(이름 인자 추가) 또는 RFC-0001 개정(`name` 선택화) |
 | ⑤ | 값이 없는 Performance metric 3종(`parallel`·`prefetch`·`batch`)은 `budgets[]` 항목이 `value`를 필수로 요구해 직렬화할 수 없다. 골든은 값이 있는 2종만 실증한다 | RFC-0001 부록 A(스키마 개정) |
 | ⑥ | workflow 본문 직속의 `ParallelBlock`·`PipelineBlock`이 만든 Concurrency·Pipeline 노드는 `Workflow`의 children 허용 종별(WorkflowStep만)에 부착할 수 없다 — 소유 경로가 미해소다. 본문 §Guide-level의 `LoadDashboard` 비규범 예제가 이 형태다 | RFC-0001 개정(Workflow children 확장) 또는 RFC-0002 개정(블록을 step 하위로 한정) |
-| ⑦ | 노드 `id`의 도출 규칙이 없다(형식만 규정됨). 골든의 `LoginService` → `svc.login`(접미사 제거), `UserCreated` → `event.user.created`(PascalCase 분해)는 기계 규칙이 자명하지 않다 | RFC-0001 개정 또는 ROADMAP Phase 1 파서 구현 |
+| ⑦ | ~~노드 `id`의 도출 규칙이 없다~~ → **해소(R2, 2026-07-31)**: 균일 규칙 하나. `id = <kind 접두>.<이름을 PascalCase 경계로 분해·소문자화·`.`으로 연결>`이며, **kind 자신의 낱말을 중복하는 후행 세그먼트는 제거**한다(세그먼트가 2개 이상일 때만). 그래서 Service인 `LoginService`는 `svc.login`이 되고, Event인 `UserCreated`는 `created`가 `event`와 다르므로 `event.user.created`가 된다. kind 접두: entity/svc/wf/event/cap/policy/security/perf. step은 `<workflow id>.step.<1기반 순번>`, 파생 Effect는 `<step id>.<kind 슬러그>`(Validation→check, RepositoryCall→repo, CacheAccess→cache, NetworkCall→net, Transaction→tx, Authorization→authz, EventEmit→emit, BusinessRule→rule), Constraint는 `<접두>.<소유 Service 세그먼트>`. 이 규칙은 골든 19노드의 id와 순서를 전량 재현한다(참조 구현 `impl/lnpl/lower.py` `derive_id`, 회귀 `impl/tests/test_golden.py`) | 해소됨 |
 | ⑧ | **R3은 Service 1개 모듈로만 실증된 잠정 규칙이다** — "모듈의 모든 capability를 모든 Service의 `requires`에 등재"는 골든과 정합하는 유일한 규칙이지만, Service가 2개 이상인 모듈에서 어느 Service가 어느 capability를 요구하는지(귀속)는 미해소다 | RFC-0002 개정(명시적 requires 표기 신설) 또는 RFC-0001 |
 
 **A.5 Open Questions ⑤(goal 절의 lowering 대상) 해소.** `GoalLine`은
