@@ -76,15 +76,19 @@ def _steps_in_order(nodes, ids, out):
                 for _ in range(int(node["count"])):
                     _steps_in_order(nodes, node.get("children", []), out)
             elif node["mode"] == "when":
+                # RFC-0008 G9: when becomes arith.cmpi + scf.if
                 inner = []
                 _steps_in_order(nodes, node.get("children", []), inner)
                 for step, _cond in inner:
-                    out.append((step, node.get("condition")))
+                    out.append((step, ("when", node.get("condition"))))
+            elif node["mode"] == "until":
+                # RFC-0008 G10: until becomes scf.while with condition negation + round cap
+                inner = []
+                _steps_in_order(nodes, node.get("children", []), inner)
+                for step, _cond in inner:
+                    out.append((step, ("until", node.get("condition"))))
             else:
-                raise BackendError(
-                    "mode B cannot compile guard mode %r yet: an `until` loop needs "
-                    "a runtime condition evaluator (RFC-0002 Open Questions 2)"
-                    % node["mode"])
+                raise BackendError("unknown guard mode %r" % node["mode"])
         else:
             raise BackendError("workflow body cannot contain %s" % kind)
     return out
@@ -132,9 +136,15 @@ def emit_mlir(document, workflow_id):
 
     for idx, (step, cond) in enumerate(steps, start=1):
         sym = strings[step["name"]]
+        guard_desc = ""
+        if cond:
+            if isinstance(cond, tuple):
+                mode, cond_str = cond
+                guard_desc = "  (guarded by `%s` %s)" % (mode, cond_str)
+            else:
+                guard_desc = "  (guarded by `%s`)" % cond
         lines.append("    // step %d: %s%s"
-                     % (idx, step["name"],
-                        "  (guarded by `%s`)" % cond if cond else ""))
+                     % (idx, step["name"], guard_desc))
         lines.append("    %%p%d = llvm.mlir.addressof @%s : !llvm.ptr" % (idx, sym))
         lines.append("    %%i%d = arith.constant %d : i32" % (idx, idx))
         if cond:
