@@ -240,16 +240,37 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 .venv/bin/python impl/tests/mutation_check.py
 ```
 
-`mutation_check.py` removes one specification rule at a time — 18 of them: the
-id-derivation strip, a verb from the lexicon, the retry cap, guard semantics, Password
-masking, the metric-label allowlist, the cache TTL requirement,
-SLO-measurement-not-enforcement, capability attribution, mode B's step order and
-effect calls, the differential check's own toolchain guard, OpenAPI's refusal to emit
-an empty schema — and requires the suite to go red for each. It has found two real
-defects so far: retries were bounded only by the attempt cap and not by the workflow
-deadline RFC-0003 requires (so a runtime that lost its cap would spin instead of
-failing), and the mode B pipeline stopped lowering at the `cf` dialect so any `when`
-guard failed to compile.
+`mutation_check.py` removes one specification rule at a time — 53 of them — and
+requires the suite to go red for each. It begins with a **no-op control**: a mutation
+that provably cannot change behaviour, which must *survive*. That control is not
+ceremony. An earlier version of this harness copied only `impl/` into the mutant tree
+while the tests resolve the repo from `__file__`, so every mutant died on a missing
+data file before any rule ran — it reported "all caught" while proving nothing, and an
+independent audit caught it. If the control goes red the harness stops and reports
+that nothing else was measured.
+
+Between them the suite, the harness, and two rounds of adversarial audit have found
+real defects at every level:
+
+- **Runtime.** Retries bounded only by the attempt cap and not the workflow deadline.
+  A mode B pipeline that stopped lowering at the `cf` dialect, so `when` guards failed
+  to compile.
+- **Three rules no test asserted at all** — non-idempotent retry, SLO-measurement, and
+  at-least-once emit. The first two hid behind the broken harness. The third hid behind
+  something worse: a test that *named* the rule but seeded its fixture so nothing
+  failed, making `attempts == 1` true no matter what the runtime did. A test can be
+  green, well-named, and still assert nothing.
+- **The Reviewer, five times.** Its first ownership check looked only at new nodes, so a
+  removal expressed as an edit passed. Then: provenance checked for presence but not
+  form; provenance that matched the form and resolved to nothing; the same removal
+  reached through `constraints` instead of `children`, because the review gate and the
+  apply gate asked different questions; ownership cycles longer than one hop; a kind
+  swap under an existing id; and one node given two owners. Each fix was defeated by
+  the adjacent variant until the checks were rewritten from RFC-0001's structure rules
+  (2, 4, 6) instead of from the cases already known to fail.
+
+The lesson that generalises: a gate written per-case gets walked case by case. A gate
+written from the rule closes the family.
 
 Cross-consistency verdicts (C1–C9, each with a negative control) live in
 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md).
@@ -292,7 +313,7 @@ What remains open is recorded in each RFC's `## Open Questions` and tracked as i
 | Issue | What is deferred |
 |-------|------------------|
 | [#1](https://github.com/choiyounggi/linkly/issues/1) | RFC-0004 S4 — the custom `lnpl` MLIR dialect (needs a C++ TableGen build) |
-| [#2](https://github.com/choiyounggi/linkly/issues/2) | Six of the nine agent roles, and a Reviewer that can reject on its own criteria |
+| [#2](https://github.com/choiyounggi/linkly/issues/2) | `RefactoringAgent`, the last of the nine roles — it needs `ir.propose` to express node *removal*, an RFC-0006 revision |
 | [#3](https://github.com/choiyounggi/linkly/issues/3) | The guard condition grammar (RFC-0002 OQ2), which also blocks `until` in mode B |
 
 Those are *deferred decisions*, not holes in a contract. The reference implementation

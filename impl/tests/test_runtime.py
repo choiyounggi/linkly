@@ -85,15 +85,25 @@ class TestPolicyEnforcement(unittest.TestCase):
         self.assertEqual(failed["attempts"], 4)      # 1 initial + retry 3
         self.assertEqual(result["status"], "failed")
 
-    def test_non_idempotent_effect_is_not_retried(self):
+    def test_a_failing_non_idempotent_effect_is_not_retried(self):
+        # `create` is not idempotent, so a failure must NOT be replayed even though
+        # `retry 3` is declared — replaying it would risk a duplicate side effect.
+        # The row is pre-seeded so the create conflicts and actually fails; without
+        # a failing non-idempotent effect this rule cannot be observed.
         src = SOURCE.replace("    authenticate", "    create user")
         doc = lower(parse(src), "login").to_document()
-        interp = Interpreter(doc, repo_rows={})
-        # A create is not idempotent, so a failure must not be retried. It also
-        # does not fail here (create returns a row), so the run completes with
-        # exactly one attempt per step — the assertion is on attempts, not status.
+        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
         result = interp.run_workflow("wf.login", PAYLOAD)
-        self.assertTrue(all(s["attempts"] == 1 for s in result["steps"]))
+        failed = [s for s in result["steps"] if s["step"] == "create user"][0]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(failed["attempts"], 1, "a non-idempotent effect was retried")
+
+    def test_an_idempotent_effect_under_the_same_policy_is_retried(self):
+        # The contrast that makes the assertion above meaningful: same `retry 3`,
+        # same failure shape, but a read is idempotent so it *is* replayed.
+        result = build(rows={}).run_workflow("wf.login", PAYLOAD)
+        failed = [s for s in result["steps"] if s["step"] == "authenticate"][0]
+        self.assertEqual(failed["attempts"], 4)
 
     def test_retries_stop_at_the_deadline_not_only_at_the_attempt_cap(self):
         # Backoff is 100/200/400ms; with a 300ms deadline the third retry cannot
@@ -114,12 +124,16 @@ class TestPolicyEnforcement(unittest.TestCase):
                             for e in interp.trace.logs))
 
     def test_response_slo_is_measured_not_enforced(self):
-        interp = build(clock=Clock(step_cost_ms=30))     # far past the 50ms SLO
+        # 3 steps x 30ms is far past the 50ms SLO but well inside the 3s deadline,
+        # so the run must still COMPLETE. Asserting the status is the point: an
+        # implementation that enforced the SLO would fail here, and only a status
+        # assertion can tell the two apart.
+        interp = build(clock=Clock(step_cost_ms=30))
         result = interp.run_workflow("wf.login", PAYLOAD)
         self.assertFalse(result["slo_met"])
-        # Exceeding the SLO must not by itself fail the run: the failure below,
-        # if any, comes from the deadline, never from the SLO.
-        self.assertNotIn("slo", str(result["failed_step"] or ""))
+        self.assertEqual(result["status"], "completed",
+                         "the SLO was enforced; RFC-0003 says measure and report")
+        self.assertIsNone(result["failed_step"])
 
 
 class TestValidationAndMasking(unittest.TestCase):
@@ -203,8 +217,10 @@ workflow Signup
 """
 
     def _run(self):
+        # Empty repository: the workflow *creates* the user, and a create against an
+        # existing row conflicts.
         doc = lower(parse(self.SRC), "signup").to_document()
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={})
         return interp, interp.run_workflow("wf.signup", PAYLOAD)
 
     def test_publication_is_registered_with_a_unique_id(self):
@@ -227,19 +243,28 @@ workflow Signup
         for node in doc["nodes"]:
             if node["kind"] == "EventEmit":
                 node["event"] = "event.nope"
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={})
         result = interp.run_workflow("wf.signup", PAYLOAD)
         self.assertEqual(result["failed_step"], "emit userCreated")
 
     def test_emit_is_not_retried_because_delivery_is_at_least_once(self):
         # An EventEmit must not be replayed by the retry policy; duplicate
         # publication is the consumer's dedupe problem, not the runtime's to create.
+        # The emit has to *fail* for this to mean anything: with a succeeding emit
+        # every step reports attempts == 1 whatever the retry rule says, so the
+        # assertion would hold even for a runtime that retried everything.
         src = self.SRC.replace("service SignupService",
                                "service SignupService\n    policy\n        retry 3")
         doc = lower(parse(src), "signup").to_document()
-        interp = Interpreter(doc, repo_rows={})   # create still succeeds
+        for node in doc["nodes"]:
+            if node["kind"] == "EventEmit":
+                node["event"] = "event.nope"      # makes the emit raise
+        interp = Interpreter(doc, repo_rows={})
         result = interp.run_workflow("wf.signup", PAYLOAD)
-        self.assertTrue(all(s["attempts"] == 1 for s in result["steps"]))
+        failed = [s for s in result["steps"] if s["step"] == "emit userCreated"]
+        self.assertEqual(result["failed_step"], "emit userCreated")
+        self.assertEqual([s["attempts"] for s in failed], [1],
+                         "an at-least-once emit must be attempted exactly once")
 
 
 class TestObservabilityContract(unittest.TestCase):

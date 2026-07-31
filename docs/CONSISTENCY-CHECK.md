@@ -1339,6 +1339,22 @@ C1~C9 전항 판정은 위에 기록돼 있다. 그 판정 이후 이 스위트�
 *계약의 공백*이 아니다 — 대표적으로 조건식의 일반 문법(RFC-0002 OQ②), refinement 타입
 표면 표기(OQ③), MLIR Location API 표기(RFC-0004 OQ②), 에이전트 인증(RFC-0006 OQ).
 
+### 구현이 규칙보다 좁게 강제하는 지점 (2026-07-31 기록)
+
+RFC-0001 구조 규칙 5는 비소유 참조 필드로 `requires`, `constraints`, `entity`, `event`,
+`target`, `source.ref`를 열거하고, 규칙 6은 **모든 참조가 같은 문서의 id로 해소돼야
+한다**고 못박는다. 구현(`protocol.NAMED_REF_FIELDS`)은 이 중 **`target`을 제외**한다 —
+컴파일러가 그 필드에 노드 id뿐 아니라 필드 경로(`entity.user.email`)와 리터럴
+`"unspecified"`도 쓰기 때문이다(`lower.py`의 Validation 하강). `target`을 규칙 6에
+곧이곧대로 넣으면 컴파일러 자신의 정상 출력이 반려된다.
+
+- 판정: **RFC 개정 후보**(`target`의 값 문법을 규칙 5에서 분리해 명시)이지 계약 공백은
+  아니다. `Accepted` 상태이므로 본문 수정 대신 여기에 기록하고 Supersede 대상으로 남긴다.
+- 대신 지킨 것: `children`·`requires`·`constraints`·`entity`·`event`·`source.ref`는
+  리뷰 시점(`Reviewer._assess`)과 적용 시점(`Server._apply`) **양쪽에서 같은 함수로**
+  검사한다. 두 게이트가 서로 다른 질문을 하던 동안, `constraints`에서 빠진 참조가 둘 다
+  통과했다(적대적 재감사가 실증).
+
 ### 이후 변경 절차
 
 `Accepted` RFC의 실질 변경은 수정이 아니라 **새 RFC로 대체(Supersede)** 한다

@@ -193,8 +193,12 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 > 붙이지 않아 고아 노드가 됐다(부모 step을 함께 제안하도록 수정) ③ 매핑이 거칠어 `return
 > token`에도 authz가 붙었다(동사 `generate`로 한정).
 >
-> 남은 것: 에이전트 9종 중 2종(Planner·Coder)만 구현했고 Reviewer는 승인 경로만 갖는다.
-> 나머지 6종과 SSE 스트리밍·에이전트 인증은 RFC-0006 Open Questions에 남아 있다.
+> **2026-07-31 갱신**: 위 "남은 것"은 해소됐다. 9종 중 8종(Planner·Coder·Reviewer·
+> Architect·Tester·SecurityAuditor·PerformanceAnalyzer·ReleaseAgent)이 구현됐고,
+> Reviewer는 호출자 지시와 무관하게 자기 기준(권한·해소되는 출처·제거 불가·참조·소유
+> 유일·비순환·스키마)으로 반려한다 — `run_cycle`도 `approve=` 없이 그 판단을 탄다.
+> 남은 것: **RefactoringAgent 1종**(`ir.propose`가 노드 제거를 표현하지 못해 RFC-0006
+> 개정이 선행 — 이슈 #2)과 SSE 스트리밍·에이전트 인증(RFC-0006 Open Questions).
 
 ## Phase 3 — KB 시드 12카테고리 + 에이전트 2종 프로토콜 왕복
 

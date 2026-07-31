@@ -51,6 +51,11 @@ class FakeRepository:
         self.calls.append((entity_id, operation))
         if operation in ("read", "query"):
             return self.rows.get(entity_id)
+        if operation == "create" and entity_id in self.rows:
+            # A duplicate create conflicts. This matters beyond realism: without a
+            # non-idempotent operation that can fail, the rule "do not retry a
+            # non-idempotent effect" cannot be tested at all.
+            raise RunError("repository create conflicts: %s already exists" % entity_id)
         return {"affected": 1}
 
 

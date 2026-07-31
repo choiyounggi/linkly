@@ -12,16 +12,137 @@ knowledge. It asks the KB, and if the KB has nothing to say it **stops** rather
 than inventing an Effect — the same rule the compiler's verb lexicon follows.
 """
 
-from .protocol import RpcError, Server
+import re
+
+from .lower import derive_id
+from .protocol import ROLES, RpcError, Server, node_references
+from .spec import EXPECTATIONS, SPEC_VERSION
+
+# Node kinds that may legitimately have no owner. RFC-0001 rule 2 allows only
+# Declaration nodes to be entry (top-level) nodes; rule 5 exempts Constraint
+# nodes, which are never owned via `children` and are reached through the
+# `constraints` field instead. Everything else must have exactly one owner.
+DECLARATION_KINDS = frozenset({"Entity", "Service", "Workflow", "Event", "Capability"})
+CONSTRAINT_KINDS = frozenset({"Policy", "Security", "Performance"})
+ENTRY_KINDS = DECLARATION_KINDS | CONSTRAINT_KINDS
+
+# A10: provenance is a form, not just a non-empty string. `kb:<doc id>@<semver>`
+# when the basis is a KB document, `ir:<node id>` when it is derived from the IR.
+_SOURCE_FORM = re.compile(r"^(kb:[a-z0-9-]+@\d+\.\d+\.\d+|ir:[a-z][a-z0-9.]*)$")
 
 
-class Planner:
-    """Turns an intent into dispatched work. Proposes nothing (RFC-0006 role table)."""
+def _ownership_cycle(merged):
+    """One cycle in the `children` graph as a list of ids, or [] if acyclic.
 
-    role = "Planner"
+    RFC-0001 rule 4. Checking only for a node that lists itself catches 1-cycles
+    and nothing longer: two new nodes owning each other each have an owner, so
+    every per-node check passes while the pair is unreachable from any entry node.
+    """
+    white, grey, black = 0, 1, 2
+    colour = dict.fromkeys(merged, white)
+    for root in sorted(merged):
+        if colour[root] != white:
+            continue
+        colour[root] = grey
+        path = [root]
+        stack = [(root, iter(merged[root].get("children", [])))]
+        while stack:
+            node_id, kids = stack[-1]
+            descended = False
+            for kid in kids:
+                if kid not in merged:
+                    continue              # rule 6 reports dangling separately
+                if colour[kid] == grey:
+                    return path[path.index(kid):] + [kid]
+                if colour[kid] == white:
+                    colour[kid] = grey
+                    path.append(kid)
+                    stack.append((kid, iter(merged[kid].get("children", []))))
+                    descended = True
+                    break
+            if not descended:
+                colour[node_id] = black
+                stack.pop()
+                path.pop()
+    return []
+
+
+def _structure_fault(merged):
+    """The first RFC-0001 structure-rule violation in a merged document, or None.
+
+    Rules 2 (one owner, and only Declaration/Constraint nodes may be unowned),
+    4 (acyclic ownership) and 6 (every reference resolves) are checked over the
+    *whole* merged document, not just the proposed nodes — a proposal changes
+    meaning by what it detaches as much as by what it adds.
+    """
+    dangling = sorted({ref for node in merged.values()
+                       for ref in node_references(node) if ref not in merged})
+    if dangling:
+        return ("dangling: unresolved reference(s) %s — every owning and named "
+                "reference must resolve in the same document (RFC-0001 rule 6)"
+                % ", ".join(dangling))
+
+    owners = {}
+    contested = []
+    for node in sorted(merged.values(), key=lambda n: n["id"]):
+        for ref in node.get("children", []):
+            if ref in owners:
+                contested.append("%s (owned by %s and %s)" % (ref, owners[ref], node["id"]))
+            else:
+                owners[ref] = node["id"]
+    if contested:
+        return ("ownership: %s — a node may appear in at most one `children` list "
+                "(RFC-0001 rule 2)" % ", ".join(sorted(contested)))
+
+    orphans = sorted(n["id"] for n in merged.values()
+                     if n["kind"] not in ENTRY_KINDS and n["id"] not in owners)
+    if orphans:
+        return ("orphan: nothing owns %s — only Declaration and Constraint nodes "
+                "may be unowned (RFC-0001 rules 2, 5)" % ", ".join(orphans))
+
+    cycle = _ownership_cycle(merged)
+    if cycle:
+        return ("cycle: ownership loops through %s — the `children` graph must be "
+                "acyclic (RFC-0001 rule 4)" % " -> ".join(cycle))
+    return None
+
+
+class _AgentBase:
+    """What every role shares: its name, the server, and a refusal path.
+
+    The refusal path is the important part. A role that cannot decide must say so
+    and cite the clause that owns the question — not fall back on a plausible
+    guess. That is the same discipline the compiler's verb lexicon follows.
+    """
+
+    role = None
 
     def __init__(self, server):
         self.server = server
+
+    def _meta(self, source):
+        return {"origin": "agent:%s" % self.role, "source": source}
+
+    def _refuse(self, task, reason, clause):
+        """Close the task without proposing, recording why and under whose clause."""
+        self.server.call("agent.report", task_id=task["task_id"], state="completed",
+                         payload={"proposed": None, "reason": reason, "clause": clause})
+        return {"proposal_id": None, "reason": reason, "clause": clause}
+
+    def _pin_kb(self, query):
+        """route -> load -> verify. Returns the document, or None if unrouted."""
+        routed = self.server.call("kb.route", task_description=query)["doc_ids"]
+        if not routed:
+            return None
+        doc = self.server.call("kb.load", doc_id=routed[0])["document"]
+        self.server.call("kb.verify", doc_id=doc["id"], version=doc["version"])
+        return doc
+
+
+class Planner(_AgentBase):
+    """Turns an intent into dispatched work. Proposes nothing (RFC-0006 role table)."""
+
+    role = "Planner"
 
     def plan(self, intent, steps, deadline_ms=30000):
         """Dispatch one task per step; returns the task descriptors."""
@@ -39,13 +160,10 @@ class Planner:
         return tasks
 
 
-class Coder:
+class Coder(_AgentBase):
     """Routes a step to the KB, then proposes the IR the KB prescribes."""
 
     role = "Coder"
-
-    def __init__(self, server):
-        self.server = server
 
     def implement(self, task, step, deadline_ms=30000):
         """One leg of the cycle. Returns a record of what it did and why."""
@@ -112,8 +230,7 @@ class Coder:
                           {"kind": "Authorization",
                            "id": authz_id,
                            "requirement": "verified jwt",
-                           "meta": {"origin": "agent:Coder",
-                                    "source": "kb:%s@%s" % (doc["id"], doc["version"])}}]}
+                           "meta": self._meta("kb:%s@%s" % (doc["id"], doc["version"]))}]}
 
     def _step_node_for(self, step):
         for node in self.server.doc["nodes"]:
@@ -122,20 +239,432 @@ class Coder:
         return None
 
 
-class Reviewer:
-    """Approves or rejects. The only role with approve rights."""
+class Reviewer(_AgentBase):
+    """Approves or rejects — on its own criteria, not the caller's.
+
+    `ir.propose` buys a two-stage approval, and that is worth exactly as much as
+    the reviewer behind it. So `decide` defaults to *assessing*: the caller may
+    still override, but has to say so, and the override is recorded.
+
+    The five rejection criteria are the failures that would otherwise surface at
+    apply time, moved to review time where a reviewer can explain them.
+    """
 
     role = "Reviewer"
 
-    def __init__(self, server):
-        self.server = server
-
-    def decide(self, review_task_id, proposal_id, approve=True, reason=""):
+    def decide(self, review_task_id, proposal_id, approve=None, reason=""):
+        if approve is None:
+            ok, why = self._assess(proposal_id)
+            approve, reason = ok, why or reason
+        else:
+            reason = "override: %s" % (reason or
+                                       ("approved" if approve else "rejected"))
         payload = {"proposal_id": proposal_id,
                    "decision": "approved" if approve else "rejected",
                    "reason": reason}
         return self.server.call("agent.report", task_id=review_task_id,
                                 payload=payload)
+
+    def _source_resolves(self, source, existing):
+        """Does this provenance string name something that actually exists?"""
+        if source.startswith("kb:"):
+            doc_id, _, version = source[3:].partition("@")
+            return bool(self.server.kb.verify(doc_id, version))
+        return source[3:] in existing
+
+    def _assess(self, proposal_id):
+        """Returns (approve, reason). Reason is `<code>: <why>` when rejecting."""
+        proposal = self.server.proposals.get(proposal_id)
+        if proposal is None:
+            return False, "unknown: no such proposal %r" % proposal_id
+        nodes = proposal["nodes"]
+        existing = {n["id"]: n for n in self.server.doc["nodes"]}
+
+        allowed = ROLES.get(proposal["role"], {}).get("propose", set())
+        outside = sorted({n.get("kind") for n in nodes} - set(allowed))
+        if outside:
+            return False, ("rights: %s may not propose %s"
+                           % (proposal["role"], ", ".join(outside)))
+
+        bad_source = []
+        for node in nodes:
+            if node["id"] in existing:
+                continue          # a replacement of an existing node keeps its own
+            source = (node.get("meta") or {}).get("source")
+            if not source or not _SOURCE_FORM.match(source):
+                bad_source.append("%s (%r)" % (node["id"], source))
+                continue
+            # A form that points at nothing is not a basis. Both the KB and the
+            # document are in reach here, so matching the shape is not the answer
+            # to "is this grounded?" — resolving it is.
+            if not self._source_resolves(source, existing):
+                bad_source.append("%s (%s resolves to nothing)" % (node["id"], source))
+        if bad_source:
+            return False, ("provenance: new node(s) need a meta.source that resolves "
+                           "— `kb:<id>@<version>` naming a document at that exact "
+                           "version, or `ir:<node id>` present in the document: %s"
+                           % ", ".join(bad_source))
+
+        # `ir.propose` adds or replaces; it has no way to say "remove this node".
+        # That gap is exactly why RFC-0006's RefactoringAgent is deferred, so a
+        # replacement that drops references or changes a node's kind is a removal
+        # wearing an edit's clothes — and it changes runtime meaning, because the
+        # interpreter reads `constraints` for retry, timeout, rollback and the
+        # security mechanisms.
+        for node in nodes:
+            old = existing.get(node["id"])
+            if old is None:
+                continue
+            if node.get("kind") != old.get("kind"):
+                return False, ("kind: %s is a %s in the document and this would make "
+                               "it a %s — `ir.propose` replaces a node, it does not "
+                               "remove one (RFC-0006 §Methods)"
+                               % (node["id"], old.get("kind"), node.get("kind")))
+            dropped = sorted(set(node_references(old)) - set(node_references(node)))
+            if dropped:
+                return False, ("removal: replacing %s would drop reference(s) %s — "
+                               "`ir.propose` cannot express a removal (RFC-0006 "
+                               "§Methods)" % (node["id"], ", ".join(dropped)))
+
+        # Merge into a copy — assessing must not change what it is assessing.
+        merged = {nid: node for nid, node in existing.items()}
+        for node in nodes:
+            merged[node["id"]] = node
+
+        fault = _structure_fault(merged)
+        if fault:
+            return False, fault
+
+        if self.server.validate is not None:
+            candidate = dict(self.server.doc)
+            candidate["nodes"] = [merged[n["id"]] for n in self.server.doc["nodes"]]
+            candidate["nodes"] += [n for n in nodes if n["id"] not in existing]
+            try:
+                self.server.validate(candidate)
+            except Exception as exc:
+                return False, "schema: merged document would be invalid (%s)" % exc
+
+        return True, ("assessed: rights, resolved provenance, no removal, references, "
+                      "ownership, acyclicity, schema all clear")
+
+
+
+class Architect(_AgentBase):
+    """Originates a program: intent + a declaration spec -> Declaration nodes.
+
+    It does not invent fields or types. What the spec does not say, it refuses to
+    say for you — the platform's whole claim is that the developer declares intent,
+    not that an agent fills in the parts they left out.
+    """
+
+    role = "Architect"
+
+    def design(self, task, spec, deadline_ms=30000):
+        for key in ("entity", "service", "workflow"):
+            if key not in (spec or {}):
+                return self._refuse(task, "spec incomplete: missing %r" % key,
+                                    "RFC-0006 §Roles (Architect: 입력 아티팩트)")
+        doc = self._pin_kb("entity name field name node id derivation")
+        if doc is None:
+            return self._refuse(task, "no naming guidance in the knowledge base",
+                                "RFC-0005 §Consumption Interface")
+
+        source = "kb:%s@%s" % (doc["id"], doc["version"])
+        ent, svc, wf = spec["entity"], spec["service"], spec["workflow"]
+        entity_id = derive_id(ent["name"], "Entity")
+        service_id = derive_id(svc["name"], "Service")
+        workflow_id = derive_id(wf["name"], "Workflow")
+
+        step_ids, nodes = [], []
+        for i, step_name in enumerate(wf.get("steps", []), start=1):
+            step_id = "%s.step.%d" % (workflow_id, i)
+            step_ids.append(step_id)
+            nodes.append({"kind": "WorkflowStep", "id": step_id,
+                          "name": step_name, "meta": self._meta(source)})
+
+        nodes = [
+            {"kind": "Entity", "id": entity_id, "name": ent["name"],
+             "fields": ent["fields"], "meta": self._meta(source)},
+            {"kind": "Service", "id": service_id, "name": svc["name"],
+             "children": [workflow_id], "meta": self._meta(source)},
+            {"kind": "Workflow", "id": workflow_id, "name": wf["name"],
+             "children": step_ids, "meta": self._meta(source)},
+        ] + nodes
+
+        proposal = self.server.call("ir.propose", role=self.role,
+                                    ir_fragment={"module": self.server.doc["module"],
+                                                 "nodes": nodes},
+                                    deadline_ms=deadline_ms,
+                                    idempotency_key="architect-%s" % _slug(wf["name"]))
+        self.server.call("agent.report", task_id=task["task_id"],
+                         state="input-required",
+                         payload={"proposed": proposal["proposal_id"],
+                                  "awaiting": proposal["review_task_id"]})
+        return {"proposal_id": proposal["proposal_id"],
+                "review_task_id": proposal["review_task_id"],
+                "node_ids": [n["id"] for n in nodes]}
+
+
+class SecurityAuditor(_AgentBase):
+    """One rule, decidable from the IR alone.
+
+    A workflow that reads an entity carrying a `Password` field, on a service with
+    no Security constraint, gets a `jwt` requirement proposed. Anything else is
+    *not a finding* — and an auditor that reports non-findings trains people to
+    ignore it.
+    """
+
+    role = "SecurityAuditor"
+
+    def audit(self, task, deadline_ms=30000):
+        nodes = {n["id"]: n for n in self.server.doc["nodes"]}
+        secret_entities = {
+            n["id"] for n in nodes.values()
+            if n["kind"] == "Entity"
+            and any(f.get("type") == "Password" for f in n.get("fields", []))}
+        if not secret_entities:
+            return self._clean(task, "no entity carries a Password field")
+
+        reading_steps = {n["id"]: n for n in nodes.values()
+                         if n["kind"] == "RepositoryCall"
+                         and n.get("operation") == "read"
+                         and n.get("entity") in secret_entities}
+        if not reading_steps:
+            return self._clean(task, "no workflow reads an entity with a Password field")
+
+        owners = {c: n for n in nodes.values() for c in n.get("children", [])}
+        findings = []
+        for effect_id in reading_steps:
+            step = owners.get(effect_id)
+            wf = owners.get(step["id"]) if step else None
+            svc = owners.get(wf["id"]) if wf else None
+            if svc is None or svc["kind"] != "Service":
+                continue
+            has_security = any(nodes.get(c, {}).get("kind") == "Security"
+                               for c in svc.get("constraints", []))
+            if not has_security:
+                findings.append(svc)
+        if not findings:
+            return self._clean(task, "every affected service already declares Security")
+
+        doc = self._pin_kb("generate token jwt security")
+        if doc is None:
+            return self._refuse(task, "no security guidance in the knowledge base",
+                                "RFC-0005 §Consumption Interface")
+        source = "kb:%s@%s" % (doc["id"], doc["version"])
+
+        svc = findings[0]
+        segs = svc["id"].split(".", 1)[1]
+        sec_id = "security.%s" % segs
+        # The Constraint is all this role may propose. Attaching it to the service
+        # means replacing a Service node, which is a Declaration — outside
+        # SecurityAuditor's rights (RFC-0006 §Roles). So the finding names the
+        # attachment an Architect-level proposal still has to make; proposing the
+        # Service anyway would be the role reaching past its own contract.
+        fragment = {"module": self.server.doc["module"], "nodes": [
+            {"kind": "Security", "id": sec_id, "mechanisms": ["jwt"],
+             "meta": self._meta(source)}]}
+        proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
+                                    deadline_ms=deadline_ms,
+                                    idempotency_key="audit-%s" % sec_id)
+        self.server.call("agent.report", task_id=task["task_id"],
+                         state="input-required",
+                         payload={"proposed": proposal["proposal_id"],
+                                  "finding": "service %s reads secrets without a "
+                                             "Security constraint" % svc["id"],
+                                  "attachment_required": {
+                                      "node": svc["id"], "field": "constraints",
+                                      "add": sec_id,
+                                      "why": "SecurityAuditor may not propose "
+                                             "Declaration nodes (RFC-0006 §Roles)"}})
+        return {"proposal_id": proposal["proposal_id"],
+                "review_task_id": proposal["review_task_id"],
+                "service_id": svc["id"], "constraint_id": sec_id,
+                "attachment_required": True}
+
+    def _clean(self, task, reason):
+        """No violation is not a refusal — it is a clean audit."""
+        self.server.call("agent.report", task_id=task["task_id"], state="completed",
+                         payload={"proposed": None, "finding": None, "reason": reason})
+        return {"proposal_id": None, "reason": reason}
+
+
+class PerformanceAnalyzer(_AgentBase):
+    """Proposes a response budget from measurements — and only from measurements."""
+
+    role = "PerformanceAnalyzer"
+
+    def analyze(self, task, workflow_id, measurements, deadline_ms=30000):
+        if not measurements:
+            return self._refuse(task, "no measurements to derive a budget from",
+                                "RFC-0006 §Roles (PerformanceAnalyzer: 입력 아티팩트)")
+        nodes = {n["id"]: n for n in self.server.doc["nodes"]}
+        owners = {c: n for n in nodes.values() for c in n.get("children", [])}
+        svc = owners.get(workflow_id)
+        if svc is None or svc["kind"] != "Service":
+            return self._refuse(task, "workflow %r has no owning service" % workflow_id,
+                                "RFC-0001 §구조 규칙 (소유 유일)")
+        for cid in svc.get("constraints", []):
+            node = nodes.get(cid, {})
+            if node.get("kind") == "Performance" and any(
+                    b.get("metric") == "response" for b in node.get("budgets", [])):
+                self.server.call("agent.report", task_id=task["task_id"],
+                                 state="completed",
+                                 payload={"proposed": None,
+                                          "reason": "a response budget is already "
+                                                    "declared; not overwriting it"})
+                return {"proposal_id": None, "reason": "budget already declared"}
+
+        try:
+            durations = [m["duration_ms"] for m in measurements]
+        except (KeyError, TypeError):
+            return self._refuse(task, "a measurement has no duration_ms",
+                                "RFC-0006 §Roles (PerformanceAnalyzer: 입력 아티팩트)")
+        if any(not isinstance(d, int) or isinstance(d, bool) or d <= 0
+               for d in durations):
+            return self._refuse(
+                task, "measurements must be positive integer durations, got %r"
+                      % durations,
+                "RFC-0003 §Policy Enforcement (response는 계측 대상)")
+        observed = max(durations)
+        # Round up to 10ms. The max, not a percentile: with a handful of samples a
+        # percentile is either the max or a less safe number pretending to be data.
+        budget = ((observed + 9) // 10) * 10
+        segs = svc["id"].split(".", 1)[1]
+        perf_id = "perf.%s" % segs
+        # Same rights boundary as SecurityAuditor: the Constraint is proposable,
+        # the Service replacement that would reference it is not.
+        fragment = {"module": self.server.doc["module"], "nodes": [
+            {"kind": "Performance", "id": perf_id,
+             "budgets": [{"metric": "response", "value": "<%dms" % budget}],
+             "meta": self._meta("ir:%s" % workflow_id)}]}
+        proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
+                                    deadline_ms=deadline_ms,
+                                    idempotency_key="perf-%s" % perf_id)
+        self.server.call("agent.report", task_id=task["task_id"],
+                         state="input-required",
+                         payload={"proposed": proposal["proposal_id"],
+                                  "observed_max_ms": observed, "budget_ms": budget,
+                                  "attachment_required": {
+                                      "node": svc["id"], "field": "constraints",
+                                      "add": perf_id,
+                                      "why": "PerformanceAnalyzer may not propose "
+                                             "Declaration nodes (RFC-0006 §Roles)"}})
+        return {"proposal_id": proposal["proposal_id"],
+                "review_task_id": proposal["review_task_id"],
+                "observed_max_ms": observed, "budget_ms": budget,
+                "constraint_id": perf_id, "attachment_required": True}
+
+
+class Tester(_AgentBase):
+    """Derives spec cases from the Constraint nodes — and proposes no IR at all.
+
+    `spec` is a test artifact, not part of the program's meaning (RFC-0002 A.4-2).
+    Tester holds Behavior propose rights and deliberately does not use them:
+    emitting a node here would reverse a decision the suite already made.
+    """
+
+    role = "Tester"
+
+    def derive(self, task, workflow_id, deadline_ms=30000):
+        nodes = {n["id"]: n for n in self.server.doc["nodes"]}
+        wf = nodes.get(workflow_id)
+        if wf is None or wf["kind"] != "Workflow":
+            return self._refuse(task, "no such workflow %r" % workflow_id,
+                                "RFC-0001 §노드 카탈로그 (Workflow)")
+        owners = {c: n for n in nodes.values() for c in n.get("children", [])}
+        svc = owners.get(workflow_id)
+        constraints = [nodes[c] for c in (svc or {}).get("constraints", [])
+                       if c in nodes]
+
+        step_count = sum(1 for c in wf.get("children", [])
+                         if nodes.get(c, {}).get("kind") == "WorkflowStep")
+        happy = {"name": "%s happy path" % wf["name"], "workflow": workflow_id,
+                 "given": ["valid account"], "when": ["run"],
+                 "expect": ["completed", "steps %d" % step_count]}
+        cases = [happy]
+
+        retry_n = None
+        for node in constraints:
+            if node["kind"] == "Policy":
+                for rule in node.get("rules", []):
+                    if rule["name"] == "retry":
+                        retry_n = int(rule["value"])
+            elif node["kind"] == "Performance":
+                for budget in node.get("budgets", []):
+                    if budget["metric"] == "response":
+                        happy["expect"].append("slo met")
+                    elif budget["metric"] == "cache":
+                        happy["expect"].append("cache written")
+
+        if retry_n is not None:
+            cases.append({"name": "%s exhausts its retries" % wf["name"],
+                          "workflow": workflow_id,
+                          "given": ["empty repository"], "when": ["run"],
+                          "expect": ["failed", "attempts %d" % (retry_n + 1)]})
+
+        unknown = [e.split()[0] for case in cases for e in case["expect"]
+                   if e.split()[0] not in EXPECTATIONS]
+        if unknown:
+            return self._refuse(task,
+                                "derived an expectation the runner cannot evaluate: %s"
+                                % ", ".join(sorted(set(unknown))),
+                                "RFC-0002 부록 A.4-② (spec은 테스트 아티팩트)")
+
+        manifest = {"spec_version": SPEC_VERSION,
+                    "module": self.server.doc["module"], "cases": cases}
+        self.server.call("agent.report", task_id=task["task_id"], state="completed",
+                         payload={"proposed": None, "manifest": manifest})
+        return manifest
+
+
+class ReleaseAgent(_AgentBase):
+    """Read-only. Summarises what would ship, and never turns a failure into a pass."""
+
+    role = "ReleaseAgent"
+
+    def summarize(self, task, verification=None, deadline_ms=30000):
+        overview = self.server.call("ir.get")
+        nodes = {n["id"]: n for n in self.server.doc["nodes"]}
+        by_kind = {}
+        for node in nodes.values():
+            by_kind[node["kind"]] = by_kind.get(node["kind"], 0) + 1
+
+        ready, blockers = True, []
+        if not verification:
+            # `None` and `{}` are the same thing here: no evidence. An empty map is
+            # the more dangerous of the two, because it looks like a result.
+            ready = False
+            blockers.append("no verification result was supplied")
+        elif not isinstance(verification, dict):
+            # `True`, "all green", [("t", True)] — a caller saying "it passed" in a
+            # shape this cannot audit per check. Refusing beats iterating something
+            # that happens to be iterable and calling the result readiness.
+            ready = False
+            blockers.append("verification must be a map of check name -> True, got %s"
+                            % type(verification).__name__)
+            verification = {}
+        else:
+            # Sorted by repr, not by key: mixed key types (1 and "a") make `sorted`
+            # raise, and a crash while auditing evidence is not an audit.
+            for name, ok in sorted(verification.items(), key=lambda kv: repr(kv[0])):
+                if ok is not True:
+                    # Only literal True counts. A truthy marker like "FAILED" would
+                    # otherwise be read as a pass.
+                    ready = False
+                    blockers.append("verification %r is %r, not a pass" % (name, ok))
+
+        summary = {"module": overview["module"],
+                   "lir_version": overview["lir_version"],
+                   "node_count": len(overview["node_ids"]),
+                   "by_kind": by_kind,
+                   "capabilities": sorted(n["name"] for n in nodes.values()
+                                          if n["kind"] == "Capability"),
+                   "verification": verification,
+                   "ready": ready, "blockers": blockers}
+        self.server.call("agent.report", task_id=task["task_id"], state="completed",
+                         payload={"proposed": None, "summary": summary})
+        return summary
 
 
 def run_cycle(document, knowledge_base, intent, steps, schema_validator=None):
@@ -148,8 +677,12 @@ def run_cycle(document, knowledge_base, intent, steps, schema_validator=None):
         record = coder.implement(item["task"], item["step"])
         transcript.append(record)
         if record["proposal_id"]:
+            # No `approve=` argument: the Reviewer judges. Passing True here made
+            # the one end-to-end path the README advertises the single path that
+            # never exercised the judgment, which is the rubber stamp this work
+            # was meant to remove.
             approved = reviewer.decide(record["review_task_id"],
-                                       record["proposal_id"], approve=True)
+                                       record["proposal_id"])
             record["review_state"] = approved["state"]
             record["applied"] = approved["result"]["applied_nodes"]
     return server, transcript

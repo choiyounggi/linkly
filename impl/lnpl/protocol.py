@@ -89,6 +89,34 @@ class RpcError(Exception):
         return err
 
 
+# RFC-0001 §구조 규칙 5 lists the named (non-owning) reference fields. `target` is
+# deliberately absent: the compiler also writes field paths ("entity.user.email")
+# and the literal "unspecified" there (lower.py), so treating it as a node
+# reference would reject the compiler's own output. Recorded in
+# docs/CONSISTENCY-CHECK.md rather than silently diverging.
+NAMED_REF_FIELDS = ("requires", "constraints", "entity", "event")
+
+
+def node_references(node):
+    """Every node id this node points at — owning (`children`) and named (rule 5).
+
+    One function so both gates that enforce rule 6 (the Reviewer's judgment and
+    `ir.apply`) ask the same question. When they asked different questions, a
+    reference dropped from `constraints` slipped past both.
+    """
+    refs = list(node.get("children", []))
+    for field in NAMED_REF_FIELDS:
+        value = node.get(field)
+        if isinstance(value, list):
+            refs.extend(v for v in value if isinstance(v, str))
+        elif isinstance(value, str):
+            refs.append(value)
+    source = node.get("source")
+    if isinstance(source, dict) and isinstance(source.get("ref"), str):
+        refs.append(source["ref"])
+    return refs
+
+
 class Task:
     """A dispatched unit of work with the A2A-style state machine."""
 
@@ -271,6 +299,7 @@ class Server:
         proposal["state"] = "approved"
         task.transition("completed")
         task.result = {"proposal_id": pid, "decision": "approved",
+                       "reason": payload.get("reason", ""),
                        "applied_nodes": [n["id"] for n in proposal["nodes"]]}
         return task.to_dict()
 
@@ -283,9 +312,10 @@ class Server:
                                    for n in merged["nodes"]]
             else:
                 merged["nodes"].append(node)
+        merged_ids = {n["id"] for n in merged["nodes"]}
         for node in proposal["nodes"]:
-            for ref in node.get("children", []):
-                if ref not in {n["id"] for n in merged["nodes"]}:
+            for ref in node_references(node):
+                if ref not in merged_ids:
                     raise RpcError("ir_invalid",
                                    "applying %s would leave a dangling reference to %s"
                                    % (node["id"], ref))
