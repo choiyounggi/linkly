@@ -19,14 +19,16 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: seven RFCs, all `Accepted` (2026-07-31). All three roadmap phases done.**
+> **Status: eight RFCs, all `Accepted` (2026-07-31). Phases 1–2 complete.**
 > `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter (mode A) — and
-> compiles through MLIR to a **native binary** (mode B). A differential check confirms
-> the two modes agree on the four observable classes RFC-0004 names. OpenAPI is
-> generated from the IR. The golden scenario is *generated* by the compiler rather than
-> hand-maintained. Remaining: the custom `lnpl` MLIR dialect (needs a C++ TableGen
-> build — [issue #1](https://github.com/choiyounggi/linkly/issues/1)) — see the
-> [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
+> compiles through MLIR to a **native binary** (mode B). Guard conditions (`when`/`until`)
+> evaluate at runtime in both modes, with RFC-0008 G8 enabling condition field extraction
+> from payloads via argv parameter passing. A differential check confirms the two modes
+> agree on all four observable classes RFC-0004 names (execution order, policy outcome,
+> observability signals, masking). OpenAPI is generated from the IR. The golden scenario
+> is *generated* by the compiler rather than hand-maintained (264 tests, all passing).
+> Remaining: Phase 3 custom `lnpl` MLIR dialect (needs C++ TableGen — [issue #1](https://github.com/choiyounggi/linkly/issues/1)).
+> See the [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
 > identifiers, keywords, and schema fields are English.
 
 ---

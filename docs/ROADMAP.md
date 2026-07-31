@@ -126,10 +126,13 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 > dialect(S4)** — C++ TableGen 빌드가 필요해 이번 조각에서 제외했고, 이탈을 RFC-0004
 > Open Questions 앞에 기록했다.
 >
-> **RFC-0008: Guard Conditions 전량 완료 (2026-07-31).** when/until 가드를 Mode A/B 모두
-> 구현했고, when→scf.if, until→unroll(16) 변환으로 differential EQUIVALENT를 달성했다.
-> guarded.lnpl 예제(Presence + Comparison) + mutation tests 3건 추가로 수용 기준 5개 전부 충족.
-> 미개선: Condition 필드값 런타임 추출(deferred), Mode B 시간 경계(clock 미지원).
+> **RFC-0008: Guard Conditions 전량 완료 (2026-07-31 + 2026-07-31 G8 런타임 추출).** 
+> when/until 가드를 Mode A/B 모두 구현하고, when→scf.if, until→unroll(16) 변환으로 
+> differential EQUIVALENT를 달성했다. G8 구현으로 condition 필드값을 런타임에 
+> payload에서 추출해 argv로 C runtime에 전달(정렬된 순서)하고, MLIR에서 arith.cmpi로 
+> 평가한다. guarded.lnpl 예제(Presence + Comparison) + mutation tests 3건 추가로 
+> 수용 기준 5개 전부 충족. 테스트: 264/264 pass, differential flag=0/1 모두 EQUIVALENT.
+> 미개선: Mode B 시간 경계(clock 미지원, until은 round_cap=16만).
 >
 > 환경 부작용 1건: `brew install llvm`이 의존성으로 `python@3.14`를 설치해 기본
 > `python3`가 3.9.6 → 3.14.6으로 바뀌었고, 3.14는 PEP 668 externally-managed라
