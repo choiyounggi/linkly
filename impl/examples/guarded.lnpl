@@ -1,0 +1,25 @@
+capability postgres
+
+entity Workflow
+    field
+        id UUID
+        flag String
+        counter Integer
+        doneAt DateTime
+
+service GuardedService
+    policy
+        timeout 5s
+    performance
+        cache 1m
+
+workflow Guarded
+    step Start
+    when flag exists
+    step OnlyIfFlagPresent
+    until counter >= 10
+    step LoopUntilCounter
+        effect
+            kind Query
+            target Workflow
+    step End

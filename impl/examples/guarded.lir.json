@@ -1,0 +1,136 @@
+{
+  "lir_version": "0.1",
+  "module": "guarded",
+  "nodes": [
+    {
+      "kind": "Service",
+      "id": "svc.guarded",
+      "name": "GuardedService",
+      "requires": [
+        "cap.postgres"
+      ],
+      "constraints": [
+        "policy.guarded",
+        "perf.guarded"
+      ],
+      "children": [
+        "wf.guarded"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.workflow",
+      "name": "Workflow",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "flag",
+          "type": "String"
+        },
+        {
+          "name": "counter",
+          "type": "Integer"
+        },
+        {
+          "name": "doneAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.guarded",
+      "name": "Guarded",
+      "children": [
+        "wf.guarded.step.1",
+        "wf.guarded.guard.1",
+        "wf.guarded.guard.2",
+        "wf.guarded.step.4",
+        "wf.guarded.step.5",
+        "wf.guarded.step.6",
+        "wf.guarded.step.7"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.guarded.step.1",
+      "name": "step Start"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.guarded.step.2",
+      "name": "step OnlyIfFlagPresent"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.guarded.guard.1",
+      "children": [
+        "wf.guarded.step.2"
+      ],
+      "mode": "when",
+      "condition": "flag exists"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.guarded.step.3",
+      "name": "step LoopUntilCounter"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.guarded.guard.2",
+      "children": [
+        "wf.guarded.step.3"
+      ],
+      "mode": "until",
+      "condition": "counter >= 10"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.guarded.step.4",
+      "name": "effect"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.guarded.step.5",
+      "name": "kind Query"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.guarded.step.6",
+      "name": "target Workflow"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.guarded.step.7",
+      "name": "step End"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.guarded",
+      "rules": [
+        {
+          "name": "timeout",
+          "value": "5s"
+        }
+      ]
+    },
+    {
+      "kind": "Performance",
+      "id": "perf.guarded",
+      "budgets": [
+        {
+          "metric": "cache",
+          "value": "1m"
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    }
+  ]
+}
