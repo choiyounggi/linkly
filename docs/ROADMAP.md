@@ -181,6 +181,21 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 | **R19** | 값 없는 Performance metric 3종의 직렬화 불가 | A.4-⑤ (`rfcs/0002-syntax.md:492`) | Performance 예산을 소비하는 최적화(O6 Prefetch·O8 Cache Optimization)가 `prefetch`·`batch` 선언을 읽을 수 없다 |
 | **R20** | 문법 표면 표기가 없는 Effect 3종(R1)이 미해소면, 모드 B가 컴파일할 IR도 도출 경로에 의존한다 | A.4-③ (`:490`) — 해소 소유자에 **RFC-0004(도출 패스 규정)**가 포함됨 | Phase 1에서 R1을 어떻게 해소했는지가 이 Phase의 S1~S3 입력을 정한다 |
 
+> **2026-07-31 Phase 3 완료.** KB 12카테고리를 각 1문서로 시드하고(frontmatter 6필드·
+> 근거 링크·본문 ≤500줄, `kb --lint` 0문제), RFC-0005 소비 인터페이스 3종을 구현했으며,
+> Planner·Coder·Reviewer가 RFC-0006 Examples 사이클을 완주한다: `kb.route("generate
+> token")` → `security-jwt-issuance` → `kb.load` → `kb.verify`(버전 핀) → `ir.propose`
+> → Reviewer `agent.report` 승인 → IR 병합(19→20 노드).
+>
+> 구현 중 실제 결함 3건을 잡았다: ① KB 트리거가 한국어뿐이어서 `route("generate token")`이
+> 빈 결과 — LNPL step 이름은 문법상 영어이므로 **라우팅 호출자의 어휘**를 트리거에 넣어야
+> 한다(영어 트리거 추가) ② Coder가 제안한 Authorization 노드를 부모 step의 `children`에
+> 붙이지 않아 고아 노드가 됐다(부모 step을 함께 제안하도록 수정) ③ 매핑이 거칠어 `return
+> token`에도 authz가 붙었다(동사 `generate`로 한정).
+>
+> 남은 것: 에이전트 9종 중 2종(Planner·Coder)만 구현했고 Reviewer는 승인 경로만 갖는다.
+> 나머지 6종과 SSE 스트리밍·에이전트 인증은 RFC-0006 Open Questions에 남아 있다.
+
 ## Phase 3 — KB 시드 12카테고리 + 에이전트 2종 프로토콜 왕복
 
 ### 목표

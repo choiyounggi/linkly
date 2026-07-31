@@ -19,13 +19,14 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: seven RFCs, all `Accepted` (2026-07-31). Both execution modes work.**
+> **Status: seven RFCs, all `Accepted` (2026-07-31). All three roadmap phases done.**
 > `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter (mode A) — and
 > compiles through MLIR to a **native binary** (mode B). A differential check confirms
 > the two modes agree on the four observable classes RFC-0004 names. OpenAPI is
 > generated from the IR. The golden scenario is *generated* by the compiler rather than
 > hand-maintained. Remaining: the custom `lnpl` MLIR dialect (needs a C++ TableGen
-> build) — see the [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
+> build — [issue #1](https://github.com/choiyounggi/linkly/issues/1)) — see the
+> [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
 > identifiers, keywords, and schema fields are English.
 
 ---
@@ -141,7 +142,31 @@ export PYTHONPATH=impl
 
 # an OpenAPI 3.1 document, generated from the IR
 .venv/bin/python -m lnpl openapi examples/login.lnpl | head -30
+
+# the knowledge base, and the agent cycle that consults it
+.venv/bin/python -m lnpl kb --lint
+.venv/bin/python -m lnpl agents examples/login.lnpl
 ```
+
+The agent cycle is the part worth watching:
+
+```
+agent cycle over Login (6 step(s))
+  validate input   kb=(none)                             (nothing proposed)
+  authenticate     kb=patterns-repository-call           (nothing proposed)
+  cache user       kb=cloud-redis-cache-provisioning     (nothing proposed)
+  generate token   kb=security-jwt-issuance              proposal=prop-0001 -> completed applied=['wf.login.step.4', 'wf.login.step.4.authz']
+  audit login      kb=(none)                             (nothing proposed)
+  return token     kb=security-jwt-issuance              (nothing proposed)
+IR nodes: 19 -> 20 | proposals applied: ['prop-0001']
+```
+
+Four of the six steps propose **nothing**, and that is the design working. The Coder
+does not decide what to emit from its own knowledge — it routes the step to the KB, and
+where the KB prescribes nothing it stops. The one step that does gain something goes
+through `ir.propose` (which never mutates) and a Reviewer's `agent.report` approval
+before the node reaches the document, carrying provenance:
+`meta.source = "kb:security-jwt-issuance@0.1.0"`.
 
 ### Mode B — a native binary
 
@@ -296,6 +321,7 @@ docs/ROADMAP.md             Three phases + risks
 plans/rfc-suite/            The plan that produced this suite (20 decisions, 10 tasks)
 impl/lnpl/                  Phase 1 reference implementation (lexer, parser, lowering, interpreter)
 impl/tests/                 Unit suite + mutation_check.py (proves the suite can fail)
+kb/                         The seeded knowledge base (12 categories, RFC-0005 layout)
 ```
 
 ---

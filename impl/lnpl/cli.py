@@ -14,7 +14,9 @@ from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
 from .backend import BackendError, build as build_native, run_binary
+from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
+from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, generate as generate_openapi
 from .spec import SpecError, extract, run_manifest
 
@@ -179,6 +181,63 @@ def cmd_diff(args):
     return 0 if ok else 1
 
 
+def cmd_kb(args):
+    kb = KnowledgeBase(root=args.root)
+    if args.lint:
+        problems = kb.lint()
+        for p in problems:
+            print(p)
+        print("kb lint: %s" % ("OK (%d docs)" % len(kb.index()) if not problems
+                               else "%d problem(s)" % len(problems)))
+        return 0 if not problems else 1
+    if args.route:
+        ids = kb.route(args.route)
+        print("\n".join(ids) if ids else "(no match — the KB has nothing for that)")
+        return 0
+    if args.load:
+        doc = kb.load(args.load)
+        print("# %s  (%s, v%s, %s)" % (doc["id"], doc["category"],
+                                       doc["version"], doc["status"]))
+        print("sources: %s" % ", ".join(doc["sources"]))
+        print()
+        print(doc["body"])
+        return 0
+    for doc_id, meta in sorted(kb.index().items()):
+        print("%-40s %-14s %s" % (doc_id, meta["category"], meta["triggers"][:60]))
+    return 0
+
+
+def cmd_agents(args):
+    doc = compile_source(args.source)
+    kb = KnowledgeBase(root=args.root)
+    workflows = [n for n in doc["nodes"] if n["kind"] == "Workflow"]
+    if not workflows:
+        print("no workflow to run agents against", file=sys.stderr)
+        return 1
+    wf = workflows[0]
+    steps = [doc_node["name"] for doc_node in doc["nodes"]
+             if doc_node["kind"] == "WorkflowStep"
+             and doc_node["id"] in wf.get("children", [])]
+    server, transcript = run_cycle(doc, kb, wf["name"], steps)
+
+    print("agent cycle over %s (%d step(s))" % (wf["name"], len(steps)))
+    for rec in transcript:
+        line = "  %-16s kb=%-34s" % (rec["step"], rec["doc_id"] or "(none)")
+        if rec["proposal_id"]:
+            line += " proposal=%s -> %s applied=%s" % (
+                rec["proposal_id"], rec.get("review_state"), rec.get("applied"))
+        else:
+            line += " (nothing proposed)"
+        print(line)
+    print("IR nodes: %d -> %d | proposals applied: %s"
+          % (len(doc["nodes"]), len(server.doc["nodes"]), server.applied or "none"))
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(_dump(server.doc))
+        print("wrote %s" % args.output)
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="lnpl", description="compile and run LNPL sources")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -225,10 +284,24 @@ def main(argv=None):
     df.add_argument("--skip", action="store_true")
     df.set_defaults(func=cmd_diff)
 
+    kbp = sub.add_parser("kb", help="inspect the knowledge base (RFC-0005)")
+    kbp.add_argument("--root", default=None)
+    kbp.add_argument("--lint", action="store_true", help="check RFC-0005 conformance")
+    kbp.add_argument("--route", metavar="TASK", help="kb.route(task_description)")
+    kbp.add_argument("--load", metavar="DOC_ID", help="kb.load(doc_id)")
+    kbp.set_defaults(func=cmd_kb)
+
+    ag = sub.add_parser("agents", help="run the RFC-0006 agent cycle over a source")
+    ag.add_argument("source")
+    ag.add_argument("--root", default=None, help="KB root")
+    ag.add_argument("-o", "--output", help="write the resulting IR here")
+    ag.set_defaults(func=cmd_agents)
+
     args = ap.parse_args(argv)
     try:
         return args.func(args)
-    except (LexError, ParseError, LowerError, SpecError, OpenApiError) as exc:
+    except (LexError, ParseError, LowerError, SpecError, OpenApiError,
+            KbError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)
         return 2
     except RunError as exc:

@@ -18,7 +18,7 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 개발자는 구현을 쓰지 않는다. 목표와 비즈니스 규칙(*무엇을*)만 선언하고, 컴파일러와 AI
 에이전트 파이프라인이 나머지(*어떻게*)를 설계·구현·검증·최적화·배포한다.
 
-> **상태: RFC 7편 전부 `Accepted`(2026-07-31). 두 실행 모드가 모두 동작한다.**
+> **상태: RFC 7편 전부 `Accepted`(2026-07-31). 로드맵 3 Phase 전부 완료.**
 > `.lnpl`이 파싱되고 Semantic IR로 lowering돼 IR 인터프리터에서 실행되며(모드 A),
 > MLIR을 거쳐 **네이티브 바이너리**로 컴파일된다(모드 B). 차동 검증이 RFC-0004가
 > 지명한 관측 가능 4종에 대해 두 모드의 일치를 확인한다. OpenAPI도 IR에서 생성된다.
@@ -134,7 +134,30 @@ export PYTHONPATH=impl
 
 # IR에서 생성되는 OpenAPI 3.1 문서
 .venv/bin/python -m lnpl openapi examples/login.lnpl | head -30
+
+# Knowledge Base, 그리고 그것을 참조하는 에이전트 사이클
+.venv/bin/python -m lnpl kb --lint
+.venv/bin/python -m lnpl agents examples/login.lnpl
 ```
+
+에이전트 사이클이 볼 만한 부분이다:
+
+```
+agent cycle over Login (6 step(s))
+  validate input   kb=(none)                             (nothing proposed)
+  authenticate     kb=patterns-repository-call           (nothing proposed)
+  cache user       kb=cloud-redis-cache-provisioning     (nothing proposed)
+  generate token   kb=security-jwt-issuance              proposal=prop-0001 -> completed applied=['wf.login.step.4', 'wf.login.step.4.authz']
+  audit login      kb=(none)                             (nothing proposed)
+  return token     kb=security-jwt-issuance              (nothing proposed)
+IR nodes: 19 -> 20 | proposals applied: ['prop-0001']
+```
+
+6단계 중 4개가 **아무것도 제안하지 않는데**, 그게 설계가 동작하는 모습이다. Coder는
+무엇을 낼지 자기 지식으로 정하지 않는다 — step을 KB로 라우팅하고, KB가 처방하는 것이
+없으면 멈춘다. 유일하게 무언가를 얻은 step은 `ir.propose`(문서를 변경하지 않는다)와
+Reviewer의 `agent.report` 승인을 거쳐야 노드가 문서에 닿고, 출처를 함께 남긴다:
+`meta.source = "kb:security-jwt-issuance@0.1.0"`.
 
 ### 모드 B — 네이티브 바이너리
 
@@ -282,6 +305,7 @@ docs/ROADMAP.md             3 Phase + 리스크
 plans/rfc-suite/            이 스위트를 만든 계획(결정 20건, 태스크 10개)
 impl/lnpl/                  Phase 1 참조 구현(렉서·파서·lowering·인터프리터)
 impl/tests/                 단위 스위트 + mutation_check.py(스위트가 실패할 수 있음을 증명)
+kb/                         시드된 Knowledge Base(12 카테고리, RFC-0005 레이아웃)
 ```
 
 ---
