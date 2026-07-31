@@ -17,7 +17,17 @@ import json
 import sys
 from pathlib import Path
 
-import jsonschema
+try:
+    import jsonschema
+except ModuleNotFoundError:
+    sys.stderr.write(
+        "validate_ir.py needs the `jsonschema` package, and this interpreter "
+        "(%s) does not have it.\n"
+        "Use the project venv, which pins the toolchain regardless of what\n"
+        "`python3` resolves to on your PATH:\n"
+        "    python3 -m venv .venv && .venv/bin/pip install jsonschema\n"
+        "    .venv/bin/python scripts/validate_ir.py <file>\n" % sys.executable)
+    raise SystemExit(2)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = REPO_ROOT / "schemas" / "lir.schema.json"

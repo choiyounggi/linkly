@@ -13,6 +13,9 @@ from .interp import Interpreter, RunError
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
+from .backend import BackendError, build as build_native, run_binary
+from .differential import DifferentialError, verify as verify_modes
+from .openapi import OpenApiError, generate as generate_openapi
 from .spec import SpecError, extract, run_manifest
 
 DEFAULT_PAYLOAD = {
@@ -126,6 +129,56 @@ def cmd_spec(args):
     return 0 if failed == 0 else 1
 
 
+def cmd_openapi(args):
+    doc = compile_source(args.source)
+    spec = generate_openapi(doc)
+    text = _dump(spec)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print("wrote %s (%d path(s))" % (args.output, len(spec["paths"])))
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def _repo_rows(doc, payload, empty=False):
+    if empty:
+        return {}
+    return {n["id"]: dict(payload) for n in doc["nodes"] if n["kind"] == "Entity"}
+
+
+def cmd_build(args):
+    doc = compile_source(args.source)
+    workflows = [n for n in doc["nodes"] if n["kind"] == "Workflow"]
+    if not workflows:
+        print("no workflow to build", file=sys.stderr)
+        return 1
+    target = args.workflow or workflows[0]["id"]
+    path = build_native(doc, target, args.workdir)
+    print("native binary: %s" % path)
+    if args.run:
+        rc, lines = run_binary(path, skip=args.skip)
+        print("\n".join(lines))
+        print("exit=%d" % rc)
+    return 0
+
+
+def cmd_diff(args):
+    doc = compile_source(args.source)
+    workflows = [n for n in doc["nodes"] if n["kind"] == "Workflow"]
+    if not workflows:
+        print("no workflow to compare", file=sys.stderr)
+        return 1
+    target = args.workflow or workflows[0]["id"]
+    payload = DEFAULT_PAYLOAD
+    ok, report = verify_modes(doc, target, payload,
+                              _repo_rows(doc, payload, empty=args.no_row),
+                              args.workdir, skip=args.skip)
+    print("\n".join(report))
+    return 0 if ok else 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="lnpl", description="compile and run LNPL sources")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -150,12 +203,37 @@ def main(argv=None):
     sp.add_argument("--run", action="store_true", help="execute the manifest")
     sp.set_defaults(func=cmd_spec)
 
+    oa = sub.add_parser("openapi", help="generate an OpenAPI 3.1 document from the IR")
+    oa.add_argument("source")
+    oa.add_argument("-o", "--output")
+    oa.set_defaults(func=cmd_openapi)
+
+    bd = sub.add_parser("build", help="compile to a native binary (mode B)")
+    bd.add_argument("source")
+    bd.add_argument("--workflow")
+    bd.add_argument("--workdir", default=".claude/tmp/lnpl-build")
+    bd.add_argument("--run", action="store_true")
+    bd.add_argument("--skip", action="store_true",
+                    help="set the `when` guard flag so guarded steps are skipped")
+    bd.set_defaults(func=cmd_build)
+
+    df = sub.add_parser("diff", help="differential check: mode A vs mode B")
+    df.add_argument("source")
+    df.add_argument("--workflow")
+    df.add_argument("--workdir", default=".claude/tmp/lnpl-diff")
+    df.add_argument("--no-row", action="store_true")
+    df.add_argument("--skip", action="store_true")
+    df.set_defaults(func=cmd_diff)
+
     args = ap.parse_args(argv)
     try:
         return args.func(args)
-    except (LexError, ParseError, LowerError, SpecError) as exc:
+    except (LexError, ParseError, LowerError, SpecError, OpenApiError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)
         return 2
     except RunError as exc:
         print("runtime error: %s" % exc, file=sys.stderr)
         return 3
+    except (BackendError, DifferentialError) as exc:
+        print("backend error: %s" % exc, file=sys.stderr)
+        return 4

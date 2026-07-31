@@ -426,6 +426,20 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 
 ## Open Questions
 
+> **구현 이탈 1건 (2026-07-31, Phase 2 1차 조각).** 참조 구현의 모드 B는 S4에서
+> **커스텀 `lnpl` dialect를 거치지 않고 표준 dialect(func·arith·scf)를 직접 방출**한다.
+> 커스텀 dialect를 `mlir-opt`에 등록하려면 MLIR 개발 라이브러리를 대상으로 한 C++
+> TableGen 빌드가 필요하고, 그것이 존재하기 전까지 `lnpl` dialect의 목적 — 고수준
+> 패스를 호스팅하는 것 — 은 Semantic IR 레벨의 S3가 담당한다(모드 A가 이미 수행한다).
+> 따라서 이 이탈은 동등성 주장을 약화시키지 않지만, **설계 선택이 아니라 실제 공백**이며
+> S4 구현은 Phase 2의 남은 조각이다. 실측된 하강 경로는
+> `IR → 표준 dialect MLIR → (mlir-opt: scf→cf→llvm) → LLVM dialect →
+> (mlir-translate) → LLVM IR → (clang) → 네이티브 바이너리`이며, 모드 A/B 차동 검증이
+> 관측 가능 4종에 대해 EQUIVALENT를 확인했다(`impl/lnpl/differential.py`,
+> 고의 불일치 케이스 2건이 DIVERGENT를 재현).
+
+
+
 1. **MLIR/LLVM 버전 고정 정책.** 어떤 형식의 핀 파일로 무엇을 고정할지는 미결이다.
    다만 형태는 지금 정한다: 버전은 **레포에 커밋된 핀 파일 하나를 정본**으로 하고
    CI가 그 파일을 읽는다. README 산문으로 "LLVM 18을 설치하라"고 쓰거나 CI 워크플로

@@ -119,6 +119,17 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 | **R9** | step 토큰 상한(동사 선두 1~4토큰)이 **실측 없는 설계 가설**이다 | RFC-0002 Open Questions ① (`rfcs/0002-syntax.md:586-590`) — "참조 인터프리터(plan.md D14·D20) 단계에서 **실측 후 재검토한다**" | RFC가 재검토 시점으로 이 Phase를 지목한다. 파서 구현이 실측 기회다 |
 | **R10** | MLIR/LLVM 버전 고정 정책 미결 — 다만 형태는 정해져 있다(레포에 커밋된 핀 파일 하나를 정본으로 하고 CI가 그 파일을 읽는다) | RFC-0004 Open Questions ① (`rfcs/0004-compiler.md:429-432`) | Phase 1은 LLVM을 쓰지 않으므로 막히지 않는다. **Phase 2 착수 전에 핀 파일을 만들어 두는 것이 이 Phase의 준비 항목이다** |
 
+> **2026-07-31 Phase 2 1차 조각 완료.** 모드 B가 실제 네이티브 바이너리를 산출하고,
+> 모드 A/B 차동 검증이 관측 가능 4종(실행 순서·정책 결과·관측성 신호·마스킹)에 대해
+> EQUIVALENT를 확인했다. OpenAPI 자동생성도 동작한다. **남은 조각: 커스텀 `lnpl`
+> dialect(S4)** — C++ TableGen 빌드가 필요해 이번 조각에서 제외했고, 이탈을 RFC-0004
+> Open Questions 앞에 기록했다.
+>
+> 환경 부작용 1건: `brew install llvm`이 의존성으로 `python@3.14`를 설치해 기본
+> `python3`가 3.9.6 → 3.14.6으로 바뀌었고, 3.14는 PEP 668 externally-managed라
+> `pip --user`가 막힌다. 그래서 프로젝트를 `.venv`로 고정했다(README 참조) — PATH가
+> 무엇을 가리키든 검증이 같게 돌아간다.
+
 ## Phase 2 — LLVM 백엔드(모드 B) + 자동 생성물 1종(OpenAPI)
 
 ### 목표

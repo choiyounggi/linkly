@@ -72,6 +72,22 @@ MUTATIONS = [
      "lnpl/spec.py",
      '            if check is None:\n                failed += 1',
      '            if check is None:\n                passed += 1'),
+    ("mode B: emit steps in the wrong order",
+     "lnpl/backend.py",
+     '        if kind == "WorkflowStep":\n            out.append((node, None))',
+     '        if kind == "WorkflowStep":\n            out.insert(0, (node, None))'),
+    ("mode B: drop the effect calls",
+     "lnpl/backend.py",
+     '            for cn, child_id in enumerate(step.get("children", [])):\n                ksym = strings[nodes[child_id]["kind"]]\n                lines.append("    %%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"',
+     '            for cn, child_id in enumerate([]):\n                ksym = strings[nodes[child_id]["kind"]]\n                lines.append("    %%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"'),
+    ("differential: skip the comparison when the toolchain is missing",
+     "lnpl/differential.py",
+     "    if not backend.toolchain_available():\n        raise DifferentialError(",
+     "    if False:\n        raise DifferentialError("),
+    ("OpenAPI: emit an empty schema for an unmapped semantic type",
+     "lnpl/openapi.py",
+     '        if tname not in TYPE_SCHEMA:\n            raise OpenApiError(',
+     '        if False:\n            raise OpenApiError('),
     ("RFC-0003: enforce the response SLO instead of measuring it",
      "lnpl/interp.py",
      'result["slo_met"] = total <= con["response_slo_ms"]',
@@ -79,12 +95,16 @@ MUTATIONS = [
 ]
 
 
-def run_suite(tree, timeout=60):
+VENV_PY = os.path.join(REPO, ".venv", "bin", "python")
+PYTHON = VENV_PY if os.access(VENV_PY, os.X_OK) else sys.executable
+
+
+def run_suite(tree, timeout=180):
     """Run the suite inside `tree`. Returns 'GREEN' | 'RED' | 'HANG'."""
     env = dict(os.environ, PYTHONPATH=tree, LNPL_REPO=REPO)
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "unittest", "discover",
+            [PYTHON, "-m", "unittest", "discover",
              "-s", os.path.join(tree, "tests"), "-t", tree],
             capture_output=True, text=True, timeout=timeout, env=env, cwd=REPO)
     except subprocess.TimeoutExpired:

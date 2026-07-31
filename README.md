@@ -19,12 +19,14 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: seven RFCs, all `Accepted` (2026-07-31) + a working Phase 1 reference
-> implementation.**
-> `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter; the golden
-> scenario is *generated* by the compiler rather than hand-maintained. Phase 2 (native
-> backend) is not started — see the [roadmap](docs/ROADMAP.md). RFC bodies are written
-> in Korean; identifiers, keywords, and schema fields are English.
+> **Status: seven RFCs, all `Accepted` (2026-07-31). Both execution modes work.**
+> `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter (mode A) — and
+> compiles through MLIR to a **native binary** (mode B). A differential check confirms
+> the two modes agree on the four observable classes RFC-0004 names. OpenAPI is
+> generated from the IR. The golden scenario is *generated* by the compiler rather than
+> hand-maintained. Remaining: the custom `lnpl` MLIR dialect (needs a C++ TableGen
+> build) — see the [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
+> identifiers, keywords, and schema fields are English.
 
 ---
 
@@ -123,17 +125,49 @@ Grounded in external evidence, not intuition. Full sourcing in
 ## Try it
 
 ```bash
+# The project pins its Python in a venv, so verification behaves the same no matter
+# what `python3` resolves to on your PATH.
+python3 -m venv .venv && .venv/bin/pip install jsonschema
 export PYTHONPATH=impl
 
 # intent -> Semantic IR
-python3 -m lnpl compile examples/login.lnpl | head -20
+.venv/bin/python -m lnpl compile examples/login.lnpl | head -20
 
-# and run it on the IR interpreter (mode A)
-python3 -m lnpl run examples/login.lnpl
+# mode A — run it on the IR interpreter
+.venv/bin/python -m lnpl run examples/login.lnpl
 
 # `spec` blocks become a test manifest, and the runner executes it
-python3 -m lnpl spec examples/login.lnpl --run
+.venv/bin/python -m lnpl spec examples/login.lnpl --run
+
+# an OpenAPI 3.1 document, generated from the IR
+.venv/bin/python -m lnpl openapi examples/login.lnpl | head -30
 ```
+
+### Mode B — a native binary
+
+Mode B needs the MLIR/LLVM tools (`brew install llvm`; ~1.8 GB, keg-only).
+
+```bash
+# IR -> MLIR -> LLVM IR -> native binary, then run it
+.venv/bin/python -m lnpl build examples/login.lnpl --run
+
+# and the check that matters: do the two modes agree?
+.venv/bin/python -m lnpl diff examples/login.lnpl
+```
+
+```
+PASS 1/4 execution order — 6 step(s): validate input -> authenticate -> cache user -> generate token -> audit login -> return token
+PASS 2/4 policy outcome — status=completed
+PASS 3/4 observability signals — 3 effect(s) per step match
+PASS 4/4 masking — no secret marker in either mode's output
+differential: EQUIVALENT
+```
+
+Those four classes are exactly what RFC-0004 requires the modes to agree on — and it
+is equally explicit about what they may differ in: scheduler shape, memory placement,
+instruction selection, op count, wall-clock time. The check compares the former and
+ignores the latter, because a check that compared timings would fail for reasons the
+contract permits.
 
 ```
 workflow Login -> completed  (33ms, correlation_id=cid-0001)
@@ -175,18 +209,22 @@ that only ever confirms success is not a check.
 
 ```bash
 # the implementation's own suite
-PYTHONPATH=impl python3 -m unittest discover -s impl/tests -t impl
+PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 
 # and a mutation check: can that suite actually fail?
-python3 impl/tests/mutation_check.py
+.venv/bin/python impl/tests/mutation_check.py
 ```
 
-`mutation_check.py` removes one specification rule at a time — the id-derivation
-strip, a verb from the lexicon, the retry cap, Password masking, the metric-label
-allowlist, the cache TTL requirement, SLO-measurement-not-enforcement — and requires
-the suite to go red for each. It found a real defect while being written: retries
-were bounded only by the attempt cap, not by the workflow deadline that RFC-0003
-requires, so a runtime that lost its cap would spin instead of failing.
+`mutation_check.py` removes one specification rule at a time — 18 of them: the
+id-derivation strip, a verb from the lexicon, the retry cap, guard semantics, Password
+masking, the metric-label allowlist, the cache TTL requirement,
+SLO-measurement-not-enforcement, capability attribution, mode B's step order and
+effect calls, the differential check's own toolchain guard, OpenAPI's refusal to emit
+an empty schema — and requires the suite to go red for each. It has found two real
+defects so far: retries were bounded only by the attempt cap and not by the workflow
+deadline RFC-0003 requires (so a runtime that lost its cap would spin instead of
+failing), and the mode B pipeline stopped lowering at the `cf` dialect so any `when`
+guard failed to compile.
 
 Cross-consistency verdicts (C1–C9, each with a negative control) live in
 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md).

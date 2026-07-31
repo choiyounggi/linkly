@@ -18,11 +18,13 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 개발자는 구현을 쓰지 않는다. 목표와 비즈니스 규칙(*무엇을*)만 선언하고, 컴파일러와 AI
 에이전트 파이프라인이 나머지(*어떻게*)를 설계·구현·검증·최적화·배포한다.
 
-> **상태: RFC 7편 전부 `Accepted`(2026-07-31) + 동작하는 Phase 1 참조 구현.**
-> `.lnpl`이 파싱되고 Semantic IR로 lowering되며 IR 인터프리터에서 실행된다. 골든
-> 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다. Phase 2(네이티브
-> 백엔드)는 미착수 — [로드맵](docs/ROADMAP.md) 참조. RFC 본문은 한국어이고,
-> 식별자·키워드·스키마 필드명은 영어다.
+> **상태: RFC 7편 전부 `Accepted`(2026-07-31). 두 실행 모드가 모두 동작한다.**
+> `.lnpl`이 파싱되고 Semantic IR로 lowering돼 IR 인터프리터에서 실행되며(모드 A),
+> MLIR을 거쳐 **네이티브 바이너리**로 컴파일된다(모드 B). 차동 검증이 RFC-0004가
+> 지명한 관측 가능 4종에 대해 두 모드의 일치를 확인한다. OpenAPI도 IR에서 생성된다.
+> 골든 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다. 남은 것:
+> 커스텀 `lnpl` MLIR dialect(C++ TableGen 빌드 필요) — [로드맵](docs/ROADMAP.md) 참조.
+> RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영어다.
 
 ---
 
@@ -117,17 +119,47 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 ## 실행해보기
 
 ```bash
+# 프로젝트는 Python을 venv로 고정한다 — PATH의 `python3`가 무엇이든 검증이 같게 돈다.
+python3 -m venv .venv && .venv/bin/pip install jsonschema
 export PYTHONPATH=impl
 
 # 의도 -> Semantic IR
-python3 -m lnpl compile examples/login.lnpl | head -20
+.venv/bin/python -m lnpl compile examples/login.lnpl | head -20
 
-# 그리고 IR 인터프리터(모드 A)로 실행
-python3 -m lnpl run examples/login.lnpl
+# 모드 A — IR 인터프리터로 실행
+.venv/bin/python -m lnpl run examples/login.lnpl
 
 # `spec` 블록은 테스트 매니페스트가 되고, 러너가 실행한다
-python3 -m lnpl spec examples/login.lnpl --run
+.venv/bin/python -m lnpl spec examples/login.lnpl --run
+
+# IR에서 생성되는 OpenAPI 3.1 문서
+.venv/bin/python -m lnpl openapi examples/login.lnpl | head -30
 ```
+
+### 모드 B — 네이티브 바이너리
+
+모드 B는 MLIR/LLVM 도구가 필요하다(`brew install llvm`, ~1.8GB, keg-only).
+
+```bash
+# IR -> MLIR -> LLVM IR -> 네이티브 바이너리, 그리고 실행
+.venv/bin/python -m lnpl build examples/login.lnpl --run
+
+# 그리고 정작 중요한 검사: 두 모드가 일치하는가?
+.venv/bin/python -m lnpl diff examples/login.lnpl
+```
+
+```
+PASS 1/4 execution order — 6 step(s): validate input -> authenticate -> cache user -> generate token -> audit login -> return token
+PASS 2/4 policy outcome — status=completed
+PASS 3/4 observability signals — 3 effect(s) per step match
+PASS 4/4 masking — no secret marker in either mode's output
+differential: EQUIVALENT
+```
+
+이 4종이 RFC-0004가 두 모드에게 요구하는 일치 항목의 전부다 — 그리고 RFC는 달라도
+되는 것도 똑같이 명시한다: 스케줄러 구조, 메모리 배치, 명령 선택, op 개수, 실행 시간.
+검사는 앞의 것만 비교하고 뒤의 것은 무시한다. 시간을 비교하는 검사는 계약이 허용하는
+이유로 실패할 테고, 그건 검사가 없는 것보다 나쁘다.
 
 ```
 workflow Login -> completed  (33ms, correlation_id=cid-0001)
@@ -166,18 +198,20 @@ python3 scripts/validate_ir.py --self-test
 
 ```bash
 # 구현 자체의 테스트 스위트
-PYTHONPATH=impl python3 -m unittest discover -s impl/tests -t impl
+PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 
 # 그리고 뮤테이션 검사: 저 스위트가 실제로 실패할 수 있는가?
-python3 impl/tests/mutation_check.py
+.venv/bin/python impl/tests/mutation_check.py
 ```
 
-`mutation_check.py`는 명세 규칙을 하나씩 제거한다 — id 도출의 후행 세그먼트 제거,
-동사 사전의 항목, 재시도 상한, Password 마스킹, 메트릭 라벨 allowlist, 캐시 TTL
-필수, SLO를 집행하지 않는다는 규칙 — 그리고 각각에 대해 스위트가 빨간불이 되기를
-요구한다. 이 검사가 작성 중 실제 결함을 찾았다: 재시도가 시도 횟수 상한만으로
-묶여 있고 RFC-0003이 요구하는 workflow 데드라인을 보지 않아서, 상한을 잃은
-런타임은 실패하는 대신 무한히 도는 상태였다.
+`mutation_check.py`는 명세 규칙을 하나씩 제거한다 — 18종: id 도출의 후행 세그먼트
+제거, 동사 사전 항목, 재시도 상한, 가드 의미, Password 마스킹, 메트릭 라벨 allowlist,
+캐시 TTL 필수, SLO 비집행, capability 귀속, 모드 B의 step 순서와 effect 호출, 차동
+검증 자신의 툴체인 가드, OpenAPI가 빈 스키마를 내지 않는다는 규칙 — 그리고 각각에
+대해 스위트가 빨간불이 되기를 요구한다. 지금까지 실제 결함 2건을 찾았다: ① 재시도가
+시도 상한만으로 묶여 있고 RFC-0003이 요구하는 workflow 데드라인을 보지 않아, 상한을
+잃은 런타임은 실패하는 대신 무한히 돌았다 ② 모드 B 파이프라인이 `cf` dialect에서
+하강을 멈춰 `when` 가드가 있는 프로그램이 컴파일되지 않았다.
 
 교차 정합성 판정(C1~C9, 각 항목에 음성 대조 포함)은
 [docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md)에 있다.
