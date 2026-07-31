@@ -1,0 +1,33 @@
+# login.lnpl — 골든 시나리오 "Login" (정본: plans/rfc-suite/plan.md)
+
+capability postgres
+capability redis
+capability jwt
+
+entity User
+    field
+        id UUID
+        email Email
+        password Password
+        createdAt DateTime
+
+event UserCreated on User create
+
+service LoginService
+    policy
+        retry 3
+        rollback
+        timeout 3s
+    security
+        jwt
+    performance
+        response < 50ms
+        cache 5m
+
+workflow Login
+    validate input
+    authenticate
+    cache user
+    generate token
+    audit login
+    return token
