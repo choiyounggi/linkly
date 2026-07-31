@@ -271,12 +271,18 @@ All eight gaps that RFC-0002 Appendix A.4 recorded at design time are now closed
 | Value-less `performance` metrics unserializable | `budgets[].value` is optional — a flag has no value |
 | Capability attribution provisional | A rule: the service's own `database` clause, or (single-service module) all of them, or a **compile error** — never a guess |
 
-What remains open is recorded in each RFC's `## Open Questions`. Those are *deferred
-decisions*, not holes in a contract — the general condition grammar, refinement-type
-notation, the MLIR Location API spelling, agent authentication. The reference
-implementation refuses what it cannot decide instead of guessing: an unknown verb, an
-unevaluable condition, an unattributable capability, and an unsupported spec
-expectation all produce an error that cites the RFC clause that owns the question.
+What remains open is recorded in each RFC's `## Open Questions` and tracked as issues:
+
+| Issue | What is deferred |
+|-------|------------------|
+| [#1](https://github.com/choiyounggi/linkly/issues/1) | RFC-0004 S4 — the custom `lnpl` MLIR dialect (needs a C++ TableGen build) |
+| [#2](https://github.com/choiyounggi/linkly/issues/2) | Six of the nine agent roles, and a Reviewer that can reject on its own criteria |
+| [#3](https://github.com/choiyounggi/linkly/issues/3) | The guard condition grammar (RFC-0002 OQ2), which also blocks `until` in mode B |
+
+Those are *deferred decisions*, not holes in a contract. The reference implementation
+refuses what it cannot decide instead of guessing: an unknown verb, an unevaluable
+condition, an unattributable capability, and an unsupported spec expectation all produce
+an error that cites the RFC clause that owns the question.
 
 The full set is indexed in RFC-0002 Appendix A.4 (8 items) and as Phase 1 risks
 R1–R6 in the [roadmap](docs/ROADMAP.md).

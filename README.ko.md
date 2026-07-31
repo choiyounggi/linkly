@@ -256,11 +256,17 @@ RFC-0002 부록 A.4가 설계 시점에 기록한 공백 8항이 전부 해소�
 | 값 없는 `performance` metric 직렬화 불가 | `budgets[].value`를 선택으로 — 플래그에는 값이 없다 |
 | capability 귀속이 잠정이었다 | 규칙으로 확정: 서비스 자기 `database` 절, 또는 (단일 서비스 모듈) 전체, 또는 **컴파일 오류** — 추측은 없다 |
 
-남은 미결은 각 RFC의 `## Open Questions`에 있다. 그것들은 *유보한 결정*이지 계약의
-구멍이 아니다 — 조건식의 일반 문법, refinement 타입 표기, MLIR Location API 표기,
-에이전트 인증. 참조 구현은 결정할 수 없는 것을 추측하지 않고 거부한다: 미등록 동사,
-평가 불가 조건, 귀속 불가 capability, 미지원 spec 기대 — 전부 그 질문을 소유한 RFC
-조항을 인용하며 오류를 낸다.
+남은 미결은 각 RFC의 `## Open Questions`에 있고 이슈로 추적한다:
+
+| 이슈 | 미뤄진 것 |
+|------|-----------|
+| [#1](https://github.com/choiyounggi/linkly/issues/1) | RFC-0004 S4 — 커스텀 `lnpl` MLIR dialect(C++ TableGen 빌드 필요) |
+| [#2](https://github.com/choiyounggi/linkly/issues/2) | 에이전트 9종 중 6종, 그리고 자기 기준으로 반려할 수 있는 Reviewer |
+| [#3](https://github.com/choiyounggi/linkly/issues/3) | 가드 조건식 문법(RFC-0002 OQ②) — 모드 B의 `until`도 여기에 막혀 있다 |
+
+그것들은 *유보한 결정*이지 계약의 구멍이 아니다. 참조 구현은 결정할 수 없는 것을
+추측하지 않고 거부한다: 미등록 동사, 평가 불가 조건, 귀속 불가 capability, 미지원
+spec 기대 — 전부 그 질문을 소유한 RFC 조항을 인용하며 오류를 낸다.
 
 전량은 RFC-0002 부록 A.4(8항)와 [로드맵](docs/ROADMAP.md)의 Phase 1 리스크 R1~R6에
 색인돼 있다.
