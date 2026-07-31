@@ -40,10 +40,24 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
             "text": _text_of(steps, result["status"])}
 
 
-def observe_mode_b(document, workflow_id, workdir, skip=False):
-    """Build and run the native binary, reducing its output to the same shape."""
+def observe_mode_b(document, workflow_id, workdir, payload=None, skip=False):
+    """Build and run the native binary, reducing its output to the same shape.
+
+    RFC-0008 G8: Extracts condition field values from payload and passes them
+    to the binary via environment variables.
+    """
     bin_path = backend.build(document, workflow_id, workdir)
-    rc, lines = backend.run_binary(bin_path, skip=skip)
+
+    # RFC-0008 G8: Extract condition field values from payload
+    condition_fields = {}
+    if payload:
+        # Extract all non-reserved fields as potential condition fields
+        # (skip, counter, flag, etc.)
+        for key, value in payload.items():
+            if key not in ("id", "doneAt") and isinstance(value, int):
+                condition_fields[key] = value
+
+    rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=condition_fields)
     order, effects, status = [], {}, None
     for line in lines:
         parts = line.split(" ", 2)
@@ -87,7 +101,7 @@ def verify(document, workflow_id, payload, repo_rows, workdir, skip=False):
             "divergence ship unnoticed.)")
 
     a = observe_mode_a(document, workflow_id, payload, repo_rows)
-    b = observe_mode_b(document, workflow_id, workdir, skip=skip)
+    b = observe_mode_b(document, workflow_id, workdir, payload=payload, skip=skip)
 
     report, ok = [], True
 
