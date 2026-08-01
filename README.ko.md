@@ -167,7 +167,9 @@ Reviewer의 `agent.report` 승인을 거쳐야 노드가 문서에 닿고, 출�
 
 ### 모드 B — 네이티브 바이너리
 
-모드 B는 MLIR/LLVM 도구가 필요하다(`brew install llvm`, ~1.8GB, keg-only).
+모드 B는 MLIR/LLVM 도구가 필요하다(`brew install llvm`, ~1.8GB, keg-only). 전제조건은
+그것뿐이다 — 커스텀 `lnpl` dialect는 `mlir/lnpl.irdl.mlir`에 선언적으로 정의돼 표준
+`mlir-opt`가 `--irdl-file`로 읽으므로, C++ 컴파일러·cmake·TableGen 빌드가 필요없다.
 
 ```bash
 # IR -> MLIR -> LLVM IR -> 네이티브 바이너리, 그리고 실행
@@ -297,7 +299,6 @@ RFC 승격 이후 명세↔구현 갭 3건을 더 닫았다. 셋 다 같은 모�
 
 | 이슈 | 미뤄진 것 |
 |------|-----------|
-| [#1](https://github.com/choiyounggi/linkly/issues/1) | RFC-0004 S4 — 커스텀 `lnpl` MLIR dialect(C++ TableGen 빌드 필요) |
 | [#2](https://github.com/choiyounggi/linkly/issues/2) | 9역할 중 마지막 `RefactoringAgent` — `ir.propose`가 노드 *제거*를 표현해야 하고 그건 RFC-0006 개정 사항 |
 | [#3](https://github.com/choiyounggi/linkly/issues/3) | 가드 조건식 문법(RFC-0002 OQ②) — 모드 B의 `until`도 여기에 막혀 있다 |
 

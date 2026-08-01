@@ -178,7 +178,10 @@ before the node reaches the document, carrying provenance:
 
 ### Mode B — a native binary
 
-Mode B needs the MLIR/LLVM tools (`brew install llvm`; ~1.8 GB, keg-only).
+Mode B needs the MLIR/LLVM tools (`brew install llvm`; ~1.8 GB, keg-only). That is
+the whole prerequisite — the custom `lnpl` dialect is defined declaratively in
+`mlir/lnpl.irdl.mlir` and loaded into stock `mlir-opt` with `--irdl-file`, so no
+C++ compiler, cmake, or TableGen build is involved.
 
 ```bash
 # IR -> MLIR -> LLVM IR -> native binary, then run it
@@ -320,7 +323,6 @@ What remains open is recorded in each RFC's `## Open Questions` and tracked as i
 
 | Issue | What is deferred |
 |-------|------------------|
-| [#1](https://github.com/choiyounggi/linkly/issues/1) | RFC-0004 S4 — the custom `lnpl` MLIR dialect (needs a C++ TableGen build) |
 | [#2](https://github.com/choiyounggi/linkly/issues/2) | `RefactoringAgent`, the last of the nine roles — it needs `ir.propose` to express node *removal*, an RFC-0006 revision |
 | [#3](https://github.com/choiyounggi/linkly/issues/3) | The guard condition grammar (RFC-0002 OQ2), which also blocks `until` in mode B |
 
