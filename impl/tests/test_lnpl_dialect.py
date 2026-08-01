@@ -161,8 +161,9 @@ class TestDialectRegistration(unittest.TestCase):
         """
         tmpdir = os.path.join(REPO, ".claude", "tmp")
         os.makedirs(tmpdir, exist_ok=True)
-        path = os.path.join(tmpdir, "negative-control.lnpl.mlir")
-        with open(path, "w", encoding="utf-8") as fh:
+        # mkstemp for the same reason the product code uses it: concurrent runs.
+        fd, path = tempfile.mkstemp(dir=tmpdir, suffix=".negative-control.mlir")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(module(STEP))
         try:
             proc = subprocess.run([backend.tool(backend.MLIR_OPT), path],
@@ -249,6 +250,67 @@ class TestLnplEmission(unittest.TestCase):
         with self.assertRaises(backend.BackendError) as ctx:
             backend.emit_lnpl_mlir(golden(), "wf.nope")
         self.assertIn("wf.nope", str(ctx.exception))
+
+    def test_interleaved_unroll_rounds_are_numbered_per_node_id(self):
+        """A multi-step guard body: rounds interleave, so a global counter is wrong.
+
+        With one step in the body a global counter and a per-node one are
+        indistinguishable, which is why the single-step tests above do not pin
+        this. Here `repeat 2` over a two-step pipeline must give 1,1,2,2 — not
+        1,2,3,4.
+        """
+        src = GUARDED.replace(
+            "    when token missing\n    cache user",
+            "    repeat 2\n    pipeline P\n        cache user\n        audit login")
+        doc = lower(parse(src), "t").to_document()
+        _attrs, ops = backend._lnpl_ops(doc, "wf.w")
+        rounds = {}
+        for entry in ops:
+            if entry["unroll_round"] is not None:
+                rounds.setdefault(entry["node_id"], []).append(
+                    entry["unroll_round"])
+        self.assertEqual(len(rounds), 2, rounds)
+        for node_id, seq in rounds.items():
+            self.assertEqual(seq, [1, 2], node_id)
+
+
+class TestStringEscaping(unittest.TestCase):
+    """Step names are unconstrained by the grammar, so both renderings escape.
+
+    A name holding a literal backslash is the dangerous case: emitted unescaped,
+    `\\n` becomes a real newline that MLIR accepts, the C shim prints as two trace
+    lines, and the differential check then reports a divergence that is an emitter
+    bug rather than a backend disagreement. `\\b` fails loudly instead, which is
+    why the silent one needs the test.
+    """
+
+    def workflow_named(self, step_name):
+        src = GUARDED.replace("    when token missing\n    cache user", "")
+        src = src.replace("    load user", "    %s" % step_name)
+        return lower(parse(src), "t").to_document()
+
+    def test_a_backslash_in_a_step_name_is_escaped_in_both_renderings(self):
+        doc = self.workflow_named("frobnicate a\\nb")
+        lnpl = backend.emit_lnpl_mlir(doc, "wf.w")
+        std = backend.emit_mlir(doc, "wf.w")
+        # Doubled in the output, so MLIR reads back one literal backslash.
+        self.assertIn(r"frobnicate a\\nb", lnpl)
+        self.assertIn(r"frobnicate a\\nb", std)
+        # And no raw newline was introduced inside the emitted literal.
+        self.assertNotIn("frobnicate a\nb", lnpl)
+        self.assertNotIn("frobnicate a\nb", std)
+
+    def test_a_quote_in_a_step_name_is_escaped(self):
+        doc = self.workflow_named('frobnicate a"b')
+        self.assertIn(r'frobnicate a\"b', backend.emit_lnpl_mlir(doc, "wf.w"))
+        self.assertIn(r'frobnicate a\"b', backend.emit_mlir(doc, "wf.w"))
+
+    def test_the_escape_helper_orders_backslash_before_quote(self):
+        # Boundary: escaping the quote first would emit a backslash that then
+        # needed escaping, and the result would be wrong for this input.
+        self.assertEqual(backend._mlir_escape('a\\"b'), r'a\\\"b')
+        self.assertEqual(backend._mlir_escape(""), "")
+        self.assertEqual(backend._mlir_escape("plain"), "plain")
 
 
 @NEEDS_TOOLS
@@ -373,6 +435,70 @@ class TestLnplAndStandardDescribeTheSameWorkflow(unittest.TestCase):
                 node_ids(lnpl, '"lnpl.effect"'),
                 [e["node_id"] for o in ops for e in o["effects"]], workflow)
 
+    def test_each_location_carries_that_op_s_own_node_id(self):
+        """RFC-0004 traceability path 1, which the verifier cannot enforce.
+
+        IRDL constrains attributes, not locations, so an op with a correct
+        lnpl.node_id and a wrong loc() verifies cleanly. Asserting only that
+        `loc(` appears leaves the durable path unchecked — a constant wrong id
+        would satisfy it.
+        """
+        for doc, workflow in self.cases():
+            lnpl = backend.emit_lnpl_mlir(doc, workflow)
+            pairs = re.findall(
+                r'lnpl\.node_id = "([^"]*)".*?loc\("([^"]*)"\)', lnpl)
+            self.assertEqual(len(pairs), lnpl.count('"lnpl.'), workflow)
+            for attr_id, loc_id in pairs:
+                self.assertEqual(attr_id, loc_id, workflow)
+
+    def test_step_indices_are_the_flattened_execution_order(self):
+        for doc, workflow in self.cases():
+            _attrs, ops = backend._lnpl_ops(doc, workflow)
+            lnpl = backend.emit_lnpl_mlir(doc, workflow)
+            self.assertEqual(attr_ints(lnpl, "lnpl.index"),
+                             [o["index"] for o in ops], workflow)
+            # 1-based and gapless: the std rendering numbers its trace from this.
+            self.assertEqual([o["index"] for o in ops],
+                             list(range(1, len(ops) + 1)), workflow)
+
+    def test_step_names_match_the_op_stream(self):
+        for doc, workflow in self.cases():
+            _attrs, ops = backend._lnpl_ops(doc, workflow)
+            lnpl = backend.emit_lnpl_mlir(doc, workflow)
+            self.assertEqual(re.findall(r'lnpl\.name = "([^"]*)"', lnpl),
+                             [o["name"] for o in ops], workflow)
+
+    def test_module_attributes_name_the_workflow_and_module(self):
+        for doc, workflow in self.cases():
+            lnpl = backend.emit_lnpl_mlir(doc, workflow)
+            self.assertIn('lnpl.workflow = "%s"' % workflow, lnpl)
+            self.assertIn('lnpl.module = "%s"' % doc["module"], lnpl)
+            self.assertIn('lnpl.lir_version = "%s"' % doc["lir_version"], lnpl)
+
+    def test_a_when_guard_is_materialised_in_the_lnpl_module_too(self):
+        """The divergence D18 exists to stop, in its most concrete form.
+
+        `_render_std` emits an scf.if for a `when` guard. If the lnpl module
+        omitted the guard attributes, the artifact would describe an unguarded
+        step while the compiled module branched — and counts and node-id order
+        would both still agree.
+        """
+        doc = guarded_doc("when token missing")
+        lnpl = backend.emit_lnpl_mlir(doc, "wf.w")
+        std = backend.emit_mlir(doc, "wf.w")
+        self.assertIn("scf.if", std)
+        self.assertIn('lnpl.guard_mode = "when"', lnpl)
+        self.assertIn('lnpl.guard_condition = "token missing"', lnpl)
+
+    def test_every_guarded_step_in_the_std_module_is_guarded_in_the_lnpl_one(self):
+        # Counts the two representations of the same decision against each other.
+        for guard in ("when token missing", "until counter >= 10"):
+            doc = guarded_doc(guard)
+            lnpl = backend.emit_lnpl_mlir(doc, "wf.w")
+            std = backend.emit_mlir(doc, "wf.w")
+            self.assertEqual(lnpl.count("lnpl.guard_mode"),
+                             std.count("scf.if"), guard)
+
 
 class TestOpStreamRoutesThroughStepsInOrder(unittest.TestCase):
     """_lnpl_ops must read its steps through the module-global _steps_in_order.
@@ -460,6 +586,22 @@ class TestBuildGatesOnTheDialect(unittest.TestCase):
         self.assertIn("lnpl.node_id", str(ctx.exception))
         self.assertFalse(os.path.exists(os.path.join(self.workdir, "module")),
                          "a binary was produced despite the S4 gate failing")
+
+    def test_the_failure_names_the_artifact_not_a_staged_copy(self):
+        """The build must verify the file it wrote, not a temporary duplicate.
+
+        Verifying a copy in .claude/tmp would produce an identical pass/fail
+        verdict, so only the reported path distinguishes the two — which is why
+        this asserts on the message rather than on the outcome.
+        """
+        backend.emit_lnpl_mlir = lambda *_a, **_k: (
+            'module {\n  "lnpl.step"() : () -> ()\n}\n')
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(golden(), "wf.login", self.workdir)
+        # The workdir is itself under .claude/tmp (repo policy), so "not a temp
+        # path" is not the discriminator — naming *this build's* artifact is.
+        self.assertIn(os.path.join(self.workdir, "module.lnpl.mlir"),
+                      str(ctx.exception))
 
     def test_the_rejected_module_is_left_on_disk_to_read(self):
         backend.emit_lnpl_mlir = lambda *_a, **_k: (

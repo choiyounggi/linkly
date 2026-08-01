@@ -444,11 +444,16 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 > **S4 산출물은 장식이 아니다.** `build()`는 `module.lnpl.mlir`을 기록한 뒤 그 파일에
 > dialect 검증기를 돌리고, 검증에 실패하면 `BackendError`로 중단해 바이너리를 만들지
 > 않는다 — 이 문서가 S4 불변조건으로 규정한 "실체화되지 않은 결정은 유실이며 변환 실패로
-> 취급한다"의 이행이다. `lnpl.node_id`의 존재와 문자열 타입은 IRDL의
-> `irdl.attributes` 제약으로 **검증기가 강제**하므로, 역추적 불변조건은 테스트가 아니라
-> 기계 검증으로 지켜진다.
+> 취급한다"의 이행이다.
 >
-> **남은 한계 2종 (설계 선택이 아니라 실제 공백이다).**
+> **역추적 두 경로의 강제 수준은 다르다.** `lnpl.node_id`의 존재와 문자열 타입은 IRDL의
+> `irdl.attributes`로 **검증기가 강제**한다. 그러나 **Location 경로는 강제되지 않는다** —
+> IRDL은 attribute를 제약할 뿐 location을 제약할 수 없으므로, `loc(...)`가 없거나 값이
+> 틀린 op도 검증기는 통과시킨다. 그쪽은 방출 시 항상 붙이고 테스트로 내용까지 대조하는
+> 수준이다. 이 문서가 §역추적에서 Location을 "attribute가 discardable하므로 두는 durable한
+> 경로"라 규정한 것과 비교하면, 실제로는 durable하다고 규정한 쪽이 기계 강제가 약하다.
+>
+> **남은 한계 4종 (설계 선택이 아니라 실제 공백이다).**
 >
 > ① **S5 하강은 lnpl 모듈을 재파싱하지 않는다.** `emit_lnpl_mlir`(S4 텍스트)과
 > `_render_std`(S5 표준 dialect)는 같은 **op 스트림**(`_lnpl_ops`)의 두 렌더링이며, 하강은
@@ -462,6 +467,22 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 > 항목을 전부 op attribute로 실체화한다"는 S4 불변조건은 현재 **방출 시점에 실재하는
 > 컴파일 결정에 대해서만** 충족된다 — guard mode, guard condition, unroll round,
 > 조건필드 목록. 없는 side table을 만들어 채우지는 않았다.
+>
+> ③ **구조 노드(`Guard`·`Concurrency`·`Pipeline`)의 id가 lnpl 모듈에 실리지 않는다 —
+> §역추적 보존 규칙 2(다:1 병합은 전 id를 보존하며 하나만 남기고 축약하지 않는다) 위반이다.**
+> `_steps_in_order`가 이 노드들을 평탄화하면서 `WorkflowStep`만 남기므로, 실측하면
+> `wf.w.guard.1`·`wf.w.parallel.1` 같은 id는 산출물에서 사라진다(guard의 mode·condition
+> 자체는 `lnpl.step`에 병합되어 살아남는다). 이 문서의 판정 문장("최종 산출물의 임의
+> 지점에서 원 IR 노드 id를 최소 1개 이상 얻을 수 있다")은 여전히 성립하므로 역추적 요구의
+> 전면 실패는 아니지만, 보존 규칙 2는 지켜지지 않는다.
+>
+> ④ **dialect가 Concurrency를 표현하지 못한다.** op이 2종(`lnpl.step`·`lnpl.effect`)이고
+> region이 없으므로, `parallel` 블록을 쓴 워크플로우와 같은 step을 순차로 쓴 워크플로우는
+> **바이트 동일한 lnpl 모듈**을 낸다(실측). 즉 S5 불변조건의 "structured concurrency
+> 4조건 보존"은 S4 산출물 안에서 표현 자체가 불가능하고, ①의 후속 작업(하강을 lnpl 모듈
+> 재파싱으로 바꾸는 것)만으로는 복구되지 않는다 — region을 갖는 op(예: `lnpl.concurrency`)
+> 추가가 함께 필요하다. 현재 파이프라인이 `async` dialect를 쓰지 않아 실동작에는 영향이
+> 없으나, 이 공백은 `async` 하강을 착수할 때 선행 해소 대상이다.
 
 
 

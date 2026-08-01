@@ -132,10 +132,17 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 > 정의는 `mlir/lnpl.irdl.mlir`, op 목록·역추적 표기는 RFC-0004 OQ ②에 기록.
 > `lnpl.node_id`의 존재·문자열 타입은 dialect 검증기가 강제하고, `build()`는
 > `module.lnpl.mlir`을 그 검증기에 통과시키지 못하면 바이너리를 만들지 않는다.
-> **남은 한계 2종**(RFC-0004 §Open Questions에 기록): ① S5 하강이 lnpl 모듈을
+> **남은 한계 4종**(상세는 RFC-0004 §Open Questions가 정본): ① S5 하강이 lnpl 모듈을
 > 재파싱하지 않고 같은 op 스트림을 소비한다 — 진짜 MLIR `ConversionPattern`화는 별도
 > 이슈다. ② S3 컴파일 컨텍스트 side table이 참조 구현에 없어, 실체화는 방출 시점에
 > 실재하는 컴파일 결정(guard mode·condition·unroll round·조건필드)에 한정된다.
+> ③ 구조 노드(`Guard`·`Concurrency`·`Pipeline`)의 id가 산출물에 실리지 않아 역추적
+> 보존 규칙 2를 위반한다(판정 문장 자체는 성립). ④ op이 2종이고 region이 없어 dialect가
+> Concurrency를 표현하지 못한다 — `parallel`과 순차가 동일한 모듈을 낸다. `async` 하강
+> 착수 시 선행 해소 대상이다.
+>
+> 역추적 두 경로의 강제 수준이 다르다는 점도 RFC에 명시했다: `lnpl.node_id`는 검증기가
+> 강제하지만 **Location은 IRDL로 제약할 수 없어** 방출·테스트 수준에서만 지켜진다.
 >
 > **RFC-0008: Guard Conditions 전량 완료 (2026-07-31 + 2026-07-31 G8 런타임 추출).** 
 > when/until 가드를 Mode A/B 모두 구현하고, when→scf.if, until→unroll(16) 변환으로 

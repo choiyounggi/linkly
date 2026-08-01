@@ -330,8 +330,21 @@ def _lnpl_ops(document, workflow_id):
     return module_attrs, ops
 
 
+def _mlir_escape(text):
+    r"""Escape a Python string for an MLIR string literal.
+
+    The backslash must go first, or escaping the quote would produce one. Getting
+    this wrong is silent rather than loud for some inputs: the grammar accepts
+    step names with arbitrary characters (the lexer splits on whitespace), so a
+    name containing a literal `\n` emitted unescaped becomes a real newline that
+    MLIR accepts and the C shim prints as two trace lines. `\b` at least fails
+    loudly with "unknown escape in string literal".
+    """
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _mlir_str(text):
-    return '"%s"' % str(text).replace('"', '\\"')
+    return '"%s"' % _mlir_escape(text)
 
 
 def _mlir_attr(value):
@@ -427,7 +440,13 @@ def _render_std(module_attrs, ops):
             intern(effect["kind"])
 
     for text, sym in strings.items():
-        encoded = text.replace('"', '\\"')
+        # Shares _mlir_escape with the lnpl rendering. This line previously
+        # escaped only the quote, which let a name containing a literal `\n`
+        # become a real newline in the global — the C shim then printed two trace
+        # lines and the differential check reported a divergence that was an
+        # emitter bug, not a backend disagreement. No fixture contains a
+        # backslash, so the fix does not move any recorded byte.
+        encoded = _mlir_escape(text)
         lines.append('  llvm.mlir.global internal constant @%s("%s\\00")'
                      % (sym, encoded))
     lines.append("")
@@ -446,9 +465,9 @@ def _render_std(module_attrs, ops):
     # Declare i64 constants for condition comparisons
     # Collect all i64 values used in condition comparisons
     cond_i64_values = set()
-    for op in ops:
-        if op["guard_condition"]:
-            extracted = _extract_condition_field(op["guard_condition"])
+    for entry in ops:
+        if entry["guard_condition"]:
+            extracted = _extract_condition_field(entry["guard_condition"])
             if extracted and len(extracted) == 3:  # Comparison
                 cond_i64_values.add(extracted[2])
 
