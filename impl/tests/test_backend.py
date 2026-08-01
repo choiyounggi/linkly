@@ -112,7 +112,8 @@ class TestNativeBuild(unittest.TestCase):
 
     def test_intermediates_are_kept_for_inspection(self):
         backend.build(golden(), "wf.login", self.workdir)
-        for name in ("module.mlir", "module.llvm.mlir", "module.ll"):
+        for name in ("module.lnpl.mlir", "module.mlir", "module.llvm.mlir",
+                     "module.ll"):
             self.assertTrue(os.path.isfile(os.path.join(self.workdir, name)), name)
 
     def test_when_guard_flag_skips_the_guarded_step_in_the_binary(self):

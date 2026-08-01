@@ -605,8 +605,14 @@ def runtime_c(field_names):
 
 
 def build(document, workflow_id, workdir, keep_intermediate=True):
-    """Run S4-S7. Returns the path to the native binary."""
+    """Run S4-S7. Returns the path to the native binary.
+
+    Stages on disk, in order: `module.lnpl.mlir` (S4, verified against the `lnpl`
+    dialect), `module.mlir` (S5 standard dialects), `module.llvm.mlir` (S6),
+    `module.ll`, and the binary (S7).
+    """
     os.makedirs(workdir, exist_ok=True)
+    lnpl_path = os.path.join(workdir, "module.lnpl.mlir")
     mlir_path = os.path.join(workdir, "module.mlir")
     llvm_dialect = os.path.join(workdir, "module.llvm.mlir")
     ll_path = os.path.join(workdir, "module.ll")
@@ -614,6 +620,17 @@ def build(document, workflow_id, workdir, keep_intermediate=True):
     bin_path = os.path.join(workdir, "module")
 
     fields = condition_field_names(document, workflow_id)
+
+    # S4. Written before it is verified, so a rejected module is on disk to read.
+    # The gate is not advisory: RFC-0004 treats a decision that failed to
+    # materialise as a failed conversion, so nothing downstream runs and no
+    # binary appears. `path=` verifies this file rather than a staged copy, which
+    # keeps the artifact and the verified object the same thing.
+    lnpl_text = emit_lnpl_mlir(document, workflow_id)
+    with open(lnpl_path, "w", encoding="utf-8") as fh:
+        fh.write(lnpl_text)
+    verify_lnpl_module(lnpl_text, path=lnpl_path)
+
     with open(mlir_path, "w", encoding="utf-8") as fh:
         fh.write(emit_mlir(document, workflow_id))
     with open(c_path, "w", encoding="utf-8") as fh:
@@ -636,7 +653,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True):
          "S7 (clang: LLVM IR + runtime -> native binary)")
 
     if not keep_intermediate:
-        for path in (mlir_path, llvm_dialect, ll_path, c_path):
+        for path in (lnpl_path, mlir_path, llvm_dialect, ll_path, c_path):
             os.remove(path)
     return bin_path
 

@@ -15,7 +15,9 @@ outright.
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 from lnpl import backend
@@ -413,6 +415,67 @@ class TestOpStreamRoutesThroughStepsInOrder(unittest.TestCase):
         backend._steps_in_order = drop_last
         std = backend.emit_mlir(golden(), "wf.login")
         self.assertEqual(std.count("func.call @lnpl_step"), 5)
+
+
+@NEEDS_TOOLS
+class TestBuildGatesOnTheDialect(unittest.TestCase):
+    """S4 sits in the build path, and failing its verifier fails the build."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-s4-",
+                                        dir=os.path.join(REPO, ".claude", "tmp"))
+        self.original_emit = backend.emit_lnpl_mlir
+
+    def tearDown(self):
+        backend.emit_lnpl_mlir = self.original_emit
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def test_build_writes_the_lnpl_module(self):
+        backend.build(golden(), "wf.login", self.workdir)
+        path = os.path.join(self.workdir, "module.lnpl.mlir")
+        self.assertTrue(os.path.isfile(path))
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn('"lnpl.step"', text)
+        self.assertIn("lnpl.node_id", text)
+
+    def test_the_binary_still_runs_after_the_dialect_stage(self):
+        # End-to-end guard that inserting S4 did not disturb S5-S7.
+        path = backend.build(golden(), "wf.login", self.workdir)
+        rc, lines = backend.run_binary(path)
+        self.assertEqual(rc, 0)
+        self.assertEqual(lines[-1], "status completed")
+        self.assertEqual(len([l for l in lines if l.startswith("step ")]), 6)
+
+    def test_a_module_failing_the_dialect_verifier_fails_the_build(self):
+        """Negative control for the gate: without this, "load-bearing" is a claim.
+
+        A module whose op has no node id is exactly what the dialect forbids, so
+        the build must stop rather than produce an untraceable binary.
+        """
+        backend.emit_lnpl_mlir = lambda *_a, **_k: (
+            'module {\n  "lnpl.step"() : () -> ()\n}\n')
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(golden(), "wf.login", self.workdir)
+        self.assertIn("lnpl.node_id", str(ctx.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.workdir, "module")),
+                         "a binary was produced despite the S4 gate failing")
+
+    def test_the_rejected_module_is_left_on_disk_to_read(self):
+        backend.emit_lnpl_mlir = lambda *_a, **_k: (
+            'module {\n  "lnpl.step"() : () -> ()\n}\n')
+        with self.assertRaises(backend.BackendError):
+            backend.build(golden(), "wf.login", self.workdir)
+        # Written before verification precisely so a failure is inspectable.
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.workdir, "module.lnpl.mlir")))
+
+    def test_intermediates_are_removed_when_not_kept(self):
+        path = backend.build(golden(), "wf.login", self.workdir,
+                             keep_intermediate=False)
+        self.assertFalse(os.path.exists(
+            os.path.join(self.workdir, "module.lnpl.mlir")))
+        self.assertTrue(os.access(path, os.X_OK))
 
 
 if __name__ == "__main__":
