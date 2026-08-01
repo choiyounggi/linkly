@@ -380,13 +380,16 @@ def emit_lnpl_mlir(document, workflow_id):
     return "\n".join(lines) + "\n"
 
 
-def emit_mlir(document, workflow_id):
-    """Semantic IR -> textual MLIR using func/arith only (no custom dialect)."""
-    nodes, steps = _workflow_steps(document, workflow_id)
+def _render_std(module_attrs, ops):
+    """S5: the `lnpl` op stream -> standard-dialect MLIR (func, arith, scf).
 
+    Reads nothing but the op stream, so this rendering and the `lnpl` module
+    `emit_lnpl_mlir` writes are two views of one structure rather than two
+    independent readings of the IR.
+    """
     lines = [
         "// Generated from Semantic IR (lir_version %s, module %s) — do not edit."
-        % (document["lir_version"], document["module"]),
+        % (module_attrs["lnpl.lir_version"], module_attrs["lnpl.module"]),
         "// RFC-0004 S4-S5: standard dialects (func, arith). See backend.py for the",
         "// recorded deviation: the custom `lnpl` dialect is not yet registered.",
         "module {",
@@ -402,10 +405,12 @@ def emit_mlir(document, workflow_id):
             strings[text] = "s%d" % len(strings)
         return strings[text]
 
-    for step, _cond in steps:
-        intern(step["name"])
-        for child_id in step.get("children", []):
-            intern(nodes[child_id]["kind"])
+    # This order decides the @s<N> numbering and therefore the emitted bytes:
+    # each step's name first, then that step's effect kinds, in order.
+    for op in ops:
+        intern(op["name"])
+        for effect in op["effects"]:
+            intern(effect["kind"])
 
     for text, sym in strings.items():
         encoded = text.replace('"', '\\"')
@@ -416,7 +421,7 @@ def emit_mlir(document, workflow_id):
     # RFC-0008 G8: condition fields become i64 parameters, in the one order
     # condition_field_names defines (see its docstring for why that matters).
     params = ["%skip : i32"]
-    for field in condition_field_names(document, workflow_id):
+    for field in module_attrs["lnpl.condition_fields"]:
         params.append(f"%{field} : i64")
     params_str = ", ".join(params)
 
@@ -427,32 +432,30 @@ def emit_mlir(document, workflow_id):
     # Declare i64 constants for condition comparisons
     # Collect all i64 values used in condition comparisons
     cond_i64_values = set()
-    for step, cond in steps:
-        if cond and isinstance(cond, tuple) and len(cond) == 2:
-            mode, cond_str = cond
-            extracted = _extract_condition_field(cond_str)
+    for op in ops:
+        if op["guard_condition"]:
+            extracted = _extract_condition_field(op["guard_condition"])
             if extracted and len(extracted) == 3:  # Comparison
-                field, op, value = extracted
-                cond_i64_values.add(value)
+                cond_i64_values.add(extracted[2])
 
     # Declare all i64 constants upfront
     for value in sorted(cond_i64_values):
         lines.append(f"    %c{value}_i64 = arith.constant {value} : i64")
 
-    for idx, (step, cond) in enumerate(steps, start=1):
-        sym = strings[step["name"]]
-        guard_mode = None
-        guard_str = None
-
-        if cond and isinstance(cond, tuple):
-            guard_mode, guard_str = cond
+    # `entry`, not `op` — the guard branches below unpack `field, op, value` from
+    # a parsed condition, and a loop named `op` would be shadowed mid-body.
+    for entry in ops:
+        idx = entry["index"]
+        sym = strings[entry["name"]]
+        guard_mode = entry["guard_mode"]
+        guard_str = entry["guard_condition"]
 
         guard_desc = ""
         if guard_mode and guard_str:
             guard_desc = "  (guarded by `%s` %s)" % (guard_mode, guard_str)
 
         lines.append("    // step %d: %s%s"
-                     % (idx, step["name"], guard_desc))
+                     % (idx, entry["name"], guard_desc))
         lines.append("    %%p%d = llvm.mlir.addressof @%s : !llvm.ptr" % (idx, sym))
         lines.append("    %%i%d = arith.constant %d : i32" % (idx, idx))
 
@@ -477,8 +480,8 @@ def emit_mlir(document, workflow_id):
             # RFC-0008: When condition is true, execute the guarded step
             lines.append("      %%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
                          "(!llvm.ptr, i32) -> i32" % (idx, idx, idx))
-            for cn, child_id in enumerate(step.get("children", [])):
-                ksym = strings[nodes[child_id]["kind"]]
+            for cn, effect in enumerate(entry["effects"]):
+                ksym = strings[effect["kind"]]
                 lines.append("      %%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
                              % (idx, cn, ksym))
                 lines.append("      func.call @lnpl_effect(%%p%d, %%k%d_%d) : "
@@ -514,8 +517,8 @@ def emit_mlir(document, workflow_id):
 
             lines.append("%s%%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
                          "(!llvm.ptr, i32) -> i32" % (body, idx, idx, idx))
-            for cn, child_id in enumerate(step.get("children", [])):
-                ksym = strings[nodes[child_id]["kind"]]
+            for cn, effect in enumerate(entry["effects"]):
+                ksym = strings[effect["kind"]]
                 lines.append("%s%%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
                              % (body, idx, cn, ksym))
                 lines.append("%sfunc.call @lnpl_effect(%%p%d, %%k%d_%d) : "
@@ -525,8 +528,8 @@ def emit_mlir(document, workflow_id):
             # No guard: unconditional step
             lines.append("    %%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
                          "(!llvm.ptr, i32) -> i32" % (idx, idx, idx))
-            for cn, child_id in enumerate(step.get("children", [])):
-                ksym = strings[nodes[child_id]["kind"]]
+            for cn, effect in enumerate(entry["effects"]):
+                ksym = strings[effect["kind"]]
                 lines.append("    %%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
                              % (idx, cn, ksym))
                 lines.append("    func.call @lnpl_effect(%%p%d, %%k%d_%d) : "
@@ -536,6 +539,17 @@ def emit_mlir(document, workflow_id):
     lines.append("  }")
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+def emit_mlir(document, workflow_id):
+    """Semantic IR -> standard-dialect MLIR, by way of the `lnpl` dialect (S4-S5).
+
+    The op stream this renders is the one `emit_lnpl_mlir` serialises, so the
+    standard-dialect module and the `lnpl` module cannot describe different
+    workflows. The signature and the output are unchanged from before the dialect
+    existed; `impl/tests/golden/` holds the pre-change bytes that prove it.
+    """
+    return _render_std(*_lnpl_ops(document, workflow_id))
 
 
 RUNTIME_C_HEADER = r"""/* Mode B runtime shim — generated, do not edit.

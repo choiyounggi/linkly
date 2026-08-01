@@ -272,5 +272,148 @@ class TestEmittedModuleVerifies(unittest.TestCase):
             self.assertIn("wf.login.step.%d" % n, out)
 
 
+GOLDEN_DIR = os.path.join(REPO, "impl", "tests", "golden")
+
+
+def _body(text):
+    """Drop the leading `//` comment block.
+
+    The fixtures hold pre-change bytes and are never regenerated, so the
+    comparison has to survive a deliberate edit to the header comment without
+    becoming a snapshot of the current implementation. Everything below the
+    header is the part that must not move.
+    """
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines) and lines[i].startswith("//"):
+        i += 1
+    return "\n".join(lines[i:])
+
+
+def fixture(name):
+    with open(os.path.join(GOLDEN_DIR, name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+class TestStandardLoweringIsUnchanged(unittest.TestCase):
+    """Routing emit_mlir through the lnpl op stream must not move its output.
+
+    The fixtures were captured from emit_mlir *before* the dialect existed. They
+    are the only evidence that S4 was inserted without changing what mode B
+    compiles, which is why nothing regenerates them.
+    """
+
+    def test_the_fixtures_exist(self):
+        for name in ("wf_login.std.mlir", "w_until.std.mlir"):
+            self.assertTrue(os.path.isfile(os.path.join(GOLDEN_DIR, name)), name)
+
+    def test_golden_login_lowering_is_unchanged(self):
+        self.assertEqual(_body(fixture("wf_login.std.mlir")),
+                         _body(backend.emit_mlir(golden(), "wf.login")))
+
+    def test_until_workflow_lowering_is_unchanged(self):
+        # The 16-round case: largest output, and the only one with guard branches.
+        doc = guarded_doc("until counter >= 10")
+        self.assertEqual(_body(fixture("w_until.std.mlir")),
+                         _body(backend.emit_mlir(doc, "wf.w")))
+
+    def test_the_header_still_names_the_module_and_version(self):
+        # _body discards the header, so the values it carries are asserted here
+        # rather than left uncovered.
+        first = backend.emit_mlir(golden(), "wf.login").split("\n")[0]
+        self.assertIn("lir_version 0.1", first)
+        self.assertIn("module login", first)
+
+    def test_the_stripper_leaves_non_comment_text_alone(self):
+        # _body is test-only logic the two comparisons above depend on, so it is
+        # pinned rather than trusted.
+        self.assertEqual(_body("// a\n// b\nmodule {\n}\n"), "module {\n}\n")
+        self.assertEqual(_body("module {\n// inner\n}\n"), "module {\n// inner\n}\n")
+        self.assertEqual(_body(""), "")
+
+
+class TestLnplAndStandardDescribeTheSameWorkflow(unittest.TestCase):
+    """The lnpl module must not be able to disagree with what gets compiled.
+
+    The dialect verifier is a structural gate — it accepts a one-step module where
+    six belong, and it accepts an empty one. The differential check observes only
+    the binary. So without these assertions a drop, reorder or duplication in
+    emit_lnpl_mlir alone would leave the lnpl artifact describing a different
+    workflow while the build and the equivalence check both pass.
+    """
+
+    def cases(self):
+        return ((golden(), "wf.login"),
+                (guarded_doc("until counter >= 10"), "wf.w"))
+
+    def test_step_counts_agree(self):
+        for doc, workflow in self.cases():
+            lnpl = backend.emit_lnpl_mlir(doc, workflow)
+            std = backend.emit_mlir(doc, workflow)
+            self.assertEqual(lnpl.count('"lnpl.step"'),
+                             std.count("func.call @lnpl_step"), workflow)
+
+    def test_effect_counts_agree(self):
+        for doc, workflow in self.cases():
+            lnpl = backend.emit_lnpl_mlir(doc, workflow)
+            std = backend.emit_mlir(doc, workflow)
+            # Count call sites, not the bare symbol: the standard module also
+            # contains one @lnpl_effect declaration.
+            self.assertEqual(lnpl.count('"lnpl.effect"'),
+                             std.count("func.call @lnpl_effect"), workflow)
+
+    def test_node_ids_match_the_op_stream_in_order(self):
+        for doc, workflow in self.cases():
+            _attrs, ops = backend._lnpl_ops(doc, workflow)
+            lnpl = backend.emit_lnpl_mlir(doc, workflow)
+            self.assertEqual(node_ids(lnpl), [o["node_id"] for o in ops], workflow)
+            self.assertEqual(
+                node_ids(lnpl, '"lnpl.effect"'),
+                [e["node_id"] for o in ops for e in o["effects"]], workflow)
+
+
+class TestOpStreamRoutesThroughStepsInOrder(unittest.TestCase):
+    """_lnpl_ops must read its steps through the module-global _steps_in_order.
+
+    That indirection is what lets the deliberate-mismatch tests reach mode B by
+    monkeypatching one name. It gets a direct test because the differential suite
+    is a weak detector of it: three of its five mismatch cases pass against a
+    baseline divergence their patch never causes, so they would stay green even if
+    this routing were bypassed.
+    """
+
+    def setUp(self):
+        self.original = backend._steps_in_order
+
+    def tearDown(self):
+        backend._steps_in_order = self.original
+
+    def test_patching_steps_in_order_changes_the_op_stream(self):
+        _attrs, before = backend._lnpl_ops(golden(), "wf.login")
+
+        original = self.original
+
+        def drop_last(nodes, ids, out):
+            got = original(nodes, ids, [])
+            out.extend(got[:-1])
+            return out
+
+        backend._steps_in_order = drop_last
+        _attrs, after = backend._lnpl_ops(golden(), "wf.login")
+        self.assertEqual(len(after), len(before) - 1)
+
+    def test_patching_steps_in_order_reaches_the_standard_module(self):
+        # Same seam, followed all the way to what mode B would compile.
+        original = self.original
+
+        def drop_last(nodes, ids, out):
+            out.extend(original(nodes, ids, [])[:-1])
+            return out
+
+        backend._steps_in_order = drop_last
+        std = backend.emit_mlir(golden(), "wf.login")
+        self.assertEqual(std.count("func.call @lnpl_step"), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
