@@ -1,3 +1,7 @@
+// PRE-CHANGE SNAPSHOT — captured from emit_mlir before the lnpl dialect
+// existed (RFC-0004 S4). Do not regenerate: this is the only evidence the
+// S4 refactor preserved behaviour. The header below is therefore stale on
+// purpose; the comparison in test_lnpl_dialect.py strips leading comments.
 // Generated from Semantic IR (lir_version 0.1, module login) — do not edit.
 // RFC-0004 S4-S5: standard dialects (func, arith). See backend.py for the
 // recorded deviation: the custom `lnpl` dialect is not yet registered.

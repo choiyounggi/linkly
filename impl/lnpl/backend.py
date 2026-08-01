@@ -1,22 +1,36 @@
 """Execution mode B — Semantic IR -> MLIR -> LLVM IR -> native binary.
 
-RFC-0004 stages S4-S7. One deviation from the RFC is recorded here and in
-docs/ROADMAP.md: **S4 emits standard MLIR dialects directly, not the custom
-`lnpl` dialect.** Registering a custom dialect with `mlir-opt` requires a C++
-TableGen build against MLIR's development libraries; until that exists, the
-`lnpl` dialect's purpose — hosting the high-level passes — is served at the
-Semantic IR level by S3, which mode A already performs. Deferring it therefore
-does not weaken the equivalence claim, but it is a real gap, not a design choice.
+RFC-0004 stages S4-S7, including the custom `lnpl` dialect S4 calls for. The
+dialect is defined declaratively in `mlir/lnpl.irdl.mlir` and registered into
+stock `mlir-opt` with `--irdl-file`, so it needs no C++ TableGen build and adds
+no build dependency beyond the `brew install llvm` mode B already required.
 
-What this module emits is a `func` + `scf` + `arith` module that reproduces the
-workflow's **observable** behaviour: the step order, the policy outcomes, and the
-exit status. The effects themselves call into a small C runtime shim (printf-based
-trace) so the native binary emits the same span/step lines mode A does — that is
-what the differential check compares.
+`_lnpl_ops` is the only place the IR is read for code generation. Two renderings
+consume that op stream: `emit_lnpl_mlir` serialises it as `lnpl` dialect text
+(S4), and `_render_std` lowers it to `func` + `scf` + `arith` (S5). Because both
+views come from one structure, the artifact and the compiled module cannot
+describe different workflows by accident; `build()` additionally runs the dialect
+verifier over the emitted `lnpl` module and fails the compile if it is rejected.
+
+Node ids survive into MLIR on both paths RFC-0004 requires: the discardable
+`lnpl.node_id` attribute, whose presence and string type the dialect verifier
+enforces, and a `loc("<node id>")` the debug info follows. Unrolled guards keep
+one node id across their rounds and are distinguished by `lnpl.unroll_round`.
+
+What ends up compiled is a module reproducing the workflow's **observable**
+behaviour: step order, policy outcomes, exit status. The effects call into a small
+C runtime shim (printf-based trace) so the native binary emits the same step lines
+mode A does — that is what the differential check compares.
+
+Two gaps remain, recorded in `rfcs/0004-compiler.md` §Open Questions: S5 consumes
+the op stream rather than re-parsing the `lnpl` module, and the RFC's S3 compile
+context side table does not exist, so only the compile decisions present at
+emission time are materialised as attributes.
 
 Pipeline:
 
-    IR --emit_mlir--> .mlir --mlir-opt--> LLVM dialect --mlir-translate--> .ll
+    IR --emit_lnpl_mlir--> .lnpl.mlir --verify(mlir-opt --irdl-file)-->
+        --_render_std--> .mlir --mlir-opt--> LLVM dialect --mlir-translate--> .ll
         --clang--> native binary
 """
 
@@ -390,8 +404,8 @@ def _render_std(module_attrs, ops):
     lines = [
         "// Generated from Semantic IR (lir_version %s, module %s) — do not edit."
         % (module_attrs["lnpl.lir_version"], module_attrs["lnpl.module"]),
-        "// RFC-0004 S4-S5: standard dialects (func, arith). See backend.py for the",
-        "// recorded deviation: the custom `lnpl` dialect is not yet registered.",
+        "// RFC-0004 S5: standard dialects (func, arith), lowered from the `lnpl`",
+        "// dialect module emitted at S4 (see mlir/lnpl.irdl.mlir).",
         "module {",
         '  func.func private @lnpl_step(!llvm.ptr, i32) -> i32',
         '  func.func private @lnpl_effect(!llvm.ptr, !llvm.ptr) -> ()',
