@@ -24,12 +24,20 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 
 from lnpl.condition import parse_condition, Presence, Comparison
 
 MLIR_OPT = "mlir-opt"
 MLIR_TRANSLATE = "mlir-translate"
 BREW_LLVM_BIN = "/opt/homebrew/opt/llvm/bin"
+
+# This file is <repo>/impl/lnpl/backend.py, so three dirnames reach the repo.
+# The dialect definition is located from here rather than from the cwd, because
+# `build()` runs against an arbitrary workdir while the tests run from the root.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+LNPL_IRDL_PATH = os.path.join(REPO_ROOT, "mlir", "lnpl.irdl.mlir")
 
 
 class BackendError(Exception):
@@ -56,6 +64,39 @@ def toolchain_available():
         except BackendError:
             return False
     return True
+
+
+def verify_lnpl_module(text, stage="S4 (lnpl dialect verification)", path=None):
+    """Run the `lnpl` dialect's verifier over a module; return the round trip.
+
+    With `path`, the file at that path is verified **in place** — so the artifact
+    `build()` wrote is the object that actually gets checked, and a failure names
+    the file the caller can go read. Without it, `text` is staged under the repo's
+    own tmp directory (never the system temp dir) and removed afterwards.
+
+    `--mlir-print-debuginfo` is not cosmetic: without it `mlir-opt` prints no
+    `loc(...)` at all, so the round trip could not show that the Location half of
+    RFC-0004's two traceability paths survived. The `lnpl.node_id` attribute is
+    discardable by design, which is exactly why the Location must be observable.
+    """
+    staged = None
+    if path is None:
+        tmpdir = os.path.join(REPO_ROOT, ".claude", "tmp")
+        os.makedirs(tmpdir, exist_ok=True)
+        # mkstemp, not a fixed name: builds can run concurrently.
+        fd, staged = tempfile.mkstemp(dir=tmpdir, suffix=".lnpl.mlir")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        target = staged
+    else:
+        target = path
+
+    try:
+        return _run([tool(MLIR_OPT), "--irdl-file", LNPL_IRDL_PATH,
+                     "--mlir-print-debuginfo", target], stage)
+    finally:
+        if staged is not None:
+            os.remove(staged)
 
 
 def _extract_condition_field(cond_str):
