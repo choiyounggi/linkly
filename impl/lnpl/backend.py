@@ -253,6 +253,133 @@ def encode_condition_value(value):
         % (value, type(value).__name__))
 
 
+def _lnpl_ops(document, workflow_id):
+    """S4: the `lnpl` op stream, plus the module-level attributes.
+
+    This is the one place the Semantic IR is read for code generation. Both
+    renderings consume the result — `emit_lnpl_mlir` serialises it as `lnpl`
+    dialect text and `_render_std` lowers it to standard dialects — so the two
+    modules cannot describe different workflows by construction.
+
+    Steps come from `_workflow_steps`, which calls the module-global
+    `_steps_in_order`. That indirection is load-bearing: the deliberate-mismatch
+    tests monkeypatch that name, and flattening the body here instead would
+    disarm them. `TestOpStreamRoutesThroughStepsInOrder` pins it.
+    """
+    nodes, steps = _workflow_steps(document, workflow_id)
+
+    # Two passes. A node id repeats only when an unrolled guard emitted it more
+    # than once — `until` (guarded rounds) or `repeat` (no guard attached at all)
+    # — and RFC-0004's 1:다 확장 rule wants every one of those ops to keep the
+    # same id. Counting first keeps the round marker off the ordinary case, where
+    # a bare index already identifies the op.
+    occurrences = {}
+    for step, _cond in steps:
+        occurrences[step["id"]] = occurrences.get(step["id"], 0) + 1
+
+    rounds = {}
+    ops = []
+    for idx, (step, cond) in enumerate(steps, start=1):
+        node_id = step["id"]
+        guard_mode = guard_condition = None
+        if cond and isinstance(cond, tuple) and len(cond) == 2:
+            guard_mode, guard_condition = cond
+
+        unroll_round = None
+        if occurrences[node_id] > 1:
+            rounds[node_id] = rounds.get(node_id, 0) + 1
+            unroll_round = rounds[node_id]
+
+        ops.append({
+            "node_id": node_id,
+            "name": step["name"],
+            "index": idx,
+            "guard_mode": guard_mode,
+            "guard_condition": guard_condition,
+            "unroll_round": unroll_round,
+            # Read `children` off the dict we were handed rather than off
+            # `document`: one divergence test strips them to prove the
+            # differential check can go red, and re-reading the document would
+            # put the effects back and silently disarm it.
+            "effects": [{"node_id": child_id, "kind": nodes[child_id]["kind"]}
+                        for child_id in step.get("children", [])],
+        })
+
+    module_attrs = {
+        "lnpl.module": document["module"],
+        "lnpl.lir_version": document["lir_version"],
+        "lnpl.workflow": workflow_id,
+        # From the single source of truth, never re-derived here: three sites
+        # deriving this list independently is the defect PR #4 existed to fix.
+        "lnpl.condition_fields": condition_field_names(document, workflow_id),
+    }
+    return module_attrs, ops
+
+
+def _mlir_str(text):
+    return '"%s"' % str(text).replace('"', '\\"')
+
+
+def _mlir_attr(value):
+    """Render one attribute value. Ints carry an explicit i64 type."""
+    if isinstance(value, bool):
+        raise BackendError("boolean attributes are not part of the lnpl dialect")
+    if isinstance(value, int):
+        return "%d : i64" % value
+    if isinstance(value, (list, tuple)):
+        return "[%s]" % ", ".join(_mlir_str(item) for item in value)
+    return _mlir_str(value)
+
+
+def _mlir_attr_dict(pairs):
+    return ", ".join("%s = %s" % (key, _mlir_attr(value))
+                     for key, value in pairs if value is not None)
+
+
+def emit_lnpl_mlir(document, workflow_id):
+    """S4: Semantic IR -> `lnpl` dialect MLIR.
+
+    Every op carries the originating node id on both paths RFC-0004 requires: the
+    discardable attribute `lnpl.node_id` that passes read, and a `loc(...)` that
+    diagnostics and debug info follow. The dialect's verifier enforces the
+    attribute's presence and type (see `mlir/lnpl.irdl.mlir`); `build()` runs that
+    verifier over the emitted module, so a module that loses a node id fails the
+    compile rather than producing a binary that cannot be traced back.
+    """
+    module_attrs, ops = _lnpl_ops(document, workflow_id)
+
+    lines = [
+        "// Generated from Semantic IR (lir_version %s, module %s) — do not edit."
+        % (module_attrs["lnpl.lir_version"], module_attrs["lnpl.module"]),
+        "// RFC-0004 S4: the custom `lnpl` dialect, registered into stock",
+        "// mlir-opt via --irdl-file=mlir/lnpl.irdl.mlir (no C++ TableGen build).",
+        "module attributes {%s} {" % _mlir_attr_dict(sorted(module_attrs.items())),
+    ]
+
+    for op in ops:
+        lines.append('  "lnpl.step"() {%s} : () -> () loc(%s)' % (
+            _mlir_attr_dict([
+                ("lnpl.node_id", op["node_id"]),
+                ("lnpl.name", op["name"]),
+                ("lnpl.index", op["index"]),
+                ("lnpl.guard_mode", op["guard_mode"]),
+                ("lnpl.guard_condition", op["guard_condition"]),
+                ("lnpl.unroll_round", op["unroll_round"]),
+            ]),
+            _mlir_str(op["node_id"])))
+        for effect in op["effects"]:
+            lines.append('  "lnpl.effect"() {%s} : () -> () loc(%s)' % (
+                _mlir_attr_dict([
+                    ("lnpl.node_id", effect["node_id"]),
+                    ("lnpl.kind", effect["kind"]),
+                    ("lnpl.step", op["node_id"]),
+                ]),
+                _mlir_str(effect["node_id"])))
+
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
 def emit_mlir(document, workflow_id):
     """Semantic IR -> textual MLIR using func/arith only (no custom dialect)."""
     nodes, steps = _workflow_steps(document, workflow_id)
