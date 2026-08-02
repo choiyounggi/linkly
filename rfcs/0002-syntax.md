@@ -4,6 +4,7 @@
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 - Updated-by: RFC-0008 (§Full grammar)
+- Updated-by: RFC-0009 (§Open Questions)
 
 ## Motivation
 
@@ -629,6 +630,8 @@ workflow Login
    제한한다.
 
 ## Open Questions
+
+> 갱신됨: RFC-0009
 
 1. **step 토큰 상한은 실측 없는 설계 가설이다** — "동사+목적어 2~4토큰 권장,
    단독 동사 허용, 상한 4토큰"은 LLM 생성 품질·표현력에 대한 실측 없이 정한
