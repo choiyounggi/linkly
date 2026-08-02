@@ -14,6 +14,7 @@ import unittest
 from lnpl import backend, differential
 from lnpl.lower import lower
 from lnpl.parser import parse
+from tests.fixtures import GUARDED, UNTIL_COUNTER, guarded_source
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN_IR = os.path.join(REPO, "examples", "login.lir.json")
@@ -27,18 +28,6 @@ HAS_TOOLS = backend.toolchain_available()
 NEEDS_TOOLS = unittest.skipUnless(
     HAS_TOOLS, "MLIR/LLVM toolchain not installed (brew install llvm)")
 
-GUARDED = """
-capability postgres
-entity User
-    field
-        id UUID
-        email Email
-service S
-workflow W
-    load user
-    when token missing
-    cache user
-"""
 
 
 def golden():
@@ -65,7 +54,7 @@ class TestMlirEmission(unittest.TestCase):
         self.assertEqual(text.count("@lnpl_effect"), 3 + 1)   # 3 call sites + 1 decl
 
     def test_repeat_guard_unrolls_to_a_constant_number_of_steps(self):
-        src = GUARDED.replace("    when token missing", "    repeat 3")
+        src = guarded_source("repeat 3")
         doc = lower(parse(src), "t").to_document()
         text = backend.emit_mlir(doc, "wf.w")
         self.assertEqual(text.count("func.call @lnpl_step"), 1 + 3)
@@ -77,7 +66,7 @@ class TestMlirEmission(unittest.TestCase):
 
     def test_until_guard_emits_mlir(self):
         # RFC-0008 G10: until now compiles to MLIR (scf.while)
-        src = GUARDED.replace("when token missing", "until token exists")
+        src = guarded_source("until token exists")
         doc = lower(parse(src), "t").to_document()
         text = backend.emit_mlir(doc, "wf.w")
         # Verify until guard appears in the output (comment form for now)
@@ -158,7 +147,24 @@ class TestDifferential(unittest.TestCase):
 
 @NEEDS_TOOLS
 class TestDivergenceIsDetected(unittest.TestCase):
-    """RFC-0004's deliberate-mismatch requirement: the check must be able to fail."""
+    """RFC-0004's deliberate-mismatch requirement: the check must be able to fail.
+
+    Every case here does the same three things, in this order: run the workflow
+    **unpatched** and require EQUIVALENT, apply exactly one fault, then require
+    the specific `FAIL n/4` class that fault produces.
+
+    The baseline assertion is not ceremony. Three of these cases used to run
+    against `GUARDED` while it was divergent on its own — its `cache user` had no
+    TTL budget, so mode A refused and mode B did not (see `tests/fixtures.py`).
+    They asserted `assertFalse(ok)` and `any("FAIL")`, both of which that standing
+    divergence satisfied, so their patches could be deleted without the tests
+    noticing. Two of the three could not have worked in any case: `GUARDED` has no
+    `until`, so the two `until` faults were no-ops on it, and they now use
+    `UNTIL_COUNTER`.
+
+    Pinning the FAIL class matters for the same reason — a bare `any("FAIL")`
+    accepts a divergence the test did not cause.
+    """
 
     def setUp(self):
         self.workdir = tempfile.mkdtemp(prefix="lnpl-div-",
@@ -169,7 +175,15 @@ class TestDivergenceIsDetected(unittest.TestCase):
         backend._steps_in_order = self.original
         shutil.rmtree(self.workdir, ignore_errors=True)
 
+    def _verify(self, doc, workflow, payload, rows, skip=False):
+        return differential.verify(doc, workflow, payload, rows, self.workdir,
+                                   skip=skip)
+
     def test_reordered_backend_is_reported_as_divergent(self):
+        doc = golden()
+        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        self.assertTrue(ok, "baseline must be equivalent before the fault")
+
         original = self.original
 
         def reversed_order(nodes, ids, out):
@@ -178,13 +192,15 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = reversed_order
-        doc = golden()
-        ok, report = differential.verify(doc, "wf.login", PAYLOAD,
-                                         rows_for(doc), self.workdir)
+        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
         self.assertFalse(ok, "a reversed backend must not compare as equivalent")
         self.assertTrue(any("FAIL 1/4" in line for line in report), report)
 
     def test_dropped_effect_in_the_backend_is_reported_as_divergent(self):
+        doc = golden()
+        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        self.assertTrue(ok, "baseline must be equivalent before the fault")
+
         original = self.original
 
         def without_effects(nodes, ids, out):
@@ -195,75 +211,95 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = without_effects
-        doc = golden()
-        ok, report = differential.verify(doc, "wf.login", PAYLOAD,
-                                         rows_for(doc), self.workdir)
+        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
         self.assertFalse(ok)
         self.assertTrue(any("FAIL 3/4" in line for line in report), report)
 
     def test_when_guard_removed_diverges(self):
-        """RFC-0008: Removing when guard → always executes → diverges from conditional."""
+        """A `when` guard that evaluates false must actually skip its step.
+
+        The payload carries `token`, so `when token missing` is **false** and the
+        guarded step is skipped — `skip=True` tells mode B the same. With the
+        guard satisfied instead, removing it would change nothing observable and
+        this case would prove nothing, which is how it read before.
+        """
+        doc = lower(parse(GUARDED), "t").to_document()
+        payload = dict(PAYLOAD, token="present")
+        rows = {"entity.user": dict(PAYLOAD)}
+
+        ok, _report = self._verify(doc, "wf.w", payload, rows, skip=True)
+        self.assertTrue(ok, "baseline must be equivalent before the fault")
+
         original = self.original
 
         def without_when(nodes, ids, out):
-            got = original(nodes, ids, [])
-            # Strip when guards (replace tuple cond with None)
-            for step, cond in got:
-                if isinstance(cond, tuple) and cond[0] == "when":
-                    out.append((step, None))
-                else:
-                    out.append((step, cond))
+            for step, cond in original(nodes, ids, []):
+                out.append((step, None)
+                           if isinstance(cond, tuple) and cond[0] == "when"
+                           else (step, cond))
             return out
 
         backend._steps_in_order = without_when
-        doc = lower(parse(GUARDED), "t").to_document()
-        ok, report = differential.verify(doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)},
-                                         self.workdir)
-        self.assertFalse(ok, "removing when guard must diverge")
-        self.assertTrue(any("FAIL" in line for line in report), report)
+        ok, report = self._verify(doc, "wf.w", payload, rows, skip=True)
+        self.assertFalse(ok, "removing the when guard must diverge")
+        self.assertTrue(any("FAIL 1/4" in line for line in report), report)
 
     def test_until_guard_removed_diverges(self):
-        """RFC-0008: Removing until guard → single execution → diverges from loop."""
+        """`counter=100` satisfies `until counter >= 10`, so neither mode loops.
+
+        Removing the guard makes mode B run the unrolled body anyway. This uses
+        `UNTIL_COUNTER` because `GUARDED` has no `until` at all — against it this
+        fault was a no-op and the case passed on an unrelated divergence.
+        """
+        doc = lower(parse(UNTIL_COUNTER), "t").to_document()
+        payload = {"counter": 100}
+        rows = {"entity.workflow": dict(payload)}
+
+        ok, _report = self._verify(doc, "wf.w", payload, rows)
+        self.assertTrue(ok, "baseline must be equivalent before the fault")
+
         original = self.original
 
         def without_until(nodes, ids, out):
-            got = original(nodes, ids, [])
-            # Strip until guards (replace tuple cond with None)
-            for step, cond in got:
-                if isinstance(cond, tuple) and cond[0] == "until":
-                    out.append((step, None))
-                else:
-                    out.append((step, cond))
+            for step, cond in original(nodes, ids, []):
+                out.append((step, None)
+                           if isinstance(cond, tuple) and cond[0] == "until"
+                           else (step, cond))
             return out
 
         backend._steps_in_order = without_until
-        doc = lower(parse(GUARDED), "t").to_document()
-        ok, report = differential.verify(doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)},
-                                         self.workdir)
-        self.assertFalse(ok, "removing until guard must diverge")
-        self.assertTrue(any("FAIL" in line for line in report), report)
+        ok, report = self._verify(doc, "wf.w", payload, rows)
+        self.assertFalse(ok, "removing the until guard must diverge")
+        self.assertTrue(any("FAIL 1/4" in line for line in report), report)
 
     def test_until_round_cap_violation_diverges(self):
-        """RFC-0008 G7: Violating round_cap → step count mismatch."""
+        """`counter=0` leaves the condition false, so both modes run the cap.
+
+        Mode B unrolling to a different cap is then a visible step-count
+        mismatch. Also `UNTIL_COUNTER`, for the same reason as above.
+        """
+        doc = lower(parse(UNTIL_COUNTER), "t").to_document()
+        payload = {"counter": 0}
+        rows = {"entity.workflow": dict(payload)}
+
+        ok, _report = self._verify(doc, "wf.w", payload, rows)
+        self.assertTrue(ok, "baseline must be equivalent before the fault")
+
         original = self.original
 
         def with_wrong_cap(nodes, ids, out):
-            # Patch _UNTIL_ROUND_CAP to 8 instead of 16
             old_cap = backend._UNTIL_ROUND_CAP
             backend._UNTIL_ROUND_CAP = 8
             try:
-                got = original(nodes, ids, [])
-                out.extend(got)
+                out.extend(original(nodes, ids, []))
             finally:
                 backend._UNTIL_ROUND_CAP = old_cap
             return out
 
         backend._steps_in_order = with_wrong_cap
-        doc = lower(parse(GUARDED), "t").to_document()
-        ok, report = differential.verify(doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)},
-                                         self.workdir)
-        self.assertFalse(ok, "wrong round_cap must diverge")
-        self.assertTrue(any("FAIL" in line for line in report), report)
+        ok, report = self._verify(doc, "wf.w", payload, rows)
+        self.assertFalse(ok, "an unrolled cap that disagrees with mode A must diverge")
+        self.assertTrue(any("FAIL 1/4" in line for line in report), report)
 
 
 class TestToolchainHonesty(unittest.TestCase):
