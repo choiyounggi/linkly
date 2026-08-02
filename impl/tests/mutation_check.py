@@ -71,10 +71,15 @@ MUTATIONS = [
      "lnpl/interp.py",
      'for _ in range(int(node["count"])):',
      "for _ in range(1):"),
-    ("Guard: accept any condition instead of refusing unknown ones",
+    # Re-anchored 2026-08-02: RFC-0008 replaced the hand-rolled
+    # `<field> missing|exists` check with parse_condition, so the old anchor's
+    # error string no longer exists. This is issue #3's acceptance bullet
+    # "평가 불가 조건 수용" — mode A must refuse a condition it cannot evaluate
+    # rather than treating it as true.
+    ("Guard: accept an unevaluable condition instead of refusing it",
      "lnpl/interp.py",
-     'raise RunError("Phase 1 evaluates only `<field> missing|exists` conditions, "',
-     'return True\n    raise RunError("unreachable, "'),
+     '    except ConditionError as e:\n        raise RunError(f"Invalid condition: {e}")',
+     '    except ConditionError:\n        return True'),
     ("Capability attribution: guess instead of failing on a multi-service module",
      "lnpl/lower.py",
      'raise LowerError(\n                "service %s declares no `database` clause',
@@ -268,8 +273,14 @@ NOOP_CONTROL = ("CONTROL (must survive): reword a docstring",
 
 # Copied into each mutant tree. The tests resolve the repo from __file__, so they
 # need the data they read, not just the package.
+#
+# `mlir` and `CHARTER.md` arrived with the RFC-0004 S4 work: `build()` loads the
+# dialect from `mlir/lnpl.irdl.mlir`, and a test asserts `CHARTER.md` to pin that
+# `backend.REPO_ROOT` resolves to this repository. Omitting them made every
+# mutant tree fail at the baseline — 41 errors reading a missing .irdl.mlir — so
+# the harness could not tell a caught mutation from a broken tree.
 TREE_CONTENTS = ("impl", "examples", "schemas", "scripts", "kb", "rfcs", "docs",
-                 "plans", ".venv")
+                 "plans", "mlir", "CHARTER.md", ".venv")
 
 
 def make_tree(dest):
@@ -283,6 +294,8 @@ def make_tree(dest):
             # The venv holds absolute paths; symlink instead of copying so the
             # interpreter and its packages resolve.
             os.symlink(src, os.path.join(dest, name))
+        elif os.path.isfile(src):
+            shutil.copy2(src, os.path.join(dest, name))
         else:
             shutil.copytree(src, os.path.join(dest, name), symlinks=True,
                             ignore=shutil.ignore_patterns("__pycache__"))
@@ -307,9 +320,21 @@ def run_suite(tree_root, timeout=300):
     return "GREEN" if proc.returncode == 0 else "RED"
 
 
+def _scratch():
+    """Mutant trees live under the repo, never the system temp directory.
+
+    This repo keeps generated trees and the native binaries their tests build
+    out of the system scratch area; a harness that ignores that cannot be run
+    here at all.
+    """
+    path = os.path.join(REPO, ".claude", "tmp")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def apply_and_run(label, relpath, original, mutated):
     """Returns (verdict, note). verdict is GREEN|RED|HANG|STALE."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=_scratch()) as tmp:
         root = os.path.join(tmp, "repo")
         make_tree(root)
         target = os.path.join(root, "impl", relpath)
@@ -324,7 +349,7 @@ def apply_and_run(label, relpath, original, mutated):
 
 def main():
     baseline_root = None
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=_scratch()) as tmp:
         baseline_root = os.path.join(tmp, "repo")
         make_tree(baseline_root)
         baseline = run_suite(baseline_root)

@@ -23,6 +23,9 @@ import unittest
 from lnpl import backend
 from lnpl.lower import lower
 from lnpl.parser import parse
+# GUARDED itself, not only the helper: two tests below rewrite a two-line block
+# of it rather than just the guard line, which guarded_source cannot express.
+from tests.fixtures import GUARDED, guarded_source
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN_IR = os.path.join(REPO, "examples", "login.lir.json")
@@ -31,21 +34,6 @@ NEEDS_TOOLS = unittest.skipUnless(
     backend.toolchain_available(),
     "MLIR/LLVM toolchain not installed (brew install llvm)")
 
-# Same shape test_backend.py uses, so the guard cases here and there stay
-# comparable. The guard line is substituted per test.
-GUARDED = """
-capability postgres
-entity User
-    field
-        id UUID
-        email Email
-service S
-workflow W
-    load user
-    when token missing
-    cache user
-"""
-
 
 def golden():
     with open(GOLDEN_IR, encoding="utf-8") as fh:
@@ -53,8 +41,8 @@ def golden():
 
 
 def guarded_doc(guard):
-    """The GUARDED workflow with its guard line replaced by `guard`."""
-    src = GUARDED.replace("when token missing", guard)
+    """The shared GUARDED workflow with its guard line replaced by `guard`."""
+    src = guarded_source(guard)
     return lower(parse(src), "t").to_document()
 
 
@@ -504,10 +492,10 @@ class TestOpStreamRoutesThroughStepsInOrder(unittest.TestCase):
     """_lnpl_ops must read its steps through the module-global _steps_in_order.
 
     That indirection is what lets the deliberate-mismatch tests reach mode B by
-    monkeypatching one name. It gets a direct test because the differential suite
-    is a weak detector of it: three of its five mismatch cases pass against a
-    baseline divergence their patch never causes, so they would stay green even if
-    this routing were bypassed.
+    monkeypatching one name. It keeps its own direct test even though those cases
+    were since repaired — they now assert an equivalent baseline before applying
+    their fault, so they would catch a bypass. This pins the seam itself rather
+    than inferring it from five tests that could each be rewritten.
     """
 
     def setUp(self):

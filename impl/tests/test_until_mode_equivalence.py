@@ -22,6 +22,7 @@ import unittest
 from lnpl import backend, differential
 from lnpl.lower import lower
 from lnpl.parser import parse
+from tests.fixtures import UNTIL_COUNTER as SRC
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TMP = os.path.join(REPO, ".claude", "tmp")
@@ -29,25 +30,6 @@ TMP = os.path.join(REPO, ".claude", "tmp")
 HAS_TOOLS = backend.toolchain_available()
 NEEDS_TOOLS = unittest.skipUnless(
     HAS_TOOLS, "MLIR/LLVM toolchain not installed (brew install llvm)")
-
-SRC = """capability postgres
-
-entity Workflow
-    field
-        id UUID
-        counter Integer
-        doneAt DateTime
-
-service S
-    policy
-        timeout 5s
-
-workflow W
-    step Start
-    until counter >= 10
-    step Loop
-    step End
-"""
 
 CAP = backend._UNTIL_ROUND_CAP
 

@@ -4,6 +4,7 @@
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 - Updated-by: RFC-0008 (§Full grammar)
+- Updated-by: RFC-0009 (§Open Questions)
 
 ## Motivation
 
@@ -275,7 +276,8 @@ workflow 본문의 각 라인은 step이거나 제어 구조다:
   텍스트(5토큰 이상, 동사 비선두)는 금지다. 토큰 상한이 실측 없는 설계
   가설임은 Open Questions ①에 명시한다. step의 `name`은 RFC-0001
   WorkflowStep의 `name`(동사구) 계약과 정합한다.
-- **가드 라인** — `when <Condition>`·`repeat <Integer>`·`until <Condition>`은
+- **가드 라인** (`Condition` 부분은 갱신됨: RFC-0009) — `when <Condition>`·
+  `repeat <Integer>`·`until <Condition>`은
   **직후 1개의** step 또는 parallel/pipeline 블록에 적용되는 접두 가드다.
   별도 블록을 열지 않으므로 적용 범위가 항상 명확하다. `Condition`은 비교식
   또는 1~4토큰 구다. 가드의 실행 의미(조건 평가·반복 종료)는 RFC-0003 소유다.
@@ -629,6 +631,8 @@ workflow Login
    제한한다.
 
 ## Open Questions
+
+> 갱신됨: RFC-0009
 
 1. **step 토큰 상한은 실측 없는 설계 가설이다** — "동사+목적어 2~4토큰 권장,
    단독 동사 허용, 상한 4토큰"은 LLM 생성 품질·표현력에 대한 실측 없이 정한
