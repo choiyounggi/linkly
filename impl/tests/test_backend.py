@@ -302,6 +302,86 @@ class TestDivergenceIsDetected(unittest.TestCase):
         self.assertTrue(any("FAIL 1/4" in line for line in report), report)
 
 
+NO_TTL_CACHE = """
+capability postgres
+capability redis
+entity User
+    field
+        id UUID
+        email Email
+service S
+workflow W
+    load user
+    cache user
+"""
+
+TTL_CACHE = NO_TTL_CACHE.replace(
+    "service S\n", "service S\n    performance\n        cache 5m\n")
+
+
+@NEEDS_TOOLS
+class TestModeBDoesNotEnforceTheCacheTtlContract(unittest.TestCase):
+    """A known mode A/B gap, pinned so fixing GUARDED does not hide it.
+
+    RFC-0003 requires every cache key to carry a TTL. Mode A enforces it — its
+    `Cache.set` raises `RunError` when the budget is absent. Mode B does not
+    enforce it at all: the generated C shim prints the effect and returns 0. So
+    a workflow whose `CacheAccess set` has no budget really does make the two
+    modes disagree, and the differential really does say so.
+
+    This was not a hypothesis. It is why `GUARDED` was divergent before any test
+    touched it, and why three deliberate-mismatch cases passed for months on a
+    divergence none of them caused. Giving `GUARDED` a budget fixed those tests
+    and would have made the gap invisible again; this class keeps it visible.
+
+    **When this class goes red, mode B has learned to enforce the contract.**
+    That is the signal to close the follow-up issue and invert these assertions
+    — not to weaken them. See the cache-TTL follow-up issue.
+    """
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-ttl-",
+                                        dir=os.path.join(REPO, ".claude", "tmp"))
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _doc(self, src):
+        return lower(parse(src), "t").to_document()
+
+    def test_the_differential_reports_the_disagreement(self):
+        doc = self._doc(NO_TTL_CACHE)
+        ok, report = differential.verify(
+            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+        self.assertFalse(ok)
+        # The class, not merely falsity: the disagreement must be the policy
+        # outcome, which is where a refused run shows up.
+        self.assertTrue(any("FAIL 2/4" in line for line in report), report)
+
+    def test_mode_a_refuses_only_when_the_budget_is_missing(self):
+        """Assert the pair — `status failed` alone would not be about the TTL.
+
+        `observe_mode_a` returns order, effects, status and text; the RunError
+        message never reaches the caller. So a lone `status failed` is satisfied
+        by any unrelated failure — a missing repository row produces exactly the
+        same string. Running both sources makes the budget the only variable.
+        """
+        rows = {"entity.user": dict(PAYLOAD)}
+        without = differential.observe_mode_a(
+            self._doc(NO_TTL_CACHE), "wf.w", {}, rows)
+        with_budget = differential.observe_mode_a(
+            self._doc(TTL_CACHE), "wf.w", {}, rows)
+        self.assertIn("status failed", without["text"])
+        self.assertIn("status completed", with_budget["text"])
+
+    def test_adding_a_ttl_budget_makes_the_two_modes_agree(self):
+        """Control. Without this, the two tests above could be about anything."""
+        doc = self._doc(TTL_CACHE)
+        ok, report = differential.verify(
+            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+
+
 class TestToolchainHonesty(unittest.TestCase):
     def test_missing_toolchain_raises_instead_of_silently_skipping(self):
         original = backend.toolchain_available
