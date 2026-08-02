@@ -23,6 +23,9 @@ import unittest
 from lnpl import backend
 from lnpl.lower import lower
 from lnpl.parser import parse
+# GUARDED itself, not only the helper: two tests below rewrite a two-line block
+# of it rather than just the guard line, which guarded_source cannot express.
+from tests.fixtures import GUARDED, guarded_source
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN_IR = os.path.join(REPO, "examples", "login.lir.json")
@@ -33,18 +36,6 @@ NEEDS_TOOLS = unittest.skipUnless(
 
 # Same shape test_backend.py uses, so the guard cases here and there stay
 # comparable. The guard line is substituted per test.
-GUARDED = """
-capability postgres
-entity User
-    field
-        id UUID
-        email Email
-service S
-workflow W
-    load user
-    when token missing
-    cache user
-"""
 
 
 def golden():
@@ -53,8 +44,8 @@ def golden():
 
 
 def guarded_doc(guard):
-    """The GUARDED workflow with its guard line replaced by `guard`."""
-    src = GUARDED.replace("when token missing", guard)
+    """The shared GUARDED workflow with its guard line replaced by `guard`."""
+    src = guarded_source(guard)
     return lower(parse(src), "t").to_document()
 
 
