@@ -360,8 +360,8 @@ class TestModeBDoesNotEnforceTheCacheTtlContract(unittest.TestCase):
     and would have made the gap invisible again; this class keeps it visible.
 
     **When this class goes red, mode B has learned to enforce the contract.**
-    That is the signal to close the follow-up issue and invert these assertions
-    — not to weaken them. See the cache-TTL follow-up issue.
+    That is the signal to close issue #9 and invert these assertions — not to
+    weaken them.
     """
 
     def setUp(self):
