@@ -1,22 +1,36 @@
 """Execution mode B — Semantic IR -> MLIR -> LLVM IR -> native binary.
 
-RFC-0004 stages S4-S7. One deviation from the RFC is recorded here and in
-docs/ROADMAP.md: **S4 emits standard MLIR dialects directly, not the custom
-`lnpl` dialect.** Registering a custom dialect with `mlir-opt` requires a C++
-TableGen build against MLIR's development libraries; until that exists, the
-`lnpl` dialect's purpose — hosting the high-level passes — is served at the
-Semantic IR level by S3, which mode A already performs. Deferring it therefore
-does not weaken the equivalence claim, but it is a real gap, not a design choice.
+RFC-0004 stages S4-S7, including the custom `lnpl` dialect S4 calls for. The
+dialect is defined declaratively in `mlir/lnpl.irdl.mlir` and registered into
+stock `mlir-opt` with `--irdl-file`, so it needs no C++ TableGen build and adds
+no build dependency beyond the `brew install llvm` mode B already required.
 
-What this module emits is a `func` + `scf` + `arith` module that reproduces the
-workflow's **observable** behaviour: the step order, the policy outcomes, and the
-exit status. The effects themselves call into a small C runtime shim (printf-based
-trace) so the native binary emits the same span/step lines mode A does — that is
-what the differential check compares.
+`_lnpl_ops` is the only place the IR is read for code generation. Two renderings
+consume that op stream: `emit_lnpl_mlir` serialises it as `lnpl` dialect text
+(S4), and `_render_std` lowers it to `func` + `scf` + `arith` (S5). Because both
+views come from one structure, the artifact and the compiled module cannot
+describe different workflows by accident; `build()` additionally runs the dialect
+verifier over the emitted `lnpl` module and fails the compile if it is rejected.
+
+Node ids survive into MLIR on both paths RFC-0004 requires: the discardable
+`lnpl.node_id` attribute, whose presence and string type the dialect verifier
+enforces, and a `loc("<node id>")` the debug info follows. Unrolled guards keep
+one node id across their rounds and are distinguished by `lnpl.unroll_round`.
+
+What ends up compiled is a module reproducing the workflow's **observable**
+behaviour: step order, policy outcomes, exit status. The effects call into a small
+C runtime shim (printf-based trace) so the native binary emits the same step lines
+mode A does — that is what the differential check compares.
+
+Two gaps remain, recorded in `rfcs/0004-compiler.md` §Open Questions: S5 consumes
+the op stream rather than re-parsing the `lnpl` module, and the RFC's S3 compile
+context side table does not exist, so only the compile decisions present at
+emission time are materialised as attributes.
 
 Pipeline:
 
-    IR --emit_mlir--> .mlir --mlir-opt--> LLVM dialect --mlir-translate--> .ll
+    IR --emit_lnpl_mlir--> .lnpl.mlir --verify(mlir-opt --irdl-file)-->
+        --_render_std--> .mlir --mlir-opt--> LLVM dialect --mlir-translate--> .ll
         --clang--> native binary
 """
 
@@ -24,12 +38,20 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 
 from lnpl.condition import parse_condition, Presence, Comparison
 
 MLIR_OPT = "mlir-opt"
 MLIR_TRANSLATE = "mlir-translate"
 BREW_LLVM_BIN = "/opt/homebrew/opt/llvm/bin"
+
+# This file is <repo>/impl/lnpl/backend.py, so three dirnames reach the repo.
+# The dialect definition is located from here rather than from the cwd, because
+# `build()` runs against an arbitrary workdir while the tests run from the root.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+LNPL_IRDL_PATH = os.path.join(REPO_ROOT, "mlir", "lnpl.irdl.mlir")
 
 
 class BackendError(Exception):
@@ -56,6 +78,39 @@ def toolchain_available():
         except BackendError:
             return False
     return True
+
+
+def verify_lnpl_module(text, stage="S4 (lnpl dialect verification)", path=None):
+    """Run the `lnpl` dialect's verifier over a module; return the round trip.
+
+    With `path`, the file at that path is verified **in place** — so the artifact
+    `build()` wrote is the object that actually gets checked, and a failure names
+    the file the caller can go read. Without it, `text` is staged under the repo's
+    own tmp directory (never the system temp dir) and removed afterwards.
+
+    `--mlir-print-debuginfo` is not cosmetic: without it `mlir-opt` prints no
+    `loc(...)` at all, so the round trip could not show that the Location half of
+    RFC-0004's two traceability paths survived. The `lnpl.node_id` attribute is
+    discardable by design, which is exactly why the Location must be observable.
+    """
+    staged = None
+    if path is None:
+        tmpdir = os.path.join(REPO_ROOT, ".claude", "tmp")
+        os.makedirs(tmpdir, exist_ok=True)
+        # mkstemp, not a fixed name: builds can run concurrently.
+        fd, staged = tempfile.mkstemp(dir=tmpdir, suffix=".lnpl.mlir")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        target = staged
+    else:
+        target = path
+
+    try:
+        return _run([tool(MLIR_OPT), "--irdl-file", LNPL_IRDL_PATH,
+                     "--mlir-print-debuginfo", target], stage)
+    finally:
+        if staged is not None:
+            os.remove(staged)
 
 
 def _extract_condition_field(cond_str):
@@ -212,15 +267,158 @@ def encode_condition_value(value):
         % (value, type(value).__name__))
 
 
-def emit_mlir(document, workflow_id):
-    """Semantic IR -> textual MLIR using func/arith only (no custom dialect)."""
+def _lnpl_ops(document, workflow_id):
+    """S4: the `lnpl` op stream, plus the module-level attributes.
+
+    This is the one place the Semantic IR is read for code generation. Both
+    renderings consume the result — `emit_lnpl_mlir` serialises it as `lnpl`
+    dialect text and `_render_std` lowers it to standard dialects — so the two
+    modules cannot describe different workflows by construction.
+
+    Steps come from `_workflow_steps`, which calls the module-global
+    `_steps_in_order`. That indirection is load-bearing: the deliberate-mismatch
+    tests monkeypatch that name, and flattening the body here instead would
+    disarm them. `TestOpStreamRoutesThroughStepsInOrder` pins it.
+    """
     nodes, steps = _workflow_steps(document, workflow_id)
+
+    # Two passes. A node id repeats only when an unrolled guard emitted it more
+    # than once — `until` (guarded rounds) or `repeat` (no guard attached at all)
+    # — and RFC-0004's 1:다 확장 rule wants every one of those ops to keep the
+    # same id. Counting first keeps the round marker off the ordinary case, where
+    # a bare index already identifies the op.
+    occurrences = {}
+    for step, _cond in steps:
+        occurrences[step["id"]] = occurrences.get(step["id"], 0) + 1
+
+    rounds = {}
+    ops = []
+    for idx, (step, cond) in enumerate(steps, start=1):
+        node_id = step["id"]
+        guard_mode = guard_condition = None
+        if cond and isinstance(cond, tuple) and len(cond) == 2:
+            guard_mode, guard_condition = cond
+
+        unroll_round = None
+        if occurrences[node_id] > 1:
+            rounds[node_id] = rounds.get(node_id, 0) + 1
+            unroll_round = rounds[node_id]
+
+        ops.append({
+            "node_id": node_id,
+            "name": step["name"],
+            "index": idx,
+            "guard_mode": guard_mode,
+            "guard_condition": guard_condition,
+            "unroll_round": unroll_round,
+            # Read `children` off the dict we were handed rather than off
+            # `document`: one divergence test strips them to prove the
+            # differential check can go red, and re-reading the document would
+            # put the effects back and silently disarm it.
+            "effects": [{"node_id": child_id, "kind": nodes[child_id]["kind"]}
+                        for child_id in step.get("children", [])],
+        })
+
+    module_attrs = {
+        "lnpl.module": document["module"],
+        "lnpl.lir_version": document["lir_version"],
+        "lnpl.workflow": workflow_id,
+        # From the single source of truth, never re-derived here: three sites
+        # deriving this list independently is the defect PR #4 existed to fix.
+        "lnpl.condition_fields": condition_field_names(document, workflow_id),
+    }
+    return module_attrs, ops
+
+
+def _mlir_escape(text):
+    r"""Escape a Python string for an MLIR string literal.
+
+    The backslash must go first, or escaping the quote would produce one. Getting
+    this wrong is silent rather than loud for some inputs: the grammar accepts
+    step names with arbitrary characters (the lexer splits on whitespace), so a
+    name containing a literal `\n` emitted unescaped becomes a real newline that
+    MLIR accepts and the C shim prints as two trace lines. `\b` at least fails
+    loudly with "unknown escape in string literal".
+    """
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _mlir_str(text):
+    return '"%s"' % _mlir_escape(text)
+
+
+def _mlir_attr(value):
+    """Render one attribute value. Ints carry an explicit i64 type."""
+    if isinstance(value, bool):
+        raise BackendError("boolean attributes are not part of the lnpl dialect")
+    if isinstance(value, int):
+        return "%d : i64" % value
+    if isinstance(value, (list, tuple)):
+        return "[%s]" % ", ".join(_mlir_str(item) for item in value)
+    return _mlir_str(value)
+
+
+def _mlir_attr_dict(pairs):
+    return ", ".join("%s = %s" % (key, _mlir_attr(value))
+                     for key, value in pairs if value is not None)
+
+
+def emit_lnpl_mlir(document, workflow_id):
+    """S4: Semantic IR -> `lnpl` dialect MLIR.
+
+    Every op carries the originating node id on both paths RFC-0004 requires: the
+    discardable attribute `lnpl.node_id` that passes read, and a `loc(...)` that
+    diagnostics and debug info follow. The dialect's verifier enforces the
+    attribute's presence and type (see `mlir/lnpl.irdl.mlir`); `build()` runs that
+    verifier over the emitted module, so a module that loses a node id fails the
+    compile rather than producing a binary that cannot be traced back.
+    """
+    module_attrs, ops = _lnpl_ops(document, workflow_id)
 
     lines = [
         "// Generated from Semantic IR (lir_version %s, module %s) — do not edit."
-        % (document["lir_version"], document["module"]),
-        "// RFC-0004 S4-S5: standard dialects (func, arith). See backend.py for the",
-        "// recorded deviation: the custom `lnpl` dialect is not yet registered.",
+        % (module_attrs["lnpl.lir_version"], module_attrs["lnpl.module"]),
+        "// RFC-0004 S4: the custom `lnpl` dialect, registered into stock",
+        "// mlir-opt via --irdl-file=mlir/lnpl.irdl.mlir (no C++ TableGen build).",
+        "module attributes {%s} {" % _mlir_attr_dict(sorted(module_attrs.items())),
+    ]
+
+    for op in ops:
+        lines.append('  "lnpl.step"() {%s} : () -> () loc(%s)' % (
+            _mlir_attr_dict([
+                ("lnpl.node_id", op["node_id"]),
+                ("lnpl.name", op["name"]),
+                ("lnpl.index", op["index"]),
+                ("lnpl.guard_mode", op["guard_mode"]),
+                ("lnpl.guard_condition", op["guard_condition"]),
+                ("lnpl.unroll_round", op["unroll_round"]),
+            ]),
+            _mlir_str(op["node_id"])))
+        for effect in op["effects"]:
+            lines.append('  "lnpl.effect"() {%s} : () -> () loc(%s)' % (
+                _mlir_attr_dict([
+                    ("lnpl.node_id", effect["node_id"]),
+                    ("lnpl.kind", effect["kind"]),
+                    ("lnpl.step", op["node_id"]),
+                ]),
+                _mlir_str(effect["node_id"])))
+
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_std(module_attrs, ops):
+    """S5: the `lnpl` op stream -> standard-dialect MLIR (func, arith, scf).
+
+    Reads nothing but the op stream, so this rendering and the `lnpl` module
+    `emit_lnpl_mlir` writes are two views of one structure rather than two
+    independent readings of the IR.
+    """
+    lines = [
+        "// Generated from Semantic IR (lir_version %s, module %s) — do not edit."
+        % (module_attrs["lnpl.lir_version"], module_attrs["lnpl.module"]),
+        "// RFC-0004 S5: standard dialects (func, arith), lowered from the `lnpl`",
+        "// dialect module emitted at S4 (see mlir/lnpl.irdl.mlir).",
         "module {",
         '  func.func private @lnpl_step(!llvm.ptr, i32) -> i32',
         '  func.func private @lnpl_effect(!llvm.ptr, !llvm.ptr) -> ()',
@@ -234,13 +432,21 @@ def emit_mlir(document, workflow_id):
             strings[text] = "s%d" % len(strings)
         return strings[text]
 
-    for step, _cond in steps:
-        intern(step["name"])
-        for child_id in step.get("children", []):
-            intern(nodes[child_id]["kind"])
+    # This order decides the @s<N> numbering and therefore the emitted bytes:
+    # each step's name first, then that step's effect kinds, in order.
+    for op in ops:
+        intern(op["name"])
+        for effect in op["effects"]:
+            intern(effect["kind"])
 
     for text, sym in strings.items():
-        encoded = text.replace('"', '\\"')
+        # Shares _mlir_escape with the lnpl rendering. This line previously
+        # escaped only the quote, which let a name containing a literal `\n`
+        # become a real newline in the global — the C shim then printed two trace
+        # lines and the differential check reported a divergence that was an
+        # emitter bug, not a backend disagreement. No fixture contains a
+        # backslash, so the fix does not move any recorded byte.
+        encoded = _mlir_escape(text)
         lines.append('  llvm.mlir.global internal constant @%s("%s\\00")'
                      % (sym, encoded))
     lines.append("")
@@ -248,7 +454,7 @@ def emit_mlir(document, workflow_id):
     # RFC-0008 G8: condition fields become i64 parameters, in the one order
     # condition_field_names defines (see its docstring for why that matters).
     params = ["%skip : i32"]
-    for field in condition_field_names(document, workflow_id):
+    for field in module_attrs["lnpl.condition_fields"]:
         params.append(f"%{field} : i64")
     params_str = ", ".join(params)
 
@@ -259,32 +465,30 @@ def emit_mlir(document, workflow_id):
     # Declare i64 constants for condition comparisons
     # Collect all i64 values used in condition comparisons
     cond_i64_values = set()
-    for step, cond in steps:
-        if cond and isinstance(cond, tuple) and len(cond) == 2:
-            mode, cond_str = cond
-            extracted = _extract_condition_field(cond_str)
+    for entry in ops:
+        if entry["guard_condition"]:
+            extracted = _extract_condition_field(entry["guard_condition"])
             if extracted and len(extracted) == 3:  # Comparison
-                field, op, value = extracted
-                cond_i64_values.add(value)
+                cond_i64_values.add(extracted[2])
 
     # Declare all i64 constants upfront
     for value in sorted(cond_i64_values):
         lines.append(f"    %c{value}_i64 = arith.constant {value} : i64")
 
-    for idx, (step, cond) in enumerate(steps, start=1):
-        sym = strings[step["name"]]
-        guard_mode = None
-        guard_str = None
-
-        if cond and isinstance(cond, tuple):
-            guard_mode, guard_str = cond
+    # `entry`, not `op` — the guard branches below unpack `field, op, value` from
+    # a parsed condition, and a loop named `op` would be shadowed mid-body.
+    for entry in ops:
+        idx = entry["index"]
+        sym = strings[entry["name"]]
+        guard_mode = entry["guard_mode"]
+        guard_str = entry["guard_condition"]
 
         guard_desc = ""
         if guard_mode and guard_str:
             guard_desc = "  (guarded by `%s` %s)" % (guard_mode, guard_str)
 
         lines.append("    // step %d: %s%s"
-                     % (idx, step["name"], guard_desc))
+                     % (idx, entry["name"], guard_desc))
         lines.append("    %%p%d = llvm.mlir.addressof @%s : !llvm.ptr" % (idx, sym))
         lines.append("    %%i%d = arith.constant %d : i32" % (idx, idx))
 
@@ -309,8 +513,8 @@ def emit_mlir(document, workflow_id):
             # RFC-0008: When condition is true, execute the guarded step
             lines.append("      %%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
                          "(!llvm.ptr, i32) -> i32" % (idx, idx, idx))
-            for cn, child_id in enumerate(step.get("children", [])):
-                ksym = strings[nodes[child_id]["kind"]]
+            for cn, effect in enumerate(entry["effects"]):
+                ksym = strings[effect["kind"]]
                 lines.append("      %%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
                              % (idx, cn, ksym))
                 lines.append("      func.call @lnpl_effect(%%p%d, %%k%d_%d) : "
@@ -346,8 +550,8 @@ def emit_mlir(document, workflow_id):
 
             lines.append("%s%%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
                          "(!llvm.ptr, i32) -> i32" % (body, idx, idx, idx))
-            for cn, child_id in enumerate(step.get("children", [])):
-                ksym = strings[nodes[child_id]["kind"]]
+            for cn, effect in enumerate(entry["effects"]):
+                ksym = strings[effect["kind"]]
                 lines.append("%s%%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
                              % (body, idx, cn, ksym))
                 lines.append("%sfunc.call @lnpl_effect(%%p%d, %%k%d_%d) : "
@@ -357,8 +561,8 @@ def emit_mlir(document, workflow_id):
             # No guard: unconditional step
             lines.append("    %%r%d = func.call @lnpl_step(%%p%d, %%i%d) : "
                          "(!llvm.ptr, i32) -> i32" % (idx, idx, idx))
-            for cn, child_id in enumerate(step.get("children", [])):
-                ksym = strings[nodes[child_id]["kind"]]
+            for cn, effect in enumerate(entry["effects"]):
+                ksym = strings[effect["kind"]]
                 lines.append("    %%k%d_%d = llvm.mlir.addressof @%s : !llvm.ptr"
                              % (idx, cn, ksym))
                 lines.append("    func.call @lnpl_effect(%%p%d, %%k%d_%d) : "
@@ -368,6 +572,17 @@ def emit_mlir(document, workflow_id):
     lines.append("  }")
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+def emit_mlir(document, workflow_id):
+    """Semantic IR -> standard-dialect MLIR, by way of the `lnpl` dialect (S4-S5).
+
+    The op stream this renders is the one `emit_lnpl_mlir` serialises, so the
+    standard-dialect module and the `lnpl` module cannot describe different
+    workflows. The signature and the output are unchanged from before the dialect
+    existed; `impl/tests/golden/` holds the pre-change bytes that prove it.
+    """
+    return _render_std(*_lnpl_ops(document, workflow_id))
 
 
 RUNTIME_C_HEADER = r"""/* Mode B runtime shim — generated, do not edit.
@@ -423,8 +638,14 @@ def runtime_c(field_names):
 
 
 def build(document, workflow_id, workdir, keep_intermediate=True):
-    """Run S4-S7. Returns the path to the native binary."""
+    """Run S4-S7. Returns the path to the native binary.
+
+    Stages on disk, in order: `module.lnpl.mlir` (S4, verified against the `lnpl`
+    dialect), `module.mlir` (S5 standard dialects), `module.llvm.mlir` (S6),
+    `module.ll`, and the binary (S7).
+    """
     os.makedirs(workdir, exist_ok=True)
+    lnpl_path = os.path.join(workdir, "module.lnpl.mlir")
     mlir_path = os.path.join(workdir, "module.mlir")
     llvm_dialect = os.path.join(workdir, "module.llvm.mlir")
     ll_path = os.path.join(workdir, "module.ll")
@@ -432,6 +653,17 @@ def build(document, workflow_id, workdir, keep_intermediate=True):
     bin_path = os.path.join(workdir, "module")
 
     fields = condition_field_names(document, workflow_id)
+
+    # S4. Written before it is verified, so a rejected module is on disk to read.
+    # The gate is not advisory: RFC-0004 treats a decision that failed to
+    # materialise as a failed conversion, so nothing downstream runs and no
+    # binary appears. `path=` verifies this file rather than a staged copy, which
+    # keeps the artifact and the verified object the same thing.
+    lnpl_text = emit_lnpl_mlir(document, workflow_id)
+    with open(lnpl_path, "w", encoding="utf-8") as fh:
+        fh.write(lnpl_text)
+    verify_lnpl_module(lnpl_text, path=lnpl_path)
+
     with open(mlir_path, "w", encoding="utf-8") as fh:
         fh.write(emit_mlir(document, workflow_id))
     with open(c_path, "w", encoding="utf-8") as fh:
@@ -454,7 +686,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True):
          "S7 (clang: LLVM IR + runtime -> native binary)")
 
     if not keep_intermediate:
-        for path in (mlir_path, llvm_dialect, ll_path, c_path):
+        for path in (lnpl_path, mlir_path, llvm_dialect, ll_path, c_path):
             os.remove(path)
     return bin_path
 

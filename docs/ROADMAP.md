@@ -122,9 +122,27 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 
 > **2026-07-31 Phase 2 1차 조각 완료.** 모드 B가 실제 네이티브 바이너리를 산출하고,
 > 모드 A/B 차동 검증이 관측 가능 4종(실행 순서·정책 결과·관측성 신호·마스킹)에 대해
-> EQUIVALENT를 확인했다. OpenAPI 자동생성도 동작한다. **남은 조각: 커스텀 `lnpl`
-> dialect(S4)** — C++ TableGen 빌드가 필요해 이번 조각에서 제외했고, 이탈을 RFC-0004
-> Open Questions 앞에 기록했다.
+> EQUIVALENT를 확인했다. OpenAPI 자동생성도 동작한다.
+>
+> **2026-08-01 커스텀 `lnpl` dialect(S4) 완료 — 이탈 해소.** "C++ TableGen 빌드가
+> 필요하다"는 제외 사유는 **틀렸다**. MLIR **IRDL**(`mlir-opt --irdl-file`)로 dialect를
+> 선언적으로 정의해 표준 `mlir-opt`에 등록하므로 C++ 빌드도 cmake도 필요없다. 따라서
+> **새 빌드 의존성이 없다** — 모드 B 전제조건은 여전히 `brew install llvm` 하나뿐이고,
+> "빌드 의존성이 늘었으니 문서에 반영한다"는 항목은 **해당 없음(void)** 이다.
+> 정의는 `mlir/lnpl.irdl.mlir`, op 목록·역추적 표기는 RFC-0004 OQ ②에 기록.
+> `lnpl.node_id`의 존재·문자열 타입은 dialect 검증기가 강제하고, `build()`는
+> `module.lnpl.mlir`을 그 검증기에 통과시키지 못하면 바이너리를 만들지 않는다.
+> **남은 한계 4종**(상세는 RFC-0004 §Open Questions가 정본): ① S5 하강이 lnpl 모듈을
+> 재파싱하지 않고 같은 op 스트림을 소비한다 — 진짜 MLIR `ConversionPattern`화는 별도
+> 이슈다. ② S3 컴파일 컨텍스트 side table이 참조 구현에 없어, 실체화는 방출 시점에
+> 실재하는 컴파일 결정(guard mode·condition·unroll round·조건필드)에 한정된다.
+> ③ 구조 노드(`Guard`·`Concurrency`·`Pipeline`)의 id가 산출물에 실리지 않아 역추적
+> 보존 규칙 2를 위반한다(판정 문장 자체는 성립). ④ op이 2종이고 region이 없어 dialect가
+> Concurrency를 표현하지 못한다 — `parallel`과 순차가 동일한 모듈을 낸다. `async` 하강
+> 착수 시 선행 해소 대상이다.
+>
+> 역추적 두 경로의 강제 수준이 다르다는 점도 RFC에 명시했다: `lnpl.node_id`는 검증기가
+> 강제하지만 **Location은 IRDL로 제약할 수 없어** 방출·테스트 수준에서만 지켜진다.
 >
 > **RFC-0008: Guard Conditions 전량 완료 (2026-07-31 + 2026-07-31 G8 런타임 추출).** 
 > when/until 가드를 Mode A/B 모두 구현하고, when→scf.if, until→unroll(16) 변환으로 
@@ -158,8 +176,8 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 
 ### 산출물
 
-- `lnpl` MLIR dialect + S4 변환 (`lnpl.node_id` attribute + MLIR Location 이중 경로)
-- S5 표준 dialect 하강(`func`·`scf`·`async`·`memref`·`arith`·`vector`) → S6 LLVM dialect → S7 네이티브
+- ~~`lnpl` MLIR dialect + S4 변환 (`lnpl.node_id` attribute + MLIR Location 이중 경로)~~ → **완료 (2026-08-01)**, `mlir/lnpl.irdl.mlir`
+- S5 표준 dialect 하강 → S6 LLVM dialect → S7 네이티브. **`func`·`scf`·`arith`는 완료**(실제 pass: `--convert-scf-to-cf` → `--convert-cf-to-llvm` → `--convert-func-to-llvm` → `--convert-arith-to-llvm`). **`async`·`memref`·`vector`는 미구현** — 현재 파이프라인은 이 3종을 쓰지 않는다
 - Architecture Optimizer의 OpenAPI 문서 생성
 - 차동(differential) 검증 하네스
 
@@ -181,7 +199,7 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 |---|--------|------|------|
 | ~~**R11**~~ | ~~동등성 판정선이 문서에서 갈린다~~ → **해소됨(리스크 아님)**. 동등성 비대상 목록이 배치의 *선택*을 비대상으로 열거해 §두 모드에서의 동일 관측과 어긋났던 문제. 비대상을 "메모리 배치의 **실현 방식**(S5~S7 하강의 레지스터·스택 슬롯 승격)"으로 좁히고 "배치의 선택 자체는 S3 공유이므로 비대상이 아니다"를 명문화해 해소 | `docs/CONSISTENCY-CHECK.md` **C9 부류②** — 모순 확정 후 **최소 수정으로 해소 완료**(`rfcs/0004-compiler.md:282-285`) | **완료 기준 1의 판정선이 확정됐다**: 모드 B가 배치 *선택*을 바꾸면 계약 위반이다(S3 공유). 달라도 되는 것은 그 선택의 *실현 방식*뿐이다. 차동 검증 하네스는 이 기준으로 판정한다 |
 | **R12** | MLIR/LLVM 버전 고정 정책 미결 | RFC-0004 OQ ① (`:429-432`) | 형태는 정해져 있으므로(커밋된 핀 파일 1개 + CI가 읽음) Phase 1 준비 항목(R10)에서 만들어 두면 해소된다 |
-| **R13** | `lnpl` dialect 커스텀 op 목록 미확정 + MLIR Location 구성 방식 미결(`lnpl.node_id` attribute 이름은 확정) | RFC-0004 OQ ② (`:433-435`) | S4 설계의 직접 입력. 역추적 이중 경로 중 Location 쪽이 미정이므로 완료 기준 3·4의 구현 방식이 열려 있다 |
+| ~~**R13**~~ | ~~`lnpl` dialect 커스텀 op 목록 미확정 + MLIR Location 구성 방식 미결~~ → **해소됨 (2026-08-01)**. op 목록·attribute·Location 표기 전부 확정되고 구현됨 | RFC-0004 OQ ② — 결정 내용은 그쪽이 정본. 정의 파일은 `mlir/lnpl.irdl.mlir` | 역추적 이중 경로가 모두 구현됐으므로 완료 기준 3·4의 구현 방식이 닫혔다. Location은 `loc("<node id>")`(NameLoc) |
 | **R14** | 디버그 정보 포맷 미결 — IR 노드 id ↔ DWARF 매핑 방식 | RFC-0004 OQ ④ (`:438`) | **S7 불변조건이 이것에 의존한다**고 RFC가 명시한다. 완료 기준 3의 S7 구간이 이 결정을 기다린다 |
 | **R15** | 자동 최적화 9종의 알고리즘 상세 미결(정의 1줄과 발생 레벨까지만 고정) | RFC-0004 OQ ⑤ (`:439-440`) | 9종 구현 시점의 설계 부담. 완료 기준에 9종 구현이 없으므로 이 Phase를 막지 않는다 |
 | **R16** | escape analysis 정밀도 한계 — Semantic IR v0.1에 값의 명시적 데이터 흐름 노드가 없어 판정이 step 경계 기준의 보수적 근사에 머문다. 판정 불가는 Arena 폴백 | RFC-0004 OQ ⑥ (`:441-444`) — "명시적 데이터 흐름 표현을 IR에 도입할지는 RFC-0001의 개정 사항이며, 도입 전까지 Stack 승격 범위는 좁게 유지된다" | Stack 승격이 좁아 최적화 이득이 제한된다. 정확성 리스크는 아니다(폴백이 보수적이므로) |
@@ -297,7 +315,7 @@ A.4 8공백 · 6 RFC의 Open Questions 27항 · CONSISTENCY-CHECK의 발견 2건
 | | ③ EventEmit 전달 보장의 구현 | Phase 1 (R7) |
 | | ④ 캐시 스탬피드 보호 | Phase 1 (R7) |
 | RFC-0004 (6항) | ① MLIR/LLVM 버전 고정 정책 | Phase 1 (R10 준비), Phase 2 (R12) |
-| | ② `lnpl` dialect op 목록·Location 표기 | Phase 2 (R13) |
+| | ~~② `lnpl` dialect op 목록·Location 표기~~ | **해소 (2026-08-01)** — `rfcs/0004-compiler.md` OQ ② |
 | | ③ 증분 컴파일의 단위 | Phase 2 (R17) |
 | | ④ 디버그 정보 포맷(DWARF 매핑) | Phase 2 (R14) |
 | | ⑤ 자동 최적화 9종 알고리즘 상세 | Phase 2 (R15) |

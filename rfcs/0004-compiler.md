@@ -426,17 +426,63 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 
 ## Open Questions
 
-> **구현 이탈 1건 (2026-07-31, Phase 2 1차 조각).** 참조 구현의 모드 B는 S4에서
-> **커스텀 `lnpl` dialect를 거치지 않고 표준 dialect(func·arith·scf)를 직접 방출**한다.
-> 커스텀 dialect를 `mlir-opt`에 등록하려면 MLIR 개발 라이브러리를 대상으로 한 C++
-> TableGen 빌드가 필요하고, 그것이 존재하기 전까지 `lnpl` dialect의 목적 — 고수준
-> 패스를 호스팅하는 것 — 은 Semantic IR 레벨의 S3가 담당한다(모드 A가 이미 수행한다).
-> 따라서 이 이탈은 동등성 주장을 약화시키지 않지만, **설계 선택이 아니라 실제 공백**이며
-> S4 구현은 Phase 2의 남은 조각이다. 실측된 하강 경로는
-> `IR → 표준 dialect MLIR → (mlir-opt: scf→cf→llvm) → LLVM dialect →
-> (mlir-translate) → LLVM IR → (clang) → 네이티브 바이너리`이며, 모드 A/B 차동 검증이
-> 관측 가능 4종에 대해 EQUIVALENT를 확인했다(`impl/lnpl/differential.py`,
-> 고의 불일치 케이스 2건이 DIVERGENT를 재현).
+> **S4 구현 완료 (2026-08-01) — 이탈 해소.** 이전 판은 "참조 구현의 모드 B가 커스텀
+> `lnpl` dialect를 거치지 않고 표준 dialect를 직접 방출하며, 등록에는 MLIR 개발
+> 라이브러리를 대상으로 한 C++ TableGen 빌드가 필요하다"고 적었다. **그 전제는 틀렸다.**
+> MLIR의 **IRDL**(`irdl` dialect + `mlir-opt --irdl-file`)로 dialect를 선언적으로 정의해
+> 표준 `mlir-opt`에 등록할 수 있으므로 C++ 빌드도 cmake도 필요하지 않다. (개발
+> 라이브러리·`mlir-tblgen`·`MLIRConfig.cmake`는 실측해보니 실제로 존재하기도 했으나,
+> IRDL 경로에서는 그 사실 자체가 무관하다.) 따라서 새 빌드 의존성은 **없다** — 모드 B의
+> 전제 조건은 여전히 `brew install llvm` 하나다.
+>
+> dialect 정의는 `mlir/lnpl.irdl.mlir`이 소유하고, op 목록·역추적 표기는 아래 Open
+> Question ②에 기록했다. 실측된 하강 경로는
+> `IR → lnpl dialect MLIR (검증됨) → 표준 dialect MLIR → (mlir-opt: scf→cf→llvm) →
+> LLVM dialect → (mlir-translate) → LLVM IR → (clang) → 네이티브 바이너리`이며, 모드 A/B
+> 차동 검증은 관측 가능 4종에 대해 EQUIVALENT를 유지한다(`impl/lnpl/differential.py`).
+>
+> **S4 산출물은 장식이 아니다.** `build()`는 `module.lnpl.mlir`을 기록한 뒤 그 파일에
+> dialect 검증기를 돌리고, 검증에 실패하면 `BackendError`로 중단해 바이너리를 만들지
+> 않는다 — 이 문서가 S4 불변조건으로 규정한 "실체화되지 않은 결정은 유실이며 변환 실패로
+> 취급한다"의 이행이다.
+>
+> **역추적 두 경로의 강제 수준은 다르다.** `lnpl.node_id`의 존재와 문자열 타입은 IRDL의
+> `irdl.attributes`로 **검증기가 강제**한다. 그러나 **Location 경로는 강제되지 않는다** —
+> IRDL은 attribute를 제약할 뿐 location을 제약할 수 없으므로, `loc(...)`가 없거나 값이
+> 틀린 op도 검증기는 통과시킨다. 그쪽은 방출 시 항상 붙이고 테스트로 내용까지 대조하는
+> 수준이다. 이 문서가 §역추적에서 Location을 "attribute가 discardable하므로 두는 durable한
+> 경로"라 규정한 것과 비교하면, 실제로는 durable하다고 규정한 쪽이 기계 강제가 약하다.
+>
+> **남은 한계 4종 (설계 선택이 아니라 실제 공백이다).**
+>
+> ① **S5 하강은 lnpl 모듈을 재파싱하지 않는다.** `emit_lnpl_mlir`(S4 텍스트)과
+> `_render_std`(S5 표준 dialect)는 같은 **op 스트림**(`_lnpl_ops`)의 두 렌더링이며, 하강은
+> 그 인메모리 구조를 소비한다. 즉 S5의 입력은 직렬화의 *원본*이지 재파싱된 산출물이
+> 아니다. Python MLIR 파서를 새로 쓰지 않기 위한 선택이고, 그 대가로 두 렌더링이 어긋날
+> 수 있는 여지가 생기므로 ⓐ 위 검증 게이트와 ⓑ 두 렌더링의 step/effect 개수·node_id
+> 순서를 대조하는 테스트로 막았다. 하강을 진짜 MLIR `ConversionPattern`으로 만드는 것은
+> 별도 이슈다.
+>
+> ② **S3 컴파일 컨텍스트 side table이 참조 구현에 존재하지 않는다.** 따라서 "컨텍스트
+> 항목을 전부 op attribute로 실체화한다"는 S4 불변조건은 현재 **방출 시점에 실재하는
+> 컴파일 결정에 대해서만** 충족된다 — guard mode, guard condition, unroll round,
+> 조건필드 목록. 없는 side table을 만들어 채우지는 않았다.
+>
+> ③ **구조 노드(`Guard`·`Concurrency`·`Pipeline`)의 id가 lnpl 모듈에 실리지 않는다 —
+> §역추적 보존 규칙 2(다:1 병합은 전 id를 보존하며 하나만 남기고 축약하지 않는다) 위반이다.**
+> `_steps_in_order`가 이 노드들을 평탄화하면서 `WorkflowStep`만 남기므로, 실측하면
+> `wf.w.guard.1`·`wf.w.parallel.1` 같은 id는 산출물에서 사라진다(guard의 mode·condition
+> 자체는 `lnpl.step`에 병합되어 살아남는다). 이 문서의 판정 문장("최종 산출물의 임의
+> 지점에서 원 IR 노드 id를 최소 1개 이상 얻을 수 있다")은 여전히 성립하므로 역추적 요구의
+> 전면 실패는 아니지만, 보존 규칙 2는 지켜지지 않는다.
+>
+> ④ **dialect가 Concurrency를 표현하지 못한다.** op이 2종(`lnpl.step`·`lnpl.effect`)이고
+> region이 없으므로, `parallel` 블록을 쓴 워크플로우와 같은 step을 순차로 쓴 워크플로우는
+> **바이트 동일한 lnpl 모듈**을 낸다(실측). 즉 S5 불변조건의 "structured concurrency
+> 4조건 보존"은 S4 산출물 안에서 표현 자체가 불가능하고, ①의 후속 작업(하강을 lnpl 모듈
+> 재파싱으로 바꾸는 것)만으로는 복구되지 않는다 — region을 갖는 op(예: `lnpl.concurrency`)
+> 추가가 함께 필요하다. 현재 파이프라인이 `async` dialect를 쓰지 않아 실동작에는 영향이
+> 없으나, 이 공백은 `async` 하강을 착수할 때 선행 해소 대상이다.
 
 
 
@@ -444,9 +490,25 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
    다만 형태는 지금 정한다: 버전은 **레포에 커밋된 핀 파일 하나를 정본**으로 하고
    CI가 그 파일을 읽는다. README 산문으로 "LLVM 18을 설치하라"고 쓰거나 CI 워크플로
    안에 버전을 다시 적는 방식은 채택하지 않는다 — 선언이 둘이면 언젠가 갈라진다.
-2. **`lnpl` dialect의 커스텀 op 목록 확정**과, §dialect 변환 이후의 역추적에서
-   말한 MLIR 위치 정보 API의 정확한 표기(`lnpl.node_id` attribute 이름은 확정,
-   Location 구성 방식은 미결).
+2. ~~**`lnpl` dialect의 커스텀 op 목록 확정**과 MLIR 위치 정보 API의 정확한 표기.~~
+   **해소 (2026-08-01).** 정본은 `mlir/lnpl.irdl.mlir`이다.
+   - **op 목록** — `lnpl.step`, `lnpl.effect` 2종. operand·result 없이 attribute로
+     정보를 싣고, 모듈 본문에 flat하게 놓인다(`builtin.module`이 `NoTerminator`이므로
+     region·terminator 배선이 필요없다). guard는 region이 아니라 **attribute**다 —
+     `_steps_in_order`가 S4에 도달하기 전에 이미 평탄화·언롤을 끝내기 때문이다.
+     attribute: `lnpl.node_id`(필수·문자열), `lnpl.name`, `lnpl.index`, `lnpl.kind`,
+     `lnpl.step`, `lnpl.guard_mode`, `lnpl.guard_condition`, `lnpl.unroll_round`.
+     선언되지 않은 attribute는 IRDL이 통과시키므로, 새 컴파일 결정을 추가할 때
+     dialect 정의를 고칠 필요가 없다.
+   - **Location 표기** — `loc("<node id>")`(NameLoc)를 모든 op에 단다.
+     `lnpl.node_id` attribute와 이중 경로다(§dialect 변환 이후의 역추적).
+     주의: `mlir-opt`는 `--mlir-print-debuginfo` 없이는 `loc(...)`를 아예 출력하지
+     않으므로, 라운드트립으로 Location 보존을 확인하려면 그 플래그가 필요하다.
+   - **강제 수단** — `irdl.attributes`가 `lnpl.node_id`를 필수로, `irdl.base
+     "#builtin.string"`이 문자열로 제약한다. node id가 없거나 문자열이 아닌 op은
+     검증기가 거부한다.
+   - 언롤된 op은 전부 같은 `lnpl.node_id`를 유지하고 `lnpl.unroll_round`로 구분한다
+     (§역추적 보존 규칙 3의 1:다 확장). `until`과 `repeat` 양쪽에 적용된다.
 3. **증분 컴파일의 단위.** 노드 `id`가 안정적이므로 id 단위 캐시가 가능해 보이지만,
    컴파일 컨텍스트가 노드 간 결정에 의존할 때의 무효화 범위가 미결이다.
 4. **디버그 정보 포맷.** IR 노드 id ↔ DWARF 매핑 방식(S7 불변조건이 의존한다).
