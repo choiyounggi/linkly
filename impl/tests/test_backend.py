@@ -29,7 +29,6 @@ NEEDS_TOOLS = unittest.skipUnless(
     HAS_TOOLS, "MLIR/LLVM toolchain not installed (brew install llvm)")
 
 
-
 def golden():
     with open(GOLDEN_IR, encoding="utf-8") as fh:
         return json.load(fh)
@@ -179,6 +178,27 @@ class TestDivergenceIsDetected(unittest.TestCase):
         return differential.verify(doc, workflow, payload, rows, self.workdir,
                                    skip=skip)
 
+    def test_the_guarded_fixture_is_equivalent_with_its_guard_taken(self):
+        """The baseline the other cases rest on, with `cache user` actually run.
+
+        Every other case here either uses the golden workflow, `UNTIL_COUNTER`, or
+        makes GUARDED's guard **false** — so none of them ever reaches
+        `cache user`, and none would notice if the fixture lost the cache budget
+        that makes mode A able to run it at all. Measured: without that budget
+        this is `FAIL 2/4 policy outcome — A=failed B=completed`, which is the
+        standing divergence three of these cases used to pass on.
+
+        Empty payload, so `token missing` is true and the guarded step executes.
+        """
+        doc = lower(parse(GUARDED), "t").to_document()
+        ok, report = self._verify(doc, "wf.w", {},
+                                  {"entity.user": dict(PAYLOAD)})
+        self.assertTrue(ok, "\n".join(report))
+        # And the guarded step really did run — otherwise the assertion above
+        # would hold for a workflow that skipped the effect entirely.
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir)
+        self.assertIn("cache user", b["text"])
+
     def test_reordered_backend_is_reported_as_divergent(self):
         doc = golden()
         ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
@@ -242,7 +262,10 @@ class TestDivergenceIsDetected(unittest.TestCase):
         backend._steps_in_order = without_when
         ok, report = self._verify(doc, "wf.w", payload, rows, skip=True)
         self.assertFalse(ok, "removing the when guard must diverge")
+        # Both classes: an extra step is an order difference *and* an extra
+        # effect. Asserting only one lets the other silently stop appearing.
         self.assertTrue(any("FAIL 1/4" in line for line in report), report)
+        self.assertTrue(any("FAIL 3/4" in line for line in report), report)
 
     def test_until_guard_removed_diverges(self):
         """`counter=100` satisfies `until counter >= 10`, so neither mode loops.
@@ -270,7 +293,9 @@ class TestDivergenceIsDetected(unittest.TestCase):
         backend._steps_in_order = without_until
         ok, report = self._verify(doc, "wf.w", payload, rows)
         self.assertFalse(ok, "removing the until guard must diverge")
+        # Both classes, for the same reason as the `when` case above.
         self.assertTrue(any("FAIL 1/4" in line for line in report), report)
+        self.assertTrue(any("FAIL 3/4" in line for line in report), report)
 
     def test_until_round_cap_violation_diverges(self):
         """`counter=0` leaves the condition false, so both modes run the cap.
@@ -316,7 +341,7 @@ workflow W
 """
 
 TTL_CACHE = NO_TTL_CACHE.replace(
-    "service S\n", "service S\n    performance\n        cache 5m\n")
+    "service S\n", "service S\n    performance\n        cache 5m\n", 1)
 
 
 @NEEDS_TOOLS

@@ -34,9 +34,6 @@ NEEDS_TOOLS = unittest.skipUnless(
     backend.toolchain_available(),
     "MLIR/LLVM toolchain not installed (brew install llvm)")
 
-# Same shape test_backend.py uses, so the guard cases here and there stay
-# comparable. The guard line is substituted per test.
-
 
 def golden():
     with open(GOLDEN_IR, encoding="utf-8") as fh:
@@ -495,10 +492,10 @@ class TestOpStreamRoutesThroughStepsInOrder(unittest.TestCase):
     """_lnpl_ops must read its steps through the module-global _steps_in_order.
 
     That indirection is what lets the deliberate-mismatch tests reach mode B by
-    monkeypatching one name. It gets a direct test because the differential suite
-    is a weak detector of it: three of its five mismatch cases pass against a
-    baseline divergence their patch never causes, so they would stay green even if
-    this routing were bypassed.
+    monkeypatching one name. It keeps its own direct test even though those cases
+    were since repaired — they now assert an equivalent baseline before applying
+    their fault, so they would catch a bypass. This pins the seam itself rather
+    than inferring it from five tests that could each be rewritten.
     """
 
     def setUp(self):

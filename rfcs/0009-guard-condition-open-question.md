@@ -3,7 +3,7 @@
 ## Status
 
 - Status: **Accepted** (RFC-0009, 2026-08-02)
-- Updates: RFC-0002 §Open Questions
+- Updates: RFC-0002 §Open Questions, RFC-0002 §Workflow body & control/가드 라인
 
 ## Motivation
 
@@ -22,6 +22,13 @@ RFC-0008이 `Condition`을 `Presence | Comparison`으로 확정하면서 평가�
 
 즉 이것은 미결 사항이 아니라 **결함**이다. 이 RFC가 빠진 `Updates` 관계를 보충해
 해소한다.
+
+**같은 결함이 한 곳 더 있다.** RFC-0002 §Workflow body & control의 가드 라인 항목도
+`Condition`은 비교식 또는 1~4토큰 구다라고 서술한다. 이 절 역시 어느 `Updates:`
+목록도 지목하지 않았으므로 규칙 2의 같은 판정을 받는다. 미결 목록만 고치고 이쪽을
+남기면 같은 파일 안에 폐기된 문법이 그대로 남는다 — 그래서 두 절을 함께 지목한다.
+절 안의 한 항목만 바뀌므로 RFC-0007 §2.2 규칙 1이 예시하는 경로 표기
+(`RFC-NNNN §<절 이름>/<하위 항목>`)를 써서 범위를 정확히 좁힌다.
 
 **RFC-0008 자체는 수정하지 않는다.** 그 본문은 여전히 옳고, `Accepted` RFC의
 `Updates:` 목록에 절을 추가하는 것은 실질 변경이다 — RFC-0007 §2.2 규칙 3이
@@ -81,6 +88,17 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 "무엇을 바꾼다"가 아니라 
    Workflow 자동 합성?)로 lowering되는지는 후속 lowering 매핑 표(태스크 04)로
    넘긴다.
 
+### RFC-0002 §Workflow body & control / 가드 라인 (치환 후 최종 텍스트)
+
+절 안의 이 항목만 갱신한다. 같은 절의 다른 항목(StepLine·`parallel` 블록·`pipeline`
+블록)은 RFC-0002 원문이 그대로 유효하며 이 RFC가 손대지 않는다.
+
+- **가드 라인** — `when <Condition>`·`repeat <Integer>`·`until <Condition>`은
+  **직후 1개의** step 또는 parallel/pipeline 블록에 적용되는 접두 가드다.
+  별도 블록을 열지 않으므로 적용 범위가 항상 명확하다. `Condition`은
+  `Presence | Comparison`이다(RFC-0008 §Full grammar). 가드의 실행 의미(조건
+  평가·반복 종료)는 RFC-0003 소유다.
+
 ### 항목 ②를 삭제하지 않고 남긴 이유
 
 이슈 #3의 수용 기준은 "RFC-0002 Open Questions ②가 **제거**된다(편집이 아니라)"로
@@ -91,16 +109,24 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 "무엇을 바꾼다"가 아니라 
 
 ## Examples
 
-골든 시나리오 "Login"(정본: `plans/rfc-suite/plan.md` — RFC-0000 §5에 따라 참조만
-하고 재정의하지 않는다)의 어휘로 두 방향을 보인다.
+골든 시나리오 "Login"(정본: `plans/rfc-suite/plan.md` §골든 시나리오)은 가드를 쓰지
+않는다. RFC-0007 §6은 그런 경우 **골든을 확장해 기능을 넣지 말고 골든 인접 예제를
+따로 제시하라**고 규정하므로, 아래는 `examples/login.lnpl`을 그대로 두고 별도
+워크플로우로 보인다. 골든의 `entity User`는 `id`/`email`/`password`/`createdAt`
+네 필드이며 여기에 필드를 추가하지 않는다.
 
-**허용** — `entity User`의 필드를 대상으로 한 Presence:
+**허용** — 조건이 참조하는 필드를 선언한 인접 예제:
 
 ```
-workflow Login
-    validate input
+entity Session
+    field
+        id UUID
+        token Text
+
+workflow Refresh
+    load session
     when token missing
-    generate token
+    issue token
 ```
 
 `token missing`은 `Presence ::= CamelName ('exists' | 'missing')`에 해당하므로
@@ -112,10 +138,10 @@ workflow Login
     when latency exceeds budget
 ```
 
-실측 결과:
+실측 결과(전문):
 
 ```
-ParseError: line N: invalid condition: invalid comparator 'exceeds'
+ParseError: line 10: invalid condition: invalid comparator 'exceeds': 'latency exceeds budget'
 ```
 
 RFC-0008 이전에는 이 프로그램이 파싱을 통과한 뒤 런타임에 반드시 실패했다. 지금은

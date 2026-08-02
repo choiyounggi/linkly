@@ -16,6 +16,15 @@ test does anything* — `FAIL 2/4 policy outcome — A=failed B=completed`. Thre
 standing divergence rather than against the fault each of them names, so their
 own monkeypatches could be removed without the tests noticing.
 
+Of the three declarations added for that fix, **only the `performance` clause is
+load-bearing** — removing it turns
+`test_the_guarded_fixture_is_equivalent_with_its_guard_taken` red, and removing
+either of the other two does not. `capability redis` and the `token Text` field
+are kept for modelling coherence, matching how `examples/login.lnpl` declares a
+capability for its own `cache user` and how a guard should reference a declared
+field. They are documentation, not mechanism; do not cite them as the reason the
+baseline is equivalent.
+
 Mode B's missing enforcement is a real gap, not a fixture problem; it is pinned
 separately by `TestModeBDoesNotEnforceTheCacheTtlContract` in `test_backend.py`
 so that adding the budget here does not bury it.

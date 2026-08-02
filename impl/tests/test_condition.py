@@ -133,5 +133,50 @@ class TestConditionParsing(unittest.TestCase):
             parse_condition("timeout > 10x")  # 'x' is not ms|s|m
 
 
+class TestModeARefusesUnevaluableConditions(unittest.TestCase):
+    """Issue #3's acceptance bullet: mode A must refuse what it cannot evaluate.
+
+    The parser rejects these forms, so a document built through `parse` can never
+    carry one — which is exactly why the refusal inside the interpreter needs its
+    own test. `Guard.condition` is a plain string in the IR, so an agent or a
+    hand-written `.lir.json` can still put an unevaluable condition there, and
+    treating it as true would silently turn a declared guard into a no-op. That
+    is the outcome RFC-0008 argued against.
+
+    Before this test the corresponding mutation in `mutation_check.py` — return
+    True instead of raising — survived, because nothing reached the branch.
+    """
+
+    def _holds(self, condition, payload=None):
+        from impl.lnpl.interp import _condition_holds
+        return _condition_holds(condition, payload or {})
+
+    def test_an_unknown_comparator_is_refused(self):
+        from impl.lnpl.interp import RunError
+        with self.assertRaises(RunError) as ctx:
+            self._holds("latency exceeds budget")
+        self.assertIn("Invalid condition", str(ctx.exception))
+
+    def test_a_bare_word_is_refused(self):
+        from impl.lnpl.interp import RunError
+        with self.assertRaises(RunError):
+            self._holds("token")
+
+    def test_a_four_token_phrase_is_refused(self):
+        """The production RFC-0008 removed — no evaluator ever implemented it."""
+        from impl.lnpl.interp import RunError
+        with self.assertRaises(RunError):
+            self._holds("foo bar baz qux")
+
+    def test_an_evaluable_condition_still_evaluates(self):
+        """Control: refusal must be about the form, not about refusing broadly."""
+        self.assertTrue(self._holds("token missing", {}))
+        self.assertFalse(self._holds("token missing", {"token": "abc"}))
+
+    def test_no_condition_holds_vacuously(self):
+        """Boundary: an unguarded step is not a refusal."""
+        self.assertTrue(self._holds(None))
+
+
 if __name__ == '__main__':
     unittest.main()

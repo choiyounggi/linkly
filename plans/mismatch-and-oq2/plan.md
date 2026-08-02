@@ -96,11 +96,16 @@ a payload that makes the condition **false** gives the patch something to break.
 ### Deliberately out of scope
 
 - Fixing mode B to enforce the cache TTL (D7). Filed instead.
-- `impl/tests/mutation_check.py`. Measured: its baseline is **RED on `main`**
-  (`baseline (unmutated copy) is not green`), from a stale anchor in `interp.py`
-  unrelated to either issue. Consequence to state plainly rather than hide: D6's
-  proof that each repaired case can fail is a **one-time manual procedure**, and
-  no automated harness stops them going vacuous again. Filed with the TTL gap.
+- ~~`impl/tests/mutation_check.py`~~ — **brought back in scope during
+  implementation.** The first draft recorded its red baseline as pre-existing,
+  "from a stale anchor in `interp.py`". That was wrong twice over. A stale anchor
+  reports as `STALE`, never as a red baseline; the baseline was red because
+  `TREE_CONTENTS` omits `mlir/` and `CHARTER.md`, **both of which the S4 PR
+  introduced** — so it was a regression from the previous change, not a
+  pre-existing condition. Fixed here, baseline verified GREEN. The stale anchor
+  was real and separate: it is issue #3's own acceptance bullet ("평가 불가 조건
+  수용"), re-anchored on the current refusal path, and it survived until a test
+  was added because nothing reached that branch.
 - Issues #2 and #7 — 영기 scoped this round to #8 and #3.
 - The `payload` / `skip` split noticed while measuring P2: mode A reads the
   condition from `payload` while mode B takes a separate `skip` flag, so a caller
