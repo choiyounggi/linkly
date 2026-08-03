@@ -96,6 +96,137 @@ class RpcError(Exception):
 # docs/CONSISTENCY-CHECK.md rather than silently diverging.
 NAMED_REF_FIELDS = ("requires", "constraints", "entity", "event")
 
+# Every field that can carry a node reference. `set(...)` is not decoration —
+# NAMED_REF_FIELDS is a tuple, and `{"children"} | NAMED_REF_FIELDS` is a TypeError.
+REFERENCE_KEYS = {"children"} | set(NAMED_REF_FIELDS)
+
+# RFC-0001 §노드 카탈로그's *children 허용* column, which RFC-0004 §S2 calls
+# invariant V5. Nothing else in this implementation enforces it — `_structure_fault`
+# covers V2/V3/V4 and the schema types `children` as an unrestricted id array — so
+# without this table RFC-0010's attachment exception would let a role write a
+# `WorkflowStep` into an `Entity`. Enforcing V5 document-wide is a larger change
+# (recorded in docs/CONSISTENCY-CHECK.md); this gates `attach` only.
+CHILDREN_ALLOWED = {
+    "Entity": {"Validation"},
+    "Service": {"Workflow", "Pipeline", "BusinessRule"},
+    "Workflow": {"WorkflowStep", "Guard", "Concurrency", "Pipeline"},
+    "Event": set(),
+    "Capability": set(),
+    "BusinessRule": set(),
+    "Validation": set(),
+    "WorkflowStep": {"Validation", "BusinessRule", "NetworkCall", "RepositoryCall",
+                     "CacheAccess", "Transaction", "Authorization", "EventEmit",
+                     "Concurrency", "Pipeline"},
+    "Guard": {"WorkflowStep", "Concurrency", "Pipeline"},
+    "Pipeline": {"WorkflowStep"},
+    "Concurrency": {"WorkflowStep"},
+    "NetworkCall": set(),
+    "RepositoryCall": set(),
+    "CacheAccess": set(),
+    "Transaction": {"RepositoryCall", "NetworkCall", "CacheAccess", "EventEmit",
+                    "BusinessRule", "Validation"},
+    "Authorization": set(),
+    "EventEmit": set(),
+    "Policy": set(),
+    "Security": set(),
+    "Performance": set(),
+}
+
+
+def attachments(intent):
+    """`{parent id: {child ids}}` from an intent's `attach` list.
+
+    Shape errors are `ir_invalid` rather than a TypeError deep in a gate, and the
+    message names `intent` so a caller can tell this from a node problem.
+    """
+    return _intent_entries(intent, "attach", ("parent", "child"),
+                           lambda e: (e["parent"], e["child"]))
+
+
+def moves(intent):
+    """`{(from id, node id): to id}` from an intent's `move` list."""
+    return _intent_entries(intent, "move", ("node", "from", "to"),
+                           lambda e: ((e["from"], e["node"]), e["to"]))
+
+
+def _intent_entries(intent, key, required, pair):
+    if intent is None:
+        intent = {}
+    if not isinstance(intent, dict):
+        raise RpcError("ir_invalid", "intent must be an object, got %r"
+                       % type(intent).__name__)
+    raw = intent.get(key) or []
+    if not isinstance(raw, list):
+        raise RpcError("ir_invalid", "intent.%s must be an array" % key)
+    out = {}
+    for entry in raw:
+        if not isinstance(entry, dict) or any(
+                not isinstance(entry.get(field), str) for field in required):
+            raise RpcError("ir_invalid",
+                           "each intent.%s entry needs string %s"
+                           % (key, ", ".join(required)))
+        left, right = pair(entry)
+        if key == "attach":
+            out.setdefault(left, set()).add(right)
+        else:
+            out[left] = right
+    return out
+
+
+def _comparable(node):
+    """A node's fields that a reference-only edit may not touch.
+
+    Reference fields are excluded because condition (d) checks those per field.
+    `meta.origin` is excluded because RFC-0010 *requires* the edit to set it, and a
+    node that had no `meta` at all would otherwise fail condition (c) for obeying
+    that requirement. The rest of `meta` — `source` in particular — is compared, so
+    provenance cannot be rewritten under cover of an attachment.
+    """
+    out = {k: v for k, v in node.items() if k not in REFERENCE_KEYS and k != "meta"}
+    meta = node.get("meta")
+    if isinstance(meta, dict):
+        rest = {k: v for k, v in meta.items() if k != "origin"}
+        # A `meta` holding nothing but the required origin is equivalent to no
+        # `meta` at all — otherwise obeying condition (e) on a node that had none
+        # would itself violate condition (c).
+        if rest:
+            out["meta"] = rest
+    elif meta is not None:
+        out["meta"] = meta
+    return out
+
+
+def reference_only_edit(proposed, existing, declared_children):
+    """Is `proposed` a replacement of `existing` that only adds `declared_children`?
+
+    RFC-0010 lets a role edit a node outside its rights for exactly one purpose:
+    attaching something it authored in the same proposal. That is safe only when the
+    edit does nothing else, so all of it holds or none of it does.
+
+    The reference comparison is **per field and order-preserving**. A set comparison
+    passes two things it must not: reversing `children` (whose order is execution
+    order, RFC-0001 rule 3), and moving a reference from `constraints` into
+    `children` — set-identical, while the interpreter reads `constraints` for retry,
+    timeout and rollback, so the declared policy silently stops applying.
+    """
+    if existing is None:
+        return False
+    if proposed.get("kind") != existing.get("kind"):
+        return False
+
+    if _comparable(proposed) != _comparable(existing):
+        return False
+
+    for field in REFERENCE_KEYS:
+        before, after = existing.get(field), proposed.get(field)
+        if isinstance(after, list):
+            remaining = [ref for ref in after if ref not in declared_children]
+            if remaining != list(before or []):
+                return False
+        elif after != before:
+            return False
+    return True
+
 
 def node_references(node):
     """Every node id this node points at — owning (`children`) and named (rule 5).
@@ -349,19 +480,68 @@ class Server:
             raise RpcError("ir_invalid",
                            "fragment module %r does not match %r"
                            % (fragment.get("module"), self.doc["module"]))
+        intent = params.get("intent") or {}
+        attach_map = attachments(intent)
+        moves(intent)          # shape-validate here so a bad move fails at propose
+
         allowed = ROLES[role]["propose"]
+        by_id = {n["id"]: n for n in self.doc["nodes"]}
+
+        # Validate the declarations before the rights loop consults them, so an
+        # unauthored child or an illegal parent/child pairing reports itself rather
+        # than surfacing as the generic "may not propose X" from the loop below.
+        proposed_by_id = {n["id"]: n for n in fragment["nodes"] if "id" in n}
+        authored = set(proposed_by_id) - set(by_id)
+        for parent, children in attach_map.items():
+            parent_kind = (proposed_by_id.get(parent)
+                           or by_id.get(parent) or {}).get("kind")
+            if not isinstance(parent_kind, str):
+                raise RpcError("ir_invalid",
+                               "intent.attach names parent %s, which is neither in "
+                               "the fragment nor in the document" % parent)
+            for child in sorted(children):
+                if child not in authored:
+                    raise RpcError(
+                        "ir_invalid",
+                        "intent.attach names %s, which this proposal did not "
+                        "author — a proposal may attach only a node it wrote in "
+                        "the same fragment (RFC-0010)" % child)
+                child_kind = proposed_by_id.get(child, {}).get("kind")
+                if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
+                    raise RpcError(
+                        "ir_invalid",
+                        "a %s may not own a %s (RFC-0001 §노드 카탈로그 children "
+                        "허용; RFC-0004 §S2 V5): intent.attach puts %s under %s"
+                        % (parent_kind, child_kind, child, parent))
+
         for node in fragment["nodes"]:
             kind = node.get("kind")
-            if kind not in allowed:
-                raise RpcError("ir_invalid",
-                               "role %s may not propose %s nodes" % (role, kind))
+            if kind in allowed:
+                continue
+            # RFC-0010: a node outside this role's rights is permitted for
+            # attachment only, and only when the edit adds the declared children
+            # and does nothing else.
+            declared = attach_map.get(node.get("id"), set())
+            if declared and reference_only_edit(node, by_id.get(node.get("id")),
+                                                declared):
+                origin = (node.get("meta") or {}).get("origin") or ""
+                if not origin.startswith("agent:"):
+                    raise RpcError(
+                        "ir_invalid",
+                        "%s is edited outside %s's rights, so it must record "
+                        "`meta.origin` as `agent:<role>` — otherwise the merged "
+                        "document keeps no trace that a role reached outside its "
+                        "rights (RFC-0010)" % (node.get("id"), role))
+                continue
+            raise RpcError("ir_invalid",
+                           "role %s may not propose %s nodes" % (role, kind))
 
         pid = "prop-%04d" % (len(self.proposals) + 1)
         review = self._m_agent_dispatch({"role": "Reviewer",
                                          "objective": "review %s" % pid,
                                          "deadline_ms": params.get("deadline_ms", 30000)})
         self.proposals[pid] = {"id": pid, "role": role, "state": "pending",
-                               "nodes": fragment["nodes"],
+                               "nodes": fragment["nodes"], "intent": intent,
                                "review_task_id": review["task_id"]}
         return {"proposal_id": pid, "state": "pending",
                 "review_task_id": review["task_id"]}

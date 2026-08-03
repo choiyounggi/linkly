@@ -241,5 +241,168 @@ class TestKbOverTheWire(unittest.TestCase):
         self.assertIn("re-route", ctx.exception.message)
 
 
+TWO_ACCESS = {
+    "lir_version": "0.1", "module": "t",
+    "nodes": [
+        {"kind": "Entity", "id": "entity.user", "name": "User",
+         "fields": [{"name": "id", "type": "UUID"}]},
+        {"kind": "Policy", "id": "policy.p", "rules": [{"name": "retry", "value": "2"}]},
+        {"kind": "Service", "id": "svc.s", "name": "S", "children": ["wf.w"],
+         "constraints": ["policy.p"]},
+        {"kind": "Workflow", "id": "wf.w", "name": "W",
+         "children": ["wf.w.step.1", "wf.w.step.2"]},
+        {"kind": "WorkflowStep", "id": "wf.w.step.1", "name": "load and audit",
+         "children": ["wf.w.step.1.a", "wf.w.step.1.b"]},
+        {"kind": "RepositoryCall", "id": "wf.w.step.1.a",
+         "entity": "entity.user", "operation": "read"},
+        {"kind": "RepositoryCall", "id": "wf.w.step.1.b",
+         "entity": "entity.user", "operation": "update"},
+        {"kind": "WorkflowStep", "id": "wf.w.step.2", "name": "return user"},
+    ],
+}
+
+PROV = {"origin": "agent:RefactoringAgent",
+        "source": "kb:patterns-repository-call@0.1.0"}
+
+# An *existing* node edited for attachment carries `origin` only. `source` is
+# provenance for a node being authored; adding it to a node that already has its own
+# would be rewriting provenance, which condition (c) refuses on purpose.
+EDIT_META = {"origin": "agent:RefactoringAgent"}
+
+
+class TestProposalIntent(unittest.TestCase):
+    """RFC-0010: a role may attach what it authored, and nothing more.
+
+    The attachment exception exists so a role can put a node it wrote where the
+    document will see it. Its whole content is "write a reference into a node whose
+    kind you do not own", so most of these tests are the refusals — an exception
+    that cannot refuse is not an exception, it is a hole.
+    """
+
+    def setUp(self):
+        self.server = Server(json.loads(json.dumps(TWO_ACCESS)), KnowledgeBase())
+
+    def _split_nodes(self, workflow_children=None, step_2_extra=None):
+        """The honest split: parent gains the new step, step.1 gives up `…b`."""
+        parent = {"kind": "Workflow", "id": "wf.w", "name": "W",
+                  "children": workflow_children
+                  or ["wf.w.step.1", "wf.w.split.1", "wf.w.step.2"],
+                  "meta": dict(EDIT_META)}
+        original = {"kind": "WorkflowStep", "id": "wf.w.step.1",
+                    "name": "load and audit", "children": ["wf.w.step.1.a"]}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "update user",
+               "children": ["wf.w.step.1.b"], "meta": dict(PROV)}
+        if step_2_extra:
+            parent.update(step_2_extra)
+        return [parent, original, new]
+
+    def _intent(self):
+        return {"attach": [{"parent": "wf.w", "child": "wf.w.split.1"}],
+                "move": [{"node": "wf.w.step.1.b", "from": "wf.w.step.1",
+                          "to": "wf.w.split.1"}]}
+
+    def _propose(self, nodes, intent=None, key="s1"):
+        return self.server.call(
+            "ir.propose", role="RefactoringAgent",
+            ir_fragment={"lir_version": "0.1", "module": "t", "nodes": nodes},
+            intent=intent, deadline_ms=1000, idempotency_key=key)
+
+    def test_a_declared_attachment_is_accepted(self):
+        out = self._propose(self._split_nodes(), self._intent())
+        self.assertEqual(out["state"], "pending")
+
+    def test_the_stored_proposal_carries_the_intent(self):
+        out = self._propose(self._split_nodes(), self._intent())
+        stored = self.server.proposals[out["proposal_id"]]["intent"]
+        self.assertEqual(stored["attach"][0]["child"], "wf.w.split.1")
+
+    def test_the_same_edit_without_an_attach_entry_is_refused(self):
+        with self.assertRaises(RpcError) as ctx:
+            self._propose(self._split_nodes(), {})
+        self.assertIn("may not propose Workflow", str(ctx.exception))
+
+    def test_changing_another_field_while_attaching_is_refused(self):
+        """Condition (c). Without it the exception is a general escape hatch."""
+        with self.assertRaises(RpcError) as ctx:
+            self._propose(self._split_nodes(step_2_extra={"name": "renamed"}),
+                          self._intent())
+        self.assertIn("may not propose Workflow", str(ctx.exception))
+
+    def test_reordering_children_while_attaching_is_refused(self):
+        """Condition (d) per-field AND order-preserving.
+
+        `children` order is execution order (RFC-0001 rule 3), so a permutation is a
+        behaviour change. A set comparison approves this.
+        """
+        with self.assertRaises(RpcError) as ctx:
+            self._propose(
+                self._split_nodes(workflow_children=["wf.w.step.2", "wf.w.step.1",
+                                                     "wf.w.split.1"]),
+                self._intent())
+        self.assertIn("may not propose Workflow", str(ctx.exception))
+
+    def test_migrating_a_reference_between_fields_is_refused(self):
+        """Condition (d) again, and the reason it is per-field.
+
+        Moving `policy.p` out of `constraints` into `children` is set-identical, but
+        the interpreter reads `constraints` for retry — so this silently drops a
+        declared policy.
+        """
+        # A BusinessRule, because a Service may own one (RFC-0001) — otherwise the
+        # V5 gate fires first and this test would not reach condition (d).
+        service = {"kind": "Service", "id": "svc.s", "name": "S",
+                   "children": ["wf.w", "policy.p", "svc.s.rule"],
+                   "constraints": [], "meta": dict(EDIT_META)}
+        new = {"kind": "BusinessRule", "id": "svc.s.rule", "name": "audited",
+               "statement": "every access is audited", "meta": dict(PROV)}
+        with self.assertRaises(RpcError) as ctx:
+            self._propose([service, new],
+                          {"attach": [{"parent": "svc.s", "child": "svc.s.rule"}]})
+        self.assertIn("may not propose Service", str(ctx.exception))
+
+    def test_attaching_a_node_it_did_not_author_is_refused(self):
+        with self.assertRaises(RpcError) as ctx:
+            self._propose(self._split_nodes(),
+                          {"attach": [{"parent": "wf.w",
+                                       "child": "wf.w.step.2"}]})
+        self.assertIn("did not", str(ctx.exception))
+
+    def test_attaching_a_child_the_parent_may_not_own_is_refused(self):
+        """RFC-0004 §S2 invariant V5, which nothing else in the codebase checks."""
+        entity = {"kind": "Entity", "id": "entity.user", "name": "User",
+                  "fields": [{"name": "id", "type": "UUID"}],
+                  "children": ["wf.w.split.1"], "meta": dict(EDIT_META)}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "update user",
+               "meta": dict(PROV)}
+        with self.assertRaises(RpcError) as ctx:
+            self._propose([entity, new],
+                          {"attach": [{"parent": "entity.user",
+                                       "child": "wf.w.split.1"}]})
+        message = str(ctx.exception)
+        self.assertIn("Entity", message)
+        self.assertIn("WorkflowStep", message)
+
+    def test_an_out_of_rights_edit_must_record_an_agent_origin(self):
+        nodes = self._split_nodes()
+        nodes[0].pop("meta")
+        with self.assertRaises(RpcError) as ctx:
+            self._propose(nodes, self._intent())
+        self.assertIn("meta.origin", str(ctx.exception))
+
+    def test_a_malformed_intent_names_intent_in_the_error(self):
+        with self.assertRaises(RpcError) as ctx:
+            self._propose(self._split_nodes(), {"attach": [{"parent": "wf.w"}]})
+        self.assertIn("intent.attach", str(ctx.exception))
+
+    def test_without_intent_the_gate_behaves_exactly_as_before(self):
+        """Backward compatibility: absent `intent` is the pre-RFC-0010 contract."""
+        within_rights = [{"kind": "WorkflowStep", "id": "wf.w.step.3",
+                          "name": "audit user", "meta": dict(PROV)}]
+        self.assertEqual(self._propose(within_rights)["state"], "pending")
+        with self.assertRaises(RpcError):
+            self._propose([{"kind": "Workflow", "id": "wf.w", "name": "W",
+                            "children": ["wf.w.step.1"]}], key="s2")
+
+
 if __name__ == "__main__":
     unittest.main()
