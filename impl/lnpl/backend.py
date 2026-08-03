@@ -352,24 +352,35 @@ def _lnpl_ops(document, workflow_id):
     }
 
     # RFC-0003 / issue #9: mode A refuses a `CacheAccess set` that has no cache-TTL
-    # budget — interp `Cache.set` raises, the step's span is already recorded, and
-    # the run's status becomes "failed". Mode B used to print the effect and
-    # complete, so the two modes disagreed on exactly that workflow. Budget
-    # presence is a static (compile-time) property of the owning service, so mode
-    # B reaches the same *observable* outcome without any new runtime parameter:
-    # when the budget is absent, the run stops at the first unconditional such set
-    # and reports "failed", keeping the trace mode A produces (the failing step
-    # and its effect are included, later steps are not). Guarded sets are left
-    # alone — a skipped set is never reached, so it must not force a failure.
+    # budget — interp `Cache.set` raises, and the run's status becomes "failed".
+    # Mode B used to print the effect and complete, so the two modes disagreed on
+    # exactly that workflow. Budget presence is a static (compile-time) property of
+    # the owning service, so mode B reaches the same *observable* outcome without
+    # any new runtime parameter: when the budget is absent, the run stops at the
+    # first unconditional such set and reports "failed".
+    #
+    # The trace is matched to mode A precisely. In `_run_effect`, the failing
+    # step's effects run in order; the cache effect's child span is appended
+    # BEFORE `Cache.set` raises, and effects after it never run. So mode A's
+    # failing step holds the effects up to and INCLUDING the cache set, and no
+    # later step. Truncate to exactly that — both the trailing effects of the
+    # failing step and every later step — or a multi-effect step would make mode B
+    # emit effects mode A never reached. Guarded sets are left alone: a skipped set
+    # is never reached, so it must not force a failure.
     terminal_status = None
     if not _has_cache_budget(document, workflow_id):
         for cut, op in enumerate(ops):
-            unbudgeted_set = op["guard_mode"] is None and any(
-                effect["kind"] == "CacheAccess"
-                and nodes[effect["node_id"]].get("operation") == "set"
-                for effect in op["effects"])
-            if unbudgeted_set:
-                ops = ops[:cut + 1]
+            if op["guard_mode"] is not None:
+                continue
+            fail_at = next(
+                (i for i, effect in enumerate(op["effects"])
+                 if effect["kind"] == "CacheAccess"
+                 and nodes[effect["node_id"]].get("operation") == "set"),
+                None)
+            if fail_at is not None:
+                truncated = dict(op)
+                truncated["effects"] = op["effects"][:fail_at + 1]
+                ops = ops[:cut] + [truncated]
                 terminal_status = "failed"
                 break
     if terminal_status is not None:

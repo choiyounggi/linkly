@@ -451,6 +451,31 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
             doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
         self.assertTrue(ok, "\n".join(report))
 
+    def test_effects_after_the_unbudgeted_set_are_not_emitted(self):
+        """A step's effects run in order; mode A stops AT the cache set (its span
+        holds the effects up to and including it, none after). Mode B must truncate
+        the failing step's effects there too — otherwise a multi-effect step makes
+        mode B emit an effect mode A never reached, and the differential diverges on
+        a workflow the modes actually agree on. Here an Authorization is appended
+        AFTER the cache set; neither mode may report it."""
+        doc = self._doc(NO_TTL_CACHE)
+        cache_set = next(n for n in doc["nodes"]
+                         if n["kind"] == "CacheAccess" and n.get("operation") == "set")
+        step = next(n for n in doc["nodes"]
+                    if n["kind"] == "WorkflowStep"
+                    and cache_set["id"] in n.get("children", []))
+        doc["nodes"].append({"kind": "Authorization",
+                             "id": step["id"] + ".after", "requirement": "x"})
+        step["children"] = list(step.get("children", [])) + [step["id"] + ".after"]
+        rows = {"entity.user": dict(PAYLOAD)}
+        a = differential.observe_mode_a(doc, "wf.w", {}, rows)
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
+        self.assertNotIn("Authorization", a["effects"].get(step["name"], []))
+        self.assertNotIn("Authorization", b["effects"].get(step["name"], []))
+        self.assertEqual(a["effects"], b["effects"])
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(b["status"], "failed")
+
 
 class TestToolchainHonesty(unittest.TestCase):
     def test_missing_toolchain_raises_instead_of_silently_skipping(self):

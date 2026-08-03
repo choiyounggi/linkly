@@ -107,7 +107,7 @@ def _derive_skip_from_payload(document, workflow_id, payload):
     is set based on whether the condition is false (skip=True) or true (skip=False).
     If no Presence guard is found, skip defaults to False (don't skip).
     """
-    from .condition import parse_condition, Presence
+    from .condition import parse_condition, Presence, ConditionError
 
     # Find any Presence guard conditions in the workflow
     nodes = {n["id"]: n for n in document["nodes"]}
@@ -125,8 +125,8 @@ def _derive_skip_from_payload(document, workflow_id, payload):
                         cond = parse_condition(cond_str)
                         if isinstance(cond, Presence):
                             return cond_str
-                    except Exception:
-                        pass
+                    except ConditionError:
+                        pass  # not a condition we can classify; keep searching
             # Recurse into children
             if node.get("children"):
                 result = find_presence_condition(node["children"])
@@ -142,16 +142,14 @@ def _derive_skip_from_payload(document, workflow_id, payload):
     if not presence_cond_str:
         return False  # No Presence guard found
 
-    # Evaluate the Presence condition against the payload using the same logic as mode A
-    try:
-        from .interp import _condition_holds
-        # Mode A evaluates "token missing" against payload.
-        # If payload has token, condition is false, so skip=True.
-        # If payload lacks token, condition is true, so skip=False.
-        condition_holds = _condition_holds(presence_cond_str, payload)
-        return not condition_holds  # skip = !condition_holds
-    except Exception:
-        return False
+    # Evaluate the Presence condition against the payload with the exact function
+    # mode A uses. Mode A raises on an invalid condition; let that propagate rather
+    # than swallow it — silently returning skip=False would run a step mode A
+    # refused, masking a real divergence behind a false verdict.
+    from .interp import _condition_holds
+    # token present -> "token missing" is false -> skip=True;
+    # token absent  -> "token missing" is true  -> skip=False.
+    return not _condition_holds(presence_cond_str, payload)
 
 
 def verify(document, workflow_id, payload, repo_rows, workdir):
