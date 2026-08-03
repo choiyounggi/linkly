@@ -15,7 +15,8 @@ than inventing an Effect — the same rule the compiler's verb lexicon follows.
 import re
 
 from .lower import derive_id
-from .protocol import ROLES, RpcError, Server, node_references
+from .protocol import (CHILDREN_ALLOWED, REFERENCE_KEYS, ROLES, RpcError, Server,
+                       attachments, moves, node_references, reference_only_edit)
 from .spec import EXPECTATIONS, SPEC_VERSION
 
 # Node kinds that may legitimately have no owner. RFC-0001 rule 2 allows only
@@ -65,6 +66,16 @@ def _ownership_cycle(merged):
                 stack.pop()
                 path.pop()
     return []
+
+
+def _refs_in(node, field):
+    """The node ids `node` references through `field`. Empty when it has none."""
+    if not node:
+        return set()
+    value = node.get(field)
+    if isinstance(value, list):
+        return {v for v in value if isinstance(v, str)}
+    return {value} if isinstance(value, str) else set()
 
 
 def _structure_fault(merged):
@@ -280,11 +291,47 @@ class Reviewer(_AgentBase):
         nodes = proposal["nodes"]
         existing = {n["id"]: n for n in self.server.doc["nodes"]}
 
+        # RFC-0010. The server validated these at propose time, but this is a
+        # second, independent gate — a proposal planted straight into
+        # `server.proposals` never passed through the first one.
+        intent = proposal.get("intent") or {}
+        attach_map = attachments(intent)
+        move_map = moves(intent)
+        authored = {n["id"] for n in nodes} - set(existing)
+
+        # Judge the declarations before the rights check consults them, so an
+        # unauthored child or an illegal pairing says so instead of surfacing as a
+        # generic `rights:` refusal.
+        for parent, children in sorted(attach_map.items()):
+            parent_kind = (next((n for n in nodes if n.get("id") == parent), None)
+                           or existing.get(parent) or {}).get("kind")
+            for child in sorted(children):
+                if child not in authored:
+                    return False, ("attach: %s was not authored by this proposal — "
+                                   "a proposal may attach only a node it wrote "
+                                   "(RFC-0010)" % child)
+                child_kind = next((n.get("kind") for n in nodes
+                                   if n.get("id") == child), None)
+                if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
+                    return False, ("attach: a %s may not own a %s (RFC-0001 노드 "
+                                   "카탈로그; RFC-0004 §S2 V5): %s under %s"
+                                   % (parent_kind, child_kind, child, parent))
+
         allowed = ROLES.get(proposal["role"], {}).get("propose", set())
-        outside = sorted({n.get("kind") for n in nodes} - set(allowed))
+        outside = []
+        for node in nodes:
+            if node.get("kind") in allowed:
+                continue
+            declared = attach_map.get(node.get("id"), set())
+            if declared and reference_only_edit(node, existing.get(node.get("id")),
+                                                declared):
+                origin = (node.get("meta") or {}).get("origin") or ""
+                if origin.startswith("agent:"):
+                    continue
+            outside.append(node.get("kind"))
         if outside:
             return False, ("rights: %s may not propose %s"
-                           % (proposal["role"], ", ".join(outside)))
+                           % (proposal["role"], ", ".join(sorted(set(outside)))))
 
         bad_source = []
         for node in nodes:
@@ -305,12 +352,12 @@ class Reviewer(_AgentBase):
                            "version, or `ir:<node id>` present in the document: %s"
                            % ", ".join(bad_source))
 
-        # `ir.propose` adds or replaces; it has no way to say "remove this node".
-        # That gap is exactly why RFC-0006's RefactoringAgent is deferred, so a
-        # replacement that drops references or changes a node's kind is a removal
-        # wearing an edit's clothes — and it changes runtime meaning, because the
-        # interpreter reads `constraints` for retry, timeout, rollback and the
-        # security mechanisms.
+        # `ir.propose` adds or replaces. Since RFC-0010 it can also *move* a
+        # reference, but only when the proposal declares it — an undeclared drop is
+        # still a removal wearing an edit's clothes, and it changes runtime meaning,
+        # because the interpreter reads `constraints` for retry, timeout, rollback
+        # and the security mechanisms.
+        declared_drops = {}
         for node in nodes:
             old = existing.get(node["id"])
             if old is None:
@@ -318,18 +365,61 @@ class Reviewer(_AgentBase):
             if node.get("kind") != old.get("kind"):
                 return False, ("kind: %s is a %s in the document and this would make "
                                "it a %s — `ir.propose` replaces a node, it does not "
-                               "remove one (RFC-0006 §Methods)"
+                               "swap one out for another kind "
+                               "(RFC-0010 §Methods/ir.propose)"
                                % (node["id"], old.get("kind"), node.get("kind")))
-            dropped = sorted(set(node_references(old)) - set(node_references(node)))
-            if dropped:
-                return False, ("removal: replacing %s would drop reference(s) %s — "
-                               "`ir.propose` cannot express a removal (RFC-0006 "
-                               "§Methods)" % (node["id"], ", ".join(dropped)))
+            # Per field, not across their union. `node_references` unions `children`
+            # with the named fields, so a union comparison sees no change when a
+            # reference merely *migrates* between them — and the interpreter reads
+            # `constraints` for retry, timeout and rollback, so migrating a Policy
+            # into `children` silently stops it applying. Measured: retry 2 became
+            # retry 1 with a proposal that declared nothing at all.
+            for field in sorted(REFERENCE_KEYS):
+                gone = sorted(_refs_in(old, field) - _refs_in(node, field))
+                for ref in gone:
+                    if (node["id"], ref) not in move_map:
+                        return False, (
+                            "removal: replacing %s would drop %s from `%s` without "
+                            "a declared move — `ir.propose` expresses a move by "
+                            "declaring it in `intent`, and refuses an undeclared "
+                            "removal (RFC-0010 §Methods/ir.propose)"
+                            % (node["id"], ref, field))
+                    declared_drops[(node["id"], ref)] = field
 
         # Merge into a copy — assessing must not change what it is assessing.
         merged = {nid: node for nid, node in existing.items()}
         for node in nodes:
             merged[node["id"]] = node
+
+        # A declared move must land where it said, in the field it left. "References
+        # it somewhere" is not enough: `node_references` unions `children` with the
+        # named fields, so a Constraint declared as moved out of `constraints` could
+        # be laundered into a `children` entry — emptying `constraints`, which the
+        # interpreter reads for retry, timeout and rollback.
+        for (from_id, node_id), to_id in sorted(move_map.items()):
+            field = declared_drops.get((from_id, node_id))
+            if field is None:
+                return False, ("move: %s does not give up %s, so there is nothing "
+                               "to move (RFC-0010)" % (from_id, node_id))
+            if node_id not in _refs_in(merged.get(to_id), field):
+                return False, ("move: %s must reference %s in `%s`, the field it "
+                               "left (RFC-0010)" % (to_id, node_id, field))
+            # And it must *newly* gain it. A destination that already referenced it
+            # satisfies "references it" without any transfer happening, which turns
+            # a declared move into a laundered removal — measured: a Policy dropped
+            # from one Service and declared moved to another that already had it was
+            # approved, and retry went from 2 to 1.
+            if node_id in _refs_in(existing.get(to_id), field):
+                return False, ("move: %s already referenced %s in `%s`, so nothing "
+                               "was transferred — a declared move must land "
+                               "somewhere new (RFC-0010)" % (to_id, node_id, field))
+            # RFC-0010 also says a Constraint may only land in `constraints`. That
+            # needs no separate branch: `field` is where the reference *left* from,
+            # and a valid document only ever holds a Constraint in `constraints`
+            # (RFC-0001 rule 5, enforced by `_structure_fault`'s orphan check), so
+            # the same-field requirement above already implies it. A branch for it
+            # was written and removed — no mutation could kill it, which is the
+            # tell for an unreachable condition.
 
         fault = _structure_fault(merged)
         if fault:
@@ -616,6 +706,165 @@ class Tester(_AgentBase):
         self.server.call("agent.report", task_id=task["task_id"], state="completed",
                          payload={"proposed": None, "manifest": manifest})
         return manifest
+
+
+class RefactoringAgent(_AgentBase):
+    """Splits a step that owns more than one repository access — and nothing else.
+
+    The KB prescribes exactly one restructuring (`patterns-repository-call`): *"한
+    step에 한 저장소 접근. 두 접근이 필요하면 두 step이다. step은 재시도·span의
+    단위이므로 접근을 묶으면 재시도가 둘을 함께 반복한다."* That last clause is the
+    reason, and it is also the honest limit of what this transform preserves:
+
+    **effect order survives; retry grouping does not.** A moved access stops being
+    retried together with the one it left. That is the *point* of the prescription,
+    not a defect — but RFC-0006's role table says this role "의미를 보존하며 구조를
+    바꾼다", and only half of that is true here. RFC-0010 §Examples records it.
+
+    Two deliberate limits:
+
+    - **Only a step owned by a `Workflow` or a `Pipeline`.** Under a `Concurrency`
+      owner the new step would become a parallel branch, which mode A is
+      single-threaded enough never to reveal; under a `Guard` it would leave two
+      guarded items where RFC-0001 allows exactly one. Both refuse.
+    - **Direct children only.** A `RepositoryCall` nested inside a `Transaction`
+      does not count, so a step with one direct and one nested access is not
+      reported. That under-detects the KB rule rather than answering it wrongly.
+
+    Anything it cannot ground, it declines — the same discipline as
+    `Coder._fragment_for` returning `None` instead of inventing an Effect.
+    """
+
+    role = "RefactoringAgent"
+
+    KB_DOC = "patterns-repository-call"
+    SPLITTABLE_OWNERS = ("Workflow", "Pipeline")
+
+    def _violations(self, doc):
+        """`(owner_id, step, [extra call ids])` for each step to split."""
+        nodes = {n["id"]: n for n in doc["nodes"]}
+        owners = {c: n for n in doc["nodes"] for c in n.get("children", [])}
+        found = []
+        for node in doc["nodes"]:
+            if node.get("kind") != "WorkflowStep":
+                continue
+            calls = [c for c in node.get("children", [])
+                     if nodes.get(c, {}).get("kind") == "RepositoryCall"]
+            if len(calls) < 2:
+                continue
+            owner = owners.get(node["id"])
+            if owner is None or owner.get("kind") not in self.SPLITTABLE_OWNERS:
+                continue
+            found.append((owner["id"], node, calls[1:]))
+        return found
+
+    def _new_step(self, doc, owner_id, call_id, taken):
+        """A step owning `call_id` alone, or None when its name cannot be derived."""
+        nodes = {n["id"]: n for n in doc["nodes"]}
+        call = nodes[call_id]
+        entity = nodes.get(call.get("entity"))
+        operation = call.get("operation")
+        # Refuse rather than invent, and refuse rather than raise: an entity whose
+        # `name` is whitespace, a number, or absent used to reach `.split()[0]` and
+        # come out as an IndexError instead of a declined task.
+        if not entity or not isinstance(entity.get("name"), str):
+            return None
+        parts = entity["name"].split()
+        if not parts or not isinstance(operation, str) or not operation:
+            return None
+        # `query` is not in the KB's verb dictionary (authenticate/load/find/read →
+        # read, create/insert, update, delete), and `find` is the entry that maps to
+        # the same operation — so a name built from `query` would not round-trip
+        # through the dictionary that document owns.
+        verb = "find" if operation == "query" else operation
+        name = "%s %s" % (verb, parts[0].lower())
+        n = 1
+        while "%s.split.%d" % (owner_id, n) in nodes or \
+                "%s.split.%d" % (owner_id, n) in taken:
+            n += 1
+        new_id = "%s.split.%d" % (owner_id, n)
+        taken.add(new_id)
+        return {"kind": "WorkflowStep", "id": new_id, "name": name,
+                "children": [call_id],
+                "meta": self._meta("kb:%s@%s" % (self.KB_DOC, self._kb_version()))}
+
+    def _kb_version(self):
+        """Through the protocol, and pinned — as Architect and Coder do it.
+
+        Reading `server.kb` directly skips the version pin, leaves the KB access out
+        of the transcript, and lets a missing document escape as a raw KbError
+        instead of a structured error.
+        """
+        doc = self.server.call("kb.load", doc_id=self.KB_DOC)["document"]
+        version = doc["version"]
+        if not self.server.call("kb.verify", doc_id=self.KB_DOC, version=version):
+            raise RpcError("kb_version_conflict",
+                           "%s@%s no longer verifies" % (self.KB_DOC, version))
+        return version
+
+    def _split(self, doc, owner_id, step, extra_call_ids):
+        """`(nodes, intent)` for one step's split, or `(None, None)`."""
+        nodes = {n["id"]: n for n in doc["nodes"]}
+        taken = set()
+        new_steps = []
+        for call_id in extra_call_ids:
+            made = self._new_step(doc, owner_id, call_id, taken)
+            if made is None:
+                return None, None
+            new_steps.append(made)
+
+        original = dict(step)
+        original["children"] = [c for c in step.get("children", [])
+                                if c not in extra_call_ids]
+
+        owner = dict(nodes[owner_id])
+        children = list(owner.get("children", []))
+        at = children.index(step["id"]) + 1
+        # Immediately after the original, not appended: `children` order is
+        # execution order (RFC-0001 Workflow row), so the tail is a different
+        # program.
+        owner["children"] = (children[:at] + [s["id"] for s in new_steps]
+                             + children[at:])
+        # `origin` only. This node already has its own provenance, and rewriting
+        # `meta.source` under cover of an attachment is what the gate refuses.
+        owner["meta"] = dict(owner.get("meta") or {},
+                             origin="agent:%s" % self.role)
+
+        intent = {
+            "attach": [{"parent": owner_id, "child": s["id"]} for s in new_steps],
+            "move": [{"node": s["children"][0], "from": step["id"], "to": s["id"]}
+                     for s in new_steps],
+        }
+        return [owner, original] + new_steps, intent
+
+    def propose(self, task, deadline_ms=30000):
+        """Propose the first split this document needs, or refuse."""
+        doc = self.server.doc
+        violations = self._violations(doc)
+        if not violations:
+            return self._refuse(
+                task, "no step owns more than one repository access",
+                "kb:%s (한 step에 한 저장소 접근)" % self.KB_DOC)
+
+        owner_id, step, extra = violations[0]
+        nodes, intent = self._split(doc, owner_id, step, extra)
+        if nodes is None:
+            return self._refuse(
+                task, "cannot derive a step name for every moved access",
+                "RFC-0001 §노드 카탈로그 (WorkflowStep.name은 동사구)")
+
+        fragment = {"lir_version": doc["lir_version"], "module": doc["module"],
+                    "nodes": nodes}
+        proposal = self.server.call("ir.propose", role=self.role,
+                                    ir_fragment=fragment, intent=intent,
+                                    deadline_ms=deadline_ms,
+                                    idempotency_key="refactor-%s" % step["id"])
+        self.server.call("agent.report", task_id=task["task_id"],
+                         state="input-required",
+                         payload={"proposed": proposal["proposal_id"],
+                                  "split": step["id"],
+                                  "moved": [m["node"] for m in intent["move"]]})
+        return proposal
 
 
 class ReleaseAgent(_AgentBase):

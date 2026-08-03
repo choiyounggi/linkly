@@ -5,8 +5,8 @@ import os
 import unittest
 
 from lnpl.agents import (Architect, Coder, PerformanceAnalyzer, Planner,
-                         ReleaseAgent, Reviewer, SecurityAuditor, Tester,
-                         run_cycle)
+                         RefactoringAgent, ReleaseAgent, Reviewer, SecurityAuditor,
+                         Tester, run_cycle)
 from lnpl.lower import derive_id
 from lnpl.spec import EXPECTATIONS, run_manifest
 from lnpl.kb import KnowledgeBase
@@ -671,6 +671,396 @@ class TestReleaseAgent(unittest.TestCase):
         self.agent.summarize(_task(self.server, "ReleaseAgent", "r4"),
                              verification={"tests": True})
         self.assertNotIn("ir.propose", {m for m, _p in self.server.log})
+
+
+TWO_ACCESS = {
+    "lir_version": "0.1", "module": "t",
+    "nodes": [
+        {"kind": "Entity", "id": "entity.user", "name": "User",
+         "fields": [{"name": "id", "type": "UUID"}]},
+        {"kind": "Policy", "id": "policy.p",
+         "rules": [{"name": "retry", "value": "2"}]},
+        {"kind": "Service", "id": "svc.s", "name": "S", "children": ["wf.w"]},
+        {"kind": "Workflow", "id": "wf.w", "name": "W",
+         "children": ["wf.w.step.1", "wf.w.step.2"]},
+        {"kind": "WorkflowStep", "id": "wf.w.step.1", "name": "load and audit",
+         "children": ["wf.w.step.1.a", "wf.w.step.1.b"],
+         "constraints": ["policy.p"]},
+        {"kind": "RepositoryCall", "id": "wf.w.step.1.a",
+         "entity": "entity.user", "operation": "read"},
+        {"kind": "RepositoryCall", "id": "wf.w.step.1.b",
+         "entity": "entity.user", "operation": "update"},
+        {"kind": "WorkflowStep", "id": "wf.w.step.2", "name": "return user"},
+    ],
+}
+
+# A node this proposal authors carries both; an *existing* node edited only for
+# attachment carries `origin` alone — adding `source` to a node that has its own
+# provenance would be rewriting it, which the gate refuses on purpose.
+NEW_META = {"origin": "agent:RefactoringAgent",
+            "source": "kb:patterns-repository-call@0.1.0"}
+EDIT_META = {"origin": "agent:RefactoringAgent"}
+
+
+class TestReviewerHonoursDeclaredIntent(unittest.TestCase):
+    """RFC-0010 at the review gate — the second, independent check.
+
+    A proposal planted straight into `server.proposals` never passes through
+    `ir.propose`, so every condition has to hold here too. These tests use that
+    seam, exactly as `test_it_rejects_a_kind_outside_the_proposers_rights` does.
+    """
+
+    ROLE = "RefactoringAgent"
+
+    def setUp(self):
+        self.server = Server(json.loads(json.dumps(TWO_ACCESS)), KnowledgeBase())
+        self.reviewer = Reviewer(self.server)
+
+    def _assess(self, nodes, intent):
+        """Plant a proposal and get the Reviewer's verdict on it."""
+        self.server.proposals["p1"] = {
+            "id": "p1", "role": self.ROLE, "state": "pending",
+            "nodes": nodes, "intent": intent, "review_task_id": "t1"}
+        return self.reviewer._assess("p1")
+
+    def _split(self, parent_children=None, to_children=None):
+        parent = {"kind": "Workflow", "id": "wf.w", "name": "W",
+                  "children": parent_children
+                  or ["wf.w.step.1", "wf.w.split.1", "wf.w.step.2"],
+                  "meta": dict(EDIT_META)}
+        original = {"kind": "WorkflowStep", "id": "wf.w.step.1",
+                    "name": "load and audit", "children": ["wf.w.step.1.a"],
+                    "constraints": ["policy.p"]}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "update user",
+               "children": to_children if to_children is not None
+               else ["wf.w.step.1.b"], "meta": dict(NEW_META)}
+        return [parent, original, new]
+
+    def _intent(self):
+        return {"attach": [{"parent": "wf.w", "child": "wf.w.split.1"}],
+                "move": [{"node": "wf.w.step.1.b", "from": "wf.w.step.1",
+                          "to": "wf.w.split.1"}]}
+
+    def test_a_declared_split_is_approved(self):
+        ok, reason = self._assess(self._split(), self._intent())
+        self.assertTrue(ok, reason)
+
+    def test_an_undeclared_drop_is_still_a_removal(self):
+        """Only the two steps — both Behavior, so rights are not the issue here.
+
+        Including the `Workflow` parent would make this a rights refusal instead,
+        since without an `intent` there is no declaration to permit that edit.
+        """
+        ok, reason = self._assess(self._split()[1:], {})
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("removal:"), reason)
+        self.assertIn("RFC-0010", reason)
+
+    def test_a_move_whose_destination_does_not_take_it_is_rejected(self):
+        ok, reason = self._assess(self._split(to_children=[]), self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("move:"), reason)
+
+    def test_a_move_to_a_destination_that_already_had_it_is_rejected(self):
+        """A pure removal dressed as a move.
+
+        Two nodes constrain the same Policy. Dropping it from one and naming the
+        other as `to` satisfies "the destination references it in the same field"
+        without anything being transferred — measured to take retry from 2 to 1
+        before this check existed.
+        """
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step2 = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.2")
+        step2["constraints"] = ["policy.p"]
+        server = Server(doc, KnowledgeBase())
+        server.proposals["p1"] = {
+            "id": "p1", "role": self.ROLE, "state": "pending",
+            "nodes": [{"kind": "WorkflowStep", "id": "wf.w.step.1",
+                       "name": "load and audit",
+                       "children": ["wf.w.step.1.a", "wf.w.step.1.b"],
+                       "constraints": []}],
+            "intent": {"move": [{"node": "policy.p", "from": "wf.w.step.1",
+                                 "to": "wf.w.step.2"}]},
+            "review_task_id": "t1"}
+        ok, reason = Reviewer(server)._assess("p1")
+        self.assertFalse(ok)
+        self.assertIn("already referenced", reason)
+
+    def test_a_reference_migrated_between_fields_is_rejected_without_any_intent(self):
+        """The drop gate is per field, not across their union.
+
+        `node_references` unions `children` with the named fields, so moving a
+        Policy out of `constraints` into `children` looks like no change at all —
+        and the interpreter reads `constraints` for retry, timeout and rollback.
+        This needs no `intent` and no out-of-rights node: the role owns the step.
+        """
+        server = Server(json.loads(json.dumps(TWO_ACCESS)), KnowledgeBase())
+        server.proposals["p1"] = {
+            "id": "p1", "role": self.ROLE, "state": "pending",
+            "nodes": [{"kind": "WorkflowStep", "id": "wf.w.step.1",
+                       "name": "load and audit",
+                       "children": ["wf.w.step.1.a", "wf.w.step.1.b", "policy.p"],
+                       "constraints": []}],
+            "intent": {}, "review_task_id": "t1"}
+        ok, reason = Reviewer(server)._assess("p1")
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("removal:"), reason)
+        self.assertIn("constraints", reason)
+
+    def test_an_attachment_may_only_be_written_into_children(self):
+        """Otherwise "attach what you authored" becomes "write an id anywhere"."""
+        nodes = self._split()
+        nodes[0]["constraints"] = ["wf.w.split.1"]
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("rights:"), reason)
+
+    def test_a_move_into_a_different_field_is_rejected(self):
+        """The laundered-removal attack: a Constraint 'moved' into `children`."""
+        original = {"kind": "WorkflowStep", "id": "wf.w.step.1",
+                    "name": "load and audit",
+                    "children": ["wf.w.step.1.a", "wf.w.step.1.b"],
+                    "constraints": []}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "hold policy",
+               "children": ["policy.p"], "meta": dict(NEW_META)}
+        parent = {"kind": "Workflow", "id": "wf.w", "name": "W",
+                  "children": ["wf.w.step.1", "wf.w.split.1", "wf.w.step.2"],
+                  "meta": dict(EDIT_META)}
+        ok, reason = self._assess(
+            [parent, original, new],
+            {"attach": [{"parent": "wf.w", "child": "wf.w.split.1"}],
+             "move": [{"node": "policy.p", "from": "wf.w.step.1",
+                       "to": "wf.w.split.1"}]})
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("move:"), reason)
+
+    def test_attaching_a_node_it_did_not_author_is_rejected(self):
+        ok, reason = self._assess(
+            self._split(), {"attach": [{"parent": "wf.w",
+                                        "child": "wf.w.step.2"}]})
+        self.assertFalse(ok)
+        # The specific reason, not just the `attach:` prefix — dropping the
+        # containment check makes the V5 pairing gate reject this too, and its
+        # message carries the same prefix, so a prefix-only assertion cannot tell
+        # the two apart and the containment branch would go untested.
+        self.assertIn("was not authored by this proposal", reason)
+
+    def test_attaching_a_child_the_parent_may_not_own_is_rejected(self):
+        entity = {"kind": "Entity", "id": "entity.user", "name": "User",
+                  "fields": [{"name": "id", "type": "UUID"}],
+                  "children": ["wf.w.split.1"], "meta": dict(EDIT_META)}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "update user",
+               "meta": dict(NEW_META)}
+        ok, reason = self._assess(
+            [entity, new], {"attach": [{"parent": "entity.user",
+                                        "child": "wf.w.split.1"}]})
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("attach:"), reason)
+        self.assertIn("Entity", reason)
+
+    def test_a_non_reference_change_on_an_out_of_rights_node_is_rejected(self):
+        nodes = self._split()
+        nodes[0]["name"] = "renamed"
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("rights:"), reason)
+
+    def test_an_out_of_rights_edit_without_an_agent_origin_is_rejected(self):
+        nodes = self._split()
+        nodes[0].pop("meta")
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("rights:"), reason)
+
+    def test_a_declared_move_the_fragment_does_not_perform_is_rejected(self):
+        """The intent says one thing and the nodes do another.
+
+        Both steps keep the child, so nothing was given up. RFC-0010 makes a
+        mismatch between the declaration and the fragment an error, and naming it
+        `move:` diagnoses it better than letting the contested ownership surface.
+        """
+        nodes = self._split()
+        nodes[1]["children"] = ["wf.w.step.1.a", "wf.w.step.1.b"]
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("move:"), reason)
+
+    def test_a_correct_move_to_an_unattached_step_is_caught_by_the_invariant_gate(self):
+        """Not by the new branches — by `_structure_fault`.
+
+        The move is honest: step.1 gives up the access and the new step takes it in
+        the same field, newly. But nothing attaches the new step, so it is an orphan
+        — and the reason must say `orphan:`, which is what shows the invariant check
+        still does the structural work these branches lean on.
+        """
+        ok, reason = self._assess(self._split()[1:], self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("orphan:"), reason)
+
+
+class TestRefactoringAgent(unittest.TestCase):
+    """The ninth role. One prescription, and a refusal for everything else."""
+
+    def _server(self, doc=None):
+        return Server(json.loads(json.dumps(doc or TWO_ACCESS)), KnowledgeBase())
+
+    def _run(self, server, key="k1"):
+        agent = RefactoringAgent(server)
+        task = server.call("agent.dispatch", role="RefactoringAgent",
+                           objective="split", deadline_ms=5000,
+                           idempotency_key=key)
+        return agent.propose(task)
+
+    def _apply(self, server, out):
+        Reviewer(server).decide(out["review_task_id"], out["proposal_id"])
+        return {n["id"]: n for n in server.doc["nodes"]}
+
+    def _accesses(self, nodes, step_id):
+        return [c for c in nodes[step_id].get("children", [])
+                if nodes.get(c, {}).get("kind") == "RepositoryCall"]
+
+    def test_it_splits_a_step_with_two_repository_accesses(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(len(self._accesses(nodes, "wf.w.step.1")), 1)
+        self.assertEqual(len(self._accesses(nodes, "wf.w.split.1")), 1)
+
+    def test_the_new_step_runs_immediately_after_the_original(self):
+        """`children` order is execution order, so the tail is a different program."""
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w"]["children"],
+                         ["wf.w.step.1", "wf.w.split.1", "wf.w.step.2"])
+
+    def test_the_original_step_keeps_its_id_and_its_first_access(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertIn("wf.w.step.1.a", nodes["wf.w.step.1"]["children"])
+
+    def test_the_new_step_is_grounded_in_the_kb(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w.split.1"]["meta"]["source"],
+                         "kb:patterns-repository-call@0.1.0")
+
+    def test_the_new_step_name_is_a_verb_phrase_from_the_operation(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w.split.1"]["name"], "update user")
+
+    def test_a_query_operation_is_named_with_the_dictionarys_verb(self):
+        """`query` is not in `patterns-repository-call`'s verb dictionary.
+
+        The dictionary maps authenticate/load/find/read → read, plus create/insert,
+        update, delete. A step named `query user` would not round-trip through it,
+        so the name uses `find`, the entry that means the same operation.
+        """
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        call = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1.b")
+        call["operation"] = "query"
+        server = self._server(doc)
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w.split.1"]["name"], "find user")
+
+    def test_it_refuses_when_no_step_owns_two_accesses(self):
+        server = Server(golden(), KnowledgeBase())
+        out = self._run(server)
+        self.assertIsNone(out["proposal_id"])
+        self.assertEqual(server.proposals, {})
+
+    def test_a_step_with_one_access_is_not_a_violation(self):
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1")
+        step["children"] = ["wf.w.step.1.a"]
+        doc["nodes"] = [n for n in doc["nodes"] if n["id"] != "wf.w.step.1.b"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_three_accesses_split_into_three_steps(self):
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1")
+        step["children"].append("wf.w.step.1.c")
+        doc["nodes"].append({"kind": "RepositoryCall", "id": "wf.w.step.1.c",
+                             "entity": "entity.user", "operation": "delete"})
+        server = self._server(doc)
+        nodes = self._apply(server, self._run(server))
+        for step_id in ("wf.w.step.1", "wf.w.split.1", "wf.w.split.2"):
+            self.assertEqual(len(self._accesses(nodes, step_id)), 1, step_id)
+        self.assertEqual(nodes["wf.w.split.2"]["name"], "delete user")
+
+    def test_it_refuses_a_step_owned_by_a_concurrency_node(self):
+        """Splitting there would make the new step a parallel branch.
+
+        Mode A is single-threaded, so no differential test would reveal it — the
+        refusal is the only thing standing between this transform and a silent
+        concurrency change.
+        """
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        doc["nodes"].append({"kind": "Concurrency", "id": "wf.w.conc",
+                             "mode": "parallel", "children": ["wf.w.step.1"]})
+        wf = next(n for n in doc["nodes"] if n["id"] == "wf.w")
+        wf["children"] = ["wf.w.conc", "wf.w.step.2"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_it_refuses_a_step_owned_by_a_guard(self):
+        """RFC-0001 allows a Guard exactly one guarded item."""
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        doc["nodes"].append({"kind": "Guard", "id": "wf.w.guard",
+                             "mode": "repeat", "count": 3,
+                             "children": ["wf.w.step.1"]})
+        wf = next(n for n in doc["nodes"] if n["id"] == "wf.w")
+        wf["children"] = ["wf.w.guard", "wf.w.step.2"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_a_nested_access_is_not_counted(self):
+        """Under-detection, stated in the docstring rather than answered wrongly."""
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1")
+        step["children"] = ["wf.w.step.1.a", "wf.w.step.1.tx"]
+        doc["nodes"].append({"kind": "Transaction", "id": "wf.w.step.1.tx",
+                             "children": ["wf.w.step.1.b"]})
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_it_declines_instead_of_crashing_on_an_underivable_name(self):
+        """Refuse, and refuse *cleanly*.
+
+        A whitespace-only entity name used to reach `.split()[0]` and come out as an
+        IndexError rather than a declined task — a crash where the docstring
+        promises a refusal.
+        """
+        for name in ("   ", 123, None):
+            doc = json.loads(json.dumps(TWO_ACCESS))
+            entity = next(n for n in doc["nodes"] if n["id"] == "entity.user")
+            entity["name"] = name
+            server = self._server(doc)
+            self.assertIsNone(self._run(server)["proposal_id"], repr(name))
+
+    def test_it_declines_when_a_repository_call_has_no_operation(self):
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        call = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1.b")
+        del call["operation"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_it_pins_the_kb_document_through_the_protocol(self):
+        """Architect and Coder route/load/verify; reading server.kb skips the pin."""
+        server = self._server()
+        self._run(server)
+        used = {m for m, _p in server.log}
+        self.assertIn("kb.load", used)
+        self.assertIn("kb.verify", used)
+
+    def test_all_nine_roles_now_have_an_implementation(self):
+        """What makes "8 of 9" impossible to regress to."""
+        import inspect
+
+        from lnpl import agents, protocol
+        implemented = {name for name, obj in inspect.getmembers(agents, inspect.isclass)
+                       if obj.__module__ == "lnpl.agents" and not name.startswith("_")}
+        self.assertEqual(set(protocol.ROLES), implemented)
 
 
 if __name__ == "__main__":

@@ -179,7 +179,10 @@ class TestLnplEmission(unittest.TestCase):
         self.assertEqual(len(op_lines), 9)          # 6 steps + 3 effects
         for line in op_lines:
             self.assertIn('lnpl.node_id = "', line)
-            self.assertIn("loc(", line)
+            # The location must be MLIR syntax, not a comment. `assertIn("loc(")`
+            # alone also passes for `// loc(...)`, which is why the mutation that
+            # comments the location out survived the suite.
+            self.assertRegex(line, r'\)\s+loc\("[^"]+"\)\s*$')
 
     def test_effects_become_lnpl_effect_ops(self):
         text = backend.emit_lnpl_mlir(golden(), "wf.login")

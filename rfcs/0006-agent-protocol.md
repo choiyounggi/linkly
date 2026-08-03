@@ -3,6 +3,7 @@
 ## Status
 
 - Status: Accepted (2026-07-31)
+- Updated-by: RFC-0010 (§Agent Roles & IR Access, §Methods/ir.propose)
 
 ## Motivation
 
@@ -76,6 +77,8 @@ A2A/MCP 생태계와 상호운용하려면 지금 사설 확장을 심지 않는
 ## Reference-level Specification
 
 ### Agent Roles & IR Access
+
+> 갱신됨: RFC-0010
 
 역할은 Charter §AI Pipeline의 9종으로 **고정**한다. 행 순서는 파이프라인 순서와
 같다. Charter 산문의 공백 표기(`Performance Analyzer` 등)는 프로토콜 식별자로
@@ -206,6 +209,8 @@ IR 조각 조회. 읽기 전용.
 - 존재하지 않는 노드 id가 포함되면 `ir_invalid`.
 
 #### `ir.propose`
+
+> 갱신됨: RFC-0010
 
 IR 변경 제안. **IR을 즉시 변경하지 않는다.**
 

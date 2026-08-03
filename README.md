@@ -19,15 +19,19 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: eight RFCs, all `Accepted` (2026-07-31). Phases 1–2 complete.**
+> **Status: 11 RFCs — 8 `Accepted`, RFC-0000 `Superseded` by RFC-0007, and
+> RFC-0007 itself still `Draft` while being the effective process
+> ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). All three
+> roadmap phases complete.**
 > `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter (mode A) — and
 > compiles through MLIR to a **native binary** (mode B). Guard conditions (`when`/`until`)
 > evaluate at runtime in both modes, with RFC-0008 G8 enabling condition field extraction
 > from payloads via argv parameter passing. A differential check confirms the two modes
 > agree on all four observable classes RFC-0004 names (execution order, policy outcome,
 > observability signals, masking). OpenAPI is generated from the IR. The golden scenario
-> is *generated* by the compiler rather than hand-maintained (264 tests, all passing).
-> Remaining: Phase 3 custom `lnpl` MLIR dialect (needs C++ TableGen — [issue #1](https://github.com/choiyounggi/linkly/issues/1)).
+> is *generated* by the compiler rather than hand-maintained (378 tests, all passing).
+> The custom `lnpl` MLIR dialect landed too — declaratively, via IRDL, so no C++
+> TableGen build is involved (RFC-0004 S4). All nine agent roles are implemented.
 > See the [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
 > identifiers, keywords, and schema fields are English.
 
@@ -323,8 +327,10 @@ What remains open is recorded in each RFC's `## Open Questions` and tracked as i
 
 | Issue | What is deferred |
 |-------|------------------|
-| [#2](https://github.com/choiyounggi/linkly/issues/2) | `RefactoringAgent`, the last of the nine roles — it needs `ir.propose` to express node *removal*, an RFC-0006 revision |
-| [#3](https://github.com/choiyounggi/linkly/issues/3) | The guard condition grammar (RFC-0002 OQ2), which also blocks `until` in mode B |
+| [#7](https://github.com/choiyounggi/linkly/issues/7) | RFC-0004 S5 — lowering the `lnpl` module with a real MLIR pass, and giving the dialect regions so it can represent concurrency |
+| [#9](https://github.com/choiyounggi/linkly/issues/9) | Mode B does not enforce RFC-0003's cache-TTL contract; mode A refuses without a budget and mode B does not |
+| [#11](https://github.com/choiyounggi/linkly/issues/11) | RFC-0007 is `Status: Draft` while being the effective process two Accepted RFCs build on |
+| [#12](https://github.com/choiyounggi/linkly/issues/12) | Mode A reads a Presence guard's condition from the payload while mode B takes a separate `skip` flag |
 
 Those are *deferred decisions*, not holes in a contract. The reference implementation
 refuses what it cannot decide instead of guessing: an unknown verb, an unevaluable

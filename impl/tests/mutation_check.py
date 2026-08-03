@@ -210,10 +210,103 @@ MUTATIONS = [
      "lnpl/agents.py",
      "                if colour[kid] == grey:\n                    return path[path.index(kid):] + [kid]",
      "                if colour[kid] == grey and kid == node_id:\n                    return path[path.index(kid):] + [kid]"),
+    # Re-anchored 2026-08-03: RFC-0010 narrowed this condition from "any dropped
+    # reference" to "a dropped reference no declared move accounts for", so the
+    # old `if dropped:` anchor no longer exists.
     ("Reviewer: allow a replacement to drop references (removal by edit)",
      "lnpl/agents.py",
-     "            if dropped:\n                return False,",
-     "            if False:\n                return False,"),
+     '                    if (node["id"], ref) not in move_map:',
+     "                    if False:"),
+
+    # RFC-0010 (2026-08-03). Every branch the attachment exception introduced.
+    # Its whole content is "write a reference into a node whose kind you do not
+    # own", so a gate here that only ever says yes is indistinguishable from a
+    # deleted one. The union-set entry is the important one: comparing references
+    # as one set across all fields is what let an audit reverse a workflow's
+    # execution order and migrate a Policy out of `constraints`.
+    ("Intent: compare references as one set instead of per field, in order",
+     "lnpl/protocol.py",
+     """    for field in REFERENCE_KEYS:
+        before, after = existing.get(field), proposed.get(field)""",
+     """    added = set(node_references(proposed)) - set(node_references(existing))
+    if added != set(declared_children):
+        return False
+    return True
+    for field in REFERENCE_KEYS:
+        before, after = existing.get(field), proposed.get(field)"""),
+    ("Intent: accept any out-of-rights edit, ignoring the other fields",
+     "lnpl/protocol.py",
+     "    if _comparable(proposed) != _comparable(existing):\n        return False",
+     "    if False:\n        return False"),
+    ("Intent: let a proposal attach a node it did not author (propose time)",
+     "lnpl/protocol.py",
+     "                if child not in authored:",
+     "                if False:"),
+    ("Intent: attach a child its parent may not own (V5, propose time)",
+     "lnpl/protocol.py",
+     "                if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):",
+     "                if False:"),
+    ("Intent: accept an out-of-rights edit with no agent origin",
+     "lnpl/protocol.py",
+     '                if not origin.startswith("agent:"):',
+     "                if False:"),
+    ("Intent: let a proposal attach a node it did not author (review time)",
+     "lnpl/agents.py",
+     "                if child not in authored:",
+     "                if False:"),
+    ("Intent: attach a child its parent may not own (V5, review time)",
+     "lnpl/agents.py",
+     "                if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):",
+     "                if False:"),
+    ("Intent: accept a move whose destination takes it in another field",
+     "lnpl/agents.py",
+     "            if node_id not in _refs_in(merged.get(to_id), field):",
+     "            if False:"),
+    # The agent rather than a gate: this proves the split is a *move*, not a
+    # duplication. Leaving the access on both steps is contested ownership, which
+    # `_structure_fault` catches — so this also exercises that the invariant gate
+    # is still what does the structural work.
+    ("Refactoring: duplicate the access instead of moving it",
+     "lnpl/agents.py",
+     """        original["children"] = [c for c in step.get("children", [])
+                                if c not in extra_call_ids]""",
+     '        original["children"] = list(step.get("children", []))'),
+    ("Refactoring: split a step under any owner, not just Workflow/Pipeline",
+     "lnpl/agents.py",
+     '            if owner is None or owner.get("kind") not in self.SPLITTABLE_OWNERS:',
+     "            if False:"),
+    # Added after an adversarial review of the branch found both of these live.
+    ("Intent: compare dropped references across fields instead of per field",
+     "lnpl/agents.py",
+     """            for field in sorted(REFERENCE_KEYS):
+                gone = sorted(_refs_in(old, field) - _refs_in(node, field))""",
+     """            for field in ["children"]:
+                gone = sorted(set(node_references(old)) - set(node_references(node)))"""),
+    ("Intent: accept a move whose destination already referenced the node",
+     "lnpl/agents.py",
+     "            if node_id in _refs_in(existing.get(to_id), field):",
+     "            if False:"),
+    ("Intent: let an attachment be written into any reference field",
+     "lnpl/protocol.py",
+     '        allowed_new = declared_children if field == "children" else ()',
+     "        allowed_new = declared_children"),
+    ("Intent: accept a fragment that names one id twice",
+     "lnpl/protocol.py",
+     "        if repeated:",
+     "        if False:"),
+    ("Refactoring: invent a name when the entity has none",
+     "lnpl/agents.py",
+     '        if not entity or not isinstance(entity.get("name"), str):\n            return None',
+     "        if False:\n            return None"),
+    ("Refactoring: propose even when no step owns two accesses",
+     "lnpl/agents.py",
+     "        if not violations:\n            return self._refuse(",
+     "        if False:\n            return self._refuse("),
+    ("Refactoring: append the new step instead of running it next",
+     "lnpl/agents.py",
+     """        owner["children"] = (children[:at] + [s["id"] for s in new_steps]
+                             + children[at:])""",
+     '        owner["children"] = children + [s["id"] for s in new_steps]'),
     ("Reviewer: allow a kind swap under the same id",
      "lnpl/agents.py",
      '            if node.get("kind") != old.get("kind"):',
