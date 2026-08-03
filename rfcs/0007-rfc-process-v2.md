@@ -1,7 +1,9 @@
 # RFC-0007: RFC Process v2
 
-> Status: Accepted (2026-07-31 — 이 RFC는 그 날짜부터 효력이 있어 왔다. RFC-0000이 그 날짜에 Superseded되면서 이 문서의 프로세스가 즉시 구현 계약이 됐으므로 역추적 기록한다.)
+> Status: Accepted (formal gate 2026-08-03, effective since 2026-07-31 when RFC-0000 Superseded)
 > Supersedes: RFC-0000
+> 
+> **Promotion note:** This RFC's process has been binding since RFC-0000 Superseded on 2026-07-31 (even while formally Draft). Formal Accepted status is recorded 2026-08-03 after walking the consistency gate (C1–C7 PASS, C8–C9 resolved) — this is a retrospective record; actual contractual effect dates to 2026-07-31.
 
 ## 1. 목적
 
