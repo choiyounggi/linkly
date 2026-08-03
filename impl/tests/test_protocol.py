@@ -394,6 +394,19 @@ class TestProposalIntent(unittest.TestCase):
             self._propose(self._split_nodes(), {"attach": [{"parent": "wf.w"}]})
         self.assertIn("intent.attach", str(ctx.exception))
 
+    def test_a_fragment_naming_an_id_twice_is_refused(self):
+        """`_assess` merges last-wins while `_apply` appends every unseen id.
+
+        So a duplicate would put two nodes with one id into the document and the
+        reviewer would only ever have judged one of them. RFC-0001's id-uniqueness
+        invariant is otherwise unenforced.
+        """
+        twin = {"kind": "WorkflowStep", "id": "wf.w.step.3", "name": "decoy",
+                "meta": dict(PROV)}
+        with self.assertRaises(RpcError) as ctx:
+            self._propose([twin, dict(twin, name="real")])
+        self.assertIn("more than once", str(ctx.exception))
+
     def test_without_intent_the_gate_behaves_exactly_as_before(self):
         """Backward compatibility: absent `intent` is the pre-RFC-0010 contract."""
         within_rights = [{"kind": "WorkflowStep", "id": "wf.w.step.3",

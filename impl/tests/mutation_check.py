@@ -215,8 +215,8 @@ MUTATIONS = [
     # old `if dropped:` anchor no longer exists.
     ("Reviewer: allow a replacement to drop references (removal by edit)",
      "lnpl/agents.py",
-     "            if unexplained:\n                return False,",
-     "            if False:\n                return False,"),
+     '                    if (node["id"], ref) not in move_map:',
+     "                    if False:"),
 
     # RFC-0010 (2026-08-03). Every branch the attachment exception introduced.
     # Its whole content is "write a reference into a node whose kind you do not
@@ -227,19 +227,13 @@ MUTATIONS = [
     ("Intent: compare references as one set instead of per field, in order",
      "lnpl/protocol.py",
      """    for field in REFERENCE_KEYS:
-        before, after = existing.get(field), proposed.get(field)
-        if isinstance(after, list):
-            remaining = [ref for ref in after if ref not in declared_children]
-            if remaining != list(before or []):
-                return False
-        elif after != before:
-            return False
-    return True""",
+        before, after = existing.get(field), proposed.get(field)""",
      """    added = set(node_references(proposed)) - set(node_references(existing))
-    dropped = set(node_references(existing)) - set(node_references(proposed))
-    if added != set(declared_children) or dropped:
+    if added != set(declared_children):
         return False
-    return True"""),
+    return True
+    for field in REFERENCE_KEYS:
+        before, after = existing.get(field), proposed.get(field)"""),
     ("Intent: accept any out-of-rights edit, ignoring the other fields",
      "lnpl/protocol.py",
      "    if _comparable(proposed) != _comparable(existing):\n        return False",
@@ -281,6 +275,33 @@ MUTATIONS = [
      "lnpl/agents.py",
      '            if owner is None or owner.get("kind") not in self.SPLITTABLE_OWNERS:',
      "            if False:"),
+    # Added after an adversarial review of the branch found both of these live.
+    ("Intent: compare dropped references across fields instead of per field",
+     "lnpl/agents.py",
+     """            for field in sorted(REFERENCE_KEYS):
+                gone = sorted(_refs_in(old, field) - _refs_in(node, field))""",
+     """            for field in ["children"]:
+                gone = sorted(set(node_references(old)) - set(node_references(node)))"""),
+    ("Intent: accept a move whose destination already referenced the node",
+     "lnpl/agents.py",
+     "            if node_id in _refs_in(existing.get(to_id), field):",
+     "            if False:"),
+    ("Intent: let an attachment be written into any reference field",
+     "lnpl/protocol.py",
+     '        allowed_new = declared_children if field == "children" else ()',
+     "        allowed_new = declared_children"),
+    ("Intent: accept a fragment that names one id twice",
+     "lnpl/protocol.py",
+     "        if repeated:",
+     "        if False:"),
+    ("Refactoring: invent a name when the entity has none",
+     "lnpl/agents.py",
+     '        if not entity or not isinstance(entity.get("name"), str):\n            return None',
+     "        if False:\n            return None"),
+    ("Refactoring: propose even when no step owns two accesses",
+     "lnpl/agents.py",
+     "        if not violations:\n            return self._refuse(",
+     "        if False:\n            return self._refuse("),
     ("Refactoring: append the new step instead of running it next",
      "lnpl/agents.py",
      """        owner["children"] = (children[:at] + [s["id"] for s in new_steps]

@@ -19,7 +19,10 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: eight RFCs, all `Accepted` (2026-07-31). Phases 1–2 complete.**
+> **Status: 11 RFCs — 8 `Accepted`, RFC-0000 `Superseded` by RFC-0007, and
+> RFC-0007 itself still `Draft` while being the effective process
+> ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). All three
+> roadmap phases complete.**
 > `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter (mode A) — and
 > compiles through MLIR to a **native binary** (mode B). Guard conditions (`when`/`until`)
 > evaluate at runtime in both modes, with RFC-0008 G8 enabling condition field extraction

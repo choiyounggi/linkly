@@ -352,12 +352,12 @@ class Reviewer(_AgentBase):
                            "version, or `ir:<node id>` present in the document: %s"
                            % ", ".join(bad_source))
 
-        # `ir.propose` adds or replaces; it has no way to say "remove this node".
-        # That gap is exactly why RFC-0006's RefactoringAgent is deferred, so a
-        # replacement that drops references or changes a node's kind is a removal
-        # wearing an edit's clothes — and it changes runtime meaning, because the
-        # interpreter reads `constraints` for retry, timeout, rollback and the
-        # security mechanisms.
+        # `ir.propose` adds or replaces. Since RFC-0010 it can also *move* a
+        # reference, but only when the proposal declares it — an undeclared drop is
+        # still a removal wearing an edit's clothes, and it changes runtime meaning,
+        # because the interpreter reads `constraints` for retry, timeout, rollback
+        # and the security mechanisms.
+        declared_drops = {}
         for node in nodes:
             old = existing.get(node["id"])
             if old is None:
@@ -365,17 +365,26 @@ class Reviewer(_AgentBase):
             if node.get("kind") != old.get("kind"):
                 return False, ("kind: %s is a %s in the document and this would make "
                                "it a %s — `ir.propose` replaces a node, it does not "
-                               "remove one (RFC-0006 §Methods)"
+                               "swap one out for another kind "
+                               "(RFC-0010 §Methods/ir.propose)"
                                % (node["id"], old.get("kind"), node.get("kind")))
-            dropped = sorted(set(node_references(old)) - set(node_references(node)))
-            unexplained = [ref for ref in dropped
-                           if (node["id"], ref) not in move_map]
-            if unexplained:
-                return False, ("removal: replacing %s would drop reference(s) %s "
-                               "without a declared move — `ir.propose` expresses a "
-                               "move by declaring it in `intent`, and refuses an "
-                               "undeclared removal (RFC-0010 §Methods/ir.propose)"
-                               % (node["id"], ", ".join(unexplained)))
+            # Per field, not across their union. `node_references` unions `children`
+            # with the named fields, so a union comparison sees no change when a
+            # reference merely *migrates* between them — and the interpreter reads
+            # `constraints` for retry, timeout and rollback, so migrating a Policy
+            # into `children` silently stops it applying. Measured: retry 2 became
+            # retry 1 with a proposal that declared nothing at all.
+            for field in sorted(REFERENCE_KEYS):
+                gone = sorted(_refs_in(old, field) - _refs_in(node, field))
+                for ref in gone:
+                    if (node["id"], ref) not in move_map:
+                        return False, (
+                            "removal: replacing %s would drop %s from `%s` without "
+                            "a declared move — `ir.propose` expresses a move by "
+                            "declaring it in `intent`, and refuses an undeclared "
+                            "removal (RFC-0010 §Methods/ir.propose)"
+                            % (node["id"], ref, field))
+                    declared_drops[(node["id"], ref)] = field
 
         # Merge into a copy — assessing must not change what it is assessing.
         merged = {nid: node for nid, node in existing.items()}
@@ -388,14 +397,22 @@ class Reviewer(_AgentBase):
         # be laundered into a `children` entry — emptying `constraints`, which the
         # interpreter reads for retry, timeout and rollback.
         for (from_id, node_id), to_id in sorted(move_map.items()):
-            field = next((f for f in sorted(REFERENCE_KEYS)
-                          if node_id in _refs_in(existing.get(from_id), f)), None)
+            field = declared_drops.get((from_id, node_id))
             if field is None:
-                return False, ("move: %s does not reference %s, so there is nothing "
+                return False, ("move: %s does not give up %s, so there is nothing "
                                "to move (RFC-0010)" % (from_id, node_id))
             if node_id not in _refs_in(merged.get(to_id), field):
                 return False, ("move: %s must reference %s in `%s`, the field it "
                                "left (RFC-0010)" % (to_id, node_id, field))
+            # And it must *newly* gain it. A destination that already referenced it
+            # satisfies "references it" without any transfer happening, which turns
+            # a declared move into a laundered removal — measured: a Policy dropped
+            # from one Service and declared moved to another that already had it was
+            # approved, and retry went from 2 to 1.
+            if node_id in _refs_in(existing.get(to_id), field):
+                return False, ("move: %s already referenced %s in `%s`, so nothing "
+                               "was transferred — a declared move must land "
+                               "somewhere new (RFC-0010)" % (to_id, node_id, field))
             # RFC-0010 also says a Constraint may only land in `constraints`. That
             # needs no separate branch: `field` is where the reference *left* from,
             # and a valid document only ever holds a Constraint in `constraints`
@@ -746,14 +763,21 @@ class RefactoringAgent(_AgentBase):
         nodes = {n["id"]: n for n in doc["nodes"]}
         call = nodes[call_id]
         entity = nodes.get(call.get("entity"))
-        if not entity or not entity.get("name"):
-            return None            # no name to derive from; do not invent one
+        operation = call.get("operation")
+        # Refuse rather than invent, and refuse rather than raise: an entity whose
+        # `name` is whitespace, a number, or absent used to reach `.split()[0]` and
+        # come out as an IndexError instead of a declined task.
+        if not entity or not isinstance(entity.get("name"), str):
+            return None
+        parts = entity["name"].split()
+        if not parts or not isinstance(operation, str) or not operation:
+            return None
         # `query` is not in the KB's verb dictionary (authenticate/load/find/read →
         # read, create/insert, update, delete), and `find` is the entry that maps to
         # the same operation — so a name built from `query` would not round-trip
         # through the dictionary that document owns.
-        verb = "find" if call.get("operation") == "query" else call.get("operation")
-        name = "%s %s" % (verb, str(entity["name"]).split()[0].lower())
+        verb = "find" if operation == "query" else operation
+        name = "%s %s" % (verb, parts[0].lower())
         n = 1
         while "%s.split.%d" % (owner_id, n) in nodes or \
                 "%s.split.%d" % (owner_id, n) in taken:
@@ -765,7 +789,18 @@ class RefactoringAgent(_AgentBase):
                 "meta": self._meta("kb:%s@%s" % (self.KB_DOC, self._kb_version()))}
 
     def _kb_version(self):
-        return self.server.kb.load(self.KB_DOC)["version"]
+        """Through the protocol, and pinned — as Architect and Coder do it.
+
+        Reading `server.kb` directly skips the version pin, leaves the KB access out
+        of the transcript, and lets a missing document escape as a raw KbError
+        instead of a structured error.
+        """
+        doc = self.server.call("kb.load", doc_id=self.KB_DOC)["document"]
+        version = doc["version"]
+        if not self.server.call("kb.verify", doc_id=self.KB_DOC, version=version):
+            raise RpcError("kb_version_conflict",
+                           "%s@%s no longer verifies" % (self.KB_DOC, version))
+        return version
 
     def _split(self, doc, owner_id, step, extra_call_ids):
         """`(nodes, intent)` for one step's split, or `(None, None)`."""

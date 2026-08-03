@@ -761,6 +761,60 @@ class TestReviewerHonoursDeclaredIntent(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(reason.startswith("move:"), reason)
 
+    def test_a_move_to_a_destination_that_already_had_it_is_rejected(self):
+        """A pure removal dressed as a move.
+
+        Two nodes constrain the same Policy. Dropping it from one and naming the
+        other as `to` satisfies "the destination references it in the same field"
+        without anything being transferred — measured to take retry from 2 to 1
+        before this check existed.
+        """
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step2 = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.2")
+        step2["constraints"] = ["policy.p"]
+        server = Server(doc, KnowledgeBase())
+        server.proposals["p1"] = {
+            "id": "p1", "role": self.ROLE, "state": "pending",
+            "nodes": [{"kind": "WorkflowStep", "id": "wf.w.step.1",
+                       "name": "load and audit",
+                       "children": ["wf.w.step.1.a", "wf.w.step.1.b"],
+                       "constraints": []}],
+            "intent": {"move": [{"node": "policy.p", "from": "wf.w.step.1",
+                                 "to": "wf.w.step.2"}]},
+            "review_task_id": "t1"}
+        ok, reason = Reviewer(server)._assess("p1")
+        self.assertFalse(ok)
+        self.assertIn("already referenced", reason)
+
+    def test_a_reference_migrated_between_fields_is_rejected_without_any_intent(self):
+        """The drop gate is per field, not across their union.
+
+        `node_references` unions `children` with the named fields, so moving a
+        Policy out of `constraints` into `children` looks like no change at all —
+        and the interpreter reads `constraints` for retry, timeout and rollback.
+        This needs no `intent` and no out-of-rights node: the role owns the step.
+        """
+        server = Server(json.loads(json.dumps(TWO_ACCESS)), KnowledgeBase())
+        server.proposals["p1"] = {
+            "id": "p1", "role": self.ROLE, "state": "pending",
+            "nodes": [{"kind": "WorkflowStep", "id": "wf.w.step.1",
+                       "name": "load and audit",
+                       "children": ["wf.w.step.1.a", "wf.w.step.1.b", "policy.p"],
+                       "constraints": []}],
+            "intent": {}, "review_task_id": "t1"}
+        ok, reason = Reviewer(server)._assess("p1")
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("removal:"), reason)
+        self.assertIn("constraints", reason)
+
+    def test_an_attachment_may_only_be_written_into_children(self):
+        """Otherwise "attach what you authored" becomes "write an id anywhere"."""
+        nodes = self._split()
+        nodes[0]["constraints"] = ["wf.w.split.1"]
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("rights:"), reason)
+
     def test_a_move_into_a_different_field_is_rejected(self):
         """The laundered-removal attack: a Constraint 'moved' into `children`."""
         original = {"kind": "WorkflowStep", "id": "wf.w.step.1",
@@ -818,18 +872,30 @@ class TestReviewerHonoursDeclaredIntent(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(reason.startswith("rights:"), reason)
 
-    def test_a_move_that_leaves_two_owners_is_caught_by_the_invariant_gate(self):
-        """Not by the move branch — by `_structure_fault`.
+    def test_a_declared_move_the_fragment_does_not_perform_is_rejected(self):
+        """The intent says one thing and the nodes do another.
 
-        Both steps keep the child, so nothing was dropped and the move branch is
-        satisfied. The reason must be `ownership:`, which is what shows the
-        invariant check is still doing the structural work.
+        Both steps keep the child, so nothing was given up. RFC-0010 makes a
+        mismatch between the declaration and the fragment an error, and naming it
+        `move:` diagnoses it better than letting the contested ownership surface.
         """
         nodes = self._split()
         nodes[1]["children"] = ["wf.w.step.1.a", "wf.w.step.1.b"]
         ok, reason = self._assess(nodes, self._intent())
         self.assertFalse(ok)
-        self.assertTrue(reason.startswith("ownership:"), reason)
+        self.assertTrue(reason.startswith("move:"), reason)
+
+    def test_a_correct_move_to_an_unattached_step_is_caught_by_the_invariant_gate(self):
+        """Not by the new branches — by `_structure_fault`.
+
+        The move is honest: step.1 gives up the access and the new step takes it in
+        the same field, newly. But nothing attaches the new step, so it is an orphan
+        — and the reason must say `orphan:`, which is what shows the invariant check
+        still does the structural work these branches lean on.
+        """
+        ok, reason = self._assess(self._split()[1:], self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("orphan:"), reason)
 
 
 class TestRefactoringAgent(unittest.TestCase):
@@ -957,6 +1023,35 @@ class TestRefactoringAgent(unittest.TestCase):
                              "children": ["wf.w.step.1.b"]})
         server = self._server(doc)
         self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_it_declines_instead_of_crashing_on_an_underivable_name(self):
+        """Refuse, and refuse *cleanly*.
+
+        A whitespace-only entity name used to reach `.split()[0]` and come out as an
+        IndexError rather than a declined task — a crash where the docstring
+        promises a refusal.
+        """
+        for name in ("   ", 123, None):
+            doc = json.loads(json.dumps(TWO_ACCESS))
+            entity = next(n for n in doc["nodes"] if n["id"] == "entity.user")
+            entity["name"] = name
+            server = self._server(doc)
+            self.assertIsNone(self._run(server)["proposal_id"], repr(name))
+
+    def test_it_declines_when_a_repository_call_has_no_operation(self):
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        call = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1.b")
+        del call["operation"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_it_pins_the_kb_document_through_the_protocol(self):
+        """Architect and Coder route/load/verify; reading server.kb skips the pin."""
+        server = self._server()
+        self._run(server)
+        used = {m for m, _p in server.log}
+        self.assertIn("kb.load", used)
+        self.assertIn("kb.verify", used)
 
     def test_all_nine_roles_now_have_an_implementation(self):
         """What makes "8 of 9" impossible to regress to."""

@@ -219,8 +219,13 @@ def reference_only_edit(proposed, existing, declared_children):
 
     for field in REFERENCE_KEYS:
         before, after = existing.get(field), proposed.get(field)
+        # Only `children` may take the declared additions. Attachment means
+        # ownership; letting the id also appear in `constraints` or `requires` would
+        # turn "attach what you authored" into "write this id into any reference
+        # field of a node whose kind you do not own".
+        allowed_new = declared_children if field == "children" else ()
         if isinstance(after, list):
-            remaining = [ref for ref in after if ref not in declared_children]
+            remaining = [ref for ref in after if ref not in allowed_new]
             if remaining != list(before or []):
                 return False
         elif after != before:
@@ -480,6 +485,17 @@ class Server:
             raise RpcError("ir_invalid",
                            "fragment module %r does not match %r"
                            % (fragment.get("module"), self.doc["module"]))
+        # One node per id. `Reviewer._assess` merges with last-wins while `_apply`
+        # appends every unseen id, so a fragment naming an id twice would put two
+        # nodes with that id into the document and the reviewer would only have seen
+        # one of them. RFC-0001's V1 (id uniqueness) is otherwise unenforced.
+        ids = [n.get("id") for n in fragment["nodes"] if isinstance(n, dict)]
+        repeated = sorted({i for i in ids if i is not None and ids.count(i) > 1})
+        if repeated:
+            raise RpcError("ir_invalid",
+                           "ir_fragment names %s more than once — one node per id "
+                           "(RFC-0001 §구조 규칙, id 유일)" % ", ".join(repeated))
+
         intent = params.get("intent") or {}
         attach_map = attachments(intent)
         moves(intent)          # shape-validate here so a bad move fails at propose
