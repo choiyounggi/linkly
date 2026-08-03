@@ -40,13 +40,18 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
             "text": _text_of(steps, result["status"])}
 
 
-def observe_mode_b(document, workflow_id, workdir, payload=None, skip=False):
+def observe_mode_b(document, workflow_id, workdir, payload=None):
     """Build and run the native binary, reducing its output to the same shape.
 
     RFC-0008 G8: condition field values come from the payload. Selection is by
     the workflow's own condition fields, not by the payload's shape — picking
     every int in the payload would let an unrelated field displace a real one,
     because the values are forwarded positionally.
+
+    The Presence-guard `skip` flag is derived from the payload here (issue #12),
+    using the same evaluation mode A uses, so there is no separate input a caller
+    could set to contradict the payload — the divergence that made a wiring
+    mistake indistinguishable from a real mode A/B disagreement.
     """
     bin_path = backend.build(document, workflow_id, workdir)
 
@@ -55,6 +60,7 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, skip=False):
         raw = (payload or {}).get(name, 0)
         values[name] = raw if isinstance(raw, int) else 0
 
+    skip = _derive_skip_from_payload(document, workflow_id, payload or {})
     rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=values)
     order, effects, status = [], {}, None
     for line in lines:
@@ -90,8 +96,69 @@ def _text_of(steps, status):
 SECRET_MARKERS = ("s3cret", "password=", "BEGIN PRIVATE KEY")
 
 
-def verify(document, workflow_id, payload, repo_rows, workdir, skip=False):
-    """Compare the two modes. Returns (ok, report_lines)."""
+def _derive_skip_from_payload(document, workflow_id, payload):
+    """Derive the skip flag from Presence guards in the workflow.
+
+    RFC-0008: Presence conditions are evaluated against the payload in mode A.
+    This function reuses that same evaluation logic to derive the skip flag
+    for mode B, ensuring both modes evaluate the same condition the same way.
+
+    If a Presence guard is found, its condition is evaluated and the skip flag
+    is set based on whether the condition is false (skip=True) or true (skip=False).
+    If no Presence guard is found, skip defaults to False (don't skip).
+    """
+    from .condition import parse_condition, Presence, ConditionError
+
+    # Find any Presence guard conditions in the workflow
+    nodes = {n["id"]: n for n in document["nodes"]}
+
+    def find_presence_condition(node_ids):
+        """Recursively search for the first Presence guard condition."""
+        for node_id in node_ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            if node["kind"] == "Guard" and node.get("mode") == "when":
+                cond_str = node.get("condition")
+                if cond_str:
+                    try:
+                        cond = parse_condition(cond_str)
+                        if isinstance(cond, Presence):
+                            return cond_str
+                    except ConditionError:
+                        pass  # not a condition we can classify; keep searching
+            # Recurse into children
+            if node.get("children"):
+                result = find_presence_condition(node["children"])
+                if result:
+                    return result
+        return None
+
+    wf = nodes.get(workflow_id)
+    if wf is None or wf["kind"] != "Workflow":
+        return False
+
+    presence_cond_str = find_presence_condition(wf.get("children", []))
+    if not presence_cond_str:
+        return False  # No Presence guard found
+
+    # Evaluate the Presence condition against the payload with the exact function
+    # mode A uses. Mode A raises on an invalid condition; let that propagate rather
+    # than swallow it — silently returning skip=False would run a step mode A
+    # refused, masking a real divergence behind a false verdict.
+    from .interp import _condition_holds
+    # token present -> "token missing" is false -> skip=True;
+    # token absent  -> "token missing" is true  -> skip=False.
+    return not _condition_holds(presence_cond_str, payload)
+
+
+def verify(document, workflow_id, payload, repo_rows, workdir):
+    """Compare the two modes. Returns (ok, report_lines).
+
+    RFC-0008: The skip flag for Presence guards is derived from the payload,
+    not supplied by the caller. This ensures mode A and B evaluate the same
+    condition the same way, preventing spurious divergence.
+    """
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "
@@ -99,7 +166,7 @@ def verify(document, workflow_id, payload, repo_rows, workdir, skip=False):
             "divergence ship unnoticed.)")
 
     a = observe_mode_a(document, workflow_id, payload, repo_rows)
-    b = observe_mode_b(document, workflow_id, workdir, payload=payload, skip=skip)
+    b = observe_mode_b(document, workflow_id, workdir, payload=payload)
 
     report, ok = [], True
 

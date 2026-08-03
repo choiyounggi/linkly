@@ -267,6 +267,29 @@ def encode_condition_value(value):
         % (value, type(value).__name__))
 
 
+def _has_cache_budget(document, workflow_id):
+    """True if the service owning `workflow_id` declares a cache TTL budget.
+
+    Mirrors the interpreter's constraint resolution (interp `_constraints`): a
+    `Performance` constraint on the owning service carrying a `cache` budget.
+    RFC-0003 requires every cache key to carry a TTL, so without this budget a
+    `CacheAccess set` cannot run — mode A raises, and mode B must agree.
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    service = next((n for n in document["nodes"]
+                    if n["kind"] == "Service"
+                    and workflow_id in n.get("children", [])), None)
+    if service is None:
+        return False
+    for cid in service.get("constraints", []):
+        node = nodes.get(cid)
+        if node and node.get("kind") == "Performance":
+            for budget in node.get("budgets", []):
+                if budget.get("metric") == "cache":
+                    return True
+    return False
+
+
 def _lnpl_ops(document, workflow_id):
     """S4: the `lnpl` op stream, plus the module-level attributes.
 
@@ -327,6 +350,42 @@ def _lnpl_ops(document, workflow_id):
         # deriving this list independently is the defect PR #4 existed to fix.
         "lnpl.condition_fields": condition_field_names(document, workflow_id),
     }
+
+    # RFC-0003 / issue #9: mode A refuses a `CacheAccess set` that has no cache-TTL
+    # budget — interp `Cache.set` raises, and the run's status becomes "failed".
+    # Mode B used to print the effect and complete, so the two modes disagreed on
+    # exactly that workflow. Budget presence is a static (compile-time) property of
+    # the owning service, so mode B reaches the same *observable* outcome without
+    # any new runtime parameter: when the budget is absent, the run stops at the
+    # first unconditional such set and reports "failed".
+    #
+    # The trace is matched to mode A precisely. In `_run_effect`, the failing
+    # step's effects run in order; the cache effect's child span is appended
+    # BEFORE `Cache.set` raises, and effects after it never run. So mode A's
+    # failing step holds the effects up to and INCLUDING the cache set, and no
+    # later step. Truncate to exactly that — both the trailing effects of the
+    # failing step and every later step — or a multi-effect step would make mode B
+    # emit effects mode A never reached. Guarded sets are left alone: a skipped set
+    # is never reached, so it must not force a failure.
+    terminal_status = None
+    if not _has_cache_budget(document, workflow_id):
+        for cut, op in enumerate(ops):
+            if op["guard_mode"] is not None:
+                continue
+            fail_at = next(
+                (i for i, effect in enumerate(op["effects"])
+                 if effect["kind"] == "CacheAccess"
+                 and nodes[effect["node_id"]].get("operation") == "set"),
+                None)
+            if fail_at is not None:
+                truncated = dict(op)
+                truncated["effects"] = op["effects"][:fail_at + 1]
+                ops = ops[:cut] + [truncated]
+                terminal_status = "failed"
+                break
+    if terminal_status is not None:
+        module_attrs["lnpl.terminal_status"] = terminal_status
+
     return module_attrs, ops
 
 
@@ -568,7 +627,10 @@ def _render_std(module_attrs, ops):
                 lines.append("    func.call @lnpl_effect(%%p%d, %%k%d_%d) : "
                              "(!llvm.ptr, !llvm.ptr) -> ()" % (idx, idx, cn))
 
-    lines.append("    return %c0 : i32")
+    # issue #9: a run that reached an unbudgeted CacheAccess set returns non-zero,
+    # which the C shim renders as `status failed` — the same outcome mode A gives.
+    ret_val = "%c1" if module_attrs.get("lnpl.terminal_status") == "failed" else "%c0"
+    lines.append("    return %s : i32" % ret_val)
     lines.append("  }")
     lines.append("}")
     return "\n".join(lines) + "\n"
