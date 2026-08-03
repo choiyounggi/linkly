@@ -486,9 +486,10 @@ class TestSecurityAuditor(unittest.TestCase):
         self.assertEqual(task["result"]["decision"], "approved", task["result"]["reason"])
         self.assertIn("security.login", [n["id"] for n in server.doc["nodes"]])
 
-    def test_it_reports_the_attachment_it_may_not_propose_itself(self):
-        # Attaching the constraint means replacing a Service (a Declaration), which
-        # is outside this role's rights. The gap is reported, not silently crossed.
+    def test_security_constraint_is_attached_and_referenced(self):
+        # SecurityAuditor now uses RFC-0010 attachment to wire Security constraints
+        # via intent.attach and reference-only Service edit. Verify the constraint
+        # is actually referenced after approval (exact shape from #14).
         doc = golden()
         for node in doc["nodes"]:
             if node["kind"] == "Service":
@@ -497,11 +498,24 @@ class TestSecurityAuditor(unittest.TestCase):
         doc["nodes"] = [n for n in doc["nodes"] if n["kind"] != "Security"]
         server = Server(doc, KnowledgeBase())
         rec = SecurityAuditor(server).audit(_task(server, "SecurityAuditor", "s5"))
-        self.assertTrue(rec["attachment_required"])
-        kinds = {n["kind"] for n in server.proposals[rec["proposal_id"]]["nodes"]}
-        allowed = set(server.call("agent.card",
-                                  role="SecurityAuditor")["ir_access"]["propose"])
-        self.assertTrue(kinds <= allowed, kinds - allowed)
+        self.assertTrue(rec["proposal_id"])
+
+        # Verify the proposal has intent.attach declaring the Constraint attachment
+        proposal = server.proposals[rec["proposal_id"]]
+        self.assertIn("attach", proposal.get("intent", {}))
+
+        # Approve the proposal
+        reviewer = Reviewer(server)
+        task = reviewer.decide(rec["review_task_id"], rec["proposal_id"])
+        self.assertEqual(task["result"]["decision"], "approved")
+
+        # Constraint should be referenced in merged doc
+        security_nodes = [n for n in server.doc["nodes"] if n["kind"] == "Security"]
+        self.assertGreater(len(security_nodes), 0)
+        svc = next(n for n in server.doc["nodes"] if n["id"] == "svc.login")
+        security_refs = [c for c in svc.get("constraints", [])
+                        if any(cn["id"] == c for cn in security_nodes)]
+        self.assertGreater(len(security_refs), 0, "Security constraint not referenced")
 
     def test_no_password_field_means_no_finding(self):
         doc = golden()
@@ -1140,7 +1154,6 @@ class TestKbPinsValidation(unittest.TestCase):
                  "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
         with self.assertRaises(RpcError) as ctx:
             self.server.call("ir.propose", role="Coder",
-                            kb_pins=[],
                                 ir_fragment={"module": "login", "nodes": nodes},
                             deadline_ms=1000, idempotency_key="kb-test-1")
         self.assertEqual(ctx.exception.type, "ir_invalid")
