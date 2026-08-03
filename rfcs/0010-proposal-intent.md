@@ -149,8 +149,12 @@ IR 변경 제안. **IR을 즉시 변경하지 않는다.**
 2. 병합 후 `to`가 그것을 **떠난 것과 같은 필드에서** 참조한다. "어딘가에서 참조하면
    된다"로는 부족하다 — 그 느슨한 판정은 Constraint 제거를 `children` 삽입으로 세탁할
    수 있고, 그것이 실증됐다.
-3. Constraint 노드(`Policy`·`Security`·`Performance`)는 `constraints`에만 놓일 수 있다.
-   RFC-0001 구조 규칙 5는 Constraint를 `children`으로 소유하는 것을 금지한다.
+3. Constraint 노드(`Policy`·`Security`·`Performance`)는 `constraints`에만 놓일 수 있다
+   — RFC-0001 구조 규칙 5가 Constraint를 `children`으로 소유하는 것을 금지한다. **이
+   조항은 2의 결과로 자동 충족된다**: 판정 기준이 되는 필드는 참조가 *떠난* 곳이고,
+   유효한 문서는 Constraint를 `constraints`에만 두므로 2가 곧 3을 함의한다. 참조
+   구현은 이를 별도 분기로 두지 않는다 — 어떤 뮤테이션도 그 분기를 죽일 수 없었고,
+   그것이 도달 불가 조건의 표식이다.
 
 선언되지 않은 참조 소실은 여전히 거절한다. `intent`가 선언한 것과 조각이 실제로 하는
 일이 어긋나면 `ir_invalid`다.

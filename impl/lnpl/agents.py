@@ -15,7 +15,8 @@ than inventing an Effect — the same rule the compiler's verb lexicon follows.
 import re
 
 from .lower import derive_id
-from .protocol import ROLES, RpcError, Server, node_references
+from .protocol import (CHILDREN_ALLOWED, REFERENCE_KEYS, ROLES, RpcError, Server,
+                       attachments, moves, node_references, reference_only_edit)
 from .spec import EXPECTATIONS, SPEC_VERSION
 
 # Node kinds that may legitimately have no owner. RFC-0001 rule 2 allows only
@@ -65,6 +66,16 @@ def _ownership_cycle(merged):
                 stack.pop()
                 path.pop()
     return []
+
+
+def _refs_in(node, field):
+    """The node ids `node` references through `field`. Empty when it has none."""
+    if not node:
+        return set()
+    value = node.get(field)
+    if isinstance(value, list):
+        return {v for v in value if isinstance(v, str)}
+    return {value} if isinstance(value, str) else set()
 
 
 def _structure_fault(merged):
@@ -280,11 +291,47 @@ class Reviewer(_AgentBase):
         nodes = proposal["nodes"]
         existing = {n["id"]: n for n in self.server.doc["nodes"]}
 
+        # RFC-0010. The server validated these at propose time, but this is a
+        # second, independent gate — a proposal planted straight into
+        # `server.proposals` never passed through the first one.
+        intent = proposal.get("intent") or {}
+        attach_map = attachments(intent)
+        move_map = moves(intent)
+        authored = {n["id"] for n in nodes} - set(existing)
+
+        # Judge the declarations before the rights check consults them, so an
+        # unauthored child or an illegal pairing says so instead of surfacing as a
+        # generic `rights:` refusal.
+        for parent, children in sorted(attach_map.items()):
+            parent_kind = (next((n for n in nodes if n.get("id") == parent), None)
+                           or existing.get(parent) or {}).get("kind")
+            for child in sorted(children):
+                if child not in authored:
+                    return False, ("attach: %s was not authored by this proposal — "
+                                   "a proposal may attach only a node it wrote "
+                                   "(RFC-0010)" % child)
+                child_kind = next((n.get("kind") for n in nodes
+                                   if n.get("id") == child), None)
+                if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
+                    return False, ("attach: a %s may not own a %s (RFC-0001 노드 "
+                                   "카탈로그; RFC-0004 §S2 V5): %s under %s"
+                                   % (parent_kind, child_kind, child, parent))
+
         allowed = ROLES.get(proposal["role"], {}).get("propose", set())
-        outside = sorted({n.get("kind") for n in nodes} - set(allowed))
+        outside = []
+        for node in nodes:
+            if node.get("kind") in allowed:
+                continue
+            declared = attach_map.get(node.get("id"), set())
+            if declared and reference_only_edit(node, existing.get(node.get("id")),
+                                                declared):
+                origin = (node.get("meta") or {}).get("origin") or ""
+                if origin.startswith("agent:"):
+                    continue
+            outside.append(node.get("kind"))
         if outside:
             return False, ("rights: %s may not propose %s"
-                           % (proposal["role"], ", ".join(outside)))
+                           % (proposal["role"], ", ".join(sorted(set(outside)))))
 
         bad_source = []
         for node in nodes:
@@ -321,15 +368,41 @@ class Reviewer(_AgentBase):
                                "remove one (RFC-0006 §Methods)"
                                % (node["id"], old.get("kind"), node.get("kind")))
             dropped = sorted(set(node_references(old)) - set(node_references(node)))
-            if dropped:
-                return False, ("removal: replacing %s would drop reference(s) %s — "
-                               "`ir.propose` cannot express a removal (RFC-0006 "
-                               "§Methods)" % (node["id"], ", ".join(dropped)))
+            unexplained = [ref for ref in dropped
+                           if (node["id"], ref) not in move_map]
+            if unexplained:
+                return False, ("removal: replacing %s would drop reference(s) %s "
+                               "without a declared move — `ir.propose` expresses a "
+                               "move by declaring it in `intent`, and refuses an "
+                               "undeclared removal (RFC-0010 §Methods/ir.propose)"
+                               % (node["id"], ", ".join(unexplained)))
 
         # Merge into a copy — assessing must not change what it is assessing.
         merged = {nid: node for nid, node in existing.items()}
         for node in nodes:
             merged[node["id"]] = node
+
+        # A declared move must land where it said, in the field it left. "References
+        # it somewhere" is not enough: `node_references` unions `children` with the
+        # named fields, so a Constraint declared as moved out of `constraints` could
+        # be laundered into a `children` entry — emptying `constraints`, which the
+        # interpreter reads for retry, timeout and rollback.
+        for (from_id, node_id), to_id in sorted(move_map.items()):
+            field = next((f for f in sorted(REFERENCE_KEYS)
+                          if node_id in _refs_in(existing.get(from_id), f)), None)
+            if field is None:
+                return False, ("move: %s does not reference %s, so there is nothing "
+                               "to move (RFC-0010)" % (from_id, node_id))
+            if node_id not in _refs_in(merged.get(to_id), field):
+                return False, ("move: %s must reference %s in `%s`, the field it "
+                               "left (RFC-0010)" % (to_id, node_id, field))
+            # RFC-0010 also says a Constraint may only land in `constraints`. That
+            # needs no separate branch: `field` is where the reference *left* from,
+            # and a valid document only ever holds a Constraint in `constraints`
+            # (RFC-0001 rule 5, enforced by `_structure_fault`'s orphan check), so
+            # the same-field requirement above already implies it. A branch for it
+            # was written and removed — no mutation could kill it, which is the
+            # tell for an unreachable condition.
 
         fault = _structure_fault(merged)
         if fault:

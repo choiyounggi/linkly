@@ -210,9 +210,12 @@ MUTATIONS = [
      "lnpl/agents.py",
      "                if colour[kid] == grey:\n                    return path[path.index(kid):] + [kid]",
      "                if colour[kid] == grey and kid == node_id:\n                    return path[path.index(kid):] + [kid]"),
+    # Re-anchored 2026-08-03: RFC-0010 narrowed this condition from "any dropped
+    # reference" to "a dropped reference no declared move accounts for", so the
+    # old `if dropped:` anchor no longer exists.
     ("Reviewer: allow a replacement to drop references (removal by edit)",
      "lnpl/agents.py",
-     "            if dropped:\n                return False,",
+     "            if unexplained:\n                return False,",
      "            if False:\n                return False,"),
     ("Reviewer: allow a kind swap under the same id",
      "lnpl/agents.py",

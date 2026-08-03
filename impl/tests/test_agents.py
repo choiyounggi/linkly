@@ -673,5 +673,164 @@ class TestReleaseAgent(unittest.TestCase):
         self.assertNotIn("ir.propose", {m for m, _p in self.server.log})
 
 
+TWO_ACCESS = {
+    "lir_version": "0.1", "module": "t",
+    "nodes": [
+        {"kind": "Entity", "id": "entity.user", "name": "User",
+         "fields": [{"name": "id", "type": "UUID"}]},
+        {"kind": "Policy", "id": "policy.p",
+         "rules": [{"name": "retry", "value": "2"}]},
+        {"kind": "Service", "id": "svc.s", "name": "S", "children": ["wf.w"]},
+        {"kind": "Workflow", "id": "wf.w", "name": "W",
+         "children": ["wf.w.step.1", "wf.w.step.2"]},
+        {"kind": "WorkflowStep", "id": "wf.w.step.1", "name": "load and audit",
+         "children": ["wf.w.step.1.a", "wf.w.step.1.b"],
+         "constraints": ["policy.p"]},
+        {"kind": "RepositoryCall", "id": "wf.w.step.1.a",
+         "entity": "entity.user", "operation": "read"},
+        {"kind": "RepositoryCall", "id": "wf.w.step.1.b",
+         "entity": "entity.user", "operation": "update"},
+        {"kind": "WorkflowStep", "id": "wf.w.step.2", "name": "return user"},
+    ],
+}
+
+# A node this proposal authors carries both; an *existing* node edited only for
+# attachment carries `origin` alone — adding `source` to a node that has its own
+# provenance would be rewriting it, which the gate refuses on purpose.
+NEW_META = {"origin": "agent:RefactoringAgent",
+            "source": "kb:patterns-repository-call@0.1.0"}
+EDIT_META = {"origin": "agent:RefactoringAgent"}
+
+
+class TestReviewerHonoursDeclaredIntent(unittest.TestCase):
+    """RFC-0010 at the review gate — the second, independent check.
+
+    A proposal planted straight into `server.proposals` never passes through
+    `ir.propose`, so every condition has to hold here too. These tests use that
+    seam, exactly as `test_it_rejects_a_kind_outside_the_proposers_rights` does.
+    """
+
+    ROLE = "RefactoringAgent"
+
+    def setUp(self):
+        self.server = Server(json.loads(json.dumps(TWO_ACCESS)), KnowledgeBase())
+        self.reviewer = Reviewer(self.server)
+
+    def _assess(self, nodes, intent):
+        """Plant a proposal and get the Reviewer's verdict on it."""
+        self.server.proposals["p1"] = {
+            "id": "p1", "role": self.ROLE, "state": "pending",
+            "nodes": nodes, "intent": intent, "review_task_id": "t1"}
+        return self.reviewer._assess("p1")
+
+    def _split(self, parent_children=None, to_children=None):
+        parent = {"kind": "Workflow", "id": "wf.w", "name": "W",
+                  "children": parent_children
+                  or ["wf.w.step.1", "wf.w.split.1", "wf.w.step.2"],
+                  "meta": dict(EDIT_META)}
+        original = {"kind": "WorkflowStep", "id": "wf.w.step.1",
+                    "name": "load and audit", "children": ["wf.w.step.1.a"],
+                    "constraints": ["policy.p"]}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "update user",
+               "children": to_children if to_children is not None
+               else ["wf.w.step.1.b"], "meta": dict(NEW_META)}
+        return [parent, original, new]
+
+    def _intent(self):
+        return {"attach": [{"parent": "wf.w", "child": "wf.w.split.1"}],
+                "move": [{"node": "wf.w.step.1.b", "from": "wf.w.step.1",
+                          "to": "wf.w.split.1"}]}
+
+    def test_a_declared_split_is_approved(self):
+        ok, reason = self._assess(self._split(), self._intent())
+        self.assertTrue(ok, reason)
+
+    def test_an_undeclared_drop_is_still_a_removal(self):
+        """Only the two steps — both Behavior, so rights are not the issue here.
+
+        Including the `Workflow` parent would make this a rights refusal instead,
+        since without an `intent` there is no declaration to permit that edit.
+        """
+        ok, reason = self._assess(self._split()[1:], {})
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("removal:"), reason)
+        self.assertIn("RFC-0010", reason)
+
+    def test_a_move_whose_destination_does_not_take_it_is_rejected(self):
+        ok, reason = self._assess(self._split(to_children=[]), self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("move:"), reason)
+
+    def test_a_move_into_a_different_field_is_rejected(self):
+        """The laundered-removal attack: a Constraint 'moved' into `children`."""
+        original = {"kind": "WorkflowStep", "id": "wf.w.step.1",
+                    "name": "load and audit",
+                    "children": ["wf.w.step.1.a", "wf.w.step.1.b"],
+                    "constraints": []}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "hold policy",
+               "children": ["policy.p"], "meta": dict(NEW_META)}
+        parent = {"kind": "Workflow", "id": "wf.w", "name": "W",
+                  "children": ["wf.w.step.1", "wf.w.split.1", "wf.w.step.2"],
+                  "meta": dict(EDIT_META)}
+        ok, reason = self._assess(
+            [parent, original, new],
+            {"attach": [{"parent": "wf.w", "child": "wf.w.split.1"}],
+             "move": [{"node": "policy.p", "from": "wf.w.step.1",
+                       "to": "wf.w.split.1"}]})
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("move:"), reason)
+
+    def test_attaching_a_node_it_did_not_author_is_rejected(self):
+        ok, reason = self._assess(
+            self._split(), {"attach": [{"parent": "wf.w",
+                                        "child": "wf.w.step.2"}]})
+        self.assertFalse(ok)
+        # The specific reason, not just the `attach:` prefix — dropping the
+        # containment check makes the V5 pairing gate reject this too, and its
+        # message carries the same prefix, so a prefix-only assertion cannot tell
+        # the two apart and the containment branch would go untested.
+        self.assertIn("was not authored by this proposal", reason)
+
+    def test_attaching_a_child_the_parent_may_not_own_is_rejected(self):
+        entity = {"kind": "Entity", "id": "entity.user", "name": "User",
+                  "fields": [{"name": "id", "type": "UUID"}],
+                  "children": ["wf.w.split.1"], "meta": dict(EDIT_META)}
+        new = {"kind": "WorkflowStep", "id": "wf.w.split.1", "name": "update user",
+               "meta": dict(NEW_META)}
+        ok, reason = self._assess(
+            [entity, new], {"attach": [{"parent": "entity.user",
+                                        "child": "wf.w.split.1"}]})
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("attach:"), reason)
+        self.assertIn("Entity", reason)
+
+    def test_a_non_reference_change_on_an_out_of_rights_node_is_rejected(self):
+        nodes = self._split()
+        nodes[0]["name"] = "renamed"
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("rights:"), reason)
+
+    def test_an_out_of_rights_edit_without_an_agent_origin_is_rejected(self):
+        nodes = self._split()
+        nodes[0].pop("meta")
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("rights:"), reason)
+
+    def test_a_move_that_leaves_two_owners_is_caught_by_the_invariant_gate(self):
+        """Not by the move branch — by `_structure_fault`.
+
+        Both steps keep the child, so nothing was dropped and the move branch is
+        satisfied. The reason must be `ownership:`, which is what shows the
+        invariant check is still doing the structural work.
+        """
+        nodes = self._split()
+        nodes[1]["children"] = ["wf.w.step.1.a", "wf.w.step.1.b"]
+        ok, reason = self._assess(nodes, self._intent())
+        self.assertFalse(ok)
+        self.assertTrue(reason.startswith("ownership:"), reason)
+
+
 if __name__ == "__main__":
     unittest.main()
