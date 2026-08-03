@@ -25,7 +25,7 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 > `.lnpl`이 파싱되고 Semantic IR로 lowering돼 IR 인터프리터에서 실행되며(모드 A),
 > MLIR을 거쳐 **네이티브 바이너리**로 컴파일된다(모드 B). 차동 검증이 RFC-0004가
 > 지명한 관측 가능 4종에 대해 두 모드의 일치를 확인한다. OpenAPI도 IR에서 생성된다.
-> 골든 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다(378 테스트 전부
+> 골든 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다(386 테스트 전부
 > 통과). 커스텀 `lnpl` MLIR dialect도 들어갔다 — IRDL로 선언적으로 정의하므로 C++
 > TableGen 빌드가 필요없다(RFC-0004 S4). 에이전트 9역할도 전부 구현됐다.
 > [로드맵](docs/ROADMAP.md) 참조.
@@ -91,15 +91,18 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 |-----|------|
 | [0000 RFC Process](rfcs/0000-rfc-process.md) | *0007로 대체됨* — 수명주기, 번호 체계, 고정 7섹션 템플릿 |
 | [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | `Updates` 관계 신설 — RFC를 대체하지 않고 지목한 **절**만 갱신 |
-| [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 노드 19종, Semantic Type 18종, 평탄 구조, canonical JSON 직렬화 |
+| [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 노드 20종, Semantic Type 18종, 평탄 구조, canonical JSON 직렬화 |
 | [0002 Syntax](rfcs/0002-syntax.md) | 라인 지향·키워드 구획 EBNF(51 생산규칙) + 문법→IR lowering 매핑 |
 | [0003 Runtime](rfcs/0003-runtime.md) | actor, structured concurrency, 정책 집행, 메모리 프리미티브, 관측성 계약 |
 | [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering 7단계, 패스 불변조건, Optimizer 3종 책임 축 |
 | [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 카테고리, 3단 progressive disclosure 라우팅, 소비 인터페이스 |
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 역할 9종, JSON-RPC 메서드 8종, 구조화 오류, 멱등, 태스크 수명주기 |
-| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | *Draft* — 가드 조건식: 존재 검사·비교식 2형태, 명세 정정, 모드 B 컴파일 |
+| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | 가드 조건식: 존재 검사·비교식 2형태, 명세 정정, 모드 B 컴파일. *0002 §Full grammar·0003 §Guard 갱신* |
+| [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | 문법이 확정됐으므로 RFC-0002 미결 ②를 해소. *0002 §Open Questions 갱신* |
+| [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | 역할이 저작 권한 없는 노드에 자기 노드를 부착하는 법, 그리고 참조가 이동할 때의 의미론. *0006 §Agent Roles & IR Access·§Methods/ir.propose 갱신* |
 
-0001~0007은 2026-07-31자로 `Accepted` — 교차 정합성 전항 통과와 소유자 승인이 모두
+8편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007 자신은 아직 `Draft`다(이슈 #11).
+교차 정합성 전항 통과와 소유자 승인은 — 교차 정합성 전항 통과와 소유자 승인이 모두
 충족됐다. 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
 **Updates**는 지목한 **절**만 갱신하고 대상은 `Accepted`를 유지한다. 두 번째 관계를 둔
