@@ -1,7 +1,9 @@
 # RFC-0007: RFC Process v2
 
-> Status: Draft
+> Status: Accepted (formal gate 2026-08-03, effective since 2026-07-31 when RFC-0000 Superseded)
 > Supersedes: RFC-0000
+> 
+> **Promotion note:** This RFC's process has been binding since RFC-0000 Superseded on 2026-07-31 (even while formally Draft). Formal Accepted status is recorded 2026-08-03 after walking the consistency gate (C1–C7 PASS, C8–C9 resolved) — this is a retrospective record; actual contractual effect dates to 2026-07-31.
 
 ## 1. 목적
 

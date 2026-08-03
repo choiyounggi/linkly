@@ -76,7 +76,7 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 
 | RFC | 무엇을 소비하는가 |
 |-----|------------------|
-| RFC-0001 + 부록 A | 노드 카탈로그 19 kind, Semantic Type 18종, 구조 규칙 6종, `.lir.json` 직렬화·스키마 |
+| RFC-0001 + 부록 A | 노드 카탈로그 20 kind, Semantic Type 18종, 구조 규칙 6종, `.lir.json` 직렬화·스키마 |
 | RFC-0002 + 부록 A | EBNF 51 생산규칙, 키워드 카탈로그, lowering 매핑 51행 |
 | RFC-0003 | Effect 6종 실행 의미, Policy·Performance 집행, arena·pool 프리미티브, Observability |
 | RFC-0004 (S1~S3, 모드 A) | 파이프라인 S1~S3, 문서 수준 불변식 V1~V5, 고수준 패스 3종, 컴파일 컨텍스트 |
