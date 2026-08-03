@@ -1459,7 +1459,7 @@ RFC-0007 승격 시점(2026-07-31) 이후 세 개정(RFC-0008·0009·0010)이 �
 | **C2** | RFC-0003 Effect 6종 실행 의미 | PASS (Guard 신설) | PASS | `rfcs/0003-runtime.md:87-96` Guard 실행 의미 2026-07-31 규정됨(RFC-0008), 이후 추가 변경 0 |
 | **C3** | S3 스키마 불변+S4~S7 역추적 | PASS | PASS | `rfcs/0004-compiler.md:100-104`, 개정이 컴파일 파이프라인을 건드린 적 없음 |
 | **C4** | `kb.*` 3종 시그니처 동일성 | PASS | PASS | `rfcs/0005-knowledge-base.md:142-144` ↔ `rfcs/0006-agent-protocol.md:225-227`, RFC-0010의 `ir.propose` 추가는 개정 범위 밖(절 §Methods 부분만 지목, 시그니처 아님) |
-| **C5** | 골든 관통(C5a/C5b) | PASS | PASS | 소스·IR·런타임·컴파일러·KB·에이전트 6 요소 검증 완료(원본 표), 골든 기계 생성으로 회귀 보호 |
+| **C5** | 골든 관통(C5a/C5b) | PASS | PASS | 소스·IR·런타임·컴파일러·KB·에이전트 6 요소 검증 완료(§C5 명령·출력 판정 대조 표 :461-468), 골든 기계 생성으로 회귀 보호 |
 | **C6** | GLOSSARY 10 용어 재정의 부재 | PASS | PASS | `docs/GLOSSARY.md` 정의 무변경, 용어 판별 속성 10개 검증 완료(`:607-620`) |
 | **C7** | `validate_ir.py --self-test` | PASS (exit 0) | PASS | positive 1 + negative 3 — 스크립트 무변경 |
 | **C8** | Heap 프리미티브 계약 | 해소 (프로세스 효력일) | 해소 유지 | `:1328` `transfer` 프리미티브 신설됨, 이후 변경 0 |
