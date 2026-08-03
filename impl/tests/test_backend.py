@@ -494,6 +494,43 @@ class TestToolchainHonesty(unittest.TestCase):
         return os.path.join(REPO, ".claude", "tmp", "unused")
 
 
+class TestVersionPin(unittest.TestCase):
+    """RFC-0004 OQ①: mlir/llvm.pin is the single machine-read version source.
+
+    The version literal lives in exactly one committed file, and something reads
+    it. There is no CI in this repo, so the reader is this test plus the toolchain
+    helper — the "선언이 둘이면 갈라진다" principle held with one declaration.
+    """
+
+    def test_pin_parses_to_a_dotted_version(self):
+        version = backend.pinned_llvm_version()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+
+    def test_malformed_pin_raises_backend_error(self):
+        tmpdir = os.path.join(REPO, ".claude", "tmp")
+        os.makedirs(tmpdir, exist_ok=True)
+        original = backend.LLVM_PIN_PATH
+        for bad in ("clang 1.2.3\n", "22.1.8\n", "llvm 1 2\n", "\n"):
+            fd, path = tempfile.mkstemp(dir=tmpdir, suffix=".pin")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(bad)
+            backend.LLVM_PIN_PATH = path
+            try:
+                with self.assertRaises(backend.BackendError):
+                    backend.pinned_llvm_version()
+            finally:
+                backend.LLVM_PIN_PATH = original
+                os.remove(path)
+
+    def test_pin_matches_installed_toolchain(self):
+        if not backend.toolchain_available():
+            self.skipTest("MLIR/LLVM toolchain not installed")
+        version = backend.pinned_llvm_version()
+        out = backend._run([backend.tool("mlir-opt"), "--version"],
+                           "version pin check")
+        self.assertIn(version, out)
+
+
 class TestDiffCliWiring(unittest.TestCase):
     """`cmd_diff` wires argparse into `differential.verify`. The suite otherwise
     calls `verify` directly, so a signature drift between the CLI and the function

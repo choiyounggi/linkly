@@ -52,6 +52,10 @@ BREW_LLVM_BIN = "/opt/homebrew/opt/llvm/bin"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 LNPL_IRDL_PATH = os.path.join(REPO_ROOT, "mlir", "lnpl.irdl.mlir")
+# RFC-0004 OQ①: the one committed, machine-read declaration of the pinned
+# LLVM/MLIR version. Anchored on __file__ (like LNPL_IRDL_PATH), never cwd —
+# `build()` runs in an arbitrary workdir.
+LLVM_PIN_PATH = os.path.join(REPO_ROOT, "mlir", "llvm.pin")
 
 
 class BackendError(Exception):
@@ -69,6 +73,21 @@ def tool(name):
     raise BackendError(
         "%s not found. Mode B needs MLIR/LLVM tools — install them with "
         "`brew install llvm` (they land in %s)." % (name, BREW_LLVM_BIN))
+
+
+def pinned_llvm_version():
+    """The single pinned LLVM/MLIR version, read from mlir/llvm.pin (RFC-0004 OQ①).
+
+    The pin file is the one machine-read declaration of the version; nothing else
+    in the tree restates it. Format: one `llvm <version>` line.
+    """
+    with open(LLVM_PIN_PATH, encoding="utf-8") as fh:
+        line = fh.readline().strip()
+    parts = line.split()
+    if len(parts) != 2 or parts[0] != "llvm":
+        raise BackendError(
+            "mlir/llvm.pin must be one line `llvm <version>`, got %r" % line)
+    return parts[1]
 
 
 def toolchain_available():
@@ -290,6 +309,57 @@ def _has_cache_budget(document, workflow_id):
     return False
 
 
+def _walk_markers(nodes, ids, out):
+    """Pre-order DFS: append one marker tuple per structural node, then recurse.
+
+    A marker is `(op_name, node_id, extra_attr_pairs)`. `WorkflowStep`s are not
+    markers — their ids and effects come from `_lnpl_ops`; their children are
+    effects, not structural, so we do not recurse into them.
+    """
+    for nid in ids:
+        node = nodes[nid]
+        kind = node["kind"]
+        if kind == "Concurrency":
+            out.append(("lnpl.concurrency", nid, [
+                ("lnpl.mode", node.get("mode")),
+                ("lnpl.children", list(node.get("children", []))),
+            ]))
+            _walk_markers(nodes, node.get("children", []), out)
+        elif kind == "Pipeline":
+            out.append(("lnpl.pipeline", nid, [
+                ("lnpl.name", node.get("name")),
+                ("lnpl.children", list(node.get("children", []))),
+            ]))
+            _walk_markers(nodes, node.get("children", []), out)
+        elif kind == "Guard":
+            out.append(("lnpl.guard", nid, [
+                ("lnpl.mode", node.get("mode")),
+                ("lnpl.guard_condition", node.get("condition")),
+                ("lnpl.count", node.get("count")),
+                ("lnpl.children", list(node.get("children", []))),
+            ]))
+            _walk_markers(nodes, node.get("children", []), out)
+
+
+def _structural_markers(document, workflow_id):
+    """RFC-0004 ③/④: flat marker ops for Guard/Concurrency/Pipeline nodes.
+
+    `_steps_in_order` flattens these structural nodes out of the step stream, so
+    their ids never reached the artifact (③) and a parallel workflow was
+    byte-identical to its sequential form (④). This walks the *un-flattened* node
+    tree and materialises one marker op per structural node, carrying its id,
+    mode, and ordered immediate children. It reads only the node tree — the
+    step/effect stream (`_lnpl_ops`) is neither read nor modified here.
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    wf = nodes.get(workflow_id)
+    if wf is None or wf["kind"] != "Workflow":
+        raise BackendError("no such workflow: %r" % workflow_id)
+    markers = []
+    _walk_markers(nodes, wf.get("children", []), markers)
+    return markers
+
+
 def _lnpl_ops(document, workflow_id):
     """S4: the `lnpl` op stream, plus the module-level attributes.
 
@@ -441,6 +511,16 @@ def emit_lnpl_mlir(document, workflow_id):
         "// mlir-opt via --irdl-file=mlir/lnpl.irdl.mlir (no C++ TableGen build).",
         "module attributes {%s} {" % _mlir_attr_dict(sorted(module_attrs.items())),
     ]
+
+    # RFC-0004 ③/④: structural marker ops (from the un-flattened node tree) as a
+    # prefix block, so Guard/Concurrency/Pipeline ids reach the artifact and a
+    # parallel workflow differs from its sequential form. `_lnpl_ops`'s step/effect
+    # stream below is untouched, so the standard-dialect lowering is unchanged.
+    for opname, node_id, extra in _structural_markers(document, workflow_id):
+        lines.append('  "%s"() {%s} : () -> () loc(%s)' % (
+            opname,
+            _mlir_attr_dict([("lnpl.node_id", node_id)] + extra),
+            _mlir_str(node_id)))
 
     for op in ops:
         lines.append('  "lnpl.step"() {%s} : () -> () loc(%s)' % (
