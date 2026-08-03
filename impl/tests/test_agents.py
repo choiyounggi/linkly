@@ -86,6 +86,7 @@ class TestCoderRestraint(unittest.TestCase):
 
     def _task(self, step):
         return self.server.call("agent.dispatch", role="Coder",
+                                kb_pins=[],
                                 objective="implement %s" % step,
                                 deadline_ms=1000, idempotency_key="t-%s" % step)
 
@@ -122,6 +123,7 @@ class TestReviewerJudgment(unittest.TestCase):
     def _propose(self, nodes, role="Coder"):
         return self.server.call("ir.propose", role=role,
                                 ir_fragment={"module": "login", "nodes": nodes},
+                                kb_pins=[],
                                 deadline_ms=1000,
                                 idempotency_key="k-%d" % len(self.server.proposals))
 
@@ -322,7 +324,8 @@ class TestReviewerJudgment(unittest.TestCase):
                  "meta": {"origin": "agent:Coder",
                           "source": "kb:security-jwt-issuance@0.1.0"}}
         out = server.call("ir.propose", role="Coder",
-                          ir_fragment={"module": "login", "nodes": [parent, child]},
+                          kb_pins=[],
+                                ir_fragment={"module": "login", "nodes": [parent, child]},
                           deadline_ms=1000, idempotency_key="s1")
         with self.assertRaises(RpcError) as ctx:
             reviewer.decide(out["review_task_id"], out["proposal_id"])
@@ -483,9 +486,10 @@ class TestSecurityAuditor(unittest.TestCase):
         self.assertEqual(task["result"]["decision"], "approved", task["result"]["reason"])
         self.assertIn("security.login", [n["id"] for n in server.doc["nodes"]])
 
-    def test_it_reports_the_attachment_it_may_not_propose_itself(self):
-        # Attaching the constraint means replacing a Service (a Declaration), which
-        # is outside this role's rights. The gap is reported, not silently crossed.
+    def test_security_constraint_is_attached_and_referenced(self):
+        # SecurityAuditor now uses RFC-0010 attachment to wire Security constraints
+        # via intent.attach and reference-only Service edit. Verify the constraint
+        # is actually referenced after approval (exact shape from #14).
         doc = golden()
         for node in doc["nodes"]:
             if node["kind"] == "Service":
@@ -494,11 +498,24 @@ class TestSecurityAuditor(unittest.TestCase):
         doc["nodes"] = [n for n in doc["nodes"] if n["kind"] != "Security"]
         server = Server(doc, KnowledgeBase())
         rec = SecurityAuditor(server).audit(_task(server, "SecurityAuditor", "s5"))
-        self.assertTrue(rec["attachment_required"])
-        kinds = {n["kind"] for n in server.proposals[rec["proposal_id"]]["nodes"]}
-        allowed = set(server.call("agent.card",
-                                  role="SecurityAuditor")["ir_access"]["propose"])
-        self.assertTrue(kinds <= allowed, kinds - allowed)
+        self.assertTrue(rec["proposal_id"])
+
+        # Verify the proposal has intent.attach declaring the Constraint attachment
+        proposal = server.proposals[rec["proposal_id"]]
+        self.assertIn("attach", proposal.get("intent", {}))
+
+        # Approve the proposal
+        reviewer = Reviewer(server)
+        task = reviewer.decide(rec["review_task_id"], rec["proposal_id"])
+        self.assertEqual(task["result"]["decision"], "approved")
+
+        # Constraint should be referenced in merged doc
+        security_nodes = [n for n in server.doc["nodes"] if n["kind"] == "Security"]
+        self.assertGreater(len(security_nodes), 0)
+        svc = next(n for n in server.doc["nodes"] if n["id"] == "svc.login")
+        security_refs = [c for c in svc.get("constraints", [])
+                        if any(cn["id"] == c for cn in security_nodes)]
+        self.assertGreater(len(security_refs), 0, "Security constraint not referenced")
 
     def test_no_password_field_means_no_finding(self):
         doc = golden()
@@ -522,6 +539,37 @@ class TestSecurityAuditor(unittest.TestCase):
         node = next(n for n in server.proposals[rec["proposal_id"]]["nodes"]
                     if n["kind"] == "Security")
         self.assertIn("kb:security-jwt-issuance@", node["meta"]["source"])
+
+    def test_security_constraint_attachment_via_intent_attach(self):
+        """SecurityAuditor proposes Constraint + Service reference-only edit with
+        intent.attach, and the proposal is APPROVED with Constraint actually
+        referenced in merged doc (RFC-0010 §Methods/ir.propose)."""
+        doc = golden()
+        for node in doc["nodes"]:
+            if node["kind"] == "Service":
+                node["constraints"] = [c for c in node["constraints"]
+                                       if not c.startswith("security.")]
+        doc["nodes"] = [n for n in doc["nodes"] if n["kind"] != "Security"]
+        server = Server(doc, KnowledgeBase())
+        rec = SecurityAuditor(server).audit(_task(server, "SecurityAuditor", "s6"))
+
+        # Proposal should be created with intent.attach
+        self.assertTrue(rec["proposal_id"])
+        proposal = server.proposals[rec["proposal_id"]]
+        self.assertIn("attach", proposal.get("intent", {}))
+
+        # Proposal should be APPROVED (Reviewer judges it)
+        reviewer = Reviewer(server)
+        task = reviewer.decide(rec["review_task_id"], rec["proposal_id"])
+        self.assertEqual(task["result"]["decision"], "approved")
+
+        # Constraint should be referenced in merged doc
+        constraints = [n for n in server.doc["nodes"] if n["kind"] == "Security"]
+        self.assertGreater(len(constraints), 0)
+        svc = next(n for n in server.doc["nodes"] if n["id"] == "svc.login")
+        security_ids = [c for c in svc.get("constraints", [])
+                       if any(cn["id"] == c for cn in constraints)]
+        self.assertGreater(len(security_ids), 0, "Security constraint not referenced")
 
 
 class TestPerformanceAnalyzer(unittest.TestCase):
@@ -579,6 +627,33 @@ class TestPerformanceAnalyzer(unittest.TestCase):
             [{"duration_ms": 999}])
         self.assertIsNone(rec["proposal_id"])
         self.assertEqual(len(server.proposals), 0)
+
+    def test_performance_constraint_attachment_via_intent_attach(self):
+        """PerformanceAnalyzer proposes Constraint + Service reference-only edit
+        with intent.attach, and the proposal is APPROVED with Constraint actually
+        referenced in merged doc (RFC-0010 §Methods/ir.propose)."""
+        server = self._server_without_budget()
+        rec = PerformanceAnalyzer(server).analyze(
+            _task(server, "PerformanceAnalyzer", "p5"), "wf.login",
+            [{"duration_ms": 45}])
+
+        # Proposal should be created with intent.attach
+        self.assertTrue(rec["proposal_id"])
+        proposal = server.proposals[rec["proposal_id"]]
+        self.assertIn("attach", proposal.get("intent", {}))
+
+        # Proposal should be APPROVED (Reviewer judges it)
+        reviewer = Reviewer(server)
+        task = reviewer.decide(rec["review_task_id"], rec["proposal_id"])
+        self.assertEqual(task["result"]["decision"], "approved")
+
+        # Constraint should be referenced in merged doc
+        perf_nodes = [n for n in server.doc["nodes"] if n["kind"] == "Performance"]
+        self.assertGreater(len(perf_nodes), 0)
+        svc = next(n for n in server.doc["nodes"] if n["id"] == "svc.login")
+        perf_ids = [c for c in svc.get("constraints", [])
+                   if any(pn["id"] == c for pn in perf_nodes)]
+        self.assertGreater(len(perf_ids), 0, "Performance constraint not referenced")
 
 
 class TestTester(unittest.TestCase):
@@ -907,7 +982,8 @@ class TestRefactoringAgent(unittest.TestCase):
     def _run(self, server, key="k1"):
         agent = RefactoringAgent(server)
         task = server.call("agent.dispatch", role="RefactoringAgent",
-                           objective="split", deadline_ms=5000,
+                           kb_pins=[],
+                                objective="split", deadline_ms=5000,
                            idempotency_key=key)
         return agent.propose(task)
 
@@ -1061,6 +1137,80 @@ class TestRefactoringAgent(unittest.TestCase):
         implemented = {name for name, obj in inspect.getmembers(agents, inspect.isclass)
                        if obj.__module__ == "lnpl.agents" and not name.startswith("_")}
         self.assertEqual(set(protocol.ROLES), implemented)
+
+
+class TestKbPinsValidation(unittest.TestCase):
+    """RFC-0006 §Methods/ir.propose requires kb_pins parameter with validation."""
+
+    def setUp(self):
+        self.server = Server(golden(), KnowledgeBase())
+
+    def test_kb_pins_parameter_is_required(self):
+        """ir.propose requires kb_pins parameter (RFC-0006)."""
+        from lnpl.protocol import RpcError
+        # Use Validation (Behavior kind) which Coder can propose
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                                ir_fragment={"module": "login", "nodes": nodes},
+                            deadline_ms=1000, idempotency_key="kb-test-1")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("kb_pins", str(ctx.exception))
+
+    def test_kb_pins_must_be_a_list(self):
+        """kb_pins must be an array, not a string or object."""
+        from lnpl.protocol import RpcError
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                            ir_fragment={"module": "login", "nodes": nodes},
+                            kb_pins="not-an-array",
+                            deadline_ms=1000, idempotency_key="kb-test-2")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+
+    def test_kb_pins_empty_list_is_valid(self):
+        """Empty kb_pins list [] is valid (no KB documents used)."""
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
+        prop = self.server.call("ir.propose", role="Coder",
+                               ir_fragment={"module": "login", "nodes": nodes},
+                               kb_pins=[],
+                               deadline_ms=1000, idempotency_key="kb-test-3")
+        self.assertTrue(prop["proposal_id"])
+
+    def test_kb_pins_entry_must_have_doc_id_and_version(self):
+        """Each kb_pins entry must have doc_id and version keys."""
+        from lnpl.protocol import RpcError
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                            ir_fragment={"module": "login", "nodes": nodes},
+                            kb_pins=[{"doc_id": "test"}],  # missing version
+                            deadline_ms=1000, idempotency_key="kb-test-4")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+
+    def test_kb_pins_values_must_be_non_empty_strings(self):
+        """kb_pins doc_id and version must be non-empty strings."""
+        from lnpl.protocol import RpcError
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
+        # Empty string
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                            ir_fragment={"module": "login", "nodes": nodes},
+                            kb_pins=[{"doc_id": "", "version": "1.0"}],
+                            deadline_ms=1000, idempotency_key="kb-test-5")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+
+
 
 
 if __name__ == "__main__":

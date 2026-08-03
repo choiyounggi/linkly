@@ -143,6 +143,39 @@ class TestDifferential(unittest.TestCase):
         self.assertNotIn("s3cret", a["text"])
         self.assertNotIn("s3cret", b["text"])
 
+    def test_presence_guard_with_key_absent_is_equivalent(self):
+        """RFC-0008: Presence guard 'when field missing' with absent field.
+
+        When the guarded field is absent from the payload, the condition evaluates
+        to true, and both modes should execute the guarded step. The skip value is
+        derived from the payload (issue #12), not supplied by the caller.
+        """
+        doc = lower(parse(GUARDED), "t").to_document()
+        # Empty payload: token is missing, so 'token missing' is true, step runs
+        ok, report = differential.verify(
+            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        # Verify the guarded step actually ran
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
+        self.assertIn("cache user", b["text"])
+
+    def test_presence_guard_with_key_present_is_equivalent(self):
+        """RFC-0008: Presence guard 'when field missing' with present field.
+
+        When the guarded field is present in the payload, the condition evaluates
+        to false, and both modes should skip the guarded step. The skip value is
+        derived from the payload (issue #12), not supplied by the caller.
+        """
+        doc = lower(parse(GUARDED), "t").to_document()
+        payload = {"token": "present"}  # token is present
+        # With token present, 'token missing' is false, step is skipped
+        ok, report = differential.verify(
+            doc, "wf.w", payload, {"entity.user": dict(PAYLOAD)}, self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        # Verify the guarded step was skipped (no cache effect)
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload=payload)
+        self.assertNotIn("cache user", b["text"])
+
 
 @NEEDS_TOOLS
 class TestDivergenceIsDetected(unittest.TestCase):
@@ -174,9 +207,8 @@ class TestDivergenceIsDetected(unittest.TestCase):
         backend._steps_in_order = self.original
         shutil.rmtree(self.workdir, ignore_errors=True)
 
-    def _verify(self, doc, workflow, payload, rows, skip=False):
-        return differential.verify(doc, workflow, payload, rows, self.workdir,
-                                   skip=skip)
+    def _verify(self, doc, workflow, payload, rows):
+        return differential.verify(doc, workflow, payload, rows, self.workdir)
 
     def test_the_guarded_fixture_is_equivalent_with_its_guard_taken(self):
         """The baseline the other cases rest on, with `cache user` actually run.
@@ -239,15 +271,14 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """A `when` guard that evaluates false must actually skip its step.
 
         The payload carries `token`, so `when token missing` is **false** and the
-        guarded step is skipped — `skip=True` tells mode B the same. With the
-        guard satisfied instead, removing it would change nothing observable and
-        this case would prove nothing, which is how it read before.
+        guarded step is skipped. The skip value is derived from evaluating the
+        condition against the payload (RFC-0008).
         """
         doc = lower(parse(GUARDED), "t").to_document()
         payload = dict(PAYLOAD, token="present")
         rows = {"entity.user": dict(PAYLOAD)}
 
-        ok, _report = self._verify(doc, "wf.w", payload, rows, skip=True)
+        ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
 
         original = self.original
@@ -260,7 +291,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = without_when
-        ok, report = self._verify(doc, "wf.w", payload, rows, skip=True)
+        ok, report = self._verify(doc, "wf.w", payload, rows)
         self.assertFalse(ok, "removing the when guard must diverge")
         # Both classes: an extra step is an order difference *and* an extra
         # effect. Asserting only one lets the other silently stop appearing.
@@ -345,23 +376,24 @@ TTL_CACHE = NO_TTL_CACHE.replace(
 
 
 @NEEDS_TOOLS
-class TestModeBDoesNotEnforceTheCacheTtlContract(unittest.TestCase):
-    """A known mode A/B gap, pinned so fixing GUARDED does not hide it.
+class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
+    """Mode B now enforces RFC-0003's cache-TTL contract, as mode A always did.
 
     RFC-0003 requires every cache key to carry a TTL. Mode A enforces it — its
-    `Cache.set` raises `RunError` when the budget is absent. Mode B does not
-    enforce it at all: the generated C shim prints the effect and returns 0. So
-    a workflow whose `CacheAccess set` has no budget really does make the two
-    modes disagree, and the differential really does say so.
+    `Cache.set` raises `RunError` when the budget is absent, so the run's status
+    becomes `failed`. Mode B used to print the effect and complete, so a workflow
+    whose `CacheAccess set` had no budget made the two modes disagree, and the
+    differential said so (`FAIL 2/4 policy outcome — A=failed B=completed`). That
+    standing divergence is why `GUARDED` was divergent before any test touched it,
+    and why three deliberate-mismatch cases passed for months on a divergence none
+    of them caused.
 
-    This was not a hypothesis. It is why `GUARDED` was divergent before any test
-    touched it, and why three deliberate-mismatch cases passed for months on a
-    divergence none of them caused. Giving `GUARDED` a budget fixed those tests
-    and would have made the gap invisible again; this class keeps it visible.
-
-    **When this class goes red, mode B has learned to enforce the contract.**
-    That is the signal to close issue #9 and invert these assertions — not to
-    weaken them.
+    Issue #9 closed the gap. Budget presence is a compile-time property of the
+    owning service, so mode B stops at the first unbudgeted `CacheAccess set` and
+    reports `failed` too, reaching the same observable outcome. Per the pin's own
+    instruction, these assertions were **inverted** the moment mode B learned to
+    enforce — they now assert the two modes AGREE (both refuse without a budget,
+    both complete with one), not weakened away.
     """
 
     def setUp(self):
@@ -374,30 +406,43 @@ class TestModeBDoesNotEnforceTheCacheTtlContract(unittest.TestCase):
     def _doc(self, src):
         return lower(parse(src), "t").to_document()
 
-    def test_the_differential_reports_the_disagreement(self):
+    def test_the_differential_reports_equivalence_now_both_modes_refuse(self):
+        """Inverted from the gap form (was `assertFalse(ok)` + `FAIL 2/4`).
+
+        Both modes now fail on the budget-less workflow, so the differential is
+        EQUIVALENT — and specifically on the policy-outcome axis (PASS 2/4), which
+        is where a refused run shows up. A bare EQUIVALENT could be any agreeing
+        pair, so the second half proves they agree by *failing*, not by running
+        clean: mode A raises and mode B returns non-zero, both surfacing as
+        `status failed`.
+        """
         doc = self._doc(NO_TTL_CACHE)
-        ok, report = differential.verify(
-            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
-        self.assertFalse(ok)
-        # The class, not merely falsity: the disagreement must be the policy
-        # outcome, which is where a refused run shows up.
-        self.assertTrue(any("FAIL 2/4" in line for line in report), report)
+        rows = {"entity.user": dict(PAYLOAD)}
+        ok, report = differential.verify(doc, "wf.w", {}, rows, self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        self.assertTrue(any("PASS 2/4" in line for line in report), report)
+        a = differential.observe_mode_a(doc, "wf.w", {}, rows)
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
+        self.assertIn("status failed", a["text"])
+        self.assertIn("status failed", b["text"])
 
-    def test_mode_a_refuses_only_when_the_budget_is_missing(self):
-        """Assert the pair — `status failed` alone would not be about the TTL.
-
-        `observe_mode_a` returns order, effects, status and text; the RunError
-        message never reaches the caller. So a lone `status failed` is satisfied
-        by any unrelated failure — a missing repository row produces exactly the
-        same string. Running both sources makes the budget the only variable.
+    def test_both_modes_refuse_without_the_budget_and_complete_with_it(self):
+        """Assert the pair in both modes — `status failed` alone would not be about
+        the TTL, since any unrelated failure produces the same string. The budget
+        is the only variable, and now BOTH modes track it (mode B used to complete
+        the budget-less run regardless).
         """
         rows = {"entity.user": dict(PAYLOAD)}
-        without = differential.observe_mode_a(
-            self._doc(NO_TTL_CACHE), "wf.w", {}, rows)
-        with_budget = differential.observe_mode_a(
-            self._doc(TTL_CACHE), "wf.w", {}, rows)
-        self.assertIn("status failed", without["text"])
-        self.assertIn("status completed", with_budget["text"])
+        a_without = differential.observe_mode_a(self._doc(NO_TTL_CACHE), "wf.w", {}, rows)
+        a_with = differential.observe_mode_a(self._doc(TTL_CACHE), "wf.w", {}, rows)
+        b_without = differential.observe_mode_b(
+            self._doc(NO_TTL_CACHE), "wf.w", self.workdir, payload={})
+        b_with = differential.observe_mode_b(
+            self._doc(TTL_CACHE), "wf.w", self.workdir, payload={})
+        self.assertIn("status failed", a_without["text"])
+        self.assertIn("status completed", a_with["text"])
+        self.assertIn("status failed", b_without["text"])
+        self.assertIn("status completed", b_with["text"])
 
     def test_adding_a_ttl_budget_makes_the_two_modes_agree(self):
         """Control. Without this, the two tests above could be about anything."""
@@ -405,6 +450,31 @@ class TestModeBDoesNotEnforceTheCacheTtlContract(unittest.TestCase):
         ok, report = differential.verify(
             doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
         self.assertTrue(ok, "\n".join(report))
+
+    def test_effects_after_the_unbudgeted_set_are_not_emitted(self):
+        """A step's effects run in order; mode A stops AT the cache set (its span
+        holds the effects up to and including it, none after). Mode B must truncate
+        the failing step's effects there too — otherwise a multi-effect step makes
+        mode B emit an effect mode A never reached, and the differential diverges on
+        a workflow the modes actually agree on. Here an Authorization is appended
+        AFTER the cache set; neither mode may report it."""
+        doc = self._doc(NO_TTL_CACHE)
+        cache_set = next(n for n in doc["nodes"]
+                         if n["kind"] == "CacheAccess" and n.get("operation") == "set")
+        step = next(n for n in doc["nodes"]
+                    if n["kind"] == "WorkflowStep"
+                    and cache_set["id"] in n.get("children", []))
+        doc["nodes"].append({"kind": "Authorization",
+                             "id": step["id"] + ".after", "requirement": "x"})
+        step["children"] = list(step.get("children", [])) + [step["id"] + ".after"]
+        rows = {"entity.user": dict(PAYLOAD)}
+        a = differential.observe_mode_a(doc, "wf.w", {}, rows)
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
+        self.assertNotIn("Authorization", a["effects"].get(step["name"], []))
+        self.assertNotIn("Authorization", b["effects"].get(step["name"], []))
+        self.assertEqual(a["effects"], b["effects"])
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(b["status"], "failed")
 
 
 class TestToolchainHonesty(unittest.TestCase):

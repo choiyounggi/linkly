@@ -196,7 +196,7 @@ def _comparable(node):
     return out
 
 
-def reference_only_edit(proposed, existing, declared_children):
+def reference_only_edit(proposed, existing, declared_children, child_kinds=None):
     """Is `proposed` a replacement of `existing` that only adds `declared_children`?
 
     RFC-0010 lets a role edit a node outside its rights for exactly one purpose:
@@ -208,6 +208,10 @@ def reference_only_edit(proposed, existing, declared_children):
     order, RFC-0001 rule 3), and moving a reference from `constraints` into
     `children` — set-identical, while the interpreter reads `constraints` for retry,
     timeout and rollback, so the declared policy silently stops applying.
+
+    RFC-0010 §Methods/ir.propose allows `constraints` field for Constraint-kind
+    children (Policy, Security, Performance), with same per-field order-preserving
+    rule as `children`.
     """
     if existing is None:
         return False
@@ -219,11 +223,20 @@ def reference_only_edit(proposed, existing, declared_children):
 
     for field in REFERENCE_KEYS:
         before, after = existing.get(field), proposed.get(field)
-        # Only `children` may take the declared additions. Attachment means
-        # ownership; letting the id also appear in `constraints` or `requires` would
-        # turn "attach what you authored" into "write this id into any reference
-        # field of a node whose kind you do not own".
-        allowed_new = declared_children if field == "children" else ()
+        # Only `children` may take the declared additions (RFC-0010 default).
+        # RFC-0010 also allows `constraints` field for Constraint-kind children
+        # when child_kinds are provided.
+        if field == "children":
+            allowed_new = declared_children
+        elif field == "constraints" and child_kinds:
+            # Allow constraints field only for Constraint-kind children
+            constraint_kinds = {"Policy", "Security", "Performance"}
+            constraint_refs = {ref for ref in declared_children
+                             if child_kinds.get(ref) in constraint_kinds}
+            allowed_new = constraint_refs
+        else:
+            allowed_new = ()
+
         if isinstance(after, list):
             remaining = [ref for ref in after if ref not in allowed_new]
             if remaining != list(before or []):
@@ -251,6 +264,127 @@ def node_references(node):
     if isinstance(source, dict) and isinstance(source.get("ref"), str):
         refs.append(source["ref"])
     return refs
+
+
+# Node kinds that may legitimately have no owner. RFC-0001 rule 2 allows only
+# Declaration nodes to be entry (top-level) nodes; rule 5 exempts Constraint
+# nodes, which are never owned via `children` and are reached through the
+# `constraints` field instead. Everything else must have exactly one owner.
+DECLARATION_KINDS = frozenset({"Entity", "Service", "Workflow", "Event", "Capability"})
+CONSTRAINT_KINDS = frozenset({"Policy", "Security", "Performance"})
+ENTRY_KINDS = DECLARATION_KINDS | CONSTRAINT_KINDS
+
+
+def _ownership_cycle(merged):
+    """One cycle in the `children` graph as a list of ids, or [] if acyclic.
+
+    RFC-0001 rule 4. Checking only for a node that lists itself catches 1-cycles
+    and nothing longer: two new nodes owning each other each have an owner, so
+    every per-node check passes while the pair is unreachable from any entry node.
+    """
+    white, grey, black = 0, 1, 2
+    colour = dict.fromkeys(merged, white)
+    for root in sorted(merged):
+        if colour[root] != white:
+            continue
+        colour[root] = grey
+        path = [root]
+        stack = [(root, iter(merged[root].get("children", [])))]
+        while stack:
+            node_id, kids = stack[-1]
+            descended = False
+            for kid in kids:
+                if kid not in merged:
+                    continue              # rule 6 reports dangling separately
+                if colour[kid] == grey:
+                    return path[path.index(kid):] + [kid]
+                if colour[kid] == white:
+                    colour[kid] = grey
+                    path.append(kid)
+                    stack.append((kid, iter(merged[kid].get("children", []))))
+                    descended = True
+                    break
+            if not descended:
+                colour[node_id] = black
+                stack.pop()
+                path.pop()
+    return []
+
+
+def _structure_fault(merged):
+    """The first RFC-0001 structure-rule violation in a merged document, or None.
+
+    Rules 2 (one owner, and only Declaration/Constraint nodes may be unowned),
+    4 (acyclic ownership), 6 (every reference resolves), and invariants V1 (id
+    uniqueness) and V5 (kind-specific children allowance per RFC-0004 §S2) are
+    checked over the *whole* merged document, not just the proposed nodes — a
+    proposal changes meaning by what it detaches as much as by what it adds.
+
+    Lives here in the protocol layer, not the Reviewer, because BOTH gates that
+    reach merge must run it: the Reviewer's `_assess` and the server's `_apply`
+    (the approval-override path). Enforcing it in only one leaves the other able
+    to write a document that violates the invariants (issue #15).
+    """
+    # V1: id uniqueness (RFC-0004 invariant V1)
+    all_ids = [n["id"] for n in merged.values()]
+    repeated = sorted({i for i in set(all_ids) if all_ids.count(i) > 1})
+    if repeated:
+        return ("id_unique: node id(s) %s appear more than once in the document "
+                "(RFC-0001 공통 필드, RFC-0004 V1)" % ", ".join(repeated))
+
+    dangling = sorted({ref for node in merged.values()
+                       for ref in node_references(node) if ref not in merged})
+    if dangling:
+        return ("dangling: unresolved reference(s) %s — every owning and named "
+                "reference must resolve in the same document (RFC-0001 rule 6)"
+                % ", ".join(dangling))
+
+    owners = {}
+    contested = []
+    for node in sorted(merged.values(), key=lambda n: n["id"]):
+        for ref in node.get("children", []):
+            if ref in owners:
+                contested.append("%s (owned by %s and %s)" % (ref, owners[ref], node["id"]))
+            else:
+                owners[ref] = node["id"]
+    if contested:
+        return ("ownership: %s — a node may appear in at most one `children` list "
+                "(RFC-0001 rule 2)" % ", ".join(sorted(contested)))
+
+    orphans = sorted(n["id"] for n in merged.values()
+                     if n["kind"] not in ENTRY_KINDS and n["id"] not in owners)
+    if orphans:
+        return ("orphan: nothing owns %s — only Declaration and Constraint nodes "
+                "may be unowned (RFC-0001 rules 2, 5)" % ", ".join(orphans))
+
+    cycle = _ownership_cycle(merged)
+    if cycle:
+        return ("cycle: ownership loops through %s — the `children` graph must be "
+                "acyclic (RFC-0001 rule 4)" % " -> ".join(cycle))
+
+    # V5: kind-specific children allowance (RFC-0004 invariant V5)
+    for node in merged.values():
+        parent_kind = node.get("kind")
+        for child_id in node.get("children", []):
+            child = merged.get(child_id)
+            if child is None:
+                continue  # dangling check above already caught this
+            child_kind = child.get("kind")
+            if child_kind and child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
+                return ("v5_children: a %s may not own a %s (RFC-0001 §노드 카탈로그 "
+                        "children 허용; RFC-0004 §S2 V5): %s under %s"
+                        % (parent_kind, child_kind, child_id, node["id"]))
+
+    # Guard cardinality: exactly one child (RFC-0001 Guard row, "피가드 항목 1개")
+    for node in merged.values():
+        if node.get("kind") == "Guard":
+            children_count = len(node.get("children", []))
+            if children_count != 1:
+                return ("guard_cardinality: Guard %s has %d children; exactly 1 required "
+                        "(RFC-0001 §노드 카탈로그 Guard row)"
+                        % (node["id"], children_count))
+
+    return None
 
 
 class Task:
@@ -455,6 +589,14 @@ class Server:
                     raise RpcError("ir_invalid",
                                    "applying %s would leave a dangling reference to %s"
                                    % (node["id"], ref))
+        # RFC-0004 §S2 invariants (V1 id-uniqueness, V5 children allowance),
+        # RFC-0001 ownership/cycle rules and Guard cardinality apply to EVERY path
+        # that reaches merge — including this approval-override path, not just the
+        # Reviewer's assessment (issue #15). Run them over the whole merged
+        # document before it becomes authoritative.
+        fault = _structure_fault({n["id"]: n for n in merged["nodes"]})
+        if fault is not None:
+            raise RpcError("ir_invalid", "merged IR violates a structure rule: %s" % fault)
         if self.validate is not None:
             try:
                 self.validate(merged)
@@ -485,6 +627,28 @@ class Server:
             raise RpcError("ir_invalid",
                            "fragment module %r does not match %r"
                            % (fragment.get("module"), self.doc["module"]))
+
+        # RFC-0006 §Methods/ir.propose: kb_pins is required.
+        # It lists the KB documents this proposal grounds on, or [] if none.
+        kb_pins = params.get("kb_pins")
+        if kb_pins is None:
+            raise RpcError("ir_invalid",
+                           "ir.propose requires kb_pins parameter — a list of "
+                           "{doc_id, version} objects, or [] if no KB docs used "
+                           "(RFC-0006 §Methods/ir.propose)")
+        if not isinstance(kb_pins, list):
+            raise RpcError("ir_invalid",
+                           "kb_pins must be an array, got %s" % type(kb_pins).__name__)
+        for pin in kb_pins:
+            if not isinstance(pin, dict):
+                raise RpcError("ir_invalid",
+                               "each kb_pins entry must be an object {doc_id, version}")
+            if not isinstance(pin.get("doc_id"), str) or not pin.get("doc_id"):
+                raise RpcError("ir_invalid",
+                               "kb_pins entry missing or empty doc_id (must be non-empty string)")
+            if not isinstance(pin.get("version"), str) or not pin.get("version"):
+                raise RpcError("ir_invalid",
+                               "kb_pins entry missing or empty version (must be non-empty string)")
         # One node per id. `Reviewer._assess` merges with last-wins while `_apply`
         # appends every unseen id, so a fragment naming an id twice would put two
         # nodes with that id into the document and the reviewer would only have seen
@@ -508,6 +672,7 @@ class Server:
         # than surfacing as the generic "may not propose X" from the loop below.
         proposed_by_id = {n["id"]: n for n in fragment["nodes"] if "id" in n}
         authored = set(proposed_by_id) - set(by_id)
+        constraint_kinds = {"Policy", "Security", "Performance"}
         for parent, children in attach_map.items():
             parent_kind = (proposed_by_id.get(parent)
                            or by_id.get(parent) or {}).get("kind")
@@ -523,12 +688,23 @@ class Server:
                         "author — a proposal may attach only a node it wrote in "
                         "the same fragment (RFC-0010)" % child)
                 child_kind = proposed_by_id.get(child, {}).get("kind")
+                # RFC-0010 §Methods/ir.propose: allow constraints field for
+                # Constraint-kind children (Policy, Security, Performance).
+                # Otherwise, child must be in CHILDREN_ALLOWED for parent.
+                if child_kind in constraint_kinds:
+                    # Constraint attachment is allowed; will be validated via
+                    # reference_only_edit when processing the parent node edit.
+                    continue
                 if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
                     raise RpcError(
                         "ir_invalid",
                         "a %s may not own a %s (RFC-0001 §노드 카탈로그 children "
                         "허용; RFC-0004 §S2 V5): intent.attach puts %s under %s"
                         % (parent_kind, child_kind, child, parent))
+
+        # Map declared children to their kinds for reference_only_edit validation
+        declared_kinds = {n["id"]: n.get("kind") for n in fragment["nodes"]
+                         if "id" in n}
 
         for node in fragment["nodes"]:
             kind = node.get("kind")
@@ -539,7 +715,7 @@ class Server:
             # and does nothing else.
             declared = attach_map.get(node.get("id"), set())
             if declared and reference_only_edit(node, by_id.get(node.get("id")),
-                                                declared):
+                                                declared, declared_kinds):
                 origin = (node.get("meta") or {}).get("origin") or ""
                 if not origin.startswith("agent:"):
                     raise RpcError(
@@ -551,6 +727,7 @@ class Server:
                 continue
             raise RpcError("ir_invalid",
                            "role %s may not propose %s nodes" % (role, kind))
+
 
         pid = "prop-%04d" % (len(self.proposals) + 1)
         review = self._m_agent_dispatch({"role": "Reviewer",

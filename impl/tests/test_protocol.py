@@ -5,7 +5,7 @@ import os
 import unittest
 
 from lnpl.kb import KnowledgeBase
-from lnpl.protocol import ERRORS, RpcError, Server
+from lnpl.protocol import ERRORS, RpcError, Server, reference_only_edit
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,6 +21,15 @@ def server():
 
 AUTHZ = {"kind": "Authorization", "id": "wf.login.step.4.authz",
          "requirement": "verified jwt"}
+
+# A structurally-valid way to add AUTHZ: the step that performs it must own it.
+# An Authorization is an effect, not an entry kind, so a merged document that adds
+# it without an owner leaves it orphaned — which `ir.apply` now refuses on every
+# path, including the approval override (issue #15). Pairing the effect with its
+# owning step keeps the merged document valid.
+STEP4_OWNS_AUTHZ = {"kind": "WorkflowStep", "id": "wf.login.step.4",
+                    "name": "generate token",
+                    "children": ["wf.login.step.4.authz"]}
 
 
 def fragment(nodes=None):
@@ -126,7 +135,7 @@ class TestProposalIsTwoStage(unittest.TestCase):
 
     def _propose(self, nodes=None, role="Coder"):
         return self.s.call("ir.propose", role=role, ir_fragment=fragment(nodes),
-                           deadline_ms=1000, idempotency_key="p-%s" % role)
+                           kb_pins=[], deadline_ms=1000, idempotency_key="p-%s" % role)
 
     def test_propose_does_not_mutate_the_document(self):
         out = self._propose()
@@ -134,11 +143,14 @@ class TestProposalIsTwoStage(unittest.TestCase):
         self.assertEqual(len(self.s.doc["nodes"]), self.before)
 
     def test_approval_applies_the_nodes(self):
-        out = self._propose()
+        # A valid proposal: the new Authorization effect is owned by its step, so
+        # the merged document satisfies the structure rules `ir.apply` enforces.
+        out = self._propose([STEP4_OWNS_AUTHZ, AUTHZ])
         task = self.s.call("agent.report", task_id=out["review_task_id"],
                            payload={"proposal_id": out["proposal_id"],
                                     "decision": "approved"})
         self.assertEqual(task["state"], "completed")
+        # step.4 is replaced in place; only the authz node is new.
         self.assertEqual(len(self.s.doc["nodes"]), self.before + 1)
 
     def test_rejection_leaves_the_document_untouched(self):
@@ -151,26 +163,32 @@ class TestProposalIsTwoStage(unittest.TestCase):
         self.assertEqual(len(self.s.doc["nodes"]), self.before)
 
     def test_a_role_without_approve_rights_cannot_approve(self):
-        out = self._propose()
+        # A VALID fragment, so the only thing that can refuse the approval is the
+        # role gate — not the merged-document structure check. With an invalid
+        # (orphan) fragment the structure check would raise regardless of the role,
+        # masking a regression in the approve-rights gate.
+        out = self._propose([STEP4_OWNS_AUTHZ, AUTHZ])
         # Re-purpose the review task to a non-approving role.
         self.s.tasks[out["review_task_id"]].role = "Coder"
-        with self.assertRaises(RpcError):
+        with self.assertRaises(RpcError) as ctx:
             self.s.call("agent.report", task_id=out["review_task_id"],
                         payload={"proposal_id": out["proposal_id"],
                                  "decision": "approved"})
+        self.assertEqual(ctx.exception.type, "proposal_rejected")
+        self.assertIn("may not approve", str(ctx.exception))
         self.assertEqual(len(self.s.doc["nodes"]), self.before)
 
     def test_a_role_may_not_propose_a_kind_outside_its_rights(self):
         with self.assertRaises(RpcError) as ctx:
             self.s.call("ir.propose", role="Planner", ir_fragment=fragment(),
-                        deadline_ms=1000, idempotency_key="pp")
+                        kb_pins=[], deadline_ms=1000, idempotency_key="pp")
         self.assertIn("may not propose", str(ctx.exception))
 
     def test_module_mismatch_is_rejected(self):
         with self.assertRaises(RpcError) as ctx:
             self.s.call("ir.propose", role="Coder",
                         ir_fragment={"module": "other", "nodes": [AUTHZ]},
-                        deadline_ms=1000, idempotency_key="pm")
+                        kb_pins=[], deadline_ms=1000, idempotency_key="pm")
         self.assertIn("does not match", str(ctx.exception))
 
     def test_a_dangling_child_reference_is_refused_at_apply_time(self):
@@ -183,8 +201,59 @@ class TestProposalIsTwoStage(unittest.TestCase):
                                  "decision": "approved"})
         self.assertIn("dangling", str(ctx.exception))
 
+    def test_override_refuses_an_orphaned_effect(self):
+        """The approval override runs the same document invariants the Reviewer
+        does (issue #15). An Authorization effect with no owning step passes
+        propose-time (the fragment is internally consistent) but is orphaned once
+        merged — `ir.apply` must refuse it, not apply it."""
+        out = self._propose([AUTHZ])
+        with self.assertRaises(RpcError) as ctx:
+            self.s.call("agent.report", task_id=out["review_task_id"],
+                        payload={"proposal_id": out["proposal_id"],
+                                 "decision": "approved"})
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("orphan", str(ctx.exception))
+        self.assertEqual(len(self.s.doc["nodes"]), self.before)
+
+    def test_override_refuses_a_v5_children_violation(self):
+        """RFC-0004 V5 on the override path: an Entity may not own a WorkflowStep.
+        Regular `children` edits are not V5-checked at propose time (that gate is
+        for the attach intent only), so without the check in `_apply` this merged
+        clean and the review gate approved it — exactly the hole #15 names."""
+        bad = [{"kind": "Entity", "id": "e.z", "name": "Z",
+                "children": ["e.z.step"]},
+               {"kind": "WorkflowStep", "id": "e.z.step", "name": "s"}]
+        out = self._propose(bad, role="Architect")
+        with self.assertRaises(RpcError) as ctx:
+            self.s.call("agent.report", task_id=out["review_task_id"],
+                        payload={"proposal_id": out["proposal_id"],
+                                 "decision": "approved"})
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("v5_children", str(ctx.exception))
+        self.assertEqual(len(self.s.doc["nodes"]), self.before)
+
+    def test_override_refuses_a_guard_with_wrong_cardinality(self):
+        """RFC-0001 Guard row: a Guard owns exactly one guarded item ("피가드 항목
+        1개"). CHILDREN_ALLOWED cannot express that count, so nothing but the
+        `_structure_fault` cardinality check catches a Guard with two children —
+        and it must run on the override path too (issue #15)."""
+        bad = [{"kind": "Workflow", "id": "wf.gc", "name": "gc",
+                "children": ["wf.gc.g"]},
+               {"kind": "Guard", "id": "wf.gc.g", "mode": "when",
+                "condition": "x missing", "children": ["wf.gc.s1", "wf.gc.s2"]},
+               {"kind": "WorkflowStep", "id": "wf.gc.s1", "name": "s1"},
+               {"kind": "WorkflowStep", "id": "wf.gc.s2", "name": "s2"}]
+        out = self._propose(bad, role="Architect")
+        with self.assertRaises(RpcError) as ctx:
+            self.s.call("agent.report", task_id=out["review_task_id"],
+                        payload={"proposal_id": out["proposal_id"],
+                                 "decision": "approved"})
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("guard_cardinality", str(ctx.exception))
+        self.assertEqual(len(self.s.doc["nodes"]), self.before)
+
     def test_double_decision_on_one_proposal_is_refused(self):
-        out = self._propose()
+        out = self._propose([STEP4_OWNS_AUTHZ, AUTHZ])
         self.s.call("agent.report", task_id=out["review_task_id"],
                     payload={"proposal_id": out["proposal_id"],
                              "decision": "approved"})
@@ -305,7 +374,7 @@ class TestProposalIntent(unittest.TestCase):
         return self.server.call(
             "ir.propose", role="RefactoringAgent",
             ir_fragment={"lir_version": "0.1", "module": "t", "nodes": nodes},
-            intent=intent, deadline_ms=1000, idempotency_key=key)
+            intent=intent, kb_pins=[], deadline_ms=1000, idempotency_key=key)
 
     def test_a_declared_attachment_is_accepted(self):
         out = self._propose(self._split_nodes(), self._intent())
@@ -415,6 +484,33 @@ class TestProposalIntent(unittest.TestCase):
         with self.assertRaises(RpcError):
             self._propose([{"kind": "Workflow", "id": "wf.w", "name": "W",
                             "children": ["wf.w.step.1"]}], key="s2")
+
+
+class TestReferenceOnlyEdit(unittest.TestCase):
+    """RFC-0010: an out-of-rights edit is permitted ONLY to attach declared
+    children, and only into `children` (or a Constraint's `constraints`). Writing
+    the declared id into any other reference field is not a reference-only edit."""
+
+    def test_a_declared_child_added_to_children_is_a_reference_only_edit(self):
+        existing = {"kind": "Service", "id": "s", "children": ["a"]}
+        proposed = {"kind": "Service", "id": "s", "children": ["a", "new"]}
+        self.assertTrue(reference_only_edit(proposed, existing, {"new"}))
+
+    def test_a_declared_child_written_into_a_non_children_field_is_refused(self):
+        # The mutation "let an attachment be written into any reference field"
+        # (allowed_new = declared_children in the else branch) makes this pass;
+        # the rule is that only `children`/`constraints` may take the addition, so
+        # a declared id appearing in `requires` must make the edit invalid.
+        existing = {"kind": "Service", "id": "s", "children": ["a"]}
+        proposed = {"kind": "Service", "id": "s", "children": ["a"],
+                    "requires": ["new"]}
+        self.assertFalse(reference_only_edit(proposed, existing, {"new"}))
+
+    def test_an_edit_that_also_changes_a_non_reference_field_is_refused(self):
+        existing = {"kind": "Service", "id": "s", "name": "S", "children": ["a"]}
+        proposed = {"kind": "Service", "id": "s", "name": "RENAMED",
+                    "children": ["a", "new"]}
+        self.assertFalse(reference_only_edit(proposed, existing, {"new"}))
 
 
 if __name__ == "__main__":

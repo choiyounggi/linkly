@@ -16,56 +16,13 @@ import re
 
 from .lower import derive_id
 from .protocol import (CHILDREN_ALLOWED, REFERENCE_KEYS, ROLES, RpcError, Server,
-                       attachments, moves, node_references, reference_only_edit)
+                       _structure_fault, attachments, moves, node_references,
+                       reference_only_edit)
 from .spec import EXPECTATIONS, SPEC_VERSION
-
-# Node kinds that may legitimately have no owner. RFC-0001 rule 2 allows only
-# Declaration nodes to be entry (top-level) nodes; rule 5 exempts Constraint
-# nodes, which are never owned via `children` and are reached through the
-# `constraints` field instead. Everything else must have exactly one owner.
-DECLARATION_KINDS = frozenset({"Entity", "Service", "Workflow", "Event", "Capability"})
-CONSTRAINT_KINDS = frozenset({"Policy", "Security", "Performance"})
-ENTRY_KINDS = DECLARATION_KINDS | CONSTRAINT_KINDS
 
 # A10: provenance is a form, not just a non-empty string. `kb:<doc id>@<semver>`
 # when the basis is a KB document, `ir:<node id>` when it is derived from the IR.
 _SOURCE_FORM = re.compile(r"^(kb:[a-z0-9-]+@\d+\.\d+\.\d+|ir:[a-z][a-z0-9.]*)$")
-
-
-def _ownership_cycle(merged):
-    """One cycle in the `children` graph as a list of ids, or [] if acyclic.
-
-    RFC-0001 rule 4. Checking only for a node that lists itself catches 1-cycles
-    and nothing longer: two new nodes owning each other each have an owner, so
-    every per-node check passes while the pair is unreachable from any entry node.
-    """
-    white, grey, black = 0, 1, 2
-    colour = dict.fromkeys(merged, white)
-    for root in sorted(merged):
-        if colour[root] != white:
-            continue
-        colour[root] = grey
-        path = [root]
-        stack = [(root, iter(merged[root].get("children", [])))]
-        while stack:
-            node_id, kids = stack[-1]
-            descended = False
-            for kid in kids:
-                if kid not in merged:
-                    continue              # rule 6 reports dangling separately
-                if colour[kid] == grey:
-                    return path[path.index(kid):] + [kid]
-                if colour[kid] == white:
-                    colour[kid] = grey
-                    path.append(kid)
-                    stack.append((kid, iter(merged[kid].get("children", []))))
-                    descended = True
-                    break
-            if not descended:
-                colour[node_id] = black
-                stack.pop()
-                path.pop()
-    return []
 
 
 def _refs_in(node, field):
@@ -76,46 +33,6 @@ def _refs_in(node, field):
     if isinstance(value, list):
         return {v for v in value if isinstance(v, str)}
     return {value} if isinstance(value, str) else set()
-
-
-def _structure_fault(merged):
-    """The first RFC-0001 structure-rule violation in a merged document, or None.
-
-    Rules 2 (one owner, and only Declaration/Constraint nodes may be unowned),
-    4 (acyclic ownership) and 6 (every reference resolves) are checked over the
-    *whole* merged document, not just the proposed nodes — a proposal changes
-    meaning by what it detaches as much as by what it adds.
-    """
-    dangling = sorted({ref for node in merged.values()
-                       for ref in node_references(node) if ref not in merged})
-    if dangling:
-        return ("dangling: unresolved reference(s) %s — every owning and named "
-                "reference must resolve in the same document (RFC-0001 rule 6)"
-                % ", ".join(dangling))
-
-    owners = {}
-    contested = []
-    for node in sorted(merged.values(), key=lambda n: n["id"]):
-        for ref in node.get("children", []):
-            if ref in owners:
-                contested.append("%s (owned by %s and %s)" % (ref, owners[ref], node["id"]))
-            else:
-                owners[ref] = node["id"]
-    if contested:
-        return ("ownership: %s — a node may appear in at most one `children` list "
-                "(RFC-0001 rule 2)" % ", ".join(sorted(contested)))
-
-    orphans = sorted(n["id"] for n in merged.values()
-                     if n["kind"] not in ENTRY_KINDS and n["id"] not in owners)
-    if orphans:
-        return ("orphan: nothing owns %s — only Declaration and Constraint nodes "
-                "may be unowned (RFC-0001 rules 2, 5)" % ", ".join(orphans))
-
-    cycle = _ownership_cycle(merged)
-    if cycle:
-        return ("cycle: ownership loops through %s — the `children` graph must be "
-                "acyclic (RFC-0001 rule 4)" % " -> ".join(cycle))
-    return None
 
 
 class _AgentBase:
@@ -204,6 +121,7 @@ class Coder(_AgentBase):
 
         proposal = self.server.call(
             "ir.propose", role=self.role, ir_fragment=fragment,
+            kb_pins=[{"doc_id": doc_id, "version": doc["version"]}],
             deadline_ms=deadline_ms,
             idempotency_key="coder-%s" % _slug(step))
         self.server.call("agent.report", task_id=task["task_id"],
@@ -302,6 +220,7 @@ class Reviewer(_AgentBase):
         # Judge the declarations before the rights check consults them, so an
         # unauthored child or an illegal pairing says so instead of surfacing as a
         # generic `rights:` refusal.
+        constraint_kinds = {"Policy", "Security", "Performance"}
         for parent, children in sorted(attach_map.items()):
             parent_kind = (next((n for n in nodes if n.get("id") == parent), None)
                            or existing.get(parent) or {}).get("kind")
@@ -312,19 +231,28 @@ class Reviewer(_AgentBase):
                                    "(RFC-0010)" % child)
                 child_kind = next((n.get("kind") for n in nodes
                                    if n.get("id") == child), None)
+                # RFC-0010 §Methods/ir.propose: allow constraints field for
+                # Constraint-kind children (Policy, Security, Performance).
+                # Otherwise, child must be in CHILDREN_ALLOWED for parent.
+                if child_kind in constraint_kinds:
+                    # Constraint attachment is allowed; will be validated via
+                    # reference_only_edit when processing the parent node edit.
+                    continue
                 if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
                     return False, ("attach: a %s may not own a %s (RFC-0001 노드 "
                                    "카탈로그; RFC-0004 §S2 V5): %s under %s"
                                    % (parent_kind, child_kind, child, parent))
 
         allowed = ROLES.get(proposal["role"], {}).get("propose", set())
+        # Map declared children to their kinds for reference_only_edit validation
+        declared_kinds = {n["id"]: n.get("kind") for n in nodes}
         outside = []
         for node in nodes:
             if node.get("kind") in allowed:
                 continue
             declared = attach_map.get(node.get("id"), set())
             if declared and reference_only_edit(node, existing.get(node.get("id")),
-                                                declared):
+                                                declared, declared_kinds):
                 origin = (node.get("meta") or {}).get("origin") or ""
                 if origin.startswith("agent:"):
                     continue
@@ -484,6 +412,7 @@ class Architect(_AgentBase):
         proposal = self.server.call("ir.propose", role=self.role,
                                     ir_fragment={"module": self.server.doc["module"],
                                                  "nodes": nodes},
+                                    kb_pins=[{"doc_id": doc["id"], "version": doc["version"]}],
                                     deadline_ms=deadline_ms,
                                     idempotency_key="architect-%s" % _slug(wf["name"]))
         self.server.call("agent.report", task_id=task["task_id"],
@@ -546,31 +475,36 @@ class SecurityAuditor(_AgentBase):
         svc = findings[0]
         segs = svc["id"].split(".", 1)[1]
         sec_id = "security.%s" % segs
-        # The Constraint is all this role may propose. Attaching it to the service
-        # means replacing a Service node, which is a Declaration — outside
-        # SecurityAuditor's rights (RFC-0006 §Roles). So the finding names the
-        # attachment an Architect-level proposal still has to make; proposing the
-        # Service anyway would be the role reaching past its own contract.
-        fragment = {"module": self.server.doc["module"], "nodes": [
-            {"kind": "Security", "id": sec_id, "mechanisms": ["jwt"],
-             "meta": self._meta(source)}]}
+        # RFC-0010: Attach the Constraint to the Service via intent.attach on the
+        # constraints field. This is a reference-only edit to the Service node (a
+        # Declaration outside SecurityAuditor's rights), but RFC-0010 permits it
+        # when the role author is wiring up its own authored Constraint.
+        constraint_node = {"kind": "Security", "id": sec_id, "mechanisms": ["jwt"],
+                          "meta": self._meta(source)}
+        svc_edited = dict(svc)
+        svc_edited["constraints"] = list(svc.get("constraints", [])) + [sec_id]
+        svc_edited["meta"] = dict(svc.get("meta") or {},
+                                  origin="agent:%s" % self.role)
+        fragment = {"module": self.server.doc["module"],
+                   "nodes": [svc_edited, constraint_node]}
+        intent = {"attach": [{"parent": svc["id"], "child": sec_id}]}
+        # kb_pins come straight from the pinned doc, not from re-parsing the
+        # formatted `source` string — a doc id containing '@' would make a
+        # split-on-'@' misattribute the version (RFC-0006 §Methods/ir.propose
+        # wants the pins to identify the KB document faithfully).
         proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
+                                    intent=intent,
+                                    kb_pins=[{"doc_id": doc["id"], "version": doc["version"]}],
                                     deadline_ms=deadline_ms,
                                     idempotency_key="audit-%s" % sec_id)
         self.server.call("agent.report", task_id=task["task_id"],
                          state="input-required",
                          payload={"proposed": proposal["proposal_id"],
                                   "finding": "service %s reads secrets without a "
-                                             "Security constraint" % svc["id"],
-                                  "attachment_required": {
-                                      "node": svc["id"], "field": "constraints",
-                                      "add": sec_id,
-                                      "why": "SecurityAuditor may not propose "
-                                             "Declaration nodes (RFC-0006 §Roles)"}})
+                                             "Security constraint" % svc["id"]})
         return {"proposal_id": proposal["proposal_id"],
                 "review_task_id": proposal["review_task_id"],
-                "service_id": svc["id"], "constraint_id": sec_id,
-                "attachment_required": True}
+                "service_id": svc["id"], "constraint_id": sec_id}
 
     def _clean(self, task, reason):
         """No violation is not a refusal — it is a clean audit."""
@@ -622,28 +556,33 @@ class PerformanceAnalyzer(_AgentBase):
         budget = ((observed + 9) // 10) * 10
         segs = svc["id"].split(".", 1)[1]
         perf_id = "perf.%s" % segs
-        # Same rights boundary as SecurityAuditor: the Constraint is proposable,
-        # the Service replacement that would reference it is not.
-        fragment = {"module": self.server.doc["module"], "nodes": [
-            {"kind": "Performance", "id": perf_id,
-             "budgets": [{"metric": "response", "value": "<%dms" % budget}],
-             "meta": self._meta("ir:%s" % workflow_id)}]}
+        # RFC-0010: Attach the Constraint to the Service via intent.attach on the
+        # constraints field. This is a reference-only edit to the Service node (a
+        # Declaration outside PerformanceAnalyzer's rights), but RFC-0010 permits it
+        # when the role author is wiring up its own authored Constraint.
+        perf_node = {"kind": "Performance", "id": perf_id,
+                    "budgets": [{"metric": "response", "value": "<%dms" % budget}],
+                    "meta": self._meta("ir:%s" % workflow_id)}
+        svc_edited = dict(svc)
+        svc_edited["constraints"] = list(svc.get("constraints", [])) + [perf_id]
+        svc_edited["meta"] = dict(svc.get("meta") or {},
+                                  origin="agent:%s" % self.role)
+        fragment = {"module": self.server.doc["module"],
+                   "nodes": [svc_edited, perf_node]}
+        intent = {"attach": [{"parent": svc["id"], "child": perf_id}]}
         proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
+                                    intent=intent,
+                                    kb_pins=[],  # PerformanceAnalyzer uses ir: provenance
                                     deadline_ms=deadline_ms,
                                     idempotency_key="perf-%s" % perf_id)
         self.server.call("agent.report", task_id=task["task_id"],
                          state="input-required",
                          payload={"proposed": proposal["proposal_id"],
-                                  "observed_max_ms": observed, "budget_ms": budget,
-                                  "attachment_required": {
-                                      "node": svc["id"], "field": "constraints",
-                                      "add": perf_id,
-                                      "why": "PerformanceAnalyzer may not propose "
-                                             "Declaration nodes (RFC-0006 §Roles)"}})
+                                  "observed_max_ms": observed, "budget_ms": budget})
         return {"proposal_id": proposal["proposal_id"],
                 "review_task_id": proposal["review_task_id"],
                 "observed_max_ms": observed, "budget_ms": budget,
-                "constraint_id": perf_id, "attachment_required": True}
+                "constraint_id": perf_id}
 
 
 class Tester(_AgentBase):
@@ -855,8 +794,11 @@ class RefactoringAgent(_AgentBase):
 
         fragment = {"lir_version": doc["lir_version"], "module": doc["module"],
                     "nodes": nodes}
+        # Pin the KB document this proposal is grounded on
+        kb_version = self._kb_version()
         proposal = self.server.call("ir.propose", role=self.role,
                                     ir_fragment=fragment, intent=intent,
+                                    kb_pins=[{"doc_id": self.KB_DOC, "version": kb_version}],
                                     deadline_ms=deadline_ms,
                                     idempotency_key="refactor-%s" % step["id"])
         self.server.call("agent.report", task_id=task["task_id"],
