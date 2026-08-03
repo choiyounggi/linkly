@@ -196,7 +196,7 @@ def _comparable(node):
     return out
 
 
-def reference_only_edit(proposed, existing, declared_children):
+def reference_only_edit(proposed, existing, declared_children, child_kinds=None):
     """Is `proposed` a replacement of `existing` that only adds `declared_children`?
 
     RFC-0010 lets a role edit a node outside its rights for exactly one purpose:
@@ -208,6 +208,10 @@ def reference_only_edit(proposed, existing, declared_children):
     order, RFC-0001 rule 3), and moving a reference from `constraints` into
     `children` — set-identical, while the interpreter reads `constraints` for retry,
     timeout and rollback, so the declared policy silently stops applying.
+
+    RFC-0010 §Methods/ir.propose allows `constraints` field for Constraint-kind
+    children (Policy, Security, Performance), with same per-field order-preserving
+    rule as `children`.
     """
     if existing is None:
         return False
@@ -219,11 +223,20 @@ def reference_only_edit(proposed, existing, declared_children):
 
     for field in REFERENCE_KEYS:
         before, after = existing.get(field), proposed.get(field)
-        # Only `children` may take the declared additions. Attachment means
-        # ownership; letting the id also appear in `constraints` or `requires` would
-        # turn "attach what you authored" into "write this id into any reference
-        # field of a node whose kind you do not own".
-        allowed_new = declared_children if field == "children" else ()
+        # Only `children` may take the declared additions (RFC-0010 default).
+        # RFC-0010 also allows `constraints` field for Constraint-kind children
+        # when child_kinds are provided.
+        if field == "children":
+            allowed_new = declared_children
+        elif field == "constraints" and child_kinds:
+            # Allow constraints field only for Constraint-kind children
+            constraint_kinds = {"Policy", "Security", "Performance"}
+            constraint_refs = {ref for ref in declared_children
+                             if child_kinds.get(ref) in constraint_kinds}
+            allowed_new = constraint_refs
+        else:
+            allowed_new = ()
+
         if isinstance(after, list):
             remaining = [ref for ref in after if ref not in allowed_new]
             if remaining != list(before or []):
@@ -508,6 +521,7 @@ class Server:
         # than surfacing as the generic "may not propose X" from the loop below.
         proposed_by_id = {n["id"]: n for n in fragment["nodes"] if "id" in n}
         authored = set(proposed_by_id) - set(by_id)
+        constraint_kinds = {"Policy", "Security", "Performance"}
         for parent, children in attach_map.items():
             parent_kind = (proposed_by_id.get(parent)
                            or by_id.get(parent) or {}).get("kind")
@@ -523,12 +537,23 @@ class Server:
                         "author — a proposal may attach only a node it wrote in "
                         "the same fragment (RFC-0010)" % child)
                 child_kind = proposed_by_id.get(child, {}).get("kind")
+                # RFC-0010 §Methods/ir.propose: allow constraints field for
+                # Constraint-kind children (Policy, Security, Performance).
+                # Otherwise, child must be in CHILDREN_ALLOWED for parent.
+                if child_kind in constraint_kinds:
+                    # Constraint attachment is allowed; will be validated via
+                    # reference_only_edit when processing the parent node edit.
+                    continue
                 if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
                     raise RpcError(
                         "ir_invalid",
                         "a %s may not own a %s (RFC-0001 §노드 카탈로그 children "
                         "허용; RFC-0004 §S2 V5): intent.attach puts %s under %s"
                         % (parent_kind, child_kind, child, parent))
+
+        # Map declared children to their kinds for reference_only_edit validation
+        declared_kinds = {n["id"]: n.get("kind") for n in fragment["nodes"]
+                         if "id" in n}
 
         for node in fragment["nodes"]:
             kind = node.get("kind")
@@ -539,7 +564,7 @@ class Server:
             # and does nothing else.
             declared = attach_map.get(node.get("id"), set())
             if declared and reference_only_edit(node, by_id.get(node.get("id")),
-                                                declared):
+                                                declared, declared_kinds):
                 origin = (node.get("meta") or {}).get("origin") or ""
                 if not origin.startswith("agent:"):
                     raise RpcError(

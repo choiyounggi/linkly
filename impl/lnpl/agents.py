@@ -333,6 +333,7 @@ class Reviewer(_AgentBase):
         # Judge the declarations before the rights check consults them, so an
         # unauthored child or an illegal pairing says so instead of surfacing as a
         # generic `rights:` refusal.
+        constraint_kinds = {"Policy", "Security", "Performance"}
         for parent, children in sorted(attach_map.items()):
             parent_kind = (next((n for n in nodes if n.get("id") == parent), None)
                            or existing.get(parent) or {}).get("kind")
@@ -343,19 +344,28 @@ class Reviewer(_AgentBase):
                                    "(RFC-0010)" % child)
                 child_kind = next((n.get("kind") for n in nodes
                                    if n.get("id") == child), None)
+                # RFC-0010 §Methods/ir.propose: allow constraints field for
+                # Constraint-kind children (Policy, Security, Performance).
+                # Otherwise, child must be in CHILDREN_ALLOWED for parent.
+                if child_kind in constraint_kinds:
+                    # Constraint attachment is allowed; will be validated via
+                    # reference_only_edit when processing the parent node edit.
+                    continue
                 if child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
                     return False, ("attach: a %s may not own a %s (RFC-0001 노드 "
                                    "카탈로그; RFC-0004 §S2 V5): %s under %s"
                                    % (parent_kind, child_kind, child, parent))
 
         allowed = ROLES.get(proposal["role"], {}).get("propose", set())
+        # Map declared children to their kinds for reference_only_edit validation
+        declared_kinds = {n["id"]: n.get("kind") for n in nodes}
         outside = []
         for node in nodes:
             if node.get("kind") in allowed:
                 continue
             declared = attach_map.get(node.get("id"), set())
             if declared and reference_only_edit(node, existing.get(node.get("id")),
-                                                declared):
+                                                declared, declared_kinds):
                 origin = (node.get("meta") or {}).get("origin") or ""
                 if origin.startswith("agent:"):
                     continue
@@ -577,31 +587,31 @@ class SecurityAuditor(_AgentBase):
         svc = findings[0]
         segs = svc["id"].split(".", 1)[1]
         sec_id = "security.%s" % segs
-        # The Constraint is all this role may propose. Attaching it to the service
-        # means replacing a Service node, which is a Declaration — outside
-        # SecurityAuditor's rights (RFC-0006 §Roles). So the finding names the
-        # attachment an Architect-level proposal still has to make; proposing the
-        # Service anyway would be the role reaching past its own contract.
-        fragment = {"module": self.server.doc["module"], "nodes": [
-            {"kind": "Security", "id": sec_id, "mechanisms": ["jwt"],
-             "meta": self._meta(source)}]}
+        # RFC-0010: Attach the Constraint to the Service via intent.attach on the
+        # constraints field. This is a reference-only edit to the Service node (a
+        # Declaration outside SecurityAuditor's rights), but RFC-0010 permits it
+        # when the role author is wiring up its own authored Constraint.
+        constraint_node = {"kind": "Security", "id": sec_id, "mechanisms": ["jwt"],
+                          "meta": self._meta(source)}
+        svc_edited = dict(svc)
+        svc_edited["constraints"] = list(svc.get("constraints", [])) + [sec_id]
+        svc_edited["meta"] = dict(svc.get("meta") or {},
+                                  origin="agent:%s" % self.role)
+        fragment = {"module": self.server.doc["module"],
+                   "nodes": [svc_edited, constraint_node]}
+        intent = {"attach": [{"parent": svc["id"], "child": sec_id}]}
         proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
+                                    intent=intent,
                                     deadline_ms=deadline_ms,
                                     idempotency_key="audit-%s" % sec_id)
         self.server.call("agent.report", task_id=task["task_id"],
                          state="input-required",
                          payload={"proposed": proposal["proposal_id"],
                                   "finding": "service %s reads secrets without a "
-                                             "Security constraint" % svc["id"],
-                                  "attachment_required": {
-                                      "node": svc["id"], "field": "constraints",
-                                      "add": sec_id,
-                                      "why": "SecurityAuditor may not propose "
-                                             "Declaration nodes (RFC-0006 §Roles)"}})
+                                             "Security constraint" % svc["id"]})
         return {"proposal_id": proposal["proposal_id"],
                 "review_task_id": proposal["review_task_id"],
-                "service_id": svc["id"], "constraint_id": sec_id,
-                "attachment_required": True}
+                "service_id": svc["id"], "constraint_id": sec_id}
 
     def _clean(self, task, reason):
         """No violation is not a refusal — it is a clean audit."""
@@ -653,28 +663,32 @@ class PerformanceAnalyzer(_AgentBase):
         budget = ((observed + 9) // 10) * 10
         segs = svc["id"].split(".", 1)[1]
         perf_id = "perf.%s" % segs
-        # Same rights boundary as SecurityAuditor: the Constraint is proposable,
-        # the Service replacement that would reference it is not.
-        fragment = {"module": self.server.doc["module"], "nodes": [
-            {"kind": "Performance", "id": perf_id,
-             "budgets": [{"metric": "response", "value": "<%dms" % budget}],
-             "meta": self._meta("ir:%s" % workflow_id)}]}
+        # RFC-0010: Attach the Constraint to the Service via intent.attach on the
+        # constraints field. This is a reference-only edit to the Service node (a
+        # Declaration outside PerformanceAnalyzer's rights), but RFC-0010 permits it
+        # when the role author is wiring up its own authored Constraint.
+        perf_node = {"kind": "Performance", "id": perf_id,
+                    "budgets": [{"metric": "response", "value": "<%dms" % budget}],
+                    "meta": self._meta("ir:%s" % workflow_id)}
+        svc_edited = dict(svc)
+        svc_edited["constraints"] = list(svc.get("constraints", [])) + [perf_id]
+        svc_edited["meta"] = dict(svc.get("meta") or {},
+                                  origin="agent:%s" % self.role)
+        fragment = {"module": self.server.doc["module"],
+                   "nodes": [svc_edited, perf_node]}
+        intent = {"attach": [{"parent": svc["id"], "child": perf_id}]}
         proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
+                                    intent=intent,
                                     deadline_ms=deadline_ms,
                                     idempotency_key="perf-%s" % perf_id)
         self.server.call("agent.report", task_id=task["task_id"],
                          state="input-required",
                          payload={"proposed": proposal["proposal_id"],
-                                  "observed_max_ms": observed, "budget_ms": budget,
-                                  "attachment_required": {
-                                      "node": svc["id"], "field": "constraints",
-                                      "add": perf_id,
-                                      "why": "PerformanceAnalyzer may not propose "
-                                             "Declaration nodes (RFC-0006 §Roles)"}})
+                                  "observed_max_ms": observed, "budget_ms": budget})
         return {"proposal_id": proposal["proposal_id"],
                 "review_task_id": proposal["review_task_id"],
                 "observed_max_ms": observed, "budget_ms": budget,
-                "constraint_id": perf_id, "attachment_required": True}
+                "constraint_id": perf_id}
 
 
 class Tester(_AgentBase):

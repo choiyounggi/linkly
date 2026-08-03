@@ -523,6 +523,37 @@ class TestSecurityAuditor(unittest.TestCase):
                     if n["kind"] == "Security")
         self.assertIn("kb:security-jwt-issuance@", node["meta"]["source"])
 
+    def test_security_constraint_attachment_via_intent_attach(self):
+        """SecurityAuditor proposes Constraint + Service reference-only edit with
+        intent.attach, and the proposal is APPROVED with Constraint actually
+        referenced in merged doc (RFC-0010 §Methods/ir.propose)."""
+        doc = golden()
+        for node in doc["nodes"]:
+            if node["kind"] == "Service":
+                node["constraints"] = [c for c in node["constraints"]
+                                       if not c.startswith("security.")]
+        doc["nodes"] = [n for n in doc["nodes"] if n["kind"] != "Security"]
+        server = Server(doc, KnowledgeBase())
+        rec = SecurityAuditor(server).audit(_task(server, "SecurityAuditor", "s6"))
+
+        # Proposal should be created with intent.attach
+        self.assertTrue(rec["proposal_id"])
+        proposal = server.proposals[rec["proposal_id"]]
+        self.assertIn("attach", proposal.get("intent", {}))
+
+        # Proposal should be APPROVED (Reviewer judges it)
+        reviewer = Reviewer(server)
+        task = reviewer.decide(rec["review_task_id"], rec["proposal_id"])
+        self.assertEqual(task["result"]["decision"], "approved")
+
+        # Constraint should be referenced in merged doc
+        constraints = [n for n in server.doc["nodes"] if n["kind"] == "Security"]
+        self.assertGreater(len(constraints), 0)
+        svc = next(n for n in server.doc["nodes"] if n["id"] == "svc.login")
+        security_ids = [c for c in svc.get("constraints", [])
+                       if any(cn["id"] == c for cn in constraints)]
+        self.assertGreater(len(security_ids), 0, "Security constraint not referenced")
+
 
 class TestPerformanceAnalyzer(unittest.TestCase):
     def _server_without_budget(self):
@@ -579,6 +610,33 @@ class TestPerformanceAnalyzer(unittest.TestCase):
             [{"duration_ms": 999}])
         self.assertIsNone(rec["proposal_id"])
         self.assertEqual(len(server.proposals), 0)
+
+    def test_performance_constraint_attachment_via_intent_attach(self):
+        """PerformanceAnalyzer proposes Constraint + Service reference-only edit
+        with intent.attach, and the proposal is APPROVED with Constraint actually
+        referenced in merged doc (RFC-0010 §Methods/ir.propose)."""
+        server = self._server_without_budget()
+        rec = PerformanceAnalyzer(server).analyze(
+            _task(server, "PerformanceAnalyzer", "p5"), "wf.login",
+            [{"duration_ms": 45}])
+
+        # Proposal should be created with intent.attach
+        self.assertTrue(rec["proposal_id"])
+        proposal = server.proposals[rec["proposal_id"]]
+        self.assertIn("attach", proposal.get("intent", {}))
+
+        # Proposal should be APPROVED (Reviewer judges it)
+        reviewer = Reviewer(server)
+        task = reviewer.decide(rec["review_task_id"], rec["proposal_id"])
+        self.assertEqual(task["result"]["decision"], "approved")
+
+        # Constraint should be referenced in merged doc
+        perf_nodes = [n for n in server.doc["nodes"] if n["kind"] == "Performance"]
+        self.assertGreater(len(perf_nodes), 0)
+        svc = next(n for n in server.doc["nodes"] if n["id"] == "svc.login")
+        perf_ids = [c for c in svc.get("constraints", [])
+                   if any(pn["id"] == c for pn in perf_nodes)]
+        self.assertGreater(len(perf_ids), 0, "Performance constraint not referenced")
 
 
 class TestTester(unittest.TestCase):
