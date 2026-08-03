@@ -611,5 +611,79 @@ class TestBuildGatesOnTheDialect(unittest.TestCase):
         self.assertTrue(os.access(path, os.X_OK))
 
 
+class TestStructuralMarkers(unittest.TestCase):
+    """RFC-0004 ③/④: Guard/Concurrency/Pipeline nodes reach the `lnpl` module as
+    flat marker ops, so a parallel workflow is no longer byte-identical to its
+    sequential form and the structural node ids are traceable.
+    """
+
+    HEADER = ("capability postgres\n"
+              "entity User\n    field\n        id UUID\n"
+              "service S\n")
+
+    def _emit(self, body):
+        src = self.HEADER + "workflow W\n" + body
+        doc = lower(parse(src), "t").to_document()
+        wid = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        return backend.emit_lnpl_mlir(doc, wid), doc
+
+    def test_parallel_differs_from_sequential(self):
+        # ④: the exact byte-identity the issue measured as the bug.
+        par, _ = self._emit("    parallel\n    load user\n    authenticate\n    merge\n")
+        seq, _ = self._emit("    load user\n    authenticate\n")
+        self.assertNotEqual(par, seq)
+        self.assertIn('"lnpl.concurrency"', par)
+        self.assertNotIn('"lnpl.concurrency"', seq)
+
+    def test_structural_node_ids_reach_the_module(self):
+        # ③: every Guard/Concurrency/Pipeline id resolves to an lnpl.node_id.
+        par, doc = self._emit("    parallel\n    load user\n    authenticate\n    merge\n")
+        structural = [n["id"] for n in doc["nodes"]
+                      if n["kind"] in ("Guard", "Concurrency", "Pipeline")]
+        self.assertTrue(structural, "fixture produced no structural nodes")
+        for nid in structural:
+            self.assertIn('lnpl.node_id = "%s"' % nid, par)
+        # the concurrency marker also lists its ordered children
+        self.assertIn('lnpl.children = ["wf.w.step.1", "wf.w.step.2"]', par)
+
+    def test_guard_node_id_reaches_the_module(self):
+        # ③ for the Guard path, via the shared GUARDED fixture.
+        doc = guarded_doc("when token missing")
+        wid = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        text = backend.emit_lnpl_mlir(doc, wid)
+        guard_ids = [n["id"] for n in doc["nodes"] if n["kind"] == "Guard"]
+        self.assertTrue(guard_ids)
+        for nid in guard_ids:
+            self.assertIn('"lnpl.guard"', text)
+            self.assertIn('lnpl.node_id = "%s"' % nid, text)
+
+    def test_pipeline_marker_carries_name_and_children(self):
+        # ③ for the Pipeline path (distinct from Concurrency/Guard).
+        text, doc = self._emit("    pipeline P\n    load user\n    authenticate\n")
+        pipeline_ids = [n["id"] for n in doc["nodes"] if n["kind"] == "Pipeline"]
+        self.assertTrue(pipeline_ids, "fixture produced no Pipeline node")
+        self.assertIn('"lnpl.pipeline"', text)
+        for nid in pipeline_ids:
+            self.assertIn('lnpl.node_id = "%s"' % nid, text)
+        self.assertIn('lnpl.name = "P"', text)
+        self.assertIn('lnpl.children = ["wf.w.step.1", "wf.w.step.2"]', text)
+
+    def test_no_structural_nodes_emits_no_markers(self):
+        # boundary: a flat workflow gets no marker ops at all.
+        seq, _ = self._emit("    load user\n    authenticate\n")
+        for opname in ('"lnpl.concurrency"', '"lnpl.pipeline"', '"lnpl.guard"'):
+            self.assertNotIn(opname, seq)
+
+    @NEEDS_TOOLS
+    def test_markers_verify_and_missing_id_is_rejected(self):
+        # The emitted parallel module passes the real dialect verifier ...
+        par, _ = self._emit("    parallel\n    load user\n    authenticate\n    merge\n")
+        self.assertTrue(backend.verify_lnpl_module(par))
+        # ... and a marker without lnpl.node_id is rejected by it (not asserted).
+        bad = module('  "lnpl.guard"() {lnpl.mode = "when"} : () -> ()')
+        with self.assertRaises(backend.BackendError):
+            backend.verify_lnpl_module(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

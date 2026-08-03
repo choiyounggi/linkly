@@ -453,7 +453,9 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 > 수준이다. 이 문서가 §역추적에서 Location을 "attribute가 discardable하므로 두는 durable한
 > 경로"라 규정한 것과 비교하면, 실제로는 durable하다고 규정한 쪽이 기계 강제가 약하다.
 >
-> **남은 한계 4종 (설계 선택이 아니라 실제 공백이다).**
+> **남은 한계 4종 (설계 선택이 아니라 실제 공백이다).** 상태(issue #7, 2026-08-04
+> 갱신): ③④는 해소, ①은 dialect 표현력만 해소하고 하강(C++ `ConversionPattern`)은
+> 이월, ②는 그대로 열려 있다. 각 항목 하단의 해소/보류 노트를 참조.
 >
 > ① **S5 하강은 lnpl 모듈을 재파싱하지 않는다.** `emit_lnpl_mlir`(S4 텍스트)과
 > `_render_std`(S5 표준 dialect)는 같은 **op 스트림**(`_lnpl_ops`)의 두 렌더링이며, 하강은
@@ -462,6 +464,14 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 > 수 있는 여지가 생기므로 ⓐ 위 검증 게이트와 ⓑ 두 렌더링의 step/effect 개수·node_id
 > 순서를 대조하는 테스트로 막았다. 하강을 진짜 MLIR `ConversionPattern`으로 만드는 것은
 > 별도 이슈다.
+>
+> > **보류 (issue #7, 2026-08-04).** 진짜 C++ `ConversionPattern`(`LnplOps.td` +
+> > `mlir_tablegen` + `lnpl-opt --lower-lnpl-to-std` + cmake)은 **의도적으로 이월**한다.
+> > 근거: (ⓐ) 이 머신에 `cmake`가 설치돼 있지 않고, (ⓑ) out-of-tree C++ dialect는 빌드를
+> > LLVM 22 C++ ABI에 결합시키는데 아래 OQ①(버전 핀)이 ABI 층위에서 아직 확정되지 않았다.
+> > 이 배치에서는 ③④(dialect 표현력)만 해소하고 ①(하강 자체)은 열어 둔다 — 이슈 본문이
+> > 권한 순서("settle the pin file first")와 일치한다. S5의 입력은 여전히 인메모리 op
+> > 스트림이다.
 >
 > ② **S3 컴파일 컨텍스트 side table이 참조 구현에 존재하지 않는다.** 따라서 "컨텍스트
 > 항목을 전부 op attribute로 실체화한다"는 S4 불변조건은 현재 **방출 시점에 실재하는
@@ -476,6 +486,13 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 > 지점에서 원 IR 노드 id를 최소 1개 이상 얻을 수 있다")은 여전히 성립하므로 역추적 요구의
 > 전면 실패는 아니지만, 보존 규칙 2는 지켜지지 않는다.
 >
+> > **해소 (issue #7, 2026-08-04).** `mlir/lnpl.irdl.mlir`에 flat 구조 마커 op
+> > `lnpl.concurrency`·`lnpl.pipeline`·`lnpl.guard`를 추가했다. `backend._structural_markers`가
+> > 평탄화 이전의 노드 트리를 pre-order로 훑어 각 구조 노드를 마커 op으로 방출하며, 각 op은
+> > 자신의 `lnpl.node_id`(+ `loc`)와 순서 있는 `lnpl.children` 자식 id 목록을 싣는다. 따라서
+> > `wf.w.guard.1`·`wf.w.parallel.1` 같은 구조 id가 산출물에 실려 보존 규칙 2가 충족된다.
+> > 검증: `test_lnpl_dialect.py::TestStructuralMarkers`.
+>
 > ④ **dialect가 Concurrency를 표현하지 못한다.** op이 2종(`lnpl.step`·`lnpl.effect`)이고
 > region이 없으므로, `parallel` 블록을 쓴 워크플로우와 같은 step을 순차로 쓴 워크플로우는
 > **바이트 동일한 lnpl 모듈**을 낸다(실측). 즉 S5 불변조건의 "structured concurrency
@@ -483,21 +500,45 @@ IR에 할 수 있는 변형). 결정은 컴파일 컨텍스트에 쌓인다:
 > 재파싱으로 바꾸는 것)만으로는 복구되지 않는다 — region을 갖는 op(예: `lnpl.concurrency`)
 > 추가가 함께 필요하다. 현재 파이프라인이 `async` dialect를 쓰지 않아 실동작에는 영향이
 > 없으나, 이 공백은 `async` 하강을 착수할 때 선행 해소 대상이다.
+>
+> > **해소 (issue #7, 2026-08-04).** ③의 마커 op으로 해소했다. `parallel` 워크플로우는
+> > 이제 `lnpl.concurrency` 마커를(자식 id 목록과 함께) 방출하지만 같은 step을 순차로 쓴
+> > 워크플로우는 방출하지 않으므로, 두 lnpl 모듈은 더 이상 바이트 동일하지 않다(실측:
+> > `test_parallel_differs_from_sequential`). 마커는 **region이 아니라 flat**이다 — IRDL은
+> > terminator나 `NoTerminator` trait을 선언할 수 없어 region op은 외부 dialect의
+> > terminator(`omp.terminator`)를 산출물에 박아야 하고, `lnpl.children` 자식 id 목록이 그
+> > 결합 없이 parallel/sequential을 구분한다. structured concurrency 4조건의 **완전한**
+> > 하강 보존은 여전히 ①(진짜 `ConversionPattern`)의 후속 작업이다.
 
 
 
-1. **MLIR/LLVM 버전 고정 정책.** 어떤 형식의 핀 파일로 무엇을 고정할지는 미결이다.
+1. ~~**MLIR/LLVM 버전 고정 정책.** 어떤 형식의 핀 파일로 무엇을 고정할지는 미결이다.~~
    다만 형태는 지금 정한다: 버전은 **레포에 커밋된 핀 파일 하나를 정본**으로 하고
    CI가 그 파일을 읽는다. README 산문으로 "LLVM 18을 설치하라"고 쓰거나 CI 워크플로
    안에 버전을 다시 적는 방식은 채택하지 않는다 — 선언이 둘이면 언젠가 갈라진다.
+   **해소 (issue #7, 2026-08-04).** 정본 핀 파일은 `mlir/llvm.pin`이다 — 한 줄
+   `llvm <version>` 형식(현재 `llvm 22.1.8`). 유일한 기계 판독 선언이며, 코드·문서
+   어디에도 버전 리터럴을 다시 적지 않는다. 판독기는 `backend.pinned_llvm_version()`이고,
+   이 레포에는 CI가 없으므로 **테스트 스위트 + 툴체인 헬퍼가 판독기**다 —
+   `test_backend.py::TestVersionPin`이 파일을 파싱하고, 툴체인이 있으면 설치된
+   `mlir-opt --version`과 대조한다(툴체인 부재 시 정직하게 skip). 하드 빌드 게이트는
+   두지 않는다: 버전이 어긋나면 테스트가 붉어질 뿐 빌드를 깨뜨리지 않는다.
 2. ~~**`lnpl` dialect의 커스텀 op 목록 확정**과 MLIR 위치 정보 API의 정확한 표기.~~
    **해소 (2026-08-01).** 정본은 `mlir/lnpl.irdl.mlir`이다.
-   - **op 목록** — `lnpl.step`, `lnpl.effect` 2종. operand·result 없이 attribute로
-     정보를 싣고, 모듈 본문에 flat하게 놓인다(`builtin.module`이 `NoTerminator`이므로
-     region·terminator 배선이 필요없다). guard는 region이 아니라 **attribute**다 —
-     `_steps_in_order`가 S4에 도달하기 전에 이미 평탄화·언롤을 끝내기 때문이다.
-     attribute: `lnpl.node_id`(필수·문자열), `lnpl.name`, `lnpl.index`, `lnpl.kind`,
-     `lnpl.step`, `lnpl.guard_mode`, `lnpl.guard_condition`, `lnpl.unroll_round`.
+   - **op 목록** — 실행 op `lnpl.step`, `lnpl.effect`, 그리고 구조 마커 op
+     `lnpl.concurrency`, `lnpl.pipeline`, `lnpl.guard` 5종. operand·result 없이
+     attribute로 정보를 싣고, 모듈 본문에 flat하게 놓인다(`builtin.module`이
+     `NoTerminator`이므로 region·terminator 배선이 필요없다). `lnpl.step`의 guard는
+     region이 아니라 **attribute**다 — `_steps_in_order`가 S4에 도달하기 전에 이미
+     평탄화·언롤을 끝내기 때문이다.
+     step/effect attribute: `lnpl.node_id`(필수·문자열), `lnpl.name`, `lnpl.index`,
+     `lnpl.kind`, `lnpl.step`, `lnpl.guard_mode`, `lnpl.guard_condition`,
+     `lnpl.unroll_round`.
+     마커 op(issue #7)은 평탄화 **이전의** 구조 노드를 실체화한다: `lnpl.node_id`(필수),
+     순서 있는 자식 id 목록 `lnpl.children`, 그리고 `lnpl.mode`(concurrency·guard) /
+     `lnpl.name`(pipeline) / `lnpl.guard_condition`·`lnpl.count`(guard). region 대신
+     flat + 자식 id 목록을 쓴 이유는 ③④ 해소 노트를 참조 — IRDL이 terminator를 선언할
+     수 없기 때문이다.
      선언되지 않은 attribute는 IRDL이 통과시키므로, 새 컴파일 결정을 추가할 때
      dialect 정의를 고칠 필요가 없다.
    - **Location 표기** — `loc("<node id>")`(NameLoc)를 모든 op에 단다.

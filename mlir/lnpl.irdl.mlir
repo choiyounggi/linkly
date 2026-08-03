@@ -40,4 +40,35 @@ irdl.dialect @lnpl {
     irdl.results()
     irdl.attributes {"lnpl.node_id" = %id}
   }
+
+  // RFC-0004 ③/④: flat structural marker ops. `_steps_in_order` flattens the
+  // Guard/Concurrency/Pipeline nodes out of the step stream, so before these ops
+  // their ids never reached the module (③) and a `parallel` workflow was
+  // byte-identical to its sequential form (④). Each marker carries its own
+  // `lnpl.node_id` plus a discardable `lnpl.children` (the ordered immediate
+  // child node ids) and a `lnpl.mode`/`lnpl.name`/`lnpl.guard_condition`/
+  // `lnpl.count` as applicable. They are flat, not region-bearing: IRDL cannot
+  // declare a terminator or the NoTerminator trait, so a region op would have to
+  // embed a foreign terminator (`omp.terminator`); the child-id list avoids that
+  // coupling while still distinguishing parallel from sequential.
+  irdl.operation @concurrency {
+    %id = irdl.base "#builtin.string"
+    irdl.operands()
+    irdl.results()
+    irdl.attributes {"lnpl.node_id" = %id}
+  }
+
+  irdl.operation @pipeline {
+    %id = irdl.base "#builtin.string"
+    irdl.operands()
+    irdl.results()
+    irdl.attributes {"lnpl.node_id" = %id}
+  }
+
+  irdl.operation @guard {
+    %id = irdl.base "#builtin.string"
+    irdl.operands()
+    irdl.results()
+    irdl.attributes {"lnpl.node_id" = %id}
+  }
 }
