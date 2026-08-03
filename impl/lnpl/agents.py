@@ -16,56 +16,13 @@ import re
 
 from .lower import derive_id
 from .protocol import (CHILDREN_ALLOWED, REFERENCE_KEYS, ROLES, RpcError, Server,
-                       attachments, moves, node_references, reference_only_edit)
+                       _structure_fault, attachments, moves, node_references,
+                       reference_only_edit)
 from .spec import EXPECTATIONS, SPEC_VERSION
-
-# Node kinds that may legitimately have no owner. RFC-0001 rule 2 allows only
-# Declaration nodes to be entry (top-level) nodes; rule 5 exempts Constraint
-# nodes, which are never owned via `children` and are reached through the
-# `constraints` field instead. Everything else must have exactly one owner.
-DECLARATION_KINDS = frozenset({"Entity", "Service", "Workflow", "Event", "Capability"})
-CONSTRAINT_KINDS = frozenset({"Policy", "Security", "Performance"})
-ENTRY_KINDS = DECLARATION_KINDS | CONSTRAINT_KINDS
 
 # A10: provenance is a form, not just a non-empty string. `kb:<doc id>@<semver>`
 # when the basis is a KB document, `ir:<node id>` when it is derived from the IR.
 _SOURCE_FORM = re.compile(r"^(kb:[a-z0-9-]+@\d+\.\d+\.\d+|ir:[a-z][a-z0-9.]*)$")
-
-
-def _ownership_cycle(merged):
-    """One cycle in the `children` graph as a list of ids, or [] if acyclic.
-
-    RFC-0001 rule 4. Checking only for a node that lists itself catches 1-cycles
-    and nothing longer: two new nodes owning each other each have an owner, so
-    every per-node check passes while the pair is unreachable from any entry node.
-    """
-    white, grey, black = 0, 1, 2
-    colour = dict.fromkeys(merged, white)
-    for root in sorted(merged):
-        if colour[root] != white:
-            continue
-        colour[root] = grey
-        path = [root]
-        stack = [(root, iter(merged[root].get("children", [])))]
-        while stack:
-            node_id, kids = stack[-1]
-            descended = False
-            for kid in kids:
-                if kid not in merged:
-                    continue              # rule 6 reports dangling separately
-                if colour[kid] == grey:
-                    return path[path.index(kid):] + [kid]
-                if colour[kid] == white:
-                    colour[kid] = grey
-                    path.append(kid)
-                    stack.append((kid, iter(merged[kid].get("children", []))))
-                    descended = True
-                    break
-            if not descended:
-                colour[node_id] = black
-                stack.pop()
-                path.pop()
-    return []
 
 
 def _refs_in(node, field):
@@ -76,77 +33,6 @@ def _refs_in(node, field):
     if isinstance(value, list):
         return {v for v in value if isinstance(v, str)}
     return {value} if isinstance(value, str) else set()
-
-
-def _structure_fault(merged):
-    """The first RFC-0001 structure-rule violation in a merged document, or None.
-
-    Rules 2 (one owner, and only Declaration/Constraint nodes may be unowned),
-    4 (acyclic ownership), 6 (every reference resolves), and invariants V1 (id
-    uniqueness) and V5 (kind-specific children allowance per RFC-0004 §S2) are
-    checked over the *whole* merged document, not just the proposed nodes — a
-    proposal changes meaning by what it detaches as much as by what it adds.
-    """
-    # V1: id uniqueness (RFC-0004 invariant V1)
-    all_ids = [n["id"] for n in merged.values()]
-    repeated = sorted({i for i in set(all_ids) if all_ids.count(i) > 1})
-    if repeated:
-        return ("id_unique: node id(s) %s appear more than once in the document "
-                "(RFC-0001 공통 필드, RFC-0004 V1)" % ", ".join(repeated))
-
-    dangling = sorted({ref for node in merged.values()
-                       for ref in node_references(node) if ref not in merged})
-    if dangling:
-        return ("dangling: unresolved reference(s) %s — every owning and named "
-                "reference must resolve in the same document (RFC-0001 rule 6)"
-                % ", ".join(dangling))
-
-    owners = {}
-    contested = []
-    for node in sorted(merged.values(), key=lambda n: n["id"]):
-        for ref in node.get("children", []):
-            if ref in owners:
-                contested.append("%s (owned by %s and %s)" % (ref, owners[ref], node["id"]))
-            else:
-                owners[ref] = node["id"]
-    if contested:
-        return ("ownership: %s — a node may appear in at most one `children` list "
-                "(RFC-0001 rule 2)" % ", ".join(sorted(contested)))
-
-    orphans = sorted(n["id"] for n in merged.values()
-                     if n["kind"] not in ENTRY_KINDS and n["id"] not in owners)
-    if orphans:
-        return ("orphan: nothing owns %s — only Declaration and Constraint nodes "
-                "may be unowned (RFC-0001 rules 2, 5)" % ", ".join(orphans))
-
-    cycle = _ownership_cycle(merged)
-    if cycle:
-        return ("cycle: ownership loops through %s — the `children` graph must be "
-                "acyclic (RFC-0001 rule 4)" % " -> ".join(cycle))
-
-    # V5: kind-specific children allowance (RFC-0004 invariant V5)
-    for node in merged.values():
-        parent_kind = node.get("kind")
-        for child_id in node.get("children", []):
-            child = merged.get(child_id)
-            if child is None:
-                continue  # dangling check above already caught this
-            child_kind = child.get("kind")
-            if child_kind and child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
-                return ("v5_children: a %s may not own a %s (RFC-0001 §노드 카탈로그 "
-                        "children 허용; RFC-0004 §S2 V5): %s under %s"
-                        % (parent_kind, child_kind, child_id, node["id"]))
-
-    # Guard cardinality: exactly one child (RFC-0001 Guard row, "피가드 항목 1개")
-    for node in merged.values():
-        if node.get("kind") == "Guard":
-            children_count = len(node.get("children", []))
-            if children_count != 1:
-                return ("guard_cardinality: Guard %s has %d children; exactly 1 required "
-                        "(RFC-0001 §노드 카탈로그 Guard row)"
-                        % (node["id"], children_count))
-
-    return None
 
 
 class _AgentBase:
@@ -602,13 +488,13 @@ class SecurityAuditor(_AgentBase):
         fragment = {"module": self.server.doc["module"],
                    "nodes": [svc_edited, constraint_node]}
         intent = {"attach": [{"parent": svc["id"], "child": sec_id}]}
-        # Need to get KB doc for kb_pins. It was pinned in source earlier.
-        # Extract doc_id and version from source string "kb:doc_id@version"
-        kb_doc_id = source.split(":")[1].split("@")[0]
-        kb_version = source.split("@")[1]
+        # kb_pins come straight from the pinned doc, not from re-parsing the
+        # formatted `source` string — a doc id containing '@' would make a
+        # split-on-'@' misattribute the version (RFC-0006 §Methods/ir.propose
+        # wants the pins to identify the KB document faithfully).
         proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
                                     intent=intent,
-                                    kb_pins=[{"doc_id": kb_doc_id, "version": kb_version}],
+                                    kb_pins=[{"doc_id": doc["id"], "version": doc["version"]}],
                                     deadline_ms=deadline_ms,
                                     idempotency_key="audit-%s" % sec_id)
         self.server.call("agent.report", task_id=task["task_id"],
