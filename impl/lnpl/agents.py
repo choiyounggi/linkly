@@ -82,10 +82,18 @@ def _structure_fault(merged):
     """The first RFC-0001 structure-rule violation in a merged document, or None.
 
     Rules 2 (one owner, and only Declaration/Constraint nodes may be unowned),
-    4 (acyclic ownership) and 6 (every reference resolves) are checked over the
-    *whole* merged document, not just the proposed nodes — a proposal changes
-    meaning by what it detaches as much as by what it adds.
+    4 (acyclic ownership), 6 (every reference resolves), and invariants V1 (id
+    uniqueness) and V5 (kind-specific children allowance per RFC-0004 §S2) are
+    checked over the *whole* merged document, not just the proposed nodes — a
+    proposal changes meaning by what it detaches as much as by what it adds.
     """
+    # V1: id uniqueness (RFC-0004 invariant V1)
+    all_ids = [n["id"] for n in merged.values()]
+    repeated = sorted({i for i in set(all_ids) if all_ids.count(i) > 1})
+    if repeated:
+        return ("id_unique: node id(s) %s appear more than once in the document "
+                "(RFC-0001 공통 필드, RFC-0004 V1)" % ", ".join(repeated))
+
     dangling = sorted({ref for node in merged.values()
                        for ref in node_references(node) if ref not in merged})
     if dangling:
@@ -115,6 +123,29 @@ def _structure_fault(merged):
     if cycle:
         return ("cycle: ownership loops through %s — the `children` graph must be "
                 "acyclic (RFC-0001 rule 4)" % " -> ".join(cycle))
+
+    # V5: kind-specific children allowance (RFC-0004 invariant V5)
+    for node in merged.values():
+        parent_kind = node.get("kind")
+        for child_id in node.get("children", []):
+            child = merged.get(child_id)
+            if child is None:
+                continue  # dangling check above already caught this
+            child_kind = child.get("kind")
+            if child_kind and child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
+                return ("v5_children: a %s may not own a %s (RFC-0001 §노드 카탈로그 "
+                        "children 허용; RFC-0004 §S2 V5): %s under %s"
+                        % (parent_kind, child_kind, child_id, node["id"]))
+
+    # Guard cardinality: exactly one child (RFC-0001 Guard row, "피가드 항목 1개")
+    for node in merged.values():
+        if node.get("kind") == "Guard":
+            children_count = len(node.get("children", []))
+            if children_count != 1:
+                return ("guard_cardinality: Guard %s has %d children; exactly 1 required "
+                        "(RFC-0001 §노드 카탈로그 Guard row)"
+                        % (node["id"], children_count))
+
     return None
 
 

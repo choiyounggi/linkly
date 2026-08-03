@@ -552,6 +552,36 @@ class Server:
             raise RpcError("ir_invalid",
                            "role %s may not propose %s nodes" % (role, kind))
 
+        # Early structural validation: simulate merge and check V1/V5/Guard cardinality
+        merged_check = {n["id"]: n for n in self.doc["nodes"]}
+        for node in fragment["nodes"]:
+            if "id" in node:
+                merged_check[node["id"]] = node
+
+        # V5: kind-specific children allowance (RFC-0004 V5)
+        for node in merged_check.values():
+            parent_kind = node.get("kind")
+            for child_id in node.get("children", []):
+                child = merged_check.get(child_id)
+                if child is None:
+                    continue
+                child_kind = child.get("kind")
+                if child_kind and child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
+                    raise RpcError("ir_invalid",
+                                   "a %s may not own a %s (RFC-0001 §노드 카탈로그 "
+                                   "children 허용; RFC-0004 §S2 V5): %s under %s"
+                                   % (parent_kind, child_kind, child_id, node["id"]))
+
+        # Guard cardinality: exactly one child (RFC-0001 Guard row)
+        for node in merged_check.values():
+            if node.get("kind") == "Guard":
+                children_count = len(node.get("children", []))
+                if children_count != 1:
+                    raise RpcError("ir_invalid",
+                                   "Guard %s has %d children; exactly 1 required "
+                                   "(RFC-0001 §노드 카탈로그 Guard row)"
+                                   % (node["id"], children_count))
+
         pid = "prop-%04d" % (len(self.proposals) + 1)
         review = self._m_agent_dispatch({"role": "Reviewer",
                                          "objective": "review %s" % pid,

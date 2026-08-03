@@ -1063,5 +1063,73 @@ class TestRefactoringAgent(unittest.TestCase):
         self.assertEqual(set(protocol.ROLES), implemented)
 
 
+class TestInvariantEnforcement(unittest.TestCase):
+    """RFC-0004 §S2 invariants V1 (id uniqueness) and V5 (children kind allowance)
+    are enforced document-wide, including override path."""
+
+    def setUp(self):
+        self.server = Server(golden(), KnowledgeBase())
+        self.reviewer = Reviewer(self.server)
+
+    def test_v1_duplicate_ids_in_proposal_are_rejected_at_propose_time(self):
+        """V1: node ids must be unique. Enforced at ir.propose."""
+        step = next(n for n in self.server.doc["nodes"] if n["id"] == "wf.login.step.4")
+        # Propose two nodes with the same id
+        dup = dict(step)
+        dup["name"] = "different name"
+        from lnpl.protocol import RpcError
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                            ir_fragment={"module": "login", "nodes": [step, dup]},
+                            deadline_ms=1000, idempotency_key="v1-test")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("id 유일", str(ctx.exception))
+
+    def test_v5_invalid_children_kind_is_rejected_at_propose_time(self):
+        """V5: kind-specific children allowance. A Workflow cannot own an Entity."""
+        from lnpl.protocol import RpcError
+        entity = {"kind": "Entity", "id": "entity.test", "name": "Test",
+                 "fields": []}
+        wf = next(n for n in self.server.doc["nodes"] if n["id"] == "wf.login")
+        wf_edited = dict(wf)
+        wf_edited["children"] = list(wf.get("children", [])) + ["entity.test"]
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Architect",
+                            ir_fragment={"module": "login", "nodes": [entity, wf_edited]},
+                            deadline_ms=1000, idempotency_key="v5-test")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("V5", str(ctx.exception))
+
+    def test_guard_cardinality_exactly_one_child_required(self):
+        """RFC-0001: Guard must have exactly one child."""
+        from lnpl.protocol import RpcError
+        step = next(n for n in self.server.doc["nodes"] if n["id"] == "wf.login.step.4")
+        # Create a Guard with two children (invalid)
+        guard = {"kind": "Guard", "id": "wf.login.guard", "name": "Guard",
+                "condition": "field exists",
+                "children": ["wf.login.step.4", "wf.login.step.5"],
+                "meta": {"origin": "agent:Coder", "source": "ir:test"}}
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                            ir_fragment={"module": "login", "nodes": [guard]},
+                            deadline_ms=1000, idempotency_key="guard-test")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("Guard", str(ctx.exception))
+
+    def test_guard_with_no_children_is_rejected(self):
+        """Guard must have at least one (and only one) child."""
+        from lnpl.protocol import RpcError
+        guard = {"kind": "Guard", "id": "wf.login.guard", "name": "Guard",
+                "condition": "field exists",
+                "children": [],
+                "meta": {"origin": "agent:Coder", "source": "ir:test"}}
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                            ir_fragment={"module": "login", "nodes": [guard]},
+                            deadline_ms=1000, idempotency_key="guard-empty-test")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+        self.assertIn("Guard", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
