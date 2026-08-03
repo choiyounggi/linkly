@@ -1,6 +1,6 @@
 # RFC-0007: RFC Process v2
 
-> Status: Draft
+> Status: Accepted (2026-07-31 — 이 RFC는 그 날짜부터 효력이 있어 왔다. RFC-0000이 그 날짜에 Superseded되면서 이 문서의 프로세스가 즉시 구현 계약이 됐으므로 역추적 기록한다.)
 > Supersedes: RFC-0000
 
 ## 1. 목적
