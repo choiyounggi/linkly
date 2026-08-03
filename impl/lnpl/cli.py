@@ -194,9 +194,12 @@ def cmd_diff(args):
         return 1
     target = args.workflow or workflows[0]["id"]
     payload = DEFAULT_PAYLOAD
+    if args.payload:
+        with open(args.payload, encoding="utf-8") as fh:
+            payload = json.load(fh)
     ok, report = verify_modes(doc, target, payload,
                               _repo_rows(doc, payload, empty=args.no_row),
-                              args.workdir, skip=args.skip)
+                              args.workdir)
     print("\n".join(report))
     return 0 if ok else 1
 
@@ -307,8 +310,8 @@ def main(argv=None):
     df.add_argument("source")
     df.add_argument("--workflow")
     df.add_argument("--workdir", default=".claude/tmp/lnpl-diff")
+    df.add_argument("--payload", help="JSON file with the workflow input")
     df.add_argument("--no-row", action="store_true")
-    df.add_argument("--skip", action="store_true")
     df.set_defaults(func=cmd_diff)
 
     kbp = sub.add_parser("kb", help="inspect the knowledge base (RFC-0005)")
