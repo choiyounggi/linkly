@@ -29,7 +29,7 @@ optimize, and ship the rest (*how*).
 > from payloads via argv parameter passing. A differential check confirms the two modes
 > agree on all four observable classes RFC-0004 names (execution order, policy outcome,
 > observability signals, masking). OpenAPI is generated from the IR. The golden scenario
-> is *generated* by the compiler rather than hand-maintained (378 tests, all passing).
+> is *generated* by the compiler rather than hand-maintained (386 tests, all passing).
 > The custom `lnpl` MLIR dialect landed too — declaratively, via IRDL, so no C++
 > TableGen build is involved (RFC-0004 S4). All nine agent roles are implemented.
 > See the [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
@@ -98,15 +98,18 @@ prefixes stay reusable.
 |-----|----------|
 | [0000 RFC Process](rfcs/0000-rfc-process.md) | *Superseded by 0007* — lifecycle, numbering, the fixed 7-section template |
 | [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | Adds the `Updates` relation: revise a named *section* without replacing the RFC |
-| [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 19 node kinds, 18 semantic types, flat structure, canonical JSON serialization |
+| [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 20 node kinds, 18 semantic types, flat structure, canonical JSON serialization |
 | [0002 Syntax](rfcs/0002-syntax.md) | Line-oriented, keyword-delimited EBNF (51 productions) + grammar→IR lowering map |
 | [0003 Runtime](rfcs/0003-runtime.md) | Actors, structured concurrency, policy enforcement, memory primitives, observability contract |
 | [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering (7 stages), pass invariants, three optimizer responsibility axes |
 | [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 categories, 3-tier progressive-disclosure routing, consumption interface |
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 9 roles, 8 JSON-RPC methods, structured errors, idempotency, task lifecycle |
-| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | *Draft* — guard conditions: presence check & comparison (2 forms), spec correction, mode B compilation |
+| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | Guard conditions: presence check & comparison (2 forms), spec correction, mode B compilation. *Updates 0002 §Full grammar, 0003 §Guard* |
+| [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | Retires RFC-0002's open question ② now that the grammar is settled. *Updates 0002 §Open Questions* |
+| [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | How a role attaches a node it may not author, and what happens to a reference that moves. *Updates 0006 §Agent Roles & IR Access, §Methods/ir.propose* |
 
-0001–0007 are `Accepted` as of 2026-07-31: every cross-consistency check passes and the
+Eight are `Accepted`; 0000 is superseded by 0007, which is itself still `Draft`
+(issue #11). Cross-consistency checks pass and the owner approved: every cross-consistency check passes and the
 owner approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
 replaces an RFC whole and closes it; **Updates** revises named *sections* while the RFC
