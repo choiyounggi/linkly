@@ -235,6 +235,7 @@ class Coder(_AgentBase):
 
         proposal = self.server.call(
             "ir.propose", role=self.role, ir_fragment=fragment,
+            kb_pins=[{"doc_id": doc_id, "version": doc["version"]}],
             deadline_ms=deadline_ms,
             idempotency_key="coder-%s" % _slug(step))
         self.server.call("agent.report", task_id=task["task_id"],
@@ -525,6 +526,7 @@ class Architect(_AgentBase):
         proposal = self.server.call("ir.propose", role=self.role,
                                     ir_fragment={"module": self.server.doc["module"],
                                                  "nodes": nodes},
+                                    kb_pins=[{"doc_id": doc["id"], "version": doc["version"]}],
                                     deadline_ms=deadline_ms,
                                     idempotency_key="architect-%s" % _slug(wf["name"]))
         self.server.call("agent.report", task_id=task["task_id"],
@@ -600,8 +602,13 @@ class SecurityAuditor(_AgentBase):
         fragment = {"module": self.server.doc["module"],
                    "nodes": [svc_edited, constraint_node]}
         intent = {"attach": [{"parent": svc["id"], "child": sec_id}]}
+        # Need to get KB doc for kb_pins. It was pinned in source earlier.
+        # Extract doc_id and version from source string "kb:doc_id@version"
+        kb_doc_id = source.split(":")[1].split("@")[0]
+        kb_version = source.split("@")[1]
         proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
                                     intent=intent,
+                                    kb_pins=[{"doc_id": kb_doc_id, "version": kb_version}],
                                     deadline_ms=deadline_ms,
                                     idempotency_key="audit-%s" % sec_id)
         self.server.call("agent.report", task_id=task["task_id"],
@@ -679,6 +686,7 @@ class PerformanceAnalyzer(_AgentBase):
         intent = {"attach": [{"parent": svc["id"], "child": perf_id}]}
         proposal = self.server.call("ir.propose", role=self.role, ir_fragment=fragment,
                                     intent=intent,
+                                    kb_pins=[],  # PerformanceAnalyzer uses ir: provenance
                                     deadline_ms=deadline_ms,
                                     idempotency_key="perf-%s" % perf_id)
         self.server.call("agent.report", task_id=task["task_id"],
@@ -900,8 +908,11 @@ class RefactoringAgent(_AgentBase):
 
         fragment = {"lir_version": doc["lir_version"], "module": doc["module"],
                     "nodes": nodes}
+        # Pin the KB document this proposal is grounded on
+        kb_version = self._kb_version()
         proposal = self.server.call("ir.propose", role=self.role,
                                     ir_fragment=fragment, intent=intent,
+                                    kb_pins=[{"doc_id": self.KB_DOC, "version": kb_version}],
                                     deadline_ms=deadline_ms,
                                     idempotency_key="refactor-%s" % step["id"])
         self.server.call("agent.report", task_id=task["task_id"],

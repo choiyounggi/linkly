@@ -126,7 +126,7 @@ class TestProposalIsTwoStage(unittest.TestCase):
 
     def _propose(self, nodes=None, role="Coder"):
         return self.s.call("ir.propose", role=role, ir_fragment=fragment(nodes),
-                           deadline_ms=1000, idempotency_key="p-%s" % role)
+                           kb_pins=[], deadline_ms=1000, idempotency_key="p-%s" % role)
 
     def test_propose_does_not_mutate_the_document(self):
         out = self._propose()
@@ -163,14 +163,14 @@ class TestProposalIsTwoStage(unittest.TestCase):
     def test_a_role_may_not_propose_a_kind_outside_its_rights(self):
         with self.assertRaises(RpcError) as ctx:
             self.s.call("ir.propose", role="Planner", ir_fragment=fragment(),
-                        deadline_ms=1000, idempotency_key="pp")
+                        kb_pins=[], deadline_ms=1000, idempotency_key="pp")
         self.assertIn("may not propose", str(ctx.exception))
 
     def test_module_mismatch_is_rejected(self):
         with self.assertRaises(RpcError) as ctx:
             self.s.call("ir.propose", role="Coder",
                         ir_fragment={"module": "other", "nodes": [AUTHZ]},
-                        deadline_ms=1000, idempotency_key="pm")
+                        kb_pins=[], deadline_ms=1000, idempotency_key="pm")
         self.assertIn("does not match", str(ctx.exception))
 
     def test_a_dangling_child_reference_is_refused_at_apply_time(self):
@@ -305,7 +305,7 @@ class TestProposalIntent(unittest.TestCase):
         return self.server.call(
             "ir.propose", role="RefactoringAgent",
             ir_fragment={"lir_version": "0.1", "module": "t", "nodes": nodes},
-            intent=intent, deadline_ms=1000, idempotency_key=key)
+            intent=intent, kb_pins=[], deadline_ms=1000, idempotency_key=key)
 
     def test_a_declared_attachment_is_accepted(self):
         out = self._propose(self._split_nodes(), self._intent())

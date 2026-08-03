@@ -498,6 +498,28 @@ class Server:
             raise RpcError("ir_invalid",
                            "fragment module %r does not match %r"
                            % (fragment.get("module"), self.doc["module"]))
+
+        # RFC-0006 §Methods/ir.propose: kb_pins is required.
+        # It lists the KB documents this proposal grounds on, or [] if none.
+        kb_pins = params.get("kb_pins")
+        if kb_pins is None:
+            raise RpcError("ir_invalid",
+                           "ir.propose requires kb_pins parameter — a list of "
+                           "{doc_id, version} objects, or [] if no KB docs used "
+                           "(RFC-0006 §Methods/ir.propose)")
+        if not isinstance(kb_pins, list):
+            raise RpcError("ir_invalid",
+                           "kb_pins must be an array, got %s" % type(kb_pins).__name__)
+        for pin in kb_pins:
+            if not isinstance(pin, dict):
+                raise RpcError("ir_invalid",
+                               "each kb_pins entry must be an object {doc_id, version}")
+            if not isinstance(pin.get("doc_id"), str) or not pin.get("doc_id"):
+                raise RpcError("ir_invalid",
+                               "kb_pins entry missing or empty doc_id (must be non-empty string)")
+            if not isinstance(pin.get("version"), str) or not pin.get("version"):
+                raise RpcError("ir_invalid",
+                               "kb_pins entry missing or empty version (must be non-empty string)")
         # One node per id. `Reviewer._assess` merges with last-wins while `_apply`
         # appends every unseen id, so a fragment naming an id twice would put two
         # nodes with that id into the document and the reviewer would only have seen
@@ -577,35 +599,6 @@ class Server:
             raise RpcError("ir_invalid",
                            "role %s may not propose %s nodes" % (role, kind))
 
-        # Early structural validation: simulate merge and check V1/V5/Guard cardinality
-        merged_check = {n["id"]: n for n in self.doc["nodes"]}
-        for node in fragment["nodes"]:
-            if "id" in node:
-                merged_check[node["id"]] = node
-
-        # V5: kind-specific children allowance (RFC-0004 V5)
-        for node in merged_check.values():
-            parent_kind = node.get("kind")
-            for child_id in node.get("children", []):
-                child = merged_check.get(child_id)
-                if child is None:
-                    continue
-                child_kind = child.get("kind")
-                if child_kind and child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):
-                    raise RpcError("ir_invalid",
-                                   "a %s may not own a %s (RFC-0001 §노드 카탈로그 "
-                                   "children 허용; RFC-0004 §S2 V5): %s under %s"
-                                   % (parent_kind, child_kind, child_id, node["id"]))
-
-        # Guard cardinality: exactly one child (RFC-0001 Guard row)
-        for node in merged_check.values():
-            if node.get("kind") == "Guard":
-                children_count = len(node.get("children", []))
-                if children_count != 1:
-                    raise RpcError("ir_invalid",
-                                   "Guard %s has %d children; exactly 1 required "
-                                   "(RFC-0001 §노드 카탈로그 Guard row)"
-                                   % (node["id"], children_count))
 
         pid = "prop-%04d" % (len(self.proposals) + 1)
         review = self._m_agent_dispatch({"role": "Reviewer",

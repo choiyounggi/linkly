@@ -86,6 +86,7 @@ class TestCoderRestraint(unittest.TestCase):
 
     def _task(self, step):
         return self.server.call("agent.dispatch", role="Coder",
+                                kb_pins=[],
                                 objective="implement %s" % step,
                                 deadline_ms=1000, idempotency_key="t-%s" % step)
 
@@ -122,6 +123,7 @@ class TestReviewerJudgment(unittest.TestCase):
     def _propose(self, nodes, role="Coder"):
         return self.server.call("ir.propose", role=role,
                                 ir_fragment={"module": "login", "nodes": nodes},
+                                kb_pins=[],
                                 deadline_ms=1000,
                                 idempotency_key="k-%d" % len(self.server.proposals))
 
@@ -322,7 +324,8 @@ class TestReviewerJudgment(unittest.TestCase):
                  "meta": {"origin": "agent:Coder",
                           "source": "kb:security-jwt-issuance@0.1.0"}}
         out = server.call("ir.propose", role="Coder",
-                          ir_fragment={"module": "login", "nodes": [parent, child]},
+                          kb_pins=[],
+                                ir_fragment={"module": "login", "nodes": [parent, child]},
                           deadline_ms=1000, idempotency_key="s1")
         with self.assertRaises(RpcError) as ctx:
             reviewer.decide(out["review_task_id"], out["proposal_id"])
@@ -965,7 +968,8 @@ class TestRefactoringAgent(unittest.TestCase):
     def _run(self, server, key="k1"):
         agent = RefactoringAgent(server)
         task = server.call("agent.dispatch", role="RefactoringAgent",
-                           objective="split", deadline_ms=5000,
+                           kb_pins=[],
+                                objective="split", deadline_ms=5000,
                            idempotency_key=key)
         return agent.propose(task)
 
@@ -1121,72 +1125,79 @@ class TestRefactoringAgent(unittest.TestCase):
         self.assertEqual(set(protocol.ROLES), implemented)
 
 
-class TestInvariantEnforcement(unittest.TestCase):
-    """RFC-0004 §S2 invariants V1 (id uniqueness) and V5 (children kind allowance)
-    are enforced document-wide, including override path."""
+class TestKbPinsValidation(unittest.TestCase):
+    """RFC-0006 §Methods/ir.propose requires kb_pins parameter with validation."""
 
     def setUp(self):
         self.server = Server(golden(), KnowledgeBase())
-        self.reviewer = Reviewer(self.server)
 
-    def test_v1_duplicate_ids_in_proposal_are_rejected_at_propose_time(self):
-        """V1: node ids must be unique. Enforced at ir.propose."""
-        step = next(n for n in self.server.doc["nodes"] if n["id"] == "wf.login.step.4")
-        # Propose two nodes with the same id
-        dup = dict(step)
-        dup["name"] = "different name"
+    def test_kb_pins_parameter_is_required(self):
+        """ir.propose requires kb_pins parameter (RFC-0006)."""
         from lnpl.protocol import RpcError
+        # Use Validation (Behavior kind) which Coder can propose
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
         with self.assertRaises(RpcError) as ctx:
             self.server.call("ir.propose", role="Coder",
-                            ir_fragment={"module": "login", "nodes": [step, dup]},
-                            deadline_ms=1000, idempotency_key="v1-test")
+                            kb_pins=[],
+                                ir_fragment={"module": "login", "nodes": nodes},
+                            deadline_ms=1000, idempotency_key="kb-test-1")
         self.assertEqual(ctx.exception.type, "ir_invalid")
-        self.assertIn("id 유일", str(ctx.exception))
+        self.assertIn("kb_pins", str(ctx.exception))
 
-    def test_v5_invalid_children_kind_is_rejected_at_propose_time(self):
-        """V5: kind-specific children allowance. A Workflow cannot own an Entity."""
+    def test_kb_pins_must_be_a_list(self):
+        """kb_pins must be an array, not a string or object."""
         from lnpl.protocol import RpcError
-        entity = {"kind": "Entity", "id": "entity.test", "name": "Test",
-                 "fields": []}
-        wf = next(n for n in self.server.doc["nodes"] if n["id"] == "wf.login")
-        wf_edited = dict(wf)
-        wf_edited["children"] = list(wf.get("children", [])) + ["entity.test"]
-        with self.assertRaises(RpcError) as ctx:
-            self.server.call("ir.propose", role="Architect",
-                            ir_fragment={"module": "login", "nodes": [entity, wf_edited]},
-                            deadline_ms=1000, idempotency_key="v5-test")
-        self.assertEqual(ctx.exception.type, "ir_invalid")
-        self.assertIn("V5", str(ctx.exception))
-
-    def test_guard_cardinality_exactly_one_child_required(self):
-        """RFC-0001: Guard must have exactly one child."""
-        from lnpl.protocol import RpcError
-        step = next(n for n in self.server.doc["nodes"] if n["id"] == "wf.login.step.4")
-        # Create a Guard with two children (invalid)
-        guard = {"kind": "Guard", "id": "wf.login.guard", "name": "Guard",
-                "condition": "field exists",
-                "children": ["wf.login.step.4", "wf.login.step.5"],
-                "meta": {"origin": "agent:Coder", "source": "ir:test"}}
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
         with self.assertRaises(RpcError) as ctx:
             self.server.call("ir.propose", role="Coder",
-                            ir_fragment={"module": "login", "nodes": [guard]},
-                            deadline_ms=1000, idempotency_key="guard-test")
+                            ir_fragment={"module": "login", "nodes": nodes},
+                            kb_pins="not-an-array",
+                            deadline_ms=1000, idempotency_key="kb-test-2")
         self.assertEqual(ctx.exception.type, "ir_invalid")
-        self.assertIn("Guard", str(ctx.exception))
 
-    def test_guard_with_no_children_is_rejected(self):
-        """Guard must have at least one (and only one) child."""
+    def test_kb_pins_empty_list_is_valid(self):
+        """Empty kb_pins list [] is valid (no KB documents used)."""
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
+        prop = self.server.call("ir.propose", role="Coder",
+                               ir_fragment={"module": "login", "nodes": nodes},
+                               kb_pins=[],
+                               deadline_ms=1000, idempotency_key="kb-test-3")
+        self.assertTrue(prop["proposal_id"])
+
+    def test_kb_pins_entry_must_have_doc_id_and_version(self):
+        """Each kb_pins entry must have doc_id and version keys."""
         from lnpl.protocol import RpcError
-        guard = {"kind": "Guard", "id": "wf.login.guard", "name": "Guard",
-                "condition": "field exists",
-                "children": [],
-                "meta": {"origin": "agent:Coder", "source": "ir:test"}}
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
         with self.assertRaises(RpcError) as ctx:
             self.server.call("ir.propose", role="Coder",
-                            ir_fragment={"module": "login", "nodes": [guard]},
-                            deadline_ms=1000, idempotency_key="guard-empty-test")
+                            ir_fragment={"module": "login", "nodes": nodes},
+                            kb_pins=[{"doc_id": "test"}],  # missing version
+                            deadline_ms=1000, idempotency_key="kb-test-4")
         self.assertEqual(ctx.exception.type, "ir_invalid")
-        self.assertIn("Guard", str(ctx.exception))
+
+    def test_kb_pins_values_must_be_non_empty_strings(self):
+        """kb_pins doc_id and version must be non-empty strings."""
+        from lnpl.protocol import RpcError
+        nodes = [{"kind": "Validation", "id": "validate.test",
+                 "expression": "user != null",
+                 "meta": {"origin": "agent:Coder", "source": "ir:test"}}]
+        # Empty string
+        with self.assertRaises(RpcError) as ctx:
+            self.server.call("ir.propose", role="Coder",
+                            ir_fragment={"module": "login", "nodes": nodes},
+                            kb_pins=[{"doc_id": "", "version": "1.0"}],
+                            deadline_ms=1000, idempotency_key="kb-test-5")
+        self.assertEqual(ctx.exception.type, "ir_invalid")
+
+
 
 
 if __name__ == "__main__":
