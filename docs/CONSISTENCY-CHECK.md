@@ -1388,4 +1388,17 @@ RFC-0000 기준이었다. RFC-0007이 §2.2에서 **`Updates` 관계**를 신설
 | RFC-0002 (Syntax) | 평가기 없는 `Word Word? Word? Word?` 생산 규칙 제거 | **완료** — RFC-0008이 `Updates: RFC-0002 §Full grammar`로 갱신. 대체 아님, RFC-0002는 `Accepted` 유지 | 이슈 #3 |
 | RFC-0002 (Syntax) | Open Questions ② 가 옛 문법을 서술한 채 남아 RFC-0008과 모순(RFC-0007 §2.2 규칙 2의 "지목 없는 모순") | **완료** — RFC-0009가 `Updates: RFC-0002 §Open Questions`로 보충 | 이슈 #3 |
 | RFC-0003 (Runtime) | §Guard의 "평가할 수 없는 조건은 거부한다"를 새로 평가 가능한 범위로 갱신, `until` 종료 한계 재서술 | **완료** — RFC-0008이 `Updates: RFC-0003 §Guard`로 갱신. 대체 아님 | 이슈 #3 |
-| RFC-0006 (Agent Protocol) | ① 역할표 권한 구멍 — Constraint를 제안할 수 있는 역할이 그것을 Service/Workflow의 `constraints`에 붙일 권한이 없다 ② 의도적·검토 가능한 노드 제거 표현(RefactoringAgent의 전제) | **대기 중.** 권한표와 제거 연산이라 한 절에 그치지 않으므로, `Updates`로 충분한지 전면 대체가 필요한지는 착수 시 판단한다 | 이슈 #2 |
+| RFC-0006 (Agent Protocol) | ① 역할표 권한 구멍 — 자기가 저작한 노드를 **부착**할 권한이 없다. Constraint 전용이 아니라 세 역할 공통이다(RefactoringAgent→`Workflow`, SecurityAuditor·PerformanceAnalyzer→`Service`) ② 참조 **이동**이 제거로 읽힌다 | **완료 (2026-08-03) — RFC-0010이 `Updates`로 갱신.** 대체 아님, RFC-0006은 `Accepted` 유지. 지목 절은 `§Agent Roles & IR Access`와 `§Methods/ir.propose` 둘이며, RFC-0007 §2.2 규칙 7의 기준(한 절을 읽으려 몇 문서를 여는가)으로 선행 갱신이 없어 절당 2문서 — 규칙 안이다. **부수 발견: RFC-0006은 제거를 금지한 적이 없다** — 참조 구현이 거절하며 `(RFC-0006 §Methods)`를 인용했으나 그 절에 규정이 없었다. RFC-0010이 처음으로 규정하고 인용을 정정했다 | 이슈 #2 |
+
+
+### V5(kind별 children 허용 종별) 미구현 — 2026-08-03 기록
+
+RFC-0004 §S2는 문서 불변식 5종을 규정하는데 참조 구현은 V2(소유 유일)·V3·V4(비순환)만
+검사한다. **V1(id 유일)과 V5는 어디에서도 검사되지 않고**, `schemas/lir.schema.json`은
+`children`을 제약 없는 id 배열로 둔다. 그래서 RFC-0010 이전에는 `WorkflowStep`을 `Entity`의
+`children`에 넣어도 통과했다.
+
+RFC-0010은 `attach` 시점에 한해 V5를 요구한다(`protocol.CHILDREN_ALLOWED` — RFC-0001
+§노드 카탈로그의 *children 허용* 열을 전사). 그 예외의 내용 자체가 "자기가 소유하지 않은
+kind의 노드에 참조를 쓴다"이므로 그 지점만은 막아야 했다. **문서 전역 집행은 여전히 없다.**
+우회하기 전에 적는다(RFC-0007 §5).

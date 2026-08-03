@@ -224,8 +224,13 @@ RFC·산출물·**이진 판정 가능한 완료 기준**·리스크를 적는�
 > Architect·Tester·SecurityAuditor·PerformanceAnalyzer·ReleaseAgent)이 구현됐고,
 > Reviewer는 호출자 지시와 무관하게 자기 기준(권한·해소되는 출처·제거 불가·참조·소유
 > 유일·비순환·스키마)으로 반려한다 — `run_cycle`도 `approve=` 없이 그 판단을 탄다.
-> 남은 것: **RefactoringAgent 1종**(`ir.propose`가 노드 제거를 표현하지 못해 RFC-0006
-> 개정이 선행 — 이슈 #2)과 SSE 스트리밍·에이전트 인증(RFC-0006 Open Questions).
+> 남은 것: SSE 스트리밍·에이전트 인증(RFC-0006 Open Questions).
+>
+> **2026-08-03 갱신 — 9종 전부 구현됐다.** `RefactoringAgent`가 `patterns-repository-call`의
+> "한 step에 한 저장소 접근"을 이행한다(이슈 #2). 위 판이 적었던 사유 "`ir.propose`가 노드
+> 제거를 표현하지 못해"는 **틀렸다** — RFC-0006은 제거를 금지한 적이 없고, 그 거절은 참조
+> 구현의 판단이었다. 진짜 차단은 두 겹이었다: ① 역할이 자기가 저작한 노드를 **부착**할
+> 권한이 없다(세 역할 공통) ② 참조 **이동**이 제거로 읽힌다. RFC-0010이 둘을 규정해 해소했다.
 
 ## Phase 3 — KB 시드 12카테고리 + 에이전트 2종 프로토콜 왕복
 

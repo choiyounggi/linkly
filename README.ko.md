@@ -22,8 +22,10 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 > `.lnpl`이 파싱되고 Semantic IR로 lowering돼 IR 인터프리터에서 실행되며(모드 A),
 > MLIR을 거쳐 **네이티브 바이너리**로 컴파일된다(모드 B). 차동 검증이 RFC-0004가
 > 지명한 관측 가능 4종에 대해 두 모드의 일치를 확인한다. OpenAPI도 IR에서 생성된다.
-> 골든 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다. 남은 것:
-> 커스텀 `lnpl` MLIR dialect(C++ TableGen 빌드 필요) — [로드맵](docs/ROADMAP.md) 참조.
+> 골든 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다(378 테스트 전부
+> 통과). 커스텀 `lnpl` MLIR dialect도 들어갔다 — IRDL로 선언적으로 정의하므로 C++
+> TableGen 빌드가 필요없다(RFC-0004 S4). 에이전트 9역할도 전부 구현됐다.
+> [로드맵](docs/ROADMAP.md) 참조.
 > RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영어다.
 
 ---
@@ -299,8 +301,10 @@ RFC 승격 이후 명세↔구현 갭 3건을 더 닫았다. 셋 다 같은 모�
 
 | 이슈 | 미뤄진 것 |
 |------|-----------|
-| [#2](https://github.com/choiyounggi/linkly/issues/2) | 9역할 중 마지막 `RefactoringAgent` — `ir.propose`가 노드 *제거*를 표현해야 하고 그건 RFC-0006 개정 사항 |
-| [#3](https://github.com/choiyounggi/linkly/issues/3) | 가드 조건식 문법(RFC-0002 OQ②) — 모드 B의 `until`도 여기에 막혀 있다 |
+| [#7](https://github.com/choiyounggi/linkly/issues/7) | RFC-0004 S5 — `lnpl` 모듈을 진짜 MLIR 패스로 하강하고, dialect에 region을 줘 동시성을 표현할 수 있게 |
+| [#9](https://github.com/choiyounggi/linkly/issues/9) | 모드 B가 RFC-0003의 cache-TTL 계약을 강제하지 않는다 — 모드 A는 예산 없이 거부하는데 모드 B는 안 한다 |
+| [#11](https://github.com/choiyounggi/linkly/issues/11) | RFC-0007이 `Status: Draft`인데 Accepted RFC 둘이 그 위에 서 있다 |
+| [#12](https://github.com/choiyounggi/linkly/issues/12) | 모드 A는 Presence 가드 조건을 payload에서 읽고 모드 B는 별도 `skip` 플래그를 받는다 |
 
 그것들은 *유보한 결정*이지 계약의 구멍이 아니다. 참조 구현은 결정할 수 없는 것을
 추측하지 않고 거부한다: 미등록 동사, 평가 불가 조건, 귀속 불가 capability, 미지원
