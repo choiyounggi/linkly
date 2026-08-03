@@ -143,6 +143,39 @@ class TestDifferential(unittest.TestCase):
         self.assertNotIn("s3cret", a["text"])
         self.assertNotIn("s3cret", b["text"])
 
+    def test_presence_guard_with_key_absent_is_equivalent(self):
+        """RFC-0008: Presence guard 'when field missing' with absent field.
+
+        When the guarded field is absent from the payload, the condition evaluates
+        to true, and both modes should execute the guarded step. The skip value is
+        derived from the payload (RFC-0012), not supplied by caller.
+        """
+        doc = lower(parse(GUARDED), "t").to_document()
+        # Empty payload: token is missing, so 'token missing' is true, step runs
+        ok, report = differential.verify(
+            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        # Verify the guarded step actually ran
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
+        self.assertIn("cache user", b["text"])
+
+    def test_presence_guard_with_key_present_is_equivalent(self):
+        """RFC-0008: Presence guard 'when field missing' with present field.
+
+        When the guarded field is present in the payload, the condition evaluates
+        to false, and both modes should skip the guarded step. The skip value is
+        derived from the payload (RFC-0012), not supplied by caller.
+        """
+        doc = lower(parse(GUARDED), "t").to_document()
+        payload = {"token": "present"}  # token is present
+        # With token present, 'token missing' is false, step is skipped
+        ok, report = differential.verify(
+            doc, "wf.w", payload, {"entity.user": dict(PAYLOAD)}, self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        # Verify the guarded step was skipped (no cache effect)
+        b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload=payload)
+        self.assertNotIn("cache user", b["text"])
+
 
 @NEEDS_TOOLS
 class TestDivergenceIsDetected(unittest.TestCase):
@@ -174,9 +207,8 @@ class TestDivergenceIsDetected(unittest.TestCase):
         backend._steps_in_order = self.original
         shutil.rmtree(self.workdir, ignore_errors=True)
 
-    def _verify(self, doc, workflow, payload, rows, skip=False):
-        return differential.verify(doc, workflow, payload, rows, self.workdir,
-                                   skip=skip)
+    def _verify(self, doc, workflow, payload, rows):
+        return differential.verify(doc, workflow, payload, rows, self.workdir)
 
     def test_the_guarded_fixture_is_equivalent_with_its_guard_taken(self):
         """The baseline the other cases rest on, with `cache user` actually run.
@@ -239,15 +271,14 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """A `when` guard that evaluates false must actually skip its step.
 
         The payload carries `token`, so `when token missing` is **false** and the
-        guarded step is skipped — `skip=True` tells mode B the same. With the
-        guard satisfied instead, removing it would change nothing observable and
-        this case would prove nothing, which is how it read before.
+        guarded step is skipped. The skip value is derived from evaluating the
+        condition against the payload (RFC-0008).
         """
         doc = lower(parse(GUARDED), "t").to_document()
         payload = dict(PAYLOAD, token="present")
         rows = {"entity.user": dict(PAYLOAD)}
 
-        ok, _report = self._verify(doc, "wf.w", payload, rows, skip=True)
+        ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
 
         original = self.original
@@ -260,7 +291,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = without_when
-        ok, report = self._verify(doc, "wf.w", payload, rows, skip=True)
+        ok, report = self._verify(doc, "wf.w", payload, rows)
         self.assertFalse(ok, "removing the when guard must diverge")
         # Both classes: an extra step is an order difference *and* an extra
         # effect. Asserting only one lets the other silently stop appearing.
