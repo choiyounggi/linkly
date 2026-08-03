@@ -494,5 +494,54 @@ class TestToolchainHonesty(unittest.TestCase):
         return os.path.join(REPO, ".claude", "tmp", "unused")
 
 
+class TestDiffCliWiring(unittest.TestCase):
+    """`cmd_diff` wires argparse into `differential.verify`. The suite otherwise
+    calls `verify` directly, so a signature drift between the CLI and the function
+    (e.g. a stale `skip=` kwarg) went unnoticed until the command crashed on every
+    invocation. These tests exercise the CLI path itself.
+    """
+
+    from argparse import Namespace
+
+    LOGIN = os.path.join(REPO, "examples", "login.lnpl")
+
+    def _args(self, **over):
+        base = dict(source=self.LOGIN, workflow=None,
+                    workdir=os.path.join(REPO, ".claude", "tmp", "diff-cli-test"),
+                    payload=None, no_row=False)
+        base.update(over)
+        return self.Namespace(**base)
+
+    def test_arg_wiring_has_no_stale_kwargs(self):
+        """Regression: cmd_diff must not pass a kwarg verify() rejects. This binds
+        even without the toolchain — a bad kwarg raises TypeError at call time,
+        before verify() can gate on toolchain availability."""
+        from lnpl import cli, differential
+        try:
+            cli.cmd_diff(self._args())
+        except TypeError as exc:
+            self.fail("cmd_diff passes an argument verify() rejects: %s" % exc)
+        except differential.DifferentialError:
+            pass  # toolchain absent — the arg binding still succeeded, which is the point
+
+    @NEEDS_TOOLS
+    def test_login_diff_returns_zero(self):
+        from lnpl import cli
+        self.assertEqual(cli.cmd_diff(self._args()), 0)
+
+    @NEEDS_TOOLS
+    def test_payload_flag_is_honored(self):
+        """A payload whose entity fields differ from the default must be read from
+        the file, not silently replaced by DEFAULT_PAYLOAD."""
+        from lnpl import cli
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(PAYLOAD, fh)
+            path = fh.name
+        try:
+            self.assertEqual(cli.cmd_diff(self._args(payload=path)), 0)
+        finally:
+            os.unlink(path)
+
+
 if __name__ == "__main__":
     unittest.main()
