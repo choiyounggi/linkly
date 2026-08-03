@@ -1402,3 +1402,34 @@ RFC-0010은 `attach` 시점에 한해 V5를 요구한다(`protocol.CHILDREN_ALLO
 §노드 카탈로그의 *children 허용* 열을 전사). 그 예외의 내용 자체가 "자기가 소유하지 않은
 kind의 노드에 참조를 쓴다"이므로 그 지점만은 막아야 했다. **문서 전역 집행은 여전히 없다.**
 우회하기 전에 적는다(RFC-0007 §5).
+
+---
+
+## 이슈 #17 — RFC-0001 노드 종수 오류정정 (2026-08-03 기록)
+
+**사실:** RFC-0001 §노드 카탈로그 행 90의 산문은 "19개 kind"라고 했지만, 바로 아래 4개 표(Declaration/Behavior/Effect/Constraint)는 20개 kind를 나열한다. 2026-07-31에 Guard가 추가되면서 19→20으로 올라갔는데, 산문 숫자를 업데이트하지 않았다.
+
+| 표 | kind 수 | 명단 |
+|----|-----:|-----|
+| Declaration | 5 | Entity, Service, Workflow, Event, Capability |
+| Behavior | 6 | BusinessRule, Validation, WorkflowStep, Guard, Pipeline, Concurrency |
+| Effect | 6 | NetworkCall, RepositoryCall, CacheAccess, Transaction, Authorization, EventEmit |
+| Constraint | 3 | Policy, Security, Performance |
+| **합계** | **20** | **정본은 표, 산문은 재술** |
+
+**판정 원칙 확정:** RFC-0007 §2.1에 따라 "Accepted RFC의 실질 변경은 본문 편집이 아니다. 오탈자·서식·인용 경로 수정은 그대로 편집한다"(단, "실질 변경"은 의미 있는 내용 수정을 뜻함).
+
+산문 숫자와 표의 불일치는 **오탈자에 해당하는지 실질 변경에 해당하는지** 판정해야 한다.
+- 정본(source of truth)은 RFC-0001 §노드 카탈로그 본문의 "행의 추가·삭제는 이 RFC의 개정 사항이다"에서 명시한 **표**다.
+- 표가 정본이면, 산문 숫자는 표의 **재술(restatement)**이지 독립 규정이 아니다.
+- 표가 변했을 때 산문을 따라 갱신하지 않은 것은 **오탈자**다.
+
+**적용:** 산문 "19개 kind" → "20개 kind" 정정. 이와 같은 범주(표는 정본, 산문 숫자는 재술)의 불일치는 모두 오탈자로 취급한다.
+
+**재검증:**
+- `rfcs/0001-semantic-ir.md:90` "19개" → "20개"
+- `rfcs/0004-compiler.md:130` "19 kind" → "20 kind"
+- `docs/ROADMAP.md:79` "19 kind" → "20 kind"
+- `schemas/lir.schema.json` anyOf 20개 ref 검증 ✓
+
+**판정:** PASS — 오탈자 수정, 실질 변경 없음.
