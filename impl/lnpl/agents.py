@@ -691,6 +691,147 @@ class Tester(_AgentBase):
         return manifest
 
 
+class RefactoringAgent(_AgentBase):
+    """Splits a step that owns more than one repository access — and nothing else.
+
+    The KB prescribes exactly one restructuring (`patterns-repository-call`): *"한
+    step에 한 저장소 접근. 두 접근이 필요하면 두 step이다. step은 재시도·span의
+    단위이므로 접근을 묶으면 재시도가 둘을 함께 반복한다."* That last clause is the
+    reason, and it is also the honest limit of what this transform preserves:
+
+    **effect order survives; retry grouping does not.** A moved access stops being
+    retried together with the one it left. That is the *point* of the prescription,
+    not a defect — but RFC-0006's role table says this role "의미를 보존하며 구조를
+    바꾼다", and only half of that is true here. RFC-0010 §Examples records it.
+
+    Two deliberate limits:
+
+    - **Only a step owned by a `Workflow` or a `Pipeline`.** Under a `Concurrency`
+      owner the new step would become a parallel branch, which mode A is
+      single-threaded enough never to reveal; under a `Guard` it would leave two
+      guarded items where RFC-0001 allows exactly one. Both refuse.
+    - **Direct children only.** A `RepositoryCall` nested inside a `Transaction`
+      does not count, so a step with one direct and one nested access is not
+      reported. That under-detects the KB rule rather than answering it wrongly.
+
+    Anything it cannot ground, it declines — the same discipline as
+    `Coder._fragment_for` returning `None` instead of inventing an Effect.
+    """
+
+    role = "RefactoringAgent"
+
+    KB_DOC = "patterns-repository-call"
+    SPLITTABLE_OWNERS = ("Workflow", "Pipeline")
+
+    def _violations(self, doc):
+        """`(owner_id, step, [extra call ids])` for each step to split."""
+        nodes = {n["id"]: n for n in doc["nodes"]}
+        owners = {c: n for n in doc["nodes"] for c in n.get("children", [])}
+        found = []
+        for node in doc["nodes"]:
+            if node.get("kind") != "WorkflowStep":
+                continue
+            calls = [c for c in node.get("children", [])
+                     if nodes.get(c, {}).get("kind") == "RepositoryCall"]
+            if len(calls) < 2:
+                continue
+            owner = owners.get(node["id"])
+            if owner is None or owner.get("kind") not in self.SPLITTABLE_OWNERS:
+                continue
+            found.append((owner["id"], node, calls[1:]))
+        return found
+
+    def _new_step(self, doc, owner_id, call_id, taken):
+        """A step owning `call_id` alone, or None when its name cannot be derived."""
+        nodes = {n["id"]: n for n in doc["nodes"]}
+        call = nodes[call_id]
+        entity = nodes.get(call.get("entity"))
+        if not entity or not entity.get("name"):
+            return None            # no name to derive from; do not invent one
+        # `query` is not in the KB's verb dictionary (authenticate/load/find/read →
+        # read, create/insert, update, delete), and `find` is the entry that maps to
+        # the same operation — so a name built from `query` would not round-trip
+        # through the dictionary that document owns.
+        verb = "find" if call.get("operation") == "query" else call.get("operation")
+        name = "%s %s" % (verb, str(entity["name"]).split()[0].lower())
+        n = 1
+        while "%s.split.%d" % (owner_id, n) in nodes or \
+                "%s.split.%d" % (owner_id, n) in taken:
+            n += 1
+        new_id = "%s.split.%d" % (owner_id, n)
+        taken.add(new_id)
+        return {"kind": "WorkflowStep", "id": new_id, "name": name,
+                "children": [call_id],
+                "meta": self._meta("kb:%s@%s" % (self.KB_DOC, self._kb_version()))}
+
+    def _kb_version(self):
+        return self.server.kb.load(self.KB_DOC)["version"]
+
+    def _split(self, doc, owner_id, step, extra_call_ids):
+        """`(nodes, intent)` for one step's split, or `(None, None)`."""
+        nodes = {n["id"]: n for n in doc["nodes"]}
+        taken = set()
+        new_steps = []
+        for call_id in extra_call_ids:
+            made = self._new_step(doc, owner_id, call_id, taken)
+            if made is None:
+                return None, None
+            new_steps.append(made)
+
+        original = dict(step)
+        original["children"] = [c for c in step.get("children", [])
+                                if c not in extra_call_ids]
+
+        owner = dict(nodes[owner_id])
+        children = list(owner.get("children", []))
+        at = children.index(step["id"]) + 1
+        # Immediately after the original, not appended: `children` order is
+        # execution order (RFC-0001 Workflow row), so the tail is a different
+        # program.
+        owner["children"] = (children[:at] + [s["id"] for s in new_steps]
+                             + children[at:])
+        # `origin` only. This node already has its own provenance, and rewriting
+        # `meta.source` under cover of an attachment is what the gate refuses.
+        owner["meta"] = dict(owner.get("meta") or {},
+                             origin="agent:%s" % self.role)
+
+        intent = {
+            "attach": [{"parent": owner_id, "child": s["id"]} for s in new_steps],
+            "move": [{"node": s["children"][0], "from": step["id"], "to": s["id"]}
+                     for s in new_steps],
+        }
+        return [owner, original] + new_steps, intent
+
+    def propose(self, task, deadline_ms=30000):
+        """Propose the first split this document needs, or refuse."""
+        doc = self.server.doc
+        violations = self._violations(doc)
+        if not violations:
+            return self._refuse(
+                task, "no step owns more than one repository access",
+                "kb:%s (한 step에 한 저장소 접근)" % self.KB_DOC)
+
+        owner_id, step, extra = violations[0]
+        nodes, intent = self._split(doc, owner_id, step, extra)
+        if nodes is None:
+            return self._refuse(
+                task, "cannot derive a step name for every moved access",
+                "RFC-0001 §노드 카탈로그 (WorkflowStep.name은 동사구)")
+
+        fragment = {"lir_version": doc["lir_version"], "module": doc["module"],
+                    "nodes": nodes}
+        proposal = self.server.call("ir.propose", role=self.role,
+                                    ir_fragment=fragment, intent=intent,
+                                    deadline_ms=deadline_ms,
+                                    idempotency_key="refactor-%s" % step["id"])
+        self.server.call("agent.report", task_id=task["task_id"],
+                         state="input-required",
+                         payload={"proposed": proposal["proposal_id"],
+                                  "split": step["id"],
+                                  "moved": [m["node"] for m in intent["move"]]})
+        return proposal
+
+
 class ReleaseAgent(_AgentBase):
     """Read-only. Summarises what would ship, and never turns a failure into a pass."""
 

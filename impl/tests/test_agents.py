@@ -5,8 +5,8 @@ import os
 import unittest
 
 from lnpl.agents import (Architect, Coder, PerformanceAnalyzer, Planner,
-                         ReleaseAgent, Reviewer, SecurityAuditor, Tester,
-                         run_cycle)
+                         RefactoringAgent, ReleaseAgent, Reviewer, SecurityAuditor,
+                         Tester, run_cycle)
 from lnpl.lower import derive_id
 from lnpl.spec import EXPECTATIONS, run_manifest
 from lnpl.kb import KnowledgeBase
@@ -830,6 +830,142 @@ class TestReviewerHonoursDeclaredIntent(unittest.TestCase):
         ok, reason = self._assess(nodes, self._intent())
         self.assertFalse(ok)
         self.assertTrue(reason.startswith("ownership:"), reason)
+
+
+class TestRefactoringAgent(unittest.TestCase):
+    """The ninth role. One prescription, and a refusal for everything else."""
+
+    def _server(self, doc=None):
+        return Server(json.loads(json.dumps(doc or TWO_ACCESS)), KnowledgeBase())
+
+    def _run(self, server, key="k1"):
+        agent = RefactoringAgent(server)
+        task = server.call("agent.dispatch", role="RefactoringAgent",
+                           objective="split", deadline_ms=5000,
+                           idempotency_key=key)
+        return agent.propose(task)
+
+    def _apply(self, server, out):
+        Reviewer(server).decide(out["review_task_id"], out["proposal_id"])
+        return {n["id"]: n for n in server.doc["nodes"]}
+
+    def _accesses(self, nodes, step_id):
+        return [c for c in nodes[step_id].get("children", [])
+                if nodes.get(c, {}).get("kind") == "RepositoryCall"]
+
+    def test_it_splits_a_step_with_two_repository_accesses(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(len(self._accesses(nodes, "wf.w.step.1")), 1)
+        self.assertEqual(len(self._accesses(nodes, "wf.w.split.1")), 1)
+
+    def test_the_new_step_runs_immediately_after_the_original(self):
+        """`children` order is execution order, so the tail is a different program."""
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w"]["children"],
+                         ["wf.w.step.1", "wf.w.split.1", "wf.w.step.2"])
+
+    def test_the_original_step_keeps_its_id_and_its_first_access(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertIn("wf.w.step.1.a", nodes["wf.w.step.1"]["children"])
+
+    def test_the_new_step_is_grounded_in_the_kb(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w.split.1"]["meta"]["source"],
+                         "kb:patterns-repository-call@0.1.0")
+
+    def test_the_new_step_name_is_a_verb_phrase_from_the_operation(self):
+        server = self._server()
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w.split.1"]["name"], "update user")
+
+    def test_a_query_operation_is_named_with_the_dictionarys_verb(self):
+        """`query` is not in `patterns-repository-call`'s verb dictionary.
+
+        The dictionary maps authenticate/load/find/read → read, plus create/insert,
+        update, delete. A step named `query user` would not round-trip through it,
+        so the name uses `find`, the entry that means the same operation.
+        """
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        call = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1.b")
+        call["operation"] = "query"
+        server = self._server(doc)
+        nodes = self._apply(server, self._run(server))
+        self.assertEqual(nodes["wf.w.split.1"]["name"], "find user")
+
+    def test_it_refuses_when_no_step_owns_two_accesses(self):
+        server = Server(golden(), KnowledgeBase())
+        out = self._run(server)
+        self.assertIsNone(out["proposal_id"])
+        self.assertEqual(server.proposals, {})
+
+    def test_a_step_with_one_access_is_not_a_violation(self):
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1")
+        step["children"] = ["wf.w.step.1.a"]
+        doc["nodes"] = [n for n in doc["nodes"] if n["id"] != "wf.w.step.1.b"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_three_accesses_split_into_three_steps(self):
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1")
+        step["children"].append("wf.w.step.1.c")
+        doc["nodes"].append({"kind": "RepositoryCall", "id": "wf.w.step.1.c",
+                             "entity": "entity.user", "operation": "delete"})
+        server = self._server(doc)
+        nodes = self._apply(server, self._run(server))
+        for step_id in ("wf.w.step.1", "wf.w.split.1", "wf.w.split.2"):
+            self.assertEqual(len(self._accesses(nodes, step_id)), 1, step_id)
+        self.assertEqual(nodes["wf.w.split.2"]["name"], "delete user")
+
+    def test_it_refuses_a_step_owned_by_a_concurrency_node(self):
+        """Splitting there would make the new step a parallel branch.
+
+        Mode A is single-threaded, so no differential test would reveal it — the
+        refusal is the only thing standing between this transform and a silent
+        concurrency change.
+        """
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        doc["nodes"].append({"kind": "Concurrency", "id": "wf.w.conc",
+                             "mode": "parallel", "children": ["wf.w.step.1"]})
+        wf = next(n for n in doc["nodes"] if n["id"] == "wf.w")
+        wf["children"] = ["wf.w.conc", "wf.w.step.2"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_it_refuses_a_step_owned_by_a_guard(self):
+        """RFC-0001 allows a Guard exactly one guarded item."""
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        doc["nodes"].append({"kind": "Guard", "id": "wf.w.guard",
+                             "mode": "repeat", "count": 3,
+                             "children": ["wf.w.step.1"]})
+        wf = next(n for n in doc["nodes"] if n["id"] == "wf.w")
+        wf["children"] = ["wf.w.guard", "wf.w.step.2"]
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_a_nested_access_is_not_counted(self):
+        """Under-detection, stated in the docstring rather than answered wrongly."""
+        doc = json.loads(json.dumps(TWO_ACCESS))
+        step = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1")
+        step["children"] = ["wf.w.step.1.a", "wf.w.step.1.tx"]
+        doc["nodes"].append({"kind": "Transaction", "id": "wf.w.step.1.tx",
+                             "children": ["wf.w.step.1.b"]})
+        server = self._server(doc)
+        self.assertIsNone(self._run(server)["proposal_id"])
+
+    def test_all_nine_roles_now_have_an_implementation(self):
+        """What makes "8 of 9" impossible to regress to."""
+        import inspect
+
+        from lnpl import agents, protocol
+        implemented = {name for name, obj in inspect.getmembers(agents, inspect.isclass)
+                       if obj.__module__ == "lnpl.agents" and not name.startswith("_")}
+        self.assertEqual(set(protocol.ROLES), implemented)
 
 
 if __name__ == "__main__":
