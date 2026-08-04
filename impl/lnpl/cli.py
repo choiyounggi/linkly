@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-from .interp import Interpreter, RunError
+from .interp import Interpreter, RunError, sample_payload
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
@@ -35,12 +35,9 @@ from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, generate as generate_openapi
 from .spec import SpecError, extract, run_manifest
 
-DEFAULT_PAYLOAD = {
-    "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-    "email": "user@example.com",
-    "password": "s3cret-value",
-    "createdAt": "2026-07-31T09:00:00Z",
-}
+
+def _entities(doc):
+    return [n for n in doc["nodes"] if n["kind"] == "Entity"]
 
 
 def compile_source(path):
@@ -75,10 +72,11 @@ def cmd_compile(args):
 
 def cmd_run(args):
     doc = compile_source(args.source)
-    payload = DEFAULT_PAYLOAD
     if args.payload:
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
+    else:
+        payload = sample_payload(_entities(doc))
 
     workflows = [n for n in doc["nodes"] if n["kind"] == "Workflow"]
     if not workflows:
@@ -193,10 +191,11 @@ def cmd_diff(args):
         print("no workflow to compare", file=sys.stderr)
         return 1
     target = args.workflow or workflows[0]["id"]
-    payload = DEFAULT_PAYLOAD
     if args.payload:
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
+    else:
+        payload = sample_payload(_entities(doc))
     ok, report = verify_modes(doc, target, payload,
                               _repo_rows(doc, payload, empty=args.no_row),
                               args.workdir)

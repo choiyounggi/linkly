@@ -517,6 +517,48 @@ def check_semantic_type(type_name, value, field_name):
     # Types without a Phase 1 rule pass through; RFC-0001 owns the full table.
 
 
+# A valid sample value per RFC-0001 semantic type, used to synthesize a default
+# input fixture from an entity's declared fields (issue #23). Each value is a
+# valid instance of its type, so the derived fixture passes `check_semantic_type`.
+# Complex types mirror their RFC-0001 composite shape.
+SAMPLE_VALUES = {
+    "UUID": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+    "Email": "user@example.com",
+    "Phone": "+14155550100",
+    "Password": "s3cret-value",
+    "Currency": "USD",
+    "Money": {"amount": "0", "currency": "USD"},
+    "Address": {"line1": "1 Main St", "city": "Springfield", "country": "US"},
+    "Image": {"uri": "https://example.com/i.png", "mediaType": "image/png"},
+    "File": {"uri": "https://example.com/f.pdf", "mediaType": "application/pdf"},
+    "GeoLocation": {"lat": 0, "lng": 0},
+    "Json": {},
+    "Html": "<p>x</p>",
+    "Markdown": "# x",
+    "Text": "text",
+    "Integer": 1,
+    "Decimal": "0",
+    "Boolean": True,
+    "DateTime": "2026-07-31T09:00:00Z",
+}
+
+
+def sample_payload(entities):
+    """Synthesize a default input fixture covering every field of `entities`.
+
+    The value for each field is `SAMPLE_VALUES[field.type]`. Fields whose type is
+    not a base RFC-0001 type (e.g. a refinement) are skipped — the caller can
+    still override with an explicit payload. Replaces the hardcoded login payload
+    so `run`/`diff` work for any module (issue #23).
+    """
+    payload = {}
+    for entity in entities:
+        for field in entity.get("fields", []):
+            if field["type"] in SAMPLE_VALUES:
+                payload[field["name"]] = SAMPLE_VALUES[field["type"]]
+    return payload
+
+
 def _duration_ms(text):
     for unit, mult in (("ms", 1), ("s", 1000), ("m", 60000)):
         if str(text).endswith(unit):

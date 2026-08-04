@@ -17,7 +17,7 @@ Manifest shape:
                 "given": [...], "when": [...], "expect": [...]}]}
 """
 
-from .interp import Interpreter, RunError
+from .interp import Interpreter, RunError, sample_payload
 from .lexer import COMPARATORS
 
 SPEC_VERSION = "0.1"
@@ -126,16 +126,7 @@ def _payload_from_given(given, entity_node):
         `no <field>`         leave a field out
     Everything else is refused — a `given` nobody can build is not a fixture.
     """
-    payload = {}
-    if entity_node:
-        defaults = {"UUID": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-                    "Email": "user@example.com",
-                    "Password": "s3cret-value",
-                    "DateTime": "2026-07-31T09:00:00Z",
-                    "Text": "text", "Integer": 1, "Boolean": True}
-        for field in entity_node.get("fields", []):
-            if field["type"] in defaults:
-                payload[field["name"]] = defaults[field["type"]]
+    payload = sample_payload([entity_node] if entity_node else [])
     for phrase in given:
         tokens = phrase.split()
         if tokens[0] == "no" and len(tokens) == 2:
