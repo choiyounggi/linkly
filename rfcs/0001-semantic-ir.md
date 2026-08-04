@@ -63,7 +63,7 @@ rule을 내장해 검증·OpenAPI·프런트엔드 검증 코드 자동 생성�
 
 | 필드 | 필수 | 형식 | 의미 |
 |------|------|------|------|
-| `kind` | 필수 | 아래 카탈로그의 19개 PascalCase 식별자 중 하나 | 노드 종별의 유일 판별자. 대분류(Declaration/Behavior/Effect/Constraint)는 카탈로그 표의 분류 축일 뿐 노드 필드가 아니다 |
+| `kind` | 필수 | 아래 카탈로그의 21개 PascalCase 식별자 중 하나 | 노드 종별의 유일 판별자. 대분류(Declaration/Behavior/Effect/Constraint)는 카탈로그 표의 분류 축일 뿐 노드 필드가 아니다 |
 | `id` | 필수 | dot-path 문자열, 정규식 `^[a-z][a-z0-9]*(\.[a-z0-9]+)*$` | 노드 고유 식별자. 소문자·숫자 세그먼트를 `.`로 연결하고 첫 세그먼트는 문자로 시작. IR 문서 내에서 유일. 예: `svc.login`, `wf.login.step.3` |
 | `meta` | 선택 | 객체 | 부가 정보. 정의된 키: `source`(원본 소스 위치 문자열), `origin`(`human` \| `agent:<이름>` — 생성 주체). 추가 키의 허용 여부와 형식은 직렬화 스키마(RFC-0001 부록 A, 후속 태스크)가 규정 |
 | `children` | 선택 | id 배열 | 소유(containment) 참조. 아래 구조 규칙 참조 |
@@ -87,7 +87,7 @@ rule을 내장해 검증·OpenAPI·프런트엔드 검증 코드 자동 생성�
 
 ### 노드 카탈로그
 
-20개 kind — 아래 4표가 전부이며 행의 추가·삭제는 이 RFC의 개정 사항이다.
+21개 kind — 아래 4표가 전부이며 행의 추가·삭제는 이 RFC의 개정 사항이다.
 공통 필드(kind/id/meta/children)는 각 행에서 생략한다. 필드 값의 문자 표기
 (표현식 문법 등)는 RFC-0002가, 실행 의미(순서·실패·재시도의 동작)는 RFC-0003이
 정의한다. D15의 "Workflow Step"은 kind 식별자로는 공백을 제거한 `WorkflowStep`
@@ -102,6 +102,7 @@ rule을 내장해 검증·OpenAPI·프런트엔드 검증 코드 자동 생성�
 | Workflow | `name` | `constraints` | WorkflowStep, Guard, Concurrency, Pipeline (순서=실행 순서) — 2026-07-31 개정: 본문에 가드·블록이 직접 올 수 있다는 문법 사실을 반영(RFC-0002 부록 A.4-⑥ 해소) |
 | Event | `name` | `payload`(Entity.fields와 동형 배열), `source`(`{ref: <노드 id>, on: create\|update\|delete}`) | (없음) |
 | Capability | `name`(예: `postgres`) | `version`(요구 버전 표기) | (없음) |
+| Refinement | `name`(PascalCase — 18종 base 이름·내장 preset 이름·같은 문서의 다른 Refinement와 충돌 금지), `base`(아래 Semantic Type 표의 18종 중 하나), `facets`(제약 객체 — 1개 이상) | (없음) | (없음) — 2026-08-04 신설(부록 A.6이 직렬화를 규정) |
 
 **Behavior** — 무엇을 하는가.
 
@@ -170,7 +171,7 @@ System). 초기셋은 도메인 타입 13종 + 원시 보조 5종(표의 "보조
 **사용자 정의 타입은 refinement만 허용한다**: 위 18종 중 하나를 `base`로 지정하고
 제약을 강화(범위·패턴·열거·길이 추가)하는 방식으로만 새 타입을 정의할 수 있다.
 새 원시 타입의 창설은 금지한다 — 임의 원시 타입은 validation rule 자동 생성
-체인을 깨뜨린다. refinement의 직렬화 표기는 부록 A(후속 태스크)가 규정한다.
+체인을 깨뜨린다. refinement의 직렬화 표기는 부록 A.6이 규정한다(2026-08-04 해소).
 
 ### 경계
 
@@ -206,13 +207,15 @@ structured output(constrained decoding)으로 직접 생성할 수 있어야 하
 스키마는 OpenAI Structured Outputs 계열이 지원하는 부분집합으로 제한한다
 (docs/RESEARCH-NOTES.md §2):
 
-- 노드 종별 판별은 `anyOf` 19분기 — `oneOf`는 사용하지 않는다(미지원).
+- 노드 종별 판별은 `anyOf` 21분기 — `oneOf`는 사용하지 않는다(미지원).
 - `default` 키워드를 사용하지 않는다(미지원). 이에 따라 `fields[].required`의
   "생략 시 참" 의미론은 스키마가 아니라 본 부록이 규정한다: **`required` 키가
   생략된 필드는 필수(true)로 해석한다.**
 - 루트는 object이며, 스키마의 객체/배열 중첩은 최심 5레벨(root → nodes →
   노드 → 필드류 배열 → 항목 객체) — 평탄 노드 테이블(D17) 덕에 조합 깊이와
-  무관하게 상한이 고정된다.
+  무관하게 상한이 고정된다. A.6의 `Refinement.facets`도 이 상한 안이다:
+  facet 값은 스칼라이거나 스칼라 배열이므로 최심 경로가 root → nodes → 노드 →
+  `facets.enum` → 항목으로 **동일하게 5레벨**이다.
 - `pattern`은 `id`·노드 참조 필드에 선언돼 있다. `jsonschema` 검증기는 이를
   강제하지만 constrained decoding 런타임은 강제하지 않을 수 있다(soft) —
   기계 수용 전에는 항상 `scripts/validate_ir.py`로 재검증한다.
@@ -222,10 +225,110 @@ structured output(constrained decoding)으로 직접 생성할 수 있어야 하
 `agent:<이름>`)만 가질 수 있고, 스키마는 `additionalProperties: false`로 이를
 강제한다. 확장 메타데이터가 필요해지면 이 RFC의 개정으로 키를 추가한다.
 
-**A.6 refinement의 직렬화 표기.** v0.1에서 `fields[].type`(payload 포함)과
-`Validation.rule`은 **문자열**이다 — Semantic Type명(예: `"Email"`) 또는
-refinement 표기 문자열을 담는다. 문자열 내부의 refinement 문법은 RFC-0002가
-소유하며, 구조화(객체형) refinement 직렬화는 Open Question으로 남긴다.
+**A.6 refinement의 직렬화 표기.** 본문 §Semantic Type 시스템이 이 항목에 위임한
+결정을 확정한다(2026-08-04). 이전 판이 Open Question으로 남겼던 "구조화(객체형)
+refinement 직렬화"를 **해소한다**: refinement는 객체로 직렬화하되, `fields[].type`
+문자열 *안*이 아니라 **독립 `Refinement` 노드**의 `facets` 필드에 담는다 —
+그래야 구조 규칙 1(평탄 노드 테이블, 인라인 중첩 금지)이 유지된다.
+
+**A.6.1 타입 이름 위치.** `fields[].type`(Event `payload` 포함)은 계속
+**문자열**이며 **타입 이름**을 담는다. 이 문자열은 노드 `id`가 아니다 — 구조
+규칙 5의 명명 참조 필드 목록에 `type`은 포함되지 않는다. 이름의 해소 순서는
+다음과 같고, 어느 쪽으로도 해소되지 않는 이름은 컴파일 오류다:
+
+1. 본문 §Semantic Type 시스템 표의 **18종 base 이름**
+2. **같은 IR 문서 안** `Refinement` 노드의 `name`
+
+`Validation.rule`은 이 규칙의 대상이 아니다 — 타입 내장 rule 참조(`semantic-types`)
+또는 refinement 제약 서술을 담는 문자열로 v0.1에서 변경 없이 유지된다.
+
+**A.6.2 `Refinement` 노드.** 필드는 셋이며 전부 필수다.
+
+| 필드 | 형식 | 규정 |
+|------|------|------|
+| `name` | PascalCase 문자열(`^[A-Z][A-Za-z0-9]*$`) | 18종 base 이름, A.6.4의 내장 preset 이름, 같은 문서의 다른 `Refinement.name`과 **충돌 금지** |
+| `base` | 18종 base 이름 중 하나 | **다른 `Refinement`를 `base`로 지정할 수 없다** — 본문이 "위 18종 중 하나를 `base`로 지정"으로 이미 한정한다. refinement의 refinement는 금지다 |
+| `facets` | 객체 — 키는 A.6.3 어휘, 값은 그 행의 값 형식 | **1개 이상**. 빈 객체는 제약을 강화하지 않으므로 refinement가 아니다 |
+
+`Refinement`는 Declaration이므로 진입 노드이며 어떤 노드의 `children`에도
+등장하지 않는다(구조 규칙 2). 자신도 `children`을 갖지 않는다.
+
+정본 조각:
+
+```json
+{
+  "kind": "Refinement",
+  "id": "refine.slug",
+  "name": "Slug",
+  "base": "Text",
+  "facets": {
+    "pattern": "^[a-z0-9-]{1,64}$",
+    "maxLength": 64
+  }
+}
+```
+
+이를 참조하는 Entity — `type`은 이름을 담는다:
+
+```json
+{
+  "kind": "Entity",
+  "id": "entity.link",
+  "name": "Link",
+  "fields": [
+    {"name": "slug", "type": "Slug"},
+    {"name": "target", "type": "Url"}
+  ]
+}
+```
+
+**A.6.3 facet 어휘.** **정확히 6종의 닫힌 열거**이며, 본문이 허용한 강화
+방향("범위·패턴·열거·길이 추가") 4계열의 전개다. 어휘의 추가·삭제는 이 RFC의
+개정 사항이지 문법의 확장이 아니다.
+
+| facet | 값 형식 | 적용 base 범주 |
+|-------|--------|---------------|
+| `minLength` | 정수 ≥ 0 | 텍스트류 |
+| `maxLength` | 정수 ≥ 0 | 텍스트류 |
+| `pattern` | 문자열(ECMA-262 정규식) | 텍스트류 |
+| `min` | 수치 | 수치류 |
+| `max` | 수치 | 수치류 |
+| `enum` | 배열(문자열 또는 수치), 1개 이상 | 텍스트류 · 수치류 |
+
+base 18종은 네 범주로 나뉘며 범주가 적용 가능한 facet을 정한다. 개별 타입
+예외는 두지 않는다.
+
+| 범주 | base (계 18) | 허용 facet |
+|------|-------------|-----------|
+| 텍스트류 (9) | UUID, Email, Password, DateTime, Phone, Currency, Html, Markdown, Text | `minLength` `maxLength` `pattern` `enum` |
+| 수치류 (2) | Integer, Decimal | `min` `max` `enum` |
+| 진리값 (1) | Boolean | 없음 — 2값으로 이미 닫혀 있다 |
+| 복합류 (6) | Money, GeoLocation, Address, Image, File, Json | 없음(v0.1) — 내부 필드를 지목할 표기가 없다(Open Questions ⑤) |
+
+**A.6.4 내장 preset.** 아래 3종은 `refine` 선언 없이 쓸 수 있다. 특권적이지
+않다 — 사용자가 같은 내용을 직접 선언한 것과 **정확히 같은 노드**로 직렬화된다.
+이름은 예약되어 재선언할 수 없다(A.6.2의 충돌 금지).
+
+| `name` | `id` | `base` | `facets` |
+|--------|------|--------|----------|
+| `Url` | `refine.url` | `Text` | `pattern` = `^https?://[^\s]+$`, `maxLength` = `2048` |
+| `Slug` | `refine.slug` | `Text` | `pattern` = `^[a-z0-9-]{1,64}$`, `maxLength` = `64` |
+| `PositiveInteger` | `refine.positive.integer` | `Integer` | `min` = `1` |
+
+**방출 규칙(emit-on-use).** 모듈 안에서 어떤 `fields[].type`이 preset 이름을
+쓰면 그 preset의 `Refinement` 노드가 **그 IR 문서에 실린다**. 쓰이지 않은
+preset은 싣지 않는다. 이로써 문서는 자기완결적이다 — 소비자가 컴파일러의 내장
+표를 따로 읽지 않고도 A.6.1의 해소를 문서 안에서 끝낼 수 있다.
+
+**A.6.5 `id` 도출.** 새 규칙을 만들지 않는다. RFC-0002 부록 A.4-⑦의 균일 규칙에
+kind 접두 **`refine`** 을 추가하는 것으로 족하다(`Url` → `refine.url`,
+`PositiveInteger` → `refine.positive.integer`).
+
+**A.6.6 OpenAPI 투영(비규범 note).** 각 `Refinement`는
+`components/schemas/<name>`의 명명 스키마가 되고, 그 이름을 쓰는 엔티티 필드는
+이를 `$ref`한다. facet 이름이 JSON Schema/OpenAPI 키워드와 같으므로 투영은
+기계적이다. 생성의 정본은 RFC-0004이며 이 문단은 계약이 아니다. `Decimal`은
+OpenAPI에서 `string`으로 인코딩되므로 그 `min`/`max` 투영은 RFC-0004가 정한다.
 
 **A.7 스키마 검증의 범위.** JSON Schema는 노드 단위 구조·타입(필수 필드,
 kind별 허용 필드, enum 값, id 형식)만 검증한다. 문서 수준 불변식 — id 유일성,
@@ -233,6 +336,23 @@ dangling 참조 금지(구조 규칙 6), 소유 유일(규칙 2), 비순환(규�
 children 허용 종별 — 은 스키마 표현 범위 밖이며, 컴파일 파이프라인의 검증
 패스(RFC-0004 계열)가 소유한다. `scripts/validate_ir.py`는 스키마 검증까지만
 수행한다.
+
+A.6이 추가한 불변식 5종도 같은 구분을 따른다. 스키마는 `Refinement` 노드의
+구조(필수 필드, `base`가 18종 안인지, facet 키가 어휘 안인지, 값의 타입,
+`name`의 PascalCase 형식)까지 검증하고, 아래는 **패스가 소유한다**:
+
+| # | 불변식 | 스키마가 못 잡는 이유 |
+|---|--------|---------------------|
+| ⓐ | `fields[].type`의 이름이 A.6.1 순서로 해소된다 | 문서 전역의 `Refinement.name` 집합을 봐야 한다 |
+| ⓑ | `facets`가 1개 이상이다 | 스키마가 쓰는 키워드 집합 밖(`minProperties` 미사용) |
+| ⓒ | `enum` 배열이 1항목 이상이다 | 같음(`minItems` 미사용) |
+| ⓓ | 각 facet이 `base`의 범주에 허용된다(A.6.3 표) | 필드 간 상호 의존이다 |
+| ⓔ | `name`이 18종·preset·타 `Refinement`와 충돌하지 않는다 | 문서 전역 유일성이다 |
+
+**이 5종은 규범적 요구다 — 패스는 위반 시 오류를 일으켜야 한다.** 다만 v0.1
+참조 구현에는 **아직 없다**: 현재 구현은 선언되지 않은 타입 이름을 조용히
+통과시킨다(2026-08-04 실측). 구현은 후속 태스크의 몫이며, 이 표는 무엇이
+누락되어 있는지를 감추지 않기 위해 여기 남긴다(plan.md D6).
 
 ## Examples
 
@@ -297,3 +417,13 @@ IR은 의도만 보존한다. `event.user.created`는 User *생성* 시 발행�
    패스, Supersede 규칙과의 관계).
 4. **노드 카탈로그 확장 절차** — 신규 kind 추가가 이 RFC의 개정인가 새 RFC로의
    Supersede인가, 그리고 실험적 kind의 네임스페이스 규칙.
+5. **복합류 base의 refinement** — 부록 A.6.3이 Money·GeoLocation·Address·
+   Image·File·Json 6종에 facet을 허용하지 않은 것은, 제약이 복합 타입의 *내부
+   필드*를 지목해야 하는데 그 표기가 없기 때문이다(`Money.amount`에 `min`을
+   거는 식). 경로 표기를 도입할지, 아니면 복합류를 영구히 제외할지는 미정이다.
+   `Decimal`이 OpenAPI에서 `string`으로 인코딩되므로 그 `min`/`max`가 어떤
+   OpenAPI 키워드로 투영되는지도 여기에 속한다(RFC-0004 소유).
+6. **refinement 체인과 facet 합성** — 부록 A.6.2는 `base`를 18종으로 한정해
+   refinement의 refinement를 금지했다. 체인을 열려면 합성 규칙 — 양쪽이
+   `maxLength`를 선언했을 때 어느 쪽이 이기는가, `pattern`은 교집합인가 대체인가 —
+   이 먼저 정해져야 한다. v0.1은 그 규칙 없이 체인만 여는 쪽을 택하지 않았다.
