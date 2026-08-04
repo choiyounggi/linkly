@@ -579,6 +579,17 @@ def _lnpl_ops(document, workflow_id, seeded=None):
     # honest alternative would be to evaluate guards statically, which the payload
     # forbids — a guard's truth is a per-run fact, and mode B specialises at
     # compile time. Reported rather than papered over.
+    #
+    # A shipped example now contains a guarded repository call: `create order` in
+    # `examples/checkout.lnpl` sits under `when stock > 0`, which is the exact
+    # read-then-create shape issue #35 names. It is safe for a reason, not by
+    # exemption — `entity.order` is create-only, so the role-based seed never
+    # writes it and no earlier call creates it, and a create against an entity
+    # nothing holds inserts rather than conflicts. So there is nothing for the
+    # skip above to lose. That is a claim about consequences, so it is checked as
+    # one: `test_no_shipped_example_has_a_guarded_repository_call_that_can_fail`
+    # re-derives, for every example and both seeds the policy can produce, whether
+    # any guarded call could fail, and goes red on the first that could.
     terminal_status = None
     has_cache_budget = _has_cache_budget(document, workflow_id)
     seeded_now = set(seeded_entities(document, workflow_id) if seeded is None
