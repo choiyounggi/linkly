@@ -9,6 +9,7 @@ Mapping (each row cites the IR that produces it):
 
     Workflow            -> one POST path  /<service-slug>/<workflow-slug>
     Entity.fields       -> the request schema, by semantic type
+    Refinement          -> a named schema; fields of that type `$ref` it
     Password field      -> `format: password`, `writeOnly: true`
     Validation effect   -> which fields the request body requires
     Security jwt        -> a bearerAuth security scheme, applied per operation
@@ -25,6 +26,19 @@ from .types import SEMANTIC_TYPES
 # a `{}` that silently accepts anything.
 TYPE_SCHEMA = {name: spec["openapi"] for name, spec in SEMANTIC_TYPES.items()}
 
+# Facet -> the JSON Schema keyword it projects to (RFC-0001 A.6.6). The names
+# already agree; only the two numeric bounds are spelled differently.
+FACET_KEYWORD = {"minLength": "minLength", "maxLength": "maxLength",
+                 "pattern": "pattern", "min": "minimum", "max": "maximum",
+                 "enum": "enum"}
+
+# `Decimal` encodes as a string, and JSON Schema applies `minimum`/`maximum`
+# and a numeric `enum` only to a number instance -- on a string schema
+# `minimum: 1` accepts "-99" and a numeric `enum` is unsatisfiable. A.6.6
+# defers this case to RFC-0004, so the facets ride the `x-` extension this file
+# already uses for IR facts OpenAPI has no keyword for (`x-retry`, ...).
+DECIMAL_FACET_KEYWORD = {"min": "x-min", "max": "x-max", "enum": "x-enum"}
+
 
 class OpenApiError(Exception):
     """Raised when the IR states something this generator cannot express."""
@@ -39,6 +53,23 @@ def _slug(name):
     return "".join(out)
 
 
+def _refinement_schema(node):
+    """A Refinement node -> its named schema: the base schema, strengthened."""
+    base = node["base"]
+    keywords = DECIMAL_FACET_KEYWORD if base == "Decimal" else FACET_KEYWORD
+    schema = dict(TYPE_SCHEMA[base])
+    for facet, value in node["facets"].items():
+        keyword = keywords[facet]
+        if keyword in schema and schema[keyword] != value:
+            raise OpenApiError(
+                "refinement %s cannot set %s to %r: base %s already fixes it "
+                "at %r, and a refinement strengthens its base rather than "
+                "replacing it" % (node["name"], keyword, value, base,
+                                  schema[keyword]))
+        schema[keyword] = value
+    return schema
+
+
 def generate(document, version="0.1.0"):
     """Semantic IR document -> an OpenAPI 3.1 dict."""
     nodes = {n["id"]: n for n in document["nodes"]}
@@ -46,8 +77,16 @@ def generate(document, version="0.1.0"):
     services = [n for n in document["nodes"] if n["kind"] == "Service"]
 
     schemas, paths = {}, {}
+    for node in document["nodes"]:
+        if node["kind"] == "Refinement":
+            schemas[node["name"]] = _refinement_schema(node)
+    refined = set(schemas)
     for entity in entities:
-        schemas[entity["name"]] = _entity_schema(entity)
+        if entity["name"] in refined:
+            raise OpenApiError(
+                "name collision in components/schemas: %r is both an entity "
+                "and a refinement" % entity["name"])
+        schemas[entity["name"]] = _entity_schema(entity, refined)
 
     uses_bearer = False
     for service in services:
@@ -76,10 +115,17 @@ def generate(document, version="0.1.0"):
     return spec
 
 
-def _entity_schema(entity):
+def _entity_schema(entity, refined):
     props, required = {}, []
     for field in entity.get("fields", []):
         tname = field["type"]
+        if tname in refined:
+            # 3.1 honours keywords beside a `$ref`, but the IR states nothing
+            # about the field beyond its type, so the reference stands alone.
+            props[field["name"]] = {"$ref": "#/components/schemas/%s" % tname}
+            if field.get("required", True):
+                required.append(field["name"])
+            continue
         if tname not in TYPE_SCHEMA:
             raise OpenApiError("no OpenAPI mapping for semantic type %r "
                                "(field %s.%s)" % (tname, entity["name"], field["name"]))
