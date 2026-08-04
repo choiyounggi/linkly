@@ -19,6 +19,7 @@ Manifest shape:
 
 from .interp import Interpreter, RunError, sample_payload
 from .lexer import COMPARATORS
+from .repo_policy import default_rows
 
 SPEC_VERSION = "0.1"
 
@@ -155,7 +156,7 @@ def run_manifest(manifest, document):
     for case in manifest["cases"]:
         payload = _payload_from_given(case["given"], entity)
         empty_repo = any(g == "empty repository" for g in case["given"])
-        rows = {} if empty_repo else ({entity["id"]: dict(payload)} if entity else {})
+        rows = {} if empty_repo else default_rows(document, case["workflow"], payload)
         interp = Interpreter(document, repo_rows=rows)
         try:
             result = interp.run_workflow(case["workflow"], payload)

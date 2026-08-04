@@ -22,6 +22,7 @@ import unittest
 from lnpl import backend, differential
 from lnpl.lower import lower
 from lnpl.parser import parse
+from lnpl.repo_policy import default_rows
 from tests.fixtures import UNTIL_COUNTER as SRC
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,6 +39,18 @@ def _rounds(observed):
     return sum(1 for name in observed["order"] if "Loop" in name)
 
 
+def _rows(payload):
+    """A seeded store in the shape `FakeRepository` actually reads.
+
+    These seeds were written as `{entity_id: row}` before Wave 1 keyed each
+    entity's table (`{entity_id: {row_key: row}}`, issue #35). `UNTIL_COUNTER`
+    has no `RepositoryCall`, so the stale shape never mattered here — it would
+    have mattered the moment someone added one, as a row the repository could
+    not find. Built from `repo_policy` so it tracks the one seeding rule.
+    """
+    return default_rows(lower(parse(SRC), "t").to_document(), "wf.w", payload)
+
+
 @NEEDS_TOOLS
 class TestUntilModeEquivalence(unittest.TestCase):
     def setUp(self):
@@ -48,7 +61,7 @@ class TestUntilModeEquivalence(unittest.TestCase):
     def _both(self, counter):
         payload = {"counter": counter}
         a = differential.observe_mode_a(self.doc, "wf.w", payload,
-                                       {"entity.workflow": dict(payload)})
+                                       _rows(payload))
         b = differential.observe_mode_b(self.doc, "wf.w", self.workdir,
                                         payload=payload)
         return _rounds(a), _rounds(b)
@@ -81,7 +94,7 @@ class TestUntilModeEquivalence(unittest.TestCase):
         """The gap the golden scenario hid: verify() must go green here too."""
         payload = {"counter": 100}
         ok, report = differential.verify(
-            self.doc, "wf.w", payload, {"entity.workflow": dict(payload)},
+            self.doc, "wf.w", payload, _rows(payload),
             self.workdir)
         self.assertTrue(ok, "\n".join(report))
 
@@ -89,7 +102,7 @@ class TestUntilModeEquivalence(unittest.TestCase):
         """Control: the previously-passing payload must not regress."""
         payload = {"counter": 0}
         ok, report = differential.verify(
-            self.doc, "wf.w", payload, {"entity.workflow": dict(payload)},
+            self.doc, "wf.w", payload, _rows(payload),
             self.workdir)
         self.assertTrue(ok, "\n".join(report))
 

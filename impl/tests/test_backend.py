@@ -12,9 +12,13 @@ import tempfile
 import unittest
 
 from lnpl import backend, differential
+from lnpl.interp import sample_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
-from tests.fixtures import GUARDED, UNTIL_COUNTER, guarded_source
+from lnpl.repo_policy import (READ_OPS, default_rows, repository_calls,
+                              seeded_entities)
+from tests.fixtures import (CHECKOUT_LNPL, GUARDED, UNTIL_COUNTER,
+                            guarded_source)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN_IR = os.path.join(REPO, "examples", "login.lir.json")
@@ -34,8 +38,11 @@ def golden():
         return json.load(fh)
 
 
-def rows_for(doc):
-    return {n["id"]: dict(PAYLOAD) for n in doc["nodes"] if n["kind"] == "Entity"}
+# Seeds come from `repo_policy.default_rows(doc, workflow, payload)` — the one
+# seeding rule (issue #35). It is called with the payload each run actually uses,
+# never with the `PAYLOAD` constant by default: `row_key` derives from the run's
+# payload, so seeding a `{}` run from `PAYLOAD` files the row under
+# `entity.user#3f25…` while the read looks for `entity.user#-`.
 
 
 class TestMlirEmission(unittest.TestCase):
@@ -125,20 +132,23 @@ class TestDifferential(unittest.TestCase):
     def test_the_two_modes_are_equivalent_on_the_golden_scenario(self):
         doc = golden()
         ok, report = differential.verify(doc, "wf.login", PAYLOAD,
-                                         rows_for(doc), self.workdir)
+                                         default_rows(doc, "wf.login", PAYLOAD),
+                                         self.workdir)
         self.assertTrue(ok, "\n".join(report))
         self.assertIn("differential: EQUIVALENT", report[-1])
 
     def test_all_four_observable_classes_are_checked(self):
         doc = golden()
         _ok, report = differential.verify(doc, "wf.login", PAYLOAD,
-                                          rows_for(doc), self.workdir)
+                                          default_rows(doc, "wf.login", PAYLOAD),
+                                          self.workdir)
         for n in ("1/4", "2/4", "3/4", "4/4"):
             self.assertTrue(any(n in line for line in report), n)
 
     def test_secrets_do_not_reach_either_mode_output(self):
         doc = golden()
-        a = differential.observe_mode_a(doc, "wf.login", PAYLOAD, rows_for(doc))
+        a = differential.observe_mode_a(doc, "wf.login", PAYLOAD,
+                                        default_rows(doc, "wf.login", PAYLOAD))
         b = differential.observe_mode_b(doc, "wf.login", self.workdir)
         self.assertNotIn("s3cret", a["text"])
         self.assertNotIn("s3cret", b["text"])
@@ -153,7 +163,7 @@ class TestDifferential(unittest.TestCase):
         doc = lower(parse(GUARDED), "t").to_document()
         # Empty payload: token is missing, so 'token missing' is true, step runs
         ok, report = differential.verify(
-            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+            doc, "wf.w", {}, default_rows(doc, "wf.w", {}), self.workdir)
         self.assertTrue(ok, "\n".join(report))
         # Verify the guarded step actually ran
         b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
@@ -170,7 +180,7 @@ class TestDifferential(unittest.TestCase):
         payload = {"token": "present"}  # token is present
         # With token present, 'token missing' is false, step is skipped
         ok, report = differential.verify(
-            doc, "wf.w", payload, {"entity.user": dict(PAYLOAD)}, self.workdir)
+            doc, "wf.w", payload, default_rows(doc, "wf.w", payload), self.workdir)
         self.assertTrue(ok, "\n".join(report))
         # Verify the guarded step was skipped (no cache effect)
         b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload=payload)
@@ -224,7 +234,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(GUARDED), "t").to_document()
         ok, report = self._verify(doc, "wf.w", {},
-                                  {"entity.user": dict(PAYLOAD)})
+                                  default_rows(doc, "wf.w", {}))
         self.assertTrue(ok, "\n".join(report))
         # And the guarded step really did run — otherwise the assertion above
         # would hold for a workflow that skipped the effect entirely.
@@ -233,7 +243,8 @@ class TestDivergenceIsDetected(unittest.TestCase):
 
     def test_reordered_backend_is_reported_as_divergent(self):
         doc = golden()
-        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        rows = default_rows(doc, "wf.login", PAYLOAD)
+        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
 
         original = self.original
@@ -244,13 +255,14 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = reversed_order
-        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertFalse(ok, "a reversed backend must not compare as equivalent")
         self.assertTrue(any("FAIL 1/4" in line for line in report), report)
 
     def test_dropped_effect_in_the_backend_is_reported_as_divergent(self):
         doc = golden()
-        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        rows = default_rows(doc, "wf.login", PAYLOAD)
+        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
 
         original = self.original
@@ -263,7 +275,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = without_effects
-        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertFalse(ok)
         self.assertTrue(any("FAIL 3/4" in line for line in report), report)
 
@@ -276,7 +288,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(GUARDED), "t").to_document()
         payload = dict(PAYLOAD, token="present")
-        rows = {"entity.user": dict(PAYLOAD)}
+        rows = default_rows(doc, "wf.w", payload)
 
         ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
@@ -307,7 +319,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(UNTIL_COUNTER), "t").to_document()
         payload = {"counter": 100}
-        rows = {"entity.workflow": dict(payload)}
+        rows = default_rows(doc, "wf.w", payload)
 
         ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
@@ -336,7 +348,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(UNTIL_COUNTER), "t").to_document()
         payload = {"counter": 0}
-        rows = {"entity.workflow": dict(payload)}
+        rows = default_rows(doc, "wf.w", payload)
 
         ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
@@ -417,7 +429,7 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         `status failed`.
         """
         doc = self._doc(NO_TTL_CACHE)
-        rows = {"entity.user": dict(PAYLOAD)}
+        rows = default_rows(doc, "wf.w", {})
         ok, report = differential.verify(doc, "wf.w", {}, rows, self.workdir)
         self.assertTrue(ok, "\n".join(report))
         self.assertTrue(any("PASS 2/4" in line for line in report), report)
@@ -432,13 +444,15 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         is the only variable, and now BOTH modes track it (mode B used to complete
         the budget-less run regardless).
         """
-        rows = {"entity.user": dict(PAYLOAD)}
-        a_without = differential.observe_mode_a(self._doc(NO_TTL_CACHE), "wf.w", {}, rows)
-        a_with = differential.observe_mode_a(self._doc(TTL_CACHE), "wf.w", {}, rows)
+        no_ttl, ttl = self._doc(NO_TTL_CACHE), self._doc(TTL_CACHE)
+        a_without = differential.observe_mode_a(
+            no_ttl, "wf.w", {}, default_rows(no_ttl, "wf.w", {}))
+        a_with = differential.observe_mode_a(
+            ttl, "wf.w", {}, default_rows(ttl, "wf.w", {}))
         b_without = differential.observe_mode_b(
-            self._doc(NO_TTL_CACHE), "wf.w", self.workdir, payload={})
+            no_ttl, "wf.w", self.workdir, payload={})
         b_with = differential.observe_mode_b(
-            self._doc(TTL_CACHE), "wf.w", self.workdir, payload={})
+            ttl, "wf.w", self.workdir, payload={})
         self.assertIn("status failed", a_without["text"])
         self.assertIn("status completed", a_with["text"])
         self.assertIn("status failed", b_without["text"])
@@ -448,7 +462,7 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         """Control. Without this, the two tests above could be about anything."""
         doc = self._doc(TTL_CACHE)
         ok, report = differential.verify(
-            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+            doc, "wf.w", {}, default_rows(doc, "wf.w", {}), self.workdir)
         self.assertTrue(ok, "\n".join(report))
 
     def test_effects_after_the_unbudgeted_set_are_not_emitted(self):
@@ -467,7 +481,7 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         doc["nodes"].append({"kind": "Authorization",
                              "id": step["id"] + ".after", "requirement": "x"})
         step["children"] = list(step.get("children", [])) + [step["id"] + ".after"]
-        rows = {"entity.user": dict(PAYLOAD)}
+        rows = default_rows(doc, "wf.w", {})
         a = differential.observe_mode_a(doc, "wf.w", {}, rows)
         b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
         self.assertNotIn("Authorization", a["effects"].get(step["name"], []))
@@ -578,6 +592,757 @@ class TestDiffCliWiring(unittest.TestCase):
             self.assertEqual(cli.cmd_diff(self._args(payload=path)), 0)
         finally:
             os.unlink(path)
+
+
+# --- issue #35 Wave 2: mode B's repository-outcome derivation -----------------
+#
+# Two-entity fixtures, inline: `examples/checkout.*` is t3's this wave, so these
+# cannot depend on it. `Product` is READ and `Order` is only CREATED — the two
+# roles `repo_policy`'s role-based seed tells apart, and the pair a single-entity
+# example can never exercise.
+
+READ_THEN_CREATE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        total Money
+service CheckoutService
+workflow Checkout
+    find product
+    create order
+"""
+
+# Read and create the SAME entity. The seed rule seeds what the workflow reads,
+# so `entity.product` starts with a row and the create conflicts — a conflict
+# reachable under the DEFAULT policy, with no extra seed input.
+SAME_ENTITY = READ_THEN_CREATE.replace("    create order\n",
+                                       "    create product\n")
+
+# No RepositoryCall at all — the zero-call boundary.
+NO_REPO = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+service CheckoutService
+workflow Checkout
+    validate product
+"""
+
+# Create-only: nothing is read, so nothing is seeded and the create inserts.
+CREATE_ONLY = """
+capability postgres
+entity Order
+    field
+        id UUID
+        total Money
+service CheckoutService
+workflow Checkout
+    create order
+"""
+
+
+def checkout_doc(src):
+    return lower(parse(src), "checkout").to_document()
+
+
+def op_names(ops):
+    return [op["name"] for op in ops]
+
+
+class TestModeBDerivesRepositoryOutcomes(unittest.TestCase):
+    """Mode B reaches the repository outcome statically (issue #35).
+
+    No toolchain: these read the op stream `_lnpl_ops` builds, which is where the
+    derivation lives. Gating them on the toolchain would let the whole class skip
+    silently on a machine without LLVM — the failure mode that hid this bug.
+    """
+
+    def test_read_then_create_completes_under_the_default_seed(self):
+        attrs, ops = backend._lnpl_ops(checkout_doc(READ_THEN_CREATE),
+                                       "wf.checkout")
+        self.assertEqual(op_names(ops), ["find product", "create order"])
+        self.assertNotIn("lnpl.terminal_status", attrs)
+        self.assertEqual([len(op["effects"]) for op in ops], [1, 1])
+
+    def test_an_unseeded_read_fails_and_truncates_at_that_step(self):
+        attrs, ops = backend._lnpl_ops(checkout_doc(READ_THEN_CREATE),
+                                       "wf.checkout", seeded=frozenset())
+        self.assertEqual(op_names(ops), ["find product"])
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        # Inclusive of the failing effect, exclusive of everything after it.
+        self.assertEqual([e["kind"] for e in ops[0]["effects"]],
+                         ["RepositoryCall"])
+
+    def test_a_create_on_a_seeded_entity_conflicts(self):
+        attrs, ops = backend._lnpl_ops(checkout_doc(SAME_ENTITY), "wf.checkout")
+        self.assertEqual(op_names(ops), ["find product", "create product"])
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        self.assertEqual([e["kind"] for e in ops[-1]["effects"]],
+                         ["RepositoryCall"])
+
+    def test_an_earlier_create_makes_a_later_create_conflict(self):
+        """The `created` accumulation, not just the seed set: `create order`
+        twice conflicts on the second, because the first inserted the only key
+        this run can address (repo_policy's single-key invariant)."""
+        src = READ_THEN_CREATE.replace("    create order\n",
+                                       "    create order\n    create order\n")
+        attrs, ops = backend._lnpl_ops(checkout_doc(src), "wf.checkout")
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        self.assertEqual(len(op_names(ops)), 3)
+
+    def test_a_workflow_with_no_repository_call_is_unaffected(self):
+        attrs, ops = backend._lnpl_ops(checkout_doc(NO_REPO), "wf.checkout",
+                                       seeded=frozenset())
+        self.assertEqual(op_names(ops), ["validate product"])
+        self.assertNotIn("lnpl.terminal_status", attrs)
+
+    def test_a_create_only_workflow_inserts_rather_than_conflicting(self):
+        """The boundary the issue is about: an entity the workflow only creates
+        is not seeded, so the create inserts. Seeding it — the pre-Wave-1
+        behavior — made this `failed` under every seed."""
+        attrs, ops = backend._lnpl_ops(checkout_doc(CREATE_ONLY), "wf.checkout")
+        self.assertEqual(op_names(ops), ["create order"])
+        self.assertNotIn("lnpl.terminal_status", attrs)
+
+    def test_a_guarded_repository_call_never_forces_a_failure(self):
+        """D8: a guarded effect may not be reached, so it must not fail the run
+        statically. `when total missing` in front of the read means mode B leaves
+        it alone even with nothing seeded."""
+        src = READ_THEN_CREATE.replace("    find product\n",
+                                       "    when total missing\n    find product\n")
+        attrs, _ops = backend._lnpl_ops(checkout_doc(src), "wf.checkout",
+                                        seeded=frozenset())
+        self.assertNotIn("lnpl.terminal_status", attrs)
+
+    def test_the_derived_outcome_matches_mode_a_on_a_read_miss(self):
+        """The derivation is only worth anything if it agrees with the mode it is
+        derived to match. Mode A is run here with an empty store — the same seed
+        condition mode B is given — and its trace is compared to mode B's ops."""
+        d = checkout_doc(READ_THEN_CREATE)
+        payload = sample_payload([n for n in d["nodes"] if n["kind"] == "Entity"])
+        a = differential.observe_mode_a(d, "wf.checkout", payload, {})
+        attrs, ops = backend._lnpl_ops(d, "wf.checkout", seeded=frozenset())
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(op_names(ops), a["order"])
+        self.assertEqual({op["name"]: [e["kind"] for e in op["effects"]]
+                          for op in ops}, a["effects"])
+
+
+RETRY_TMPL = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        total Money
+service CheckoutService
+%(policy)s
+workflow Checkout
+%(lead)s    find product
+    create order
+"""
+
+
+def retry_doc(retry=None, timeout=None, lead=0):
+    rules = []
+    if retry is not None:
+        rules.append("        retry %d" % retry)
+    if timeout is not None:
+        rules.append("        timeout %s" % timeout)
+    policy = "    policy\n" + "\n".join(rules) + "\n" if rules else ""
+    return checkout_doc(RETRY_TMPL % {
+        "policy": policy,
+        "lead": "".join("    validate product\n" for _ in range(lead))})
+
+
+# `(timeout, lead)` cells where mode A's workflow deadline is exhausted before the
+# repository call is reached — 20 lead steps cost 100ms, the whole `100ms` budget.
+# Mode B models no workflow timeout (a gap that predates this task, pinned by
+# `test_a_workflow_deadline_stops_mode_a_before_the_repository_call`), so those
+# cells have no attempt count to compare. Listed, not detected: an exclusion the
+# sweep discovered for itself could grow to cover a real regression.
+DEADLINE_STARVED = {("100ms", 20)}
+
+
+class TestModeBDerivesRetryAttempts(unittest.TestCase):
+    """A retried failure repeats its effect span, and mode B must repeat it too.
+
+    `interp._run_step` re-runs every effect the step owns on each attempt, and
+    `_run_effect` appends the child span BEFORE the raise — so mode A's failing
+    step holds one copy of the failing prefix per attempt. RFC-0004 §실행 모드와
+    semantic equivalence puts that inside the contract twice: observable 2 is
+    "정책 집행 결과 — retry 판정" and observable 3 is "관측성 신호 — trace 구조
+    (step = span)". Emitting one copy makes `lnpl diff` report FAIL 3/4 on every
+    retried repository failure.
+
+    The attempt count is not `retry + 1`: `_retryable` also gates on the remaining
+    deadline, so the backoff schedule and the clock both matter. The sweep below
+    is the anti-drift device for the mirrored copy of that model — it compares the
+    derivation against mode A rather than against a restatement of the rule.
+    """
+
+    def _derived(self, document, seeded=frozenset()):
+        _attrs, ops = backend._lnpl_ops(document, "wf.checkout", seeded=seeded)
+        return len(ops[-1]["effects"])
+
+    def _observed(self, document, step, seeded_rows=None):
+        payload = sample_payload([n for n in document["nodes"]
+                                  if n["kind"] == "Entity"])
+        rows = (default_rows(document, "wf.checkout", payload)
+                if seeded_rows == "default" else {})
+        return len(differential.observe_mode_a(
+            document, "wf.checkout", payload, rows)["effects"][step])
+
+    def test_derived_attempts_match_mode_a_across_the_policy_matrix(self):
+        compared = 0
+        for retry in (None, 0, 1, 3, 5):
+            for timeout in (None, "3s", "1s", "500ms", "100ms"):
+                for lead in (0, 2, 20):
+                    if (timeout, lead) in DEADLINE_STARVED:
+                        continue
+                    with self.subTest(retry=retry, timeout=timeout, lead=lead):
+                        d = retry_doc(retry=retry, timeout=timeout, lead=lead)
+                        self.assertEqual(self._derived(d),
+                                         self._observed(d, "find product"))
+                    compared += 1
+        # A sweep that silently stopped sweeping would pass. Pin the cell count so
+        # the exclusion list cannot quietly widen.
+        self.assertEqual(compared, 5 * 5 * 3 - len(DEADLINE_STARVED) * 5)
+
+    def test_a_workflow_deadline_stops_mode_a_before_the_repository_call(self):
+        """Characterises a gap this task does NOT close, and validates the
+        exclusion above rather than trusting it.
+
+        Mode B models no workflow `timeout`: `_lnpl_ops` emits every op regardless
+        of how much of the budget the earlier steps consumed. Mode A stops the run
+        the moment the deadline is exhausted, which for these cells happens before
+        the repository call is ever reached — so there is no attempt count to
+        compare. The two modes still disagree on observable 1 here, exactly as they
+        did before this task; closing it is the timeout analogue of what issue #9
+        did for the cache budget, and belongs to its own change.
+
+        This test goes red the day mode B learns to model the deadline. That is the
+        point: it should, and whoever does it should delete this.
+        """
+        for timeout, lead in sorted(DEADLINE_STARVED):
+            with self.subTest(timeout=timeout, lead=lead):
+                d = retry_doc(retry=3, timeout=timeout, lead=lead)
+                payload = sample_payload([n for n in d["nodes"]
+                                          if n["kind"] == "Entity"])
+                a = differential.observe_mode_a(d, "wf.checkout", payload, {})
+                _attrs, ops = backend._lnpl_ops(d, "wf.checkout",
+                                                seeded=frozenset())
+                self.assertEqual(a["status"], "failed")
+                self.assertNotIn("find product", a["effects"])
+                self.assertIn("find product", [op["name"] for op in ops])
+                self.assertLess(len(a["order"]), len(ops))
+
+    def test_retry_three_without_a_deadline_gives_four_attempts(self):
+        self.assertEqual(self._derived(retry_doc(retry=3)), 4)
+
+    def test_no_policy_and_retry_zero_both_give_a_single_attempt(self):
+        self.assertEqual(self._derived(retry_doc()), 1)
+        self.assertEqual(self._derived(retry_doc(retry=0)), 1)
+
+    def test_a_tight_deadline_cuts_the_attempts_short(self):
+        """Boundary: the deadline gate, not the attempt cap, is what stops it."""
+        self.assertEqual(self._derived(retry_doc(retry=3, timeout="500ms")), 3)
+        self.assertEqual(self._derived(retry_doc(retry=3, timeout="100ms")), 1)
+
+    def test_the_attempt_count_depends_on_where_the_failure_happens(self):
+        """The case a `retry + 1` model gets wrong, and a clock-less deadline
+        model gets wrong too: same policy, different position in the workflow.
+        Each preceding step advances the interpreter clock 5ms, which moves the
+        failure across a backoff boundary."""
+        near = retry_doc(retry=5, timeout="400ms", lead=0)
+        far = retry_doc(retry=5, timeout="400ms", lead=20)
+        self.assertEqual(self._derived(near), 3)
+        self.assertEqual(self._derived(far), 2)
+        self.assertEqual(self._derived(near), self._observed(near, "find product"))
+        self.assertEqual(self._derived(far), self._observed(far, "find product"))
+
+    def test_a_create_conflict_is_never_retried(self):
+        """RFC-0003 §멱등 판정: `create` is non-idempotent, so the retry gate
+        refuses it however large the budget. One attempt, not four."""
+        src = SAME_ENTITY.replace("service CheckoutService\n",
+                                  "service CheckoutService\n    policy\n"
+                                  "        retry 3\n")
+        d = checkout_doc(src)
+        _attrs, ops = backend._lnpl_ops(d, "wf.checkout")
+        self.assertEqual(len(ops[-1]["effects"]), 1)
+        self.assertEqual(self._observed(d, "create product", "default"), 1)
+
+    def test_a_retried_cache_failure_repeats_without_the_read_miss_cost(self):
+        """The cache path shares the scan, so it shares the multiplicity. Its
+        per-attempt clock cost differs from a read miss (`Cache.set` raises
+        without advancing), which only a case with a retry budget can catch."""
+        src = NO_TTL_CACHE.replace("service S\n",
+                                   "service S\n    policy\n        retry 2\n")
+        d = lower(parse(src), "t").to_document()
+        _attrs, ops = backend._lnpl_ops(d, "wf.w")
+        payload = {}
+        observed = differential.observe_mode_a(
+            d, "wf.w", payload, default_rows(d, "wf.w", payload))["effects"]
+        self.assertEqual(len(ops[-1]["effects"]), 3)
+        self.assertEqual(len(ops[-1]["effects"]), len(observed["cache user"]))
+
+
+# The shape t3's `examples/checkout.lnpl` lands with this wave: `retry 3`, an
+# UNGUARDED read, a GUARDED create. Kept inline — t3 is the single producer of
+# `examples/checkout.*` and this file must not depend on it.
+CHECKOUT_LIKE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        total Money
+service CheckoutService
+    policy
+        retry 3
+workflow Checkout
+    find product
+    when stock > 0
+    create order
+"""
+
+
+@NEEDS_TOOLS
+class TestModeBSeedChannel(unittest.TestCase):
+    """The seed condition reaches both modes, and they agree on the outcome.
+
+    `seeded` carries the seed *condition* — which entities start with a row — not
+    a materialised store. Mode A is handed the same condition as rows and mode B
+    derives its own answer from the set, so neither reads the other's result.
+    """
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-seed-",
+                                        dir=os.path.join(REPO, ".claude", "tmp"))
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _payload(self, document):
+        return sample_payload([n for n in document["nodes"]
+                               if n["kind"] == "Entity"])
+
+    def test_read_then_create_is_equivalent_under_the_default_seed(self):
+        """The issue: this workflow could not succeed under any seed. It now
+        completes, and the two modes agree that it does."""
+        d = checkout_doc(READ_THEN_CREATE)
+        payload = self._payload(d)
+        ok, report = differential.verify(
+            d, "wf.checkout", payload,
+            default_rows(d, "wf.checkout", payload), self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        self.assertIn("differential: EQUIVALENT", report[-1])
+        self.assertTrue(any("PASS 2/4" in line for line in report), report)
+        a = differential.observe_mode_a(
+            d, "wf.checkout", payload, default_rows(d, "wf.checkout", payload))
+        self.assertEqual(a["status"], "completed")
+
+    def test_an_unseeded_read_makes_both_modes_fail_the_same_way(self):
+        """EQUIVALENT alone could be any agreeing pair, so this proves they agree
+        by FAILING: same status, same order, same per-step effects."""
+        d = checkout_doc(READ_THEN_CREATE)
+        payload = self._payload(d)
+        ok, report = differential.verify(d, "wf.checkout", payload, {},
+                                         self.workdir, seeded=frozenset())
+        self.assertTrue(ok, "\n".join(report))
+        a = differential.observe_mode_a(d, "wf.checkout", payload, {})
+        b = differential.observe_mode_b(d, "wf.checkout", self.workdir,
+                                        payload=payload, seeded=frozenset())
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(b["status"], "failed")
+        self.assertEqual(a["order"], ["find product"])
+        self.assertEqual(b["order"], a["order"])
+        self.assertEqual(b["effects"], a["effects"])
+
+    def test_a_create_conflict_makes_both_modes_fail_at_the_create(self):
+        d = checkout_doc(SAME_ENTITY)
+        payload = self._payload(d)
+        rows = default_rows(d, "wf.checkout", payload)
+        ok, report = differential.verify(d, "wf.checkout", payload, rows,
+                                         self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        a = differential.observe_mode_a(d, "wf.checkout", payload, rows)
+        b = differential.observe_mode_b(d, "wf.checkout", self.workdir,
+                                        payload=payload)
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(b["status"], "failed")
+        self.assertEqual(a["order"][-1], "create product")
+        self.assertEqual(b["order"], a["order"])
+        self.assertEqual(b["effects"], a["effects"])
+
+    def test_the_checkout_shape_agrees_seeded_and_unseeded(self):
+        """The cross-task path: `retry 3`, unguarded read, guarded create — what
+        `lnpl diff` and `lnpl diff --no-row` will run against t3's example. The
+        unseeded run must truncate at the read carrying FOUR effects, one per
+        attempt, which is the case a single-attempt model gets wrong."""
+        d = checkout_doc(CHECKOUT_LIKE)
+        payload = self._payload(d)
+
+        ok, report = differential.verify(
+            d, "wf.checkout", payload,
+            default_rows(d, "wf.checkout", payload), self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+
+        ok, report = differential.verify(d, "wf.checkout", payload, {},
+                                         self.workdir, seeded=frozenset())
+        self.assertTrue(ok, "\n".join(report))
+        b = differential.observe_mode_b(d, "wf.checkout", self.workdir,
+                                        payload=payload, seeded=frozenset())
+        self.assertEqual(b["status"], "failed")
+        self.assertEqual(b["order"], ["find product"])
+        self.assertEqual(b["effects"]["find product"], ["RepositoryCall"] * 4)
+
+    def test_a_seed_that_contradicts_the_rows_is_refused(self):
+        """Two copies of one fact own a synchronization bug. Mode A's rows and
+        mode B's seed condition disagreeing is a wiring mistake, and left silent
+        it would be indistinguishable from a real divergence — the defect issue
+        #12 removed for the skip flag."""
+        d = checkout_doc(READ_THEN_CREATE)
+        payload = self._payload(d)
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            differential.verify(d, "wf.checkout", payload,
+                                default_rows(d, "wf.checkout", payload),
+                                self.workdir, seeded=frozenset())
+        self.assertIn("entity.product", str(ctx.exception))
+
+    def test_the_golden_scenario_does_not_regress(self):
+        """Control. login reads `entity.user`, so the default seed keeps it
+        completing exactly as before the repository derivation existed."""
+        doc = golden()
+        ok, report = differential.verify(
+            doc, "wf.login", PAYLOAD,
+            default_rows(doc, "wf.login", PAYLOAD), self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        self.assertIn("differential: EQUIVALENT", report[-1])
+
+
+@NEEDS_TOOLS
+class TestRepositoryDivergenceIsDetected(unittest.TestCase):
+    """The repository derivation must not make the differential unable to fail.
+
+    A derivation that quietly copied mode A's answer would turn every comparison
+    green, which is worse than the bug it replaced: `lnpl diff` would become
+    structurally incapable of reporting DIVERGENT. Each case here follows the
+    established order — require EQUIVALENT on the unmutated workflow FIRST, so a
+    later red is attributable to the fault rather than to a standing divergence,
+    then apply exactly one mode-B-only fault and require a specific FAIL class.
+    """
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-repodiv-",
+                                        dir=os.path.join(REPO, ".claude", "tmp"))
+        self.doc = checkout_doc(READ_THEN_CREATE)
+        self.payload = sample_payload([n for n in self.doc["nodes"]
+                                       if n["kind"] == "Entity"])
+        self.rows = default_rows(self.doc, "wf.checkout", self.payload)
+        self.original_steps = backend._steps_in_order
+        self.original_read_ops = backend.READ_OPS
+        self.original_attempts = backend._failure_attempts
+
+    def tearDown(self):
+        backend._steps_in_order = self.original_steps
+        backend.READ_OPS = self.original_read_ops
+        backend._failure_attempts = self.original_attempts
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _verify(self, rows=None, seeded=None):
+        return differential.verify(self.doc, "wf.checkout", self.payload,
+                                   self.rows if rows is None else rows,
+                                   self.workdir, seeded=seeded)
+
+    def test_mode_b_missing_the_read_failure_is_reported_as_divergent(self):
+        """The fault this feature could ship: mode B failing to notice that a
+        read has nothing to find. Mode A still fails; mode B completes; the
+        comparison must say so on the policy-outcome axis."""
+        ok, report = self._verify(rows={}, seeded=frozenset())
+        self.assertTrue(ok, "baseline must be equivalent before the fault: %s"
+                            % "\n".join(report))
+
+        backend.READ_OPS = ()      # mode B stops recognising reads
+
+        ok, report = self._verify(rows={}, seeded=frozenset())
+        self.assertFalse(ok, "mode B missing the read failure must diverge")
+        self.assertTrue(any("FAIL 2/4" in line for line in report), report)
+
+    def test_mode_b_losing_the_attempt_count_is_reported_as_divergent(self):
+        """The other half of the derivation, and the one a plausible-looking
+        implementation gets wrong: the failing step's effects must repeat once
+        per attempt. Collapsing them to one is invisible on a workflow without a
+        retry budget, which is why this runs on `retry 3`."""
+        doc = retry_doc(retry=3)
+        payload = sample_payload([n for n in doc["nodes"]
+                                  if n["kind"] == "Entity"])
+
+        ok, report = differential.verify(doc, "wf.checkout", payload, {},
+                                         self.workdir, seeded=frozenset())
+        self.assertTrue(ok, "baseline must be equivalent before the fault: %s"
+                            % "\n".join(report))
+
+        backend._failure_attempts = lambda *args, **kwargs: 1
+
+        ok, report = differential.verify(doc, "wf.checkout", payload, {},
+                                         self.workdir, seeded=frozenset())
+        self.assertFalse(ok, "mode B emitting one attempt where mode A made "
+                             "four must diverge")
+        self.assertTrue(any("FAIL 3/4" in line for line in report), report)
+
+    def test_a_reordered_backend_still_diverges_on_a_repository_workflow(self):
+        """The generic control, run on the workflow this task added. The earlier
+        reorder case uses the golden scenario, which has no create at all."""
+        ok, report = self._verify()
+        self.assertTrue(ok, "baseline must be equivalent before the fault: %s"
+                            % "\n".join(report))
+
+        original = self.original_steps
+
+        def reversed_order(nodes, ids, out):
+            out.extend(list(reversed(original(nodes, ids, []))))
+            return out
+
+        backend._steps_in_order = reversed_order
+        ok, report = self._verify()
+        self.assertFalse(ok, "a reordered mode B must diverge")
+        self.assertTrue(any("FAIL 1/4" in line for line in report), report)
+
+    def test_effects_after_the_failing_repository_call_are_not_emitted(self):
+        """The boundary a one-effect-per-step workflow cannot test.
+
+        The grammar gives each `WorkflowStep` a single effect, so a multi-effect
+        step is built here directly — an `Authorization` appended AFTER the read.
+        Mode A's failing step holds the effects up to and INCLUDING the read and
+        none after it, once per attempt; a truncation off by one in either
+        direction shows up as a different effect list. `retry 3` makes this cover
+        the multiplicity and the cut at the same time.
+        """
+        d = retry_doc(retry=3)
+        read = next(n for n in d["nodes"]
+                    if n["kind"] == "RepositoryCall" and n["operation"] == "read")
+        step = next(n for n in d["nodes"]
+                    if n["kind"] == "WorkflowStep"
+                    and read["id"] in n.get("children", []))
+        d["nodes"].append({"kind": "Authorization", "id": step["id"] + ".after",
+                           "requirement": "x"})
+        step["children"] = list(step["children"]) + [step["id"] + ".after"]
+
+        payload = sample_payload([n for n in d["nodes"] if n["kind"] == "Entity"])
+        a = differential.observe_mode_a(d, "wf.checkout", payload, {})
+        b = differential.observe_mode_b(d, "wf.checkout", self.workdir,
+                                        payload=payload, seeded=frozenset())
+        self.assertEqual(a["effects"][step["name"]], ["RepositoryCall"] * 4)
+        self.assertEqual(b["effects"], a["effects"])
+        self.assertNotIn("Authorization", b["effects"][step["name"]])
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(b["status"], "failed")
+
+
+# A guarded repository call that CAN fail, in both directions the rule has.
+# Built from the sources above rather than written out again, so the shape being
+# guarded stays the shape those tests already pin.
+#
+# `SAME_ENTITY` reads and creates `entity.product`, so the seed writes it and the
+# create conflicts; guarding that create is the case mode B cannot reproduce.
+GUARDED_CONFLICT = SAME_ENTITY.replace(
+    "    create product\n", "    when stock > 0\n    create product\n")
+# The read side: guarding `find product` makes it a miss whenever the seed is
+# empty, which is the seed `--no-row` produces.
+GUARDED_MISS = READ_THEN_CREATE.replace(
+    "    find product\n", "    when stock > 0\n    find product\n")
+
+
+def calls_with_guards(document, workflow_id):
+    """`(guarded, step name, entity, operation)` per RepositoryCall, in declared
+    order — `repository_calls` plus the two facts it drops.
+
+    Pinned to that function by
+    `test_the_scan_walks_exactly_the_shared_derivations_calls`, so this cannot
+    quietly walk a different set of calls than the seed policy does.
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    workflow = nodes.get(workflow_id)
+    entries = []
+
+    def walk(ids, guarded):
+        for node_id in ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            if node["kind"] == "WorkflowStep":
+                for child_id in node.get("children", []):
+                    child = nodes.get(child_id)
+                    if child is not None and child["kind"] == "RepositoryCall":
+                        entries.append((guarded, node["name"], child["entity"],
+                                        child["operation"]))
+            else:
+                # Guard, Concurrency, Pipeline. Only a Guard makes what it holds
+                # uncertain, and that matches `_lnpl_ops`, which skips exactly the
+                # ops carrying a `guard_mode` — `when`, `until` and `repeat` alike.
+                walk(node.get("children", []), guarded or node["kind"] == "Guard")
+
+    walk((workflow or {}).get("children", []), False)
+    return entries
+
+
+def guarded_calls_that_can_fail(document, workflow_id, seeded=None):
+    """The guarded repository calls whose failure mode B would have to reproduce.
+
+    Consequence, not shape. A guard only meets the limitation if the call under it
+    could actually fail, and "could fail" is `_lnpl_ops`' own conflict/miss rule
+    applied to the ops that scan skips: a `create` fails iff its entity is already
+    present (seeded, or created by an earlier call), a read fails iff it is not.
+    Operations that are neither cannot fail, exactly as `_lnpl_ops` never sets
+    `fail_at` for them.
+
+    The inputs are the shared derivation — `seeded_entities` for what the seed
+    writes, `calls_with_guards` for the declared order — and `seeded` mirrors
+    `_lnpl_ops`' parameter of the same name, so the empty seed `--no-row` produces
+    is expressible here too. Returns `[(step name, entity, operation)]`.
+    """
+    present = set(seeded_entities(document, workflow_id) if seeded is None
+                  else seeded)
+    risky = []
+    for guarded, step, entity, operation in calls_with_guards(document, workflow_id):
+        if operation in READ_OPS:
+            can_fail = entity not in present
+        elif operation == "create":
+            can_fail = entity in present
+            if not can_fail:
+                present.add(entity)
+        else:
+            continue
+        if guarded and can_fail:
+            risky.append((step, entity, operation))
+    return risky
+
+
+def shipped_examples():
+    """Every committed example, as `(basename, document)`."""
+    import glob
+    out = []
+    for path in sorted(glob.glob(os.path.join(REPO, "examples", "*.lnpl"))):
+        with open(path, encoding="utf-8") as fh:
+            out.append((os.path.basename(path),
+                        lower(parse(fh.read()),
+                              os.path.basename(path)[:-5]).to_document()))
+    return out
+
+
+class TestGuardedRepositoryLimitationIsDocumented(unittest.TestCase):
+    """D8 is a real limitation, so it is written down and its reach is measured
+    rather than assumed.
+
+    The reach is measured as a *consequence*, not a shape. `examples/checkout.lnpl`
+    guards a `create` — that is issue #35's own reproduction shape and it is
+    supposed to be there — so asking "does an example nest a `RepositoryCall`
+    under a `Guard`?" now answers yes forever and stops measuring anything. The
+    question that still has an answer is whether that guarded call *could fail*.
+    """
+
+    def test_the_limitation_is_recorded_next_to_the_derivation(self):
+        with open(os.path.join(REPO, "impl", "lnpl", "backend.py"),
+                  encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("KNOWN LIMITATION", source)
+        self.assertIn("guard that IS taken at runtime", source)
+        # "No shipped example hits it" stopped being true when t3 landed
+        # `checkout.lnpl`; the comment has to name the example that does and say
+        # why it is safe, and the two tests below check that reason for real.
+        self.assertIn("examples/checkout.lnpl", source)
+        self.assertIn("create-only", source)
+
+    def test_the_scan_walks_exactly_the_shared_derivations_calls(self):
+        """No second copy of the walk: dropping the guard flag and the step name
+        from `calls_with_guards` must leave `repository_calls` exactly."""
+        for name, document in shipped_examples():
+            for wf in [n for n in document["nodes"] if n["kind"] == "Workflow"]:
+                with self.subTest(example=name, workflow=wf["id"]):
+                    self.assertEqual(
+                        [(entity, operation) for _, _, entity, operation
+                         in calls_with_guards(document, wf["id"])],
+                        repository_calls(document, wf["id"]))
+
+    def test_no_shipped_example_has_a_guarded_repository_call_that_can_fail(self):
+        """Measures the limitation's reach instead of claiming it is small. Goes
+        red the day an example ships a guarded call that could fail — the moment
+        the limitation stops being theoretical.
+
+        Both seeds the policy can produce are checked: the default role-based one
+        and the empty one `diff --no-row` uses.
+        """
+        risky = []
+        for name, document in shipped_examples():
+            for wf in [n for n in document["nodes"] if n["kind"] == "Workflow"]:
+                for seeded in (None, frozenset()):
+                    risky += [(name, seeded, step) for step, _, _
+                              in guarded_calls_that_can_fail(document, wf["id"],
+                                                             seeded=seeded)]
+        self.assertEqual(risky, [],
+                         "a shipped example now hits the guarded-repository "
+                         "limitation; mode B cannot reproduce its failure")
+
+    def test_checkouts_guarded_create_is_safe_because_order_is_create_only(self):
+        """The stated reason, asserted rather than assumed. `checkout.lnpl` does
+        guard a `create` — it passes the check above only because `entity.order`
+        is create-only, so no seed the policy can produce holds it, and it is
+        created exactly once, so no earlier call holds it either."""
+        with open(CHECKOUT_LNPL, encoding="utf-8") as fh:
+            document = lower(parse(fh.read()), "checkout").to_document()
+        guarded = [(step, entity, operation) for guarded, step, entity, operation
+                   in calls_with_guards(document, "wf.checkout") if guarded]
+        self.assertEqual(guarded, [("create order", "entity.order", "create")])
+        self.assertNotIn("entity.order", seeded_entities(document, "wf.checkout"))
+        self.assertEqual([call for call in repository_calls(document, "wf.checkout")
+                          if call == ("entity.order", "create")],
+                         [("entity.order", "create")])
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"), [])
+
+    def test_a_guarded_create_on_a_seeded_entity_is_reported(self):
+        """The conflict direction: the workflow reads `product`, so the seed
+        writes it and the guarded create would conflict if the guard were taken."""
+        document = checkout_doc(GUARDED_CONFLICT)
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"),
+                         [("create product", "entity.product", "create")])
+
+    def test_a_guarded_read_is_reported_only_under_the_seed_that_misses_it(self):
+        """The miss direction, and the reason this is a consequence check: one
+        document, two seeds, two verdicts. Under the default seed the read's own
+        entity is seeded and nothing can fail; under `--no-row`'s empty seed the
+        same guarded read is a miss."""
+        document = checkout_doc(GUARDED_MISS)
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"), [])
+        self.assertEqual(
+            guarded_calls_that_can_fail(document, "wf.checkout",
+                                        seeded=frozenset()),
+            [("find product", "entity.product", "read")])
+
+    def test_documents_with_nothing_to_report_are_empty_not_absent(self):
+        """Boundaries: a guardless workflow, a workflow with no repository call at
+        all, and a workflow id that is not in the document."""
+        self.assertEqual(
+            guarded_calls_that_can_fail(checkout_doc(READ_THEN_CREATE),
+                                        "wf.checkout"), [])
+        self.assertEqual(
+            guarded_calls_that_can_fail(checkout_doc(NO_REPO), "wf.checkout"), [])
+        self.assertEqual(
+            guarded_calls_that_can_fail(checkout_doc(READ_THEN_CREATE),
+                                        "wf.missing"), [])
 
 
 if __name__ == "__main__":

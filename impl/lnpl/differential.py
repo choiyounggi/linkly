@@ -20,6 +20,7 @@ self-check below proves a deliberate divergence is detected.
 
 from . import backend
 from .interp import Interpreter
+from .repo_policy import repository_calls, seeded_entities
 
 
 class DifferentialError(Exception):
@@ -40,7 +41,7 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
             "text": _text_of(steps, result["status"])}
 
 
-def observe_mode_b(document, workflow_id, workdir, payload=None):
+def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
     """Build and run the native binary, reducing its output to the same shape.
 
     RFC-0008 G8: condition field values come from the payload. Selection is by
@@ -52,8 +53,15 @@ def observe_mode_b(document, workflow_id, workdir, payload=None):
     using the same evaluation mode A uses, so there is no separate input a caller
     could set to contradict the payload — the divergence that made a wiring
     mistake indistinguishable from a real mode A/B disagreement.
+
+    `seeded` is issue #35's seed condition, in the same spirit: the SET of entity
+    ids that start with a row (`None` = the default role-based policy,
+    `frozenset()` = `--no-row`). Mode B derives its own repository outcome from
+    that set. It is deliberately not mode A's `repo_rows` dict — that is
+    `FakeRepository`'s storage layout, and reading it here would couple mode B to
+    how mode A happens to store rows rather than to what the seed rule says.
     """
-    bin_path = backend.build(document, workflow_id, workdir)
+    bin_path = backend.build(document, workflow_id, workdir, seeded=seeded)
 
     values = {}
     for name in backend.condition_field_names(document, workflow_id):
@@ -152,12 +160,43 @@ def _derive_skip_from_payload(document, workflow_id, payload):
     return not _condition_holds(presence_cond_str, payload)
 
 
-def verify(document, workflow_id, payload, repo_rows, workdir):
+def _check_seed_agreement(document, workflow_id, repo_rows, seeded):
+    """Refuse a run whose two seed inputs disagree (issue #35).
+
+    Mode A is handed a materialised store and mode B a seed condition, so the same
+    fact reaches the comparison twice — and two copies of one fact own a
+    synchronization bug. A caller that seeds mode A but tells mode B nothing is
+    seeded produces a *genuine* mode A/B disagreement that is really a wiring
+    mistake, which is the class of defect `_derive_skip_from_payload` removed for
+    the skip flag. Raising here keeps a divergence report meaning what it says.
+
+    Only entities the workflow actually calls are compared: a row for an entity no
+    `RepositoryCall` names is inert to both modes, so requiring agreement about it
+    would reject harmless input.
+    """
+    touched = {entity_id for entity_id, _op in repository_calls(document, workflow_id)}
+    if not touched:
+        return
+    from_rows = {entity_id for entity_id, table in repo_rows.items() if table}
+    if from_rows & touched != set(seeded) & touched:
+        raise DifferentialError(
+            "seed inputs disagree for %s: mode A's rows seed %s, mode B's seed "
+            "condition says %s. One of the two callers is wrong, and comparing "
+            "them anyway would report a wiring mistake as a divergence."
+            % (sorted(touched), sorted(from_rows & touched),
+               sorted(set(seeded) & touched)))
+
+
+def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     """Compare the two modes. Returns (ok, report_lines).
 
     RFC-0008: The skip flag for Presence guards is derived from the payload,
     not supplied by the caller. This ensures mode A and B evaluate the same
     condition the same way, preventing spurious divergence.
+
+    `seeded` is issue #35's seed condition — see `observe_mode_b`. `None` resolves
+    to the default role-based policy, the same rule `cli._repo_rows` materialises
+    for mode A, so the common case cannot disagree by construction.
     """
     if not backend.toolchain_available():
         raise DifferentialError(
@@ -165,8 +204,13 @@ def verify(document, workflow_id, payload, repo_rows, workdir):
             "`brew install llvm`. (Skipping the comparison silently would let a "
             "divergence ship unnoticed.)")
 
+    resolved = (seeded_entities(document, workflow_id) if seeded is None
+                else seeded)
+    _check_seed_agreement(document, workflow_id, repo_rows, resolved)
+
     a = observe_mode_a(document, workflow_id, payload, repo_rows)
-    b = observe_mode_b(document, workflow_id, workdir, payload=payload)
+    b = observe_mode_b(document, workflow_id, workdir, payload=payload,
+                       seeded=resolved)
 
     report, ok = [], True
 
