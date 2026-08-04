@@ -15,8 +15,10 @@ from lnpl import backend, differential
 from lnpl.interp import sample_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
-from lnpl.repo_policy import default_rows
-from tests.fixtures import GUARDED, UNTIL_COUNTER, guarded_source
+from lnpl.repo_policy import (READ_OPS, default_rows, repository_calls,
+                              seeded_entities)
+from tests.fixtures import (CHECKOUT_LNPL, GUARDED, UNTIL_COUNTER,
+                            guarded_source)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN_IR = os.path.join(REPO, "examples", "login.lir.json")
@@ -1151,9 +1153,107 @@ class TestRepositoryDivergenceIsDetected(unittest.TestCase):
         self.assertEqual(b["status"], "failed")
 
 
+# A guarded repository call that CAN fail, in both directions the rule has.
+# Built from the sources above rather than written out again, so the shape being
+# guarded stays the shape those tests already pin.
+#
+# `SAME_ENTITY` reads and creates `entity.product`, so the seed writes it and the
+# create conflicts; guarding that create is the case mode B cannot reproduce.
+GUARDED_CONFLICT = SAME_ENTITY.replace(
+    "    create product\n", "    when stock > 0\n    create product\n")
+# The read side: guarding `find product` makes it a miss whenever the seed is
+# empty, which is the seed `--no-row` produces.
+GUARDED_MISS = READ_THEN_CREATE.replace(
+    "    find product\n", "    when stock > 0\n    find product\n")
+
+
+def calls_with_guards(document, workflow_id):
+    """`(guarded, step name, entity, operation)` per RepositoryCall, in declared
+    order — `repository_calls` plus the two facts it drops.
+
+    Pinned to that function by
+    `test_the_scan_walks_exactly_the_shared_derivations_calls`, so this cannot
+    quietly walk a different set of calls than the seed policy does.
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    workflow = nodes.get(workflow_id)
+    entries = []
+
+    def walk(ids, guarded):
+        for node_id in ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            if node["kind"] == "WorkflowStep":
+                for child_id in node.get("children", []):
+                    child = nodes.get(child_id)
+                    if child is not None and child["kind"] == "RepositoryCall":
+                        entries.append((guarded, node["name"], child["entity"],
+                                        child["operation"]))
+            else:
+                # Guard, Concurrency, Pipeline. Only a Guard makes what it holds
+                # uncertain, and that matches `_lnpl_ops`, which skips exactly the
+                # ops carrying a `guard_mode` — `when`, `until` and `repeat` alike.
+                walk(node.get("children", []), guarded or node["kind"] == "Guard")
+
+    walk((workflow or {}).get("children", []), False)
+    return entries
+
+
+def guarded_calls_that_can_fail(document, workflow_id, seeded=None):
+    """The guarded repository calls whose failure mode B would have to reproduce.
+
+    Consequence, not shape. A guard only meets the limitation if the call under it
+    could actually fail, and "could fail" is `_lnpl_ops`' own conflict/miss rule
+    applied to the ops that scan skips: a `create` fails iff its entity is already
+    present (seeded, or created by an earlier call), a read fails iff it is not.
+    Operations that are neither cannot fail, exactly as `_lnpl_ops` never sets
+    `fail_at` for them.
+
+    The inputs are the shared derivation — `seeded_entities` for what the seed
+    writes, `calls_with_guards` for the declared order — and `seeded` mirrors
+    `_lnpl_ops`' parameter of the same name, so the empty seed `--no-row` produces
+    is expressible here too. Returns `[(step name, entity, operation)]`.
+    """
+    present = set(seeded_entities(document, workflow_id) if seeded is None
+                  else seeded)
+    risky = []
+    for guarded, step, entity, operation in calls_with_guards(document, workflow_id):
+        if operation in READ_OPS:
+            can_fail = entity not in present
+        elif operation == "create":
+            can_fail = entity in present
+            if not can_fail:
+                present.add(entity)
+        else:
+            continue
+        if guarded and can_fail:
+            risky.append((step, entity, operation))
+    return risky
+
+
+def shipped_examples():
+    """Every committed example, as `(basename, document)`."""
+    import glob
+    out = []
+    for path in sorted(glob.glob(os.path.join(REPO, "examples", "*.lnpl"))):
+        with open(path, encoding="utf-8") as fh:
+            out.append((os.path.basename(path),
+                        lower(parse(fh.read()),
+                              os.path.basename(path)[:-5]).to_document()))
+    return out
+
+
 class TestGuardedRepositoryLimitationIsDocumented(unittest.TestCase):
     """D8 is a real limitation, so it is written down and its reach is measured
-    rather than assumed."""
+    rather than assumed.
+
+    The reach is measured as a *consequence*, not a shape. `examples/checkout.lnpl`
+    guards a `create` — that is issue #35's own reproduction shape and it is
+    supposed to be there — so asking "does an example nest a `RepositoryCall`
+    under a `Guard`?" now answers yes forever and stops measuring anything. The
+    question that still has an answer is whether that guarded call *could fail*.
+    """
 
     def test_the_limitation_is_recorded_next_to_the_derivation(self):
         with open(os.path.join(REPO, "impl", "lnpl", "backend.py"),
@@ -1161,33 +1261,88 @@ class TestGuardedRepositoryLimitationIsDocumented(unittest.TestCase):
             source = fh.read()
         self.assertIn("KNOWN LIMITATION", source)
         self.assertIn("guard that IS taken at runtime", source)
+        # "No shipped example hits it" stopped being true when t3 landed
+        # `checkout.lnpl`; the comment has to name the example that does and say
+        # why it is safe, and the two tests below check that reason for real.
+        self.assertIn("examples/checkout.lnpl", source)
+        self.assertIn("create-only", source)
 
-    def test_no_shipped_example_has_a_guarded_repository_call(self):
-        """Measures the limitation's reach instead of claiming it is small. This
-        goes red when an example first nests a `RepositoryCall` under a `Guard`,
-        which is the moment the limitation stops being theoretical."""
-        import glob
-        from lnpl.repo_policy import repository_calls
-        guarded = []
-        for path in sorted(glob.glob(os.path.join(REPO, "examples", "*.lnpl"))):
-            with open(path, encoding="utf-8") as fh:
-                d = lower(parse(fh.read()),
-                          os.path.basename(path)[:-5]).to_document()
-            nodes = {n["id"]: n for n in d["nodes"]}
-            for wf in [n for n in d["nodes"] if n["kind"] == "Workflow"]:
-                if not repository_calls(d, wf["id"]):
-                    continue
-                for guard in [n for n in d["nodes"] if n["kind"] == "Guard"]:
-                    for child_id in guard.get("children", []):
-                        child = nodes.get(child_id)
-                        if child is None or child["kind"] != "WorkflowStep":
-                            continue
-                        if any(nodes[e]["kind"] == "RepositoryCall"
-                               for e in child.get("children", [])):
-                            guarded.append((os.path.basename(path), child["name"]))
-        self.assertEqual(guarded, [],
+    def test_the_scan_walks_exactly_the_shared_derivations_calls(self):
+        """No second copy of the walk: dropping the guard flag and the step name
+        from `calls_with_guards` must leave `repository_calls` exactly."""
+        for name, document in shipped_examples():
+            for wf in [n for n in document["nodes"] if n["kind"] == "Workflow"]:
+                with self.subTest(example=name, workflow=wf["id"]):
+                    self.assertEqual(
+                        [(entity, operation) for _, _, entity, operation
+                         in calls_with_guards(document, wf["id"])],
+                        repository_calls(document, wf["id"]))
+
+    def test_no_shipped_example_has_a_guarded_repository_call_that_can_fail(self):
+        """Measures the limitation's reach instead of claiming it is small. Goes
+        red the day an example ships a guarded call that could fail — the moment
+        the limitation stops being theoretical.
+
+        Both seeds the policy can produce are checked: the default role-based one
+        and the empty one `diff --no-row` uses.
+        """
+        risky = []
+        for name, document in shipped_examples():
+            for wf in [n for n in document["nodes"] if n["kind"] == "Workflow"]:
+                for seeded in (None, frozenset()):
+                    risky += [(name, seeded, step) for step, _, _
+                              in guarded_calls_that_can_fail(document, wf["id"],
+                                                             seeded=seeded)]
+        self.assertEqual(risky, [],
                          "a shipped example now hits the guarded-repository "
                          "limitation; mode B cannot reproduce its failure")
+
+    def test_checkouts_guarded_create_is_safe_because_order_is_create_only(self):
+        """The stated reason, asserted rather than assumed. `checkout.lnpl` does
+        guard a `create` — it passes the check above only because `entity.order`
+        is create-only, so no seed the policy can produce holds it, and it is
+        created exactly once, so no earlier call holds it either."""
+        with open(CHECKOUT_LNPL, encoding="utf-8") as fh:
+            document = lower(parse(fh.read()), "checkout").to_document()
+        guarded = [(step, entity, operation) for guarded, step, entity, operation
+                   in calls_with_guards(document, "wf.checkout") if guarded]
+        self.assertEqual(guarded, [("create order", "entity.order", "create")])
+        self.assertNotIn("entity.order", seeded_entities(document, "wf.checkout"))
+        self.assertEqual([call for call in repository_calls(document, "wf.checkout")
+                          if call == ("entity.order", "create")],
+                         [("entity.order", "create")])
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"), [])
+
+    def test_a_guarded_create_on_a_seeded_entity_is_reported(self):
+        """The conflict direction: the workflow reads `product`, so the seed
+        writes it and the guarded create would conflict if the guard were taken."""
+        document = checkout_doc(GUARDED_CONFLICT)
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"),
+                         [("create product", "entity.product", "create")])
+
+    def test_a_guarded_read_is_reported_only_under_the_seed_that_misses_it(self):
+        """The miss direction, and the reason this is a consequence check: one
+        document, two seeds, two verdicts. Under the default seed the read's own
+        entity is seeded and nothing can fail; under `--no-row`'s empty seed the
+        same guarded read is a miss."""
+        document = checkout_doc(GUARDED_MISS)
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"), [])
+        self.assertEqual(
+            guarded_calls_that_can_fail(document, "wf.checkout",
+                                        seeded=frozenset()),
+            [("find product", "entity.product", "read")])
+
+    def test_documents_with_nothing_to_report_are_empty_not_absent(self):
+        """Boundaries: a guardless workflow, a workflow with no repository call at
+        all, and a workflow id that is not in the document."""
+        self.assertEqual(
+            guarded_calls_that_can_fail(checkout_doc(READ_THEN_CREATE),
+                                        "wf.checkout"), [])
+        self.assertEqual(
+            guarded_calls_that_can_fail(checkout_doc(NO_REPO), "wf.checkout"), [])
+        self.assertEqual(
+            guarded_calls_that_can_fail(checkout_doc(READ_THEN_CREATE),
+                                        "wf.missing"), [])
 
 
 if __name__ == "__main__":
