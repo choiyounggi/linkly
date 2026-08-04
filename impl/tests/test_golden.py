@@ -25,11 +25,14 @@ import sys
 import tempfile
 import unittest
 
-from lnpl.interp import Interpreter, sample_payload
+from lnpl.interp import Interpreter, refinement_index, sample_payload
 from lnpl.lower import lower
+from lnpl.openapi import generate as generate_openapi
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows, row_key, seeded_entities
-from tests.fixtures import CHECKOUT_LIR, CHECKOUT_LNPL
+from lnpl.spec import extract
+from tests.fixtures import (CHECKOUT_LIR, CHECKOUT_LNPL, SHORTEN_LIR,
+                            SHORTEN_LNPL, SHORTEN_OPENAPI, SHORTEN_SPEC)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(REPO, "examples", "login.lnpl")
@@ -145,6 +148,68 @@ class TestCheckoutGoldenPair(GoldenPairContract, unittest.TestCase):
     LAST_NODE_IDS = ["cap.postgres", "cap.redis", "cap.jwt"]
     REGEN_CMD = ("python3 -m lnpl compile examples/checkout.lnpl "
                  "-o examples/checkout.lir.json")
+
+
+class TestShortenGoldenPair(GoldenPairContract, unittest.TestCase):
+    SRC = SHORTEN_LNPL
+    GOLDEN_IR = SHORTEN_LIR
+    # Refinement nodes lead the canonical order (`lower.lower` adds them before
+    # the services), so unlike login and checkout this pair's first node is a
+    # refinement rather than the service.
+    FIRST_NODE_ID = "refine.click.count"
+    LAST_NODE_IDS = ["cap.postgres", "cap.redis", "cap.jwt"]
+    REGEN_CMD = ("python3 -m lnpl compile examples/shorten.lnpl "
+                 "-o examples/shorten.lir.json")
+
+
+class TestShortenGeneratedArtifacts(unittest.TestCase):
+    """The `.spec.json` and `.openapi.json` halves of the quartet.
+
+    `GoldenPairContract` pins only the IR. These two files are generated from
+    the same source by `lnpl spec` / `lnpl openapi`, so an unchecked copy is a
+    spec that can drift silently once the generator changes; the committed file
+    is the must-pass input. Each comparison calls the generator exactly the way
+    `cli.cmd_spec` / `cli.cmd_openapi` do, so it compares against the same call
+    that produced the golden.
+    """
+
+    def _committed(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_the_committed_spec_manifest_is_what_the_cli_emits(self):
+        with open(SHORTEN_LNPL, encoding="utf-8") as fh:
+            decls = parse(fh.read())
+        self.assertEqual(extract(decls, "shorten"),
+                         self._committed(SHORTEN_SPEC),
+                         "examples/shorten.spec.json is stale — regenerate it "
+                         "with `python3 -m lnpl spec examples/shorten.lnpl "
+                         "-o examples/shorten.spec.json`")
+
+    def test_the_committed_openapi_document_is_what_the_cli_emits(self):
+        self.assertEqual(generate_openapi(compile_module(SHORTEN_LNPL)),
+                         self._committed(SHORTEN_OPENAPI),
+                         "examples/shorten.openapi.json is stale — regenerate "
+                         "it with `python3 -m lnpl openapi "
+                         "examples/shorten.lnpl -o examples/shorten.openapi.json`")
+
+    def test_the_openapi_projection_carries_the_refinement_constraints(self):
+        # The facets must survive into the API contract, not just the IR — that
+        # projection is what makes `Slug`/`Url` visible to a client generator,
+        # and it is the half of issue #31 a runtime test cannot observe.
+        schemas = self._committed(SHORTEN_OPENAPI)["components"]["schemas"]
+        self.assertEqual(schemas["Slug"],
+                         {"type": "string", "pattern": "^[a-z0-9-]{1,64}$",
+                          "maxLength": 64})
+        self.assertEqual(schemas["Url"],
+                         {"type": "string", "pattern": "^https?://[^\\s]+$",
+                          "maxLength": 2048})
+        self.assertEqual(schemas["ClickCount"],
+                         {"type": "integer", "format": "int64", "minimum": 0})
+        self.assertEqual(schemas["Link"]["properties"]["slug"],
+                         {"$ref": "#/components/schemas/Slug"})
+        self.assertEqual(schemas["Link"]["properties"]["target"],
+                         {"$ref": "#/components/schemas/Url"})
 
 
 class TestCheckoutShape(unittest.TestCase):
@@ -283,6 +348,202 @@ class TestCheckoutGoldenControls(unittest.TestCase):
         self.assertIn("INVALID", report)
         self.assertIn(CHECKOUT_WORKFLOW, report,
                       "the report must name the node it rejected")
+
+
+SHORTEN_WORKFLOW = "wf.shorten"
+
+
+class TestShortenRefinementIsLoadBearing(unittest.TestCase):
+    """Issue #31 criterion 3: `Slug`/`Url`/`ClickCount` are not decoration.
+
+    Naming a field `Slug` proves nothing on its own — what proves it is that a
+    value the facet forbids is REJECTED. Every case below runs the same
+    workflow with the same derived payload and changes exactly one field, so
+    each verdict is attributable to that one field's facet. The reason string
+    is asserted verbatim, not just the failure: a bare "it failed" passes when
+    the wrong field fails for the wrong reason.
+
+    `TestShortenTextDegradationControl` below is the other half — it shows the
+    same payloads pass once the refinements are taken away.
+    """
+
+    def _doc(self):
+        return compile_module(SHORTEN_LNPL)
+
+    def _payload(self, doc, **overrides):
+        """The CLI's own default fixture, with `overrides` applied.
+
+        `sample_payload` derives each value from the field's type and verifies
+        it against that type, so the unmodified payload is valid by
+        construction — which is what makes a single override attributable.
+        """
+        payload = dict(sample_payload(
+            [n for n in doc["nodes"] if n["kind"] == "Entity"],
+            refinement_index(doc)))
+        payload.update(overrides)
+        return payload
+
+    def _run(self, doc, payload):
+        interp = Interpreter(doc, repo_rows={})
+        result = interp.run_workflow(SHORTEN_WORKFLOW, payload)
+        reasons = [e.get("reason") for e in interp.trace.logs
+                   if e["message"] == "step failed"]
+        return result, reasons
+
+    def test_the_derived_payload_completes(self):
+        doc = self._doc()
+        payload = self._payload(doc)
+        # Non-vacuity: the three refined fields must actually be in the payload,
+        # otherwise every rejection case below would be testing an absent value.
+        self.assertEqual(payload["slug"], "text")
+        self.assertEqual(payload["target"], "https://example.com/a")
+        self.assertEqual(payload["clicks"], 1)
+        result, reasons = self._run(doc, payload)
+        self.assertEqual(result["status"], "completed")
+        self.assertIsNone(result["failed_step"])
+        self.assertEqual(reasons, [])
+        self.assertEqual([s["step"] for s in result["steps"]],
+                         ["validate input", "authorize owner", "create link",
+                          "cache link", "emit linkCreated", "return slug"])
+
+    def test_a_target_that_is_not_a_url_is_rejected(self):
+        doc = self._doc()
+        result, reasons = self._run(doc, self._payload(doc, target="not-a-url"))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "validate input")
+        # The reason renders the pattern with `%r`, so the backslash arrives
+        # doubled: four here is two in the message the caller reads.
+        self.assertEqual(
+            reasons,
+            ["field 'target' does not match Url's pattern "
+             "'^https?://[^\\\\s]+$'"])
+
+    def test_a_slug_with_uppercase_is_rejected(self):
+        doc = self._doc()
+        result, reasons = self._run(doc, self._payload(doc, slug="Bad_Slug"))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "validate input")
+        self.assertEqual(
+            reasons,
+            ["field 'slug' does not match Slug's pattern '^[a-z0-9-]{1,64}$'"])
+
+    def test_a_negative_click_count_is_rejected(self):
+        # The declared refinement, not a preset: this is the half of the
+        # mechanism a module author writes by hand.
+        doc = self._doc()
+        result, reasons = self._run(doc, self._payload(doc, clicks=-1))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "validate input")
+        self.assertEqual(reasons, ["field 'clicks' violates ClickCount's min 0"])
+
+    def test_the_slug_length_limit_is_exact(self):
+        # Boundary: `maxLength 64` accepts 64 and rejects 65 — off-by-one either
+        # way would leave one of these two assertions red.
+        doc = self._doc()
+        at_limit, reasons = self._run(doc, self._payload(doc, slug="a" * 64))
+        self.assertEqual(at_limit["status"], "completed")
+        self.assertEqual(reasons, [])
+        over, reasons = self._run(doc, self._payload(doc, slug="a" * 65))
+        self.assertEqual(over["status"], "failed")
+        self.assertEqual(over["failed_step"], "validate input")
+        self.assertEqual(reasons,
+                         ["field 'slug' is longer than Slug's maxLength 64 (65)"])
+
+    def test_the_url_length_limit_is_exact(self):
+        doc = self._doc()
+        prefix = "https://e.co/"                       # 13 chars, matches Url
+        at_limit, reasons = self._run(
+            doc, self._payload(doc, target=prefix + "a" * (2048 - len(prefix))))
+        self.assertEqual(at_limit["status"], "completed")
+        self.assertEqual(reasons, [])
+        over, reasons = self._run(
+            doc, self._payload(doc, target=prefix + "a" * (2049 - len(prefix))))
+        self.assertEqual(over["status"], "failed")
+        self.assertEqual(over["failed_step"], "validate input")
+        self.assertEqual(
+            reasons, ["field 'target' is longer than Url's maxLength 2048 (2049)"])
+
+    def test_a_missing_refined_field_is_rejected(self):
+        # Boundary: the absent value. `validate input` requires every declared
+        # field, so dropping one is refused before any facet is applied.
+        doc = self._doc()
+        payload = self._payload(doc)
+        del payload["slug"]
+        result, reasons = self._run(doc, payload)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "validate input")
+        self.assertEqual(reasons, ["missing required field 'slug'"])
+
+
+class TestShortenTextDegradationControl(unittest.TestCase):
+    """The BEFORE picture, asserted — the negative control for the class above.
+
+    Issue #31's symptom was that `slug`/`target` had to be declared `Text`,
+    losing their meaning and their validation. This compiles that degraded twin
+    from the committed source (only the two field type names replaced) and
+    shows the SAME payload the refined module rejects is ACCEPTED there.
+
+    Without this control the rejection tests could be green for some reason
+    other than the facets — a required field, an unrelated guard, a typo in the
+    workflow. It mutates only what it owns: the two type names.
+    """
+
+    def _degraded_source(self):
+        with open(SHORTEN_LNPL, encoding="utf-8") as fh:
+            source = fh.read()
+        degraded = source
+        for refined, base in (("\n        slug Slug\n", "\n        slug Text\n"),
+                              ("\n        target Url\n", "\n        target Text\n")):
+            self.assertIn(refined, degraded,
+                          "this control is anchored on the exact field line %r; "
+                          "examples/shorten.lnpl no longer declares it, so the "
+                          "control would silently degrade to a no-op" % refined)
+            degraded = degraded.replace(refined, base)
+        return degraded
+
+    def _degraded_doc(self):
+        return lower(parse(self._degraded_source()), "shorten").to_document()
+
+    def test_text_accepts_what_the_refinement_rejects(self):
+        doc = self._degraded_doc()
+        payload = dict(sample_payload(
+            [n for n in doc["nodes"] if n["kind"] == "Entity"],
+            refinement_index(doc)))
+        payload["slug"] = "Bad_Slug"
+        payload["target"] = "not-a-url"
+        interp = Interpreter(doc, repo_rows={})
+        result = interp.run_workflow(SHORTEN_WORKFLOW, payload)
+        self.assertEqual(result["status"], "completed",
+                         "under `Text` the bad payload must pass — that loss is "
+                         "exactly what issue #31 reports")
+        self.assertIsNone(result["failed_step"])
+
+    def test_the_degradation_removes_the_two_presets_and_nothing_else(self):
+        # The control must actually take the mechanism away, not merely rename
+        # it: `refine.slug` and `refine.url` are emitted on use, so dropping the
+        # uses drops the nodes. The declared `ClickCount` is untouched, which is
+        # what keeps this a one-variable control.
+        degraded = {n["id"] for n in self._degraded_doc()["nodes"]
+                    if n["kind"] == "Refinement"}
+        self.assertEqual(degraded, {"refine.click.count"})
+        refined = {n["id"] for n in compile_module(SHORTEN_LNPL)["nodes"]
+                   if n["kind"] == "Refinement"}
+        self.assertEqual(refined,
+                         {"refine.click.count", "refine.slug", "refine.url"})
+
+    def test_the_degraded_fields_are_text_in_the_entity(self):
+        entity = next(n for n in self._degraded_doc()["nodes"]
+                      if n["id"] == "entity.link")
+        types = {f["name"]: f["type"] for f in entity["fields"]}
+        self.assertEqual(types["slug"], "Text")
+        self.assertEqual(types["target"], "Text")
+        # and the committed example is the opposite — the retired symptom
+        committed = next(n for n in compile_module(SHORTEN_LNPL)["nodes"]
+                         if n["id"] == "entity.link")
+        committed_types = {f["name"]: f["type"] for f in committed["fields"]}
+        self.assertEqual(committed_types["slug"], "Slug")
+        self.assertEqual(committed_types["target"], "Url")
+        self.assertNotIn("Text", committed_types.values())
 
 
 class TestGoldenExecution(unittest.TestCase):
