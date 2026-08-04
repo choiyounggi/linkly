@@ -1,0 +1,205 @@
+{
+  "lir_version": "0.1",
+  "module": "checkout",
+  "nodes": [
+    {
+      "kind": "Service",
+      "id": "svc.checkout",
+      "name": "CheckoutService",
+      "requires": [
+        "cap.postgres",
+        "cap.redis",
+        "cap.jwt"
+      ],
+      "constraints": [
+        "policy.checkout",
+        "security.checkout",
+        "perf.checkout"
+      ],
+      "children": [
+        "wf.checkout"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.product",
+      "name": "Product",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "name",
+          "type": "Text"
+        },
+        {
+          "name": "stock",
+          "type": "Integer"
+        },
+        {
+          "name": "price",
+          "type": "Money"
+        }
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.order",
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "quantity",
+          "type": "Integer"
+        },
+        {
+          "name": "total",
+          "type": "Money"
+        },
+        {
+          "name": "placedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Event",
+      "id": "event.order.placed",
+      "name": "OrderPlaced",
+      "source": {
+        "ref": "entity.order",
+        "on": "create"
+      }
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.checkout",
+      "name": "Checkout",
+      "children": [
+        "wf.checkout.step.1",
+        "wf.checkout.step.2",
+        "wf.checkout.step.3",
+        "wf.checkout.guard.1"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.checkout.step.1",
+      "name": "validate product",
+      "children": [
+        "wf.checkout.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.checkout.step.1.check",
+      "target": "entity.product",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.checkout.step.2",
+      "name": "find product",
+      "children": [
+        "wf.checkout.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.checkout.step.2.repo",
+      "entity": "entity.product",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.checkout.step.3",
+      "name": "cache product",
+      "children": [
+        "wf.checkout.step.3.cache"
+      ]
+    },
+    {
+      "kind": "CacheAccess",
+      "id": "wf.checkout.step.3.cache",
+      "key": "product:{id}",
+      "operation": "set"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.checkout.step.4",
+      "name": "create order",
+      "children": [
+        "wf.checkout.step.4.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.checkout.step.4.repo",
+      "entity": "entity.order",
+      "operation": "create"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.checkout.guard.1",
+      "children": [
+        "wf.checkout.step.4"
+      ],
+      "mode": "when",
+      "condition": "stock > 0"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.checkout",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 3
+        },
+        {
+          "name": "timeout",
+          "value": "3s"
+        }
+      ]
+    },
+    {
+      "kind": "Security",
+      "id": "security.checkout",
+      "mechanisms": [
+        "jwt"
+      ]
+    },
+    {
+      "kind": "Performance",
+      "id": "perf.checkout",
+      "budgets": [
+        {
+          "metric": "response",
+          "value": "<50ms"
+        },
+        {
+          "metric": "cache",
+          "value": "5m"
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.redis",
+      "name": "redis"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.jwt",
+      "name": "jwt"
+    }
+  ]
+}
