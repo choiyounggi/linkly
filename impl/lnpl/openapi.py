@@ -18,53 +18,12 @@ Mapping (each row cites the IR that produces it):
 """
 
 from .interp import _duration_ms
+from .types import SEMANTIC_TYPES
 
-# Semantic type -> OpenAPI schema. Only the types RFC-0001 defines; an unknown
-# type is an error, not a `{}` that silently accepts anything.
-TYPE_SCHEMA = {
-    "UUID": {"type": "string", "format": "uuid"},
-    "Email": {"type": "string", "format": "email"},
-    "Password": {"type": "string", "format": "password", "writeOnly": True},
-    "DateTime": {"type": "string", "format": "date-time"},
-    "Phone": {"type": "string", "pattern": r"^\+[1-9]\d{1,14}$"},
-    "Money": {"type": "object",
-              "properties": {"amount": {"type": "string", "format": "decimal"},
-                             "currency": {"type": "string", "minLength": 3,
-                                          "maxLength": 3}},
-              "required": ["amount", "currency"]},
-    "Currency": {"type": "string", "minLength": 3, "maxLength": 3},
-    "GeoLocation": {"type": "object",
-                    "properties": {"lat": {"type": "number", "minimum": -90,
-                                           "maximum": 90},
-                                   "lng": {"type": "number", "minimum": -180,
-                                           "maximum": 180}},
-                    "required": ["lat", "lng"]},
-    "Address": {"type": "object",
-                "properties": {"line1": {"type": "string"},
-                               "line2": {"type": "string"},
-                               "city": {"type": "string"},
-                               "region": {"type": "string"},
-                               "postalCode": {"type": "string"},
-                               "country": {"type": "string", "minLength": 2,
-                                           "maxLength": 2}},
-                "required": ["line1", "city", "country"]},
-    "Image": {"type": "object",
-              "properties": {"uri": {"type": "string", "format": "uri"},
-                             "mediaType": {"type": "string"}},
-              "required": ["uri", "mediaType"]},
-    "File": {"type": "object",
-             "properties": {"uri": {"type": "string", "format": "uri"},
-                            "mediaType": {"type": "string"},
-                            "sizeBytes": {"type": "integer"}},
-             "required": ["uri"]},
-    "Json": {},
-    "Html": {"type": "string"},
-    "Markdown": {"type": "string"},
-    "Text": {"type": "string"},
-    "Integer": {"type": "integer", "format": "int64"},
-    "Decimal": {"type": "string", "format": "decimal"},
-    "Boolean": {"type": "boolean"},
-}
+# Semantic type -> OpenAPI schema, projected from the one type registry
+# (issue #24). Only the types RFC-0001 defines; an unknown type is an error, not
+# a `{}` that silently accepts anything.
+TYPE_SCHEMA = {name: spec["openapi"] for name, spec in SEMANTIC_TYPES.items()}
 
 
 class OpenApiError(Exception):

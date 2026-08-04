@@ -14,6 +14,8 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
+from .types import SEMANTIC_TYPES
+
 IDEMPOTENT_OPS = {
     ("RepositoryCall", "read"), ("RepositoryCall", "query"),
     ("RepositoryCall", "delete"), ("RepositoryCall", "update"),
@@ -486,61 +488,40 @@ class Interpreter:
 
 
 def check_semantic_type(type_name, value, field_name):
-    """Built-in validation rules for the semantic types Phase 1 covers."""
+    """Validate a value against its semantic type's rule (RFC-0001).
+
+    The rule is data on `types.SEMANTIC_TYPES[type_name]["check"]`; this applies
+    it. A type not in the registry (a refinement, etc.) is not the registry's to
+    judge — a present, non-null value passes. RFC-0001 owns the full table.
+    """
     import re
-    if type_name in ("semantic-types",):
+    if type_name == "semantic-types":
         return
     if value is None:
         raise RunError("field %r is null" % field_name)
-    if type_name == "UUID":
-        if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
-                        r"[0-9a-f]{4}-[0-9a-f]{12}$", str(value), re.I):
-            raise RunError("field %r is not a canonical UUID" % field_name)
-    elif type_name == "Email":
-        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(value)):
-            raise RunError("field %r is not a valid email address" % field_name)
-    elif type_name == "Password":
+    spec = SEMANTIC_TYPES.get(type_name)
+    if spec is None:
+        return
+    rule = spec["check"]
+    if rule is None:
+        return
+    if rule[0] == "pattern":
+        flags = re.I if rule[2] else 0
+        if not re.match(rule[1], str(value), flags):
+            raise RunError("field %r is not a valid %s" % (field_name, type_name))
+    elif rule[0] == "py":
+        pytype = rule[1]
+        if not isinstance(value, pytype) or (pytype is int and isinstance(value, bool)):
+            raise RunError("field %r is not a valid %s" % (field_name, type_name))
+    elif rule[0] == "nonempty":
         if not str(value):
             raise RunError("field %r is empty" % field_name)
-    elif type_name == "DateTime":
-        if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", str(value)):
-            raise RunError("field %r is not an RFC 3339 timestamp" % field_name)
-    elif type_name == "Text":
-        if not isinstance(value, str):
-            raise RunError("field %r is not text" % field_name)
-    elif type_name == "Integer":
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise RunError("field %r is not an integer" % field_name)
-    elif type_name == "Boolean":
-        if not isinstance(value, bool):
-            raise RunError("field %r is not a boolean" % field_name)
-    # Types without a Phase 1 rule pass through; RFC-0001 owns the full table.
 
 
-# A valid sample value per RFC-0001 semantic type, used to synthesize a default
-# input fixture from an entity's declared fields (issue #23). Each value is a
-# valid instance of its type, so the derived fixture passes `check_semantic_type`.
-# Complex types mirror their RFC-0001 composite shape.
-SAMPLE_VALUES = {
-    "UUID": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-    "Email": "user@example.com",
-    "Phone": "+14155550100",
-    "Password": "s3cret-value",
-    "Currency": "USD",
-    "Money": {"amount": "0", "currency": "USD"},
-    "Address": {"line1": "1 Main St", "city": "Springfield", "country": "US"},
-    "Image": {"uri": "https://example.com/i.png", "mediaType": "image/png"},
-    "File": {"uri": "https://example.com/f.pdf", "mediaType": "application/pdf"},
-    "GeoLocation": {"lat": 0, "lng": 0},
-    "Json": {},
-    "Html": "<p>x</p>",
-    "Markdown": "# x",
-    "Text": "text",
-    "Integer": 1,
-    "Decimal": "0",
-    "Boolean": True,
-    "DateTime": "2026-07-31T09:00:00Z",
-}
+# The default-fixture sample per semantic type, projected from the one registry
+# (issue #23/#24). Each value is a valid instance of its type, so a derived
+# fixture passes `check_semantic_type`.
+SAMPLE_VALUES = {name: spec["sample"] for name, spec in SEMANTIC_TYPES.items()}
 
 
 def sample_payload(entities):
