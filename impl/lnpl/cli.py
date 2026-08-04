@@ -193,9 +193,14 @@ def cmd_diff(args):
             payload = json.load(fh)
     else:
         payload = sample_payload(_entities(doc))
+    # One flag, two derivations of it: mode A gets the seed materialised as rows,
+    # mode B gets the seed condition itself (issue #35). Both come from
+    # `args.no_row`, so they cannot disagree — and `verify` refuses them if they
+    # ever do.
     ok, report = verify_modes(doc, target, payload,
                               _repo_rows(doc, payload, target, empty=args.no_row),
-                              args.workdir)
+                              args.workdir,
+                              seeded=frozenset() if args.no_row else None)
     print("\n".join(report))
     return 0 if ok else 1
 

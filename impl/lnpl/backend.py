@@ -41,6 +41,11 @@ import subprocess
 import tempfile
 
 from lnpl.condition import parse_condition, Presence, Comparison
+# The seed/key policy both modes read (issue #35). Imported, never restated: a
+# second copy of the seeding rule is the defect Wave 1 removed when three seeding
+# sites became one. `repo_policy` imports nothing from `interp`/`backend`/`cli`,
+# so this is cycle-safe.
+from lnpl.repo_policy import READ_OPS, seeded_entities
 
 MLIR_OPT = "mlir-opt"
 MLIR_TRANSLATE = "mlir-translate"
@@ -286,27 +291,136 @@ def encode_condition_value(value):
         % (value, type(value).__name__))
 
 
-def _has_cache_budget(document, workflow_id):
-    """True if the service owning `workflow_id` declares a cache TTL budget.
+def _constraints_of_kind(document, workflow_id, kind):
+    """The owning service's constraint nodes of one `kind`, in declared order.
 
-    Mirrors the interpreter's constraint resolution (interp `_constraints`): a
-    `Performance` constraint on the owning service carrying a `cache` budget.
-    RFC-0003 requires every cache key to carry a TTL, so without this budget a
-    `CacheAccess set` cannot run — mode A raises, and mode B must agree.
+    Mirrors the interpreter's constraint resolution (interp `_constraints`): the
+    `Service` whose children include the workflow, then its `constraints` list.
+    One lookup shared by every derivation below, so a second reading of "which
+    service owns this workflow" cannot drift from the first.
     """
     nodes = {n["id"]: n for n in document["nodes"]}
     service = next((n for n in document["nodes"]
                     if n["kind"] == "Service"
                     and workflow_id in n.get("children", [])), None)
     if service is None:
-        return False
-    for cid in service.get("constraints", []):
-        node = nodes.get(cid)
-        if node and node.get("kind") == "Performance":
-            for budget in node.get("budgets", []):
-                if budget.get("metric") == "cache":
-                    return True
+        return []
+    return [nodes[cid] for cid in service.get("constraints", [])
+            if nodes.get(cid) is not None and nodes[cid].get("kind") == kind]
+
+
+def _has_cache_budget(document, workflow_id):
+    """True if the service owning `workflow_id` declares a cache TTL budget.
+
+    RFC-0003 requires every cache key to carry a TTL, so without this budget a
+    `CacheAccess set` cannot run — mode A raises, and mode B must agree.
+    """
+    for node in _constraints_of_kind(document, workflow_id, "Performance"):
+        for budget in node.get("budgets", []):
+            if budget.get("metric") == "cache":
+                return True
     return False
+
+
+# --- the retry model, mirrored from the interpreter ---------------------------
+#
+# RFC-0004 §실행 모드와 semantic equivalence names "정책 집행 결과 — retry 판정"
+# as observable 2 and "관측성 신호 — trace 구조(step = span)" as observable 3, so
+# how many times a failing step ran is part of the contract, not a timing detail.
+# It shows up in the trace because `interp._run_step` re-runs every effect the
+# step owns on each attempt while `_run_effect` appends its child span before the
+# raise: mode A's failing step holds one copy of the failing prefix per attempt.
+#
+# These constants MIRROR `interp` rather than importing it. Mode B must not depend
+# on mode A — an `import interp` here is the first thing an audit of "does mode B
+# read mode A?" would flag — and `_has_cache_budget` set the same precedent for
+# constraint resolution. The cost of a mirror is drift, so the guard against it is
+# `TestModeBDerivesRetryAttempts`, which checks the derived attempt count against
+# mode A's actual trace over a (retry × timeout × position) matrix rather than
+# against a restatement of the rule. If a third consumer ever needs this model,
+# extract it to a neutral module instead of adding a second mirror.
+_STEP_COST_MS = 5        # interp `Clock.step_cost_ms`, advanced once per step
+_READ_MISS_COST_MS = 1   # interp `_run_effect` advances 1ms before raising
+
+# RFC-0003 §retry 멱등 판정 기준, as interp `IDEMPOTENT_OPS` encodes it.
+_IDEMPOTENT_OPS = {
+    ("RepositoryCall", "read"), ("RepositoryCall", "query"),
+    ("RepositoryCall", "delete"), ("RepositoryCall", "update"),
+    ("CacheAccess", "get"), ("CacheAccess", "set"), ("CacheAccess", "invalidate"),
+}
+
+
+def _backoff_ms(attempt):
+    """Capped exponential backoff — interp `_backoff_ms`, deterministic (no jitter)."""
+    return min(100 * (2 ** (attempt - 1)), 1000)
+
+
+def _duration_ms(text):
+    """`3s` -> 3000. Mirrors interp `_duration_ms`, raising a BackendError instead."""
+    for unit, mult in (("ms", 1), ("s", 1000), ("m", 60000)):
+        if str(text).endswith(unit):
+            head = str(text)[: -len(unit)]
+            if head.isdigit():
+                return int(head) * mult
+    raise BackendError("not a duration: %r" % text)
+
+
+def _retry_policy(document, workflow_id):
+    """`(retry, timeout_ms)` from the owning service's `Policy` constraints."""
+    retry, timeout_ms = 0, None
+    for node in _constraints_of_kind(document, workflow_id, "Policy"):
+        for rule in node.get("rules", []):
+            if rule["name"] == "retry":
+                retry = int(rule["value"])
+            elif rule["name"] == "timeout":
+                timeout_ms = _duration_ms(rule["value"])
+    return retry, timeout_ms
+
+
+def _failure_attempts(nodes, op, fail_at, steps_before, retry, timeout_ms):
+    """How many times mode A runs `op` before giving up on its failing effect.
+
+    This is interp's retry loop and nothing more (`run_workflow`'s while/except
+    plus `_retryable`), evaluated statically:
+
+      * the step is retryable only if EVERY effect it owns is idempotent — the
+        whole step re-runs, so one non-idempotent effect disqualifies all of them.
+        That is what makes a create conflict a single attempt at any budget;
+      * the deadline is absolute, so the clock matters: each preceding step costs
+        `_STEP_COST_MS`, and a failing read costs `_READ_MISS_COST_MS` per attempt
+        (`Cache.set` and a create conflict raise without advancing).
+
+    `steps_before` counts every op ahead of this one, which assumes each of them
+    ran. That is exact when none is guarded, and part of the same guarded-effect
+    limitation documented in `_lnpl_ops`: a guard's truth is a per-run fact this
+    compile-time derivation cannot know.
+    """
+    if retry <= 0:
+        return 1
+    for effect in op["effects"]:
+        kind = effect["kind"]
+        operation = nodes[effect["node_id"]].get("operation")
+        if kind in ("RepositoryCall", "CacheAccess") \
+                and (kind, operation) not in _IDEMPOTENT_OPS:
+            return 1
+        if kind in ("NetworkCall", "EventEmit"):
+            return 1
+
+    failing = nodes[op["effects"][fail_at]["node_id"]]
+    per_attempt = (_READ_MISS_COST_MS
+                   if op["effects"][fail_at]["kind"] == "RepositoryCall"
+                   and failing.get("operation") in READ_OPS else 0)
+
+    clock = _STEP_COST_MS * steps_before
+    attempts = 1
+    while True:
+        clock += per_attempt
+        if attempts > retry:
+            return attempts
+        if timeout_ms is not None and clock + _backoff_ms(attempts) >= timeout_ms:
+            return attempts
+        clock += _backoff_ms(attempts)
+        attempts += 1
 
 
 def _walk_markers(nodes, ids, out):
@@ -360,8 +474,15 @@ def _structural_markers(document, workflow_id):
     return markers
 
 
-def _lnpl_ops(document, workflow_id):
+def _lnpl_ops(document, workflow_id, seeded=None):
     """S4: the `lnpl` op stream, plus the module-level attributes.
+
+    `seeded` is the run's seed condition — the set of entity ids that start with a
+    row. `None` means the default role-based policy
+    (`repo_policy.seeded_entities`); `frozenset()` is the `--no-row` case. It is
+    the ONE input mode B derives its repository outcome from, and mode A is given
+    the same condition materialised as rows, so neither mode reads the other's
+    answer (the arrangement `_derive_skip_from_payload` uses for the skip flag).
 
     This is the one place the Semantic IR is read for code generation. Both
     renderings consume the result — `emit_lnpl_mlir` serialises it as `lnpl`
@@ -437,22 +558,63 @@ def _lnpl_ops(document, workflow_id):
     # failing step and every later step — or a multi-effect step would make mode B
     # emit effects mode A never reached. Guarded sets are left alone: a skipped set
     # is never reached, so it must not force a failure.
+    #
+    # Issue #35 adds the repository failures to the same scan, because mode A has
+    # exactly ONE failure point — `run_workflow` breaks out of the step loop at the
+    # first failed step — so two independent scans could disagree about which
+    # failure comes first. What makes the repository answerable statically is the
+    # single-key invariant `repo_policy` establishes: one run has one payload, so
+    # every call against entity E addresses the same key and each entity's table
+    # holds at most one row. "Does E's create conflict?" therefore reduces to a
+    # document-derivable question — E conflicts iff it is seeded or an earlier
+    # call already created it — with no interpreter state and no runtime channel.
+    #
+    # KNOWN LIMITATION, deliberate. A guarded op is skipped in BOTH directions: it
+    # cannot force a failure, and it cannot record a create either. The first is
+    # the cache rule's reason (a guard may never be taken, so failing the run on it
+    # would invent a failure mode A never has). The second follows from the same
+    # uncertainty — crediting a create that may not happen would make a LATER
+    # unguarded create conflict for a row that was never written. So: a repository
+    # failure inside a guard that IS taken at runtime is not reproduced here. The
+    # honest alternative would be to evaluate guards statically, which the payload
+    # forbids — a guard's truth is a per-run fact, and mode B specialises at
+    # compile time. Reported rather than papered over.
     terminal_status = None
-    if not _has_cache_budget(document, workflow_id):
-        for cut, op in enumerate(ops):
-            if op["guard_mode"] is not None:
-                continue
-            fail_at = next(
-                (i for i, effect in enumerate(op["effects"])
-                 if effect["kind"] == "CacheAccess"
-                 and nodes[effect["node_id"]].get("operation") == "set"),
-                None)
+    has_cache_budget = _has_cache_budget(document, workflow_id)
+    seeded_now = set(seeded_entities(document, workflow_id) if seeded is None
+                     else seeded)
+    created = set()
+    for cut, op in enumerate(ops):
+        if op["guard_mode"] is not None:
+            continue
+        fail_at = None
+        for index, effect in enumerate(op["effects"]):
+            node = nodes[effect["node_id"]]
+            kind, operation = effect["kind"], node.get("operation")
+            if kind == "CacheAccess" and operation == "set" and not has_cache_budget:
+                fail_at = index
+            elif kind == "RepositoryCall" and operation in READ_OPS:
+                if node["entity"] not in seeded_now and node["entity"] not in created:
+                    fail_at = index
+            elif kind == "RepositoryCall" and operation == "create":
+                if node["entity"] in seeded_now or node["entity"] in created:
+                    fail_at = index
+                else:
+                    created.add(node["entity"])
             if fail_at is not None:
-                truncated = dict(op)
-                truncated["effects"] = op["effects"][:fail_at + 1]
-                ops = ops[:cut] + [truncated]
-                terminal_status = "failed"
                 break
+        if fail_at is not None:
+            retry, timeout_ms = _retry_policy(document, workflow_id)
+            attempts = _failure_attempts(nodes, op, fail_at, cut, retry, timeout_ms)
+            truncated = dict(op)
+            # One copy of the failing prefix per attempt: mode A re-runs the whole
+            # step each time and its child spans accumulate on one span. The
+            # multiplicity lives in the op stream, so `emit_lnpl_mlir` and
+            # `_render_std` expand it identically — one structure, two views.
+            truncated["effects"] = op["effects"][:fail_at + 1] * attempts
+            ops = ops[:cut] + [truncated]
+            terminal_status = "failed"
+            break
     if terminal_status is not None:
         module_attrs["lnpl.terminal_status"] = terminal_status
 
@@ -492,8 +654,10 @@ def _mlir_attr_dict(pairs):
                      for key, value in pairs if value is not None)
 
 
-def emit_lnpl_mlir(document, workflow_id):
+def emit_lnpl_mlir(document, workflow_id, seeded=None):
     """S4: Semantic IR -> `lnpl` dialect MLIR.
+
+    `seeded` is the run's seed condition; see `_lnpl_ops`.
 
     Every op carries the originating node id on both paths RFC-0004 requires: the
     discardable attribute `lnpl.node_id` that passes read, and a `loc(...)` that
@@ -502,7 +666,7 @@ def emit_lnpl_mlir(document, workflow_id):
     verifier over the emitted module, so a module that loses a node id fails the
     compile rather than producing a binary that cannot be traced back.
     """
-    module_attrs, ops = _lnpl_ops(document, workflow_id)
+    module_attrs, ops = _lnpl_ops(document, workflow_id, seeded)
 
     lines = [
         "// Generated from Semantic IR (lir_version %s, module %s) — do not edit."
@@ -716,15 +880,17 @@ def _render_std(module_attrs, ops):
     return "\n".join(lines) + "\n"
 
 
-def emit_mlir(document, workflow_id):
+def emit_mlir(document, workflow_id, seeded=None):
     """Semantic IR -> standard-dialect MLIR, by way of the `lnpl` dialect (S4-S5).
+
+    `seeded` is the run's seed condition; see `_lnpl_ops`.
 
     The op stream this renders is the one `emit_lnpl_mlir` serialises, so the
     standard-dialect module and the `lnpl` module cannot describe different
     workflows. The signature and the output are unchanged from before the dialect
     existed; `impl/tests/golden/` holds the pre-change bytes that prove it.
     """
-    return _render_std(*_lnpl_ops(document, workflow_id))
+    return _render_std(*_lnpl_ops(document, workflow_id, seeded))
 
 
 RUNTIME_C_HEADER = r"""/* Mode B runtime shim — generated, do not edit.
@@ -779,8 +945,15 @@ def runtime_c(field_names):
         + "  return rc;\n}\n")
 
 
-def build(document, workflow_id, workdir, keep_intermediate=True):
+def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None):
     """Run S4-S7. Returns the path to the native binary.
+
+    `seeded` is the run's seed condition (see `_lnpl_ops`): it specialises the
+    module, exactly as the cache-TTL budget does. A runtime flag was the
+    alternative, and it is the wrong one — deciding the repository outcome at run
+    time means the generated module branches on repository state, which is a
+    store inside the native runtime. Mode B is rebuilt per `observe_mode_b` call
+    anyway, so specialising costs nothing.
 
     Stages on disk, in order: `module.lnpl.mlir` (S4, verified against the `lnpl`
     dialect), `module.mlir` (S5 standard dialects), `module.llvm.mlir` (S6),
@@ -801,13 +974,13 @@ def build(document, workflow_id, workdir, keep_intermediate=True):
     # materialise as a failed conversion, so nothing downstream runs and no
     # binary appears. `path=` verifies this file rather than a staged copy, which
     # keeps the artifact and the verified object the same thing.
-    lnpl_text = emit_lnpl_mlir(document, workflow_id)
+    lnpl_text = emit_lnpl_mlir(document, workflow_id, seeded)
     with open(lnpl_path, "w", encoding="utf-8") as fh:
         fh.write(lnpl_text)
     verify_lnpl_module(lnpl_text, path=lnpl_path)
 
     with open(mlir_path, "w", encoding="utf-8") as fh:
-        fh.write(emit_mlir(document, workflow_id))
+        fh.write(emit_mlir(document, workflow_id, seeded))
     with open(c_path, "w", encoding="utf-8") as fh:
         fh.write(runtime_c(fields))
     # Persist the parameter order next to the binary so run_binary binds values by
