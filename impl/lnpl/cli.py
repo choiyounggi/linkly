@@ -13,6 +13,7 @@ from .interp import Interpreter, RunError, sample_payload
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
+from .repo_policy import default_rows
 from .backend import BackendError, build as build_native, run_binary
 
 
@@ -84,11 +85,7 @@ def cmd_run(args):
         return 1
     target = args.workflow or workflows[0]["id"]
 
-    rows = {}
-    if not args.no_row:
-        for n in doc["nodes"]:
-            if n["kind"] == "Entity":
-                rows[n["id"]] = dict(payload)
+    rows = _repo_rows(doc, payload, target, empty=args.no_row)
     interp = Interpreter(doc, repo_rows=rows)
     result = interp.run_workflow(target, payload)
 
@@ -157,10 +154,10 @@ def cmd_openapi(args):
     return 0
 
 
-def _repo_rows(doc, payload, empty=False):
+def _repo_rows(doc, payload, workflow_id, empty=False):
     if empty:
         return {}
-    return {n["id"]: dict(payload) for n in doc["nodes"] if n["kind"] == "Entity"}
+    return default_rows(doc, workflow_id, payload)
 
 
 def cmd_build(args):
@@ -197,7 +194,7 @@ def cmd_diff(args):
     else:
         payload = sample_payload(_entities(doc))
     ok, report = verify_modes(doc, target, payload,
-                              _repo_rows(doc, payload, empty=args.no_row),
+                              _repo_rows(doc, payload, target, empty=args.no_row),
                               args.workdir)
     print("\n".join(report))
     return 0 if ok else 1

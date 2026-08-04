@@ -14,6 +14,7 @@ import unittest
 from lnpl import backend, differential
 from lnpl.lower import lower
 from lnpl.parser import parse
+from lnpl.repo_policy import default_rows
 from tests.fixtures import GUARDED, UNTIL_COUNTER, guarded_source
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -34,8 +35,11 @@ def golden():
         return json.load(fh)
 
 
-def rows_for(doc):
-    return {n["id"]: dict(PAYLOAD) for n in doc["nodes"] if n["kind"] == "Entity"}
+# Seeds come from `repo_policy.default_rows(doc, workflow, payload)` — the one
+# seeding rule (issue #35). It is called with the payload each run actually uses,
+# never with the `PAYLOAD` constant by default: `row_key` derives from the run's
+# payload, so seeding a `{}` run from `PAYLOAD` files the row under
+# `entity.user#3f25…` while the read looks for `entity.user#-`.
 
 
 class TestMlirEmission(unittest.TestCase):
@@ -125,20 +129,23 @@ class TestDifferential(unittest.TestCase):
     def test_the_two_modes_are_equivalent_on_the_golden_scenario(self):
         doc = golden()
         ok, report = differential.verify(doc, "wf.login", PAYLOAD,
-                                         rows_for(doc), self.workdir)
+                                         default_rows(doc, "wf.login", PAYLOAD),
+                                         self.workdir)
         self.assertTrue(ok, "\n".join(report))
         self.assertIn("differential: EQUIVALENT", report[-1])
 
     def test_all_four_observable_classes_are_checked(self):
         doc = golden()
         _ok, report = differential.verify(doc, "wf.login", PAYLOAD,
-                                          rows_for(doc), self.workdir)
+                                          default_rows(doc, "wf.login", PAYLOAD),
+                                          self.workdir)
         for n in ("1/4", "2/4", "3/4", "4/4"):
             self.assertTrue(any(n in line for line in report), n)
 
     def test_secrets_do_not_reach_either_mode_output(self):
         doc = golden()
-        a = differential.observe_mode_a(doc, "wf.login", PAYLOAD, rows_for(doc))
+        a = differential.observe_mode_a(doc, "wf.login", PAYLOAD,
+                                        default_rows(doc, "wf.login", PAYLOAD))
         b = differential.observe_mode_b(doc, "wf.login", self.workdir)
         self.assertNotIn("s3cret", a["text"])
         self.assertNotIn("s3cret", b["text"])
@@ -153,7 +160,7 @@ class TestDifferential(unittest.TestCase):
         doc = lower(parse(GUARDED), "t").to_document()
         # Empty payload: token is missing, so 'token missing' is true, step runs
         ok, report = differential.verify(
-            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+            doc, "wf.w", {}, default_rows(doc, "wf.w", {}), self.workdir)
         self.assertTrue(ok, "\n".join(report))
         # Verify the guarded step actually ran
         b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
@@ -170,7 +177,7 @@ class TestDifferential(unittest.TestCase):
         payload = {"token": "present"}  # token is present
         # With token present, 'token missing' is false, step is skipped
         ok, report = differential.verify(
-            doc, "wf.w", payload, {"entity.user": dict(PAYLOAD)}, self.workdir)
+            doc, "wf.w", payload, default_rows(doc, "wf.w", payload), self.workdir)
         self.assertTrue(ok, "\n".join(report))
         # Verify the guarded step was skipped (no cache effect)
         b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload=payload)
@@ -224,7 +231,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(GUARDED), "t").to_document()
         ok, report = self._verify(doc, "wf.w", {},
-                                  {"entity.user": dict(PAYLOAD)})
+                                  default_rows(doc, "wf.w", {}))
         self.assertTrue(ok, "\n".join(report))
         # And the guarded step really did run — otherwise the assertion above
         # would hold for a workflow that skipped the effect entirely.
@@ -233,7 +240,8 @@ class TestDivergenceIsDetected(unittest.TestCase):
 
     def test_reordered_backend_is_reported_as_divergent(self):
         doc = golden()
-        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        rows = default_rows(doc, "wf.login", PAYLOAD)
+        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
 
         original = self.original
@@ -244,13 +252,14 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = reversed_order
-        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertFalse(ok, "a reversed backend must not compare as equivalent")
         self.assertTrue(any("FAIL 1/4" in line for line in report), report)
 
     def test_dropped_effect_in_the_backend_is_reported_as_divergent(self):
         doc = golden()
-        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        rows = default_rows(doc, "wf.login", PAYLOAD)
+        ok, _report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
 
         original = self.original
@@ -263,7 +272,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
             return out
 
         backend._steps_in_order = without_effects
-        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows_for(doc))
+        ok, report = self._verify(doc, "wf.login", PAYLOAD, rows)
         self.assertFalse(ok)
         self.assertTrue(any("FAIL 3/4" in line for line in report), report)
 
@@ -276,7 +285,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(GUARDED), "t").to_document()
         payload = dict(PAYLOAD, token="present")
-        rows = {"entity.user": dict(PAYLOAD)}
+        rows = default_rows(doc, "wf.w", payload)
 
         ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
@@ -307,7 +316,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(UNTIL_COUNTER), "t").to_document()
         payload = {"counter": 100}
-        rows = {"entity.workflow": dict(payload)}
+        rows = default_rows(doc, "wf.w", payload)
 
         ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
@@ -336,7 +345,7 @@ class TestDivergenceIsDetected(unittest.TestCase):
         """
         doc = lower(parse(UNTIL_COUNTER), "t").to_document()
         payload = {"counter": 0}
-        rows = {"entity.workflow": dict(payload)}
+        rows = default_rows(doc, "wf.w", payload)
 
         ok, _report = self._verify(doc, "wf.w", payload, rows)
         self.assertTrue(ok, "baseline must be equivalent before the fault")
@@ -417,7 +426,7 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         `status failed`.
         """
         doc = self._doc(NO_TTL_CACHE)
-        rows = {"entity.user": dict(PAYLOAD)}
+        rows = default_rows(doc, "wf.w", {})
         ok, report = differential.verify(doc, "wf.w", {}, rows, self.workdir)
         self.assertTrue(ok, "\n".join(report))
         self.assertTrue(any("PASS 2/4" in line for line in report), report)
@@ -432,13 +441,15 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         is the only variable, and now BOTH modes track it (mode B used to complete
         the budget-less run regardless).
         """
-        rows = {"entity.user": dict(PAYLOAD)}
-        a_without = differential.observe_mode_a(self._doc(NO_TTL_CACHE), "wf.w", {}, rows)
-        a_with = differential.observe_mode_a(self._doc(TTL_CACHE), "wf.w", {}, rows)
+        no_ttl, ttl = self._doc(NO_TTL_CACHE), self._doc(TTL_CACHE)
+        a_without = differential.observe_mode_a(
+            no_ttl, "wf.w", {}, default_rows(no_ttl, "wf.w", {}))
+        a_with = differential.observe_mode_a(
+            ttl, "wf.w", {}, default_rows(ttl, "wf.w", {}))
         b_without = differential.observe_mode_b(
-            self._doc(NO_TTL_CACHE), "wf.w", self.workdir, payload={})
+            no_ttl, "wf.w", self.workdir, payload={})
         b_with = differential.observe_mode_b(
-            self._doc(TTL_CACHE), "wf.w", self.workdir, payload={})
+            ttl, "wf.w", self.workdir, payload={})
         self.assertIn("status failed", a_without["text"])
         self.assertIn("status completed", a_with["text"])
         self.assertIn("status failed", b_without["text"])
@@ -448,7 +459,7 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         """Control. Without this, the two tests above could be about anything."""
         doc = self._doc(TTL_CACHE)
         ok, report = differential.verify(
-            doc, "wf.w", {}, {"entity.user": dict(PAYLOAD)}, self.workdir)
+            doc, "wf.w", {}, default_rows(doc, "wf.w", {}), self.workdir)
         self.assertTrue(ok, "\n".join(report))
 
     def test_effects_after_the_unbudgeted_set_are_not_emitted(self):
@@ -467,7 +478,7 @@ class TestModeBEnforcesTheCacheTtlContract(unittest.TestCase):
         doc["nodes"].append({"kind": "Authorization",
                              "id": step["id"] + ".after", "requirement": "x"})
         step["children"] = list(step.get("children", [])) + [step["id"] + ".after"]
-        rows = {"entity.user": dict(PAYLOAD)}
+        rows = default_rows(doc, "wf.w", {})
         a = differential.observe_mode_a(doc, "wf.w", {}, rows)
         b = differential.observe_mode_b(doc, "wf.w", self.workdir, payload={})
         self.assertNotIn("Authorization", a["effects"].get(step["name"], []))

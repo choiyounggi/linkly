@@ -14,6 +14,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
+from .repo_policy import row_key
 from .types import SEMANTIC_TYPES
 
 IDEMPOTENT_OPS = {
@@ -43,21 +44,31 @@ class Clock:
 
 
 class FakeRepository:
-    """Stands in for a `postgres` capability."""
+    """Stands in for a `postgres` capability: one keyed table per entity."""
 
     def __init__(self, rows=None):
-        self.rows = rows or {}
+        # {entity_id: {row_key: row}} — copied per instance because `create` now
+        # writes into the table, and aliasing the caller's seed dict would carry
+        # one run's writes into the next (issue #35).
+        self.rows = {entity_id: dict(table)
+                     for entity_id, table in (rows or {}).items()}
         self.calls = []
 
-    def execute(self, entity_id, operation):
+    def execute(self, entity_id, operation, key):
         self.calls.append((entity_id, operation))
+        table = self.rows.setdefault(entity_id, {})
         if operation in ("read", "query"):
-            return self.rows.get(entity_id)
-        if operation == "create" and entity_id in self.rows:
-            # A duplicate create conflicts. This matters beyond realism: without a
-            # non-idempotent operation that can fail, the rule "do not retry a
-            # non-idempotent effect" cannot be tested at all.
-            raise RunError("repository create conflicts: %s already exists" % entity_id)
+            return table.get(key)
+        if operation == "create":
+            if key in table:
+                # A duplicate create conflicts. This matters beyond realism: without a
+                # non-idempotent operation that can fail, the rule "do not retry a
+                # non-idempotent effect" cannot be tested at all. The conflict is per
+                # (entity, key), not per entity: that is what lets a workflow read one
+                # entity and create another (issue #35) while creating the same key
+                # twice still fails, keeping the retry rule testable.
+                raise RunError("repository create conflicts: %s already exists" % entity_id)
+            table[key] = {"id": key}
         return {"affected": 1}
 
 
@@ -409,7 +420,8 @@ class Interpreter:
         if kind == "Validation":
             self._validate(effect, payload)
         elif kind == "RepositoryCall":
-            row = self.repo.execute(effect["entity"], effect["operation"])
+            row = self.repo.execute(effect["entity"], effect["operation"],
+                                    row_key(effect["entity"], payload))
             child.attrs["found"] = row is not None
             if effect["operation"] == "read" and row is None:
                 self.clock.advance(1)

@@ -14,6 +14,7 @@ import unittest
 from lnpl.interp import Interpreter
 from lnpl.lower import lower
 from lnpl.parser import parse
+from lnpl.repo_policy import row_key
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(REPO, "examples", "login.lnpl")
@@ -77,14 +78,14 @@ class TestGoldenPair(unittest.TestCase):
 class TestGoldenExecution(unittest.TestCase):
     def test_golden_runs_to_completion(self):
         doc = compile_golden()
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={"entity.user": {row_key("entity.user", PAYLOAD): dict(PAYLOAD)}})
         result = interp.run_workflow("wf.login", PAYLOAD)
         self.assertEqual(result["status"], "completed")
         self.assertEqual(len(result["steps"]), 6)
 
     def test_timeline_matches_the_declared_six_steps(self):
         doc = compile_golden()
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={"entity.user": {row_key("entity.user", PAYLOAD): dict(PAYLOAD)}})
         interp.run_workflow("wf.login", PAYLOAD)
         self.assertEqual([s.name for s in interp.trace.root.children],
                          ["validate input", "authenticate", "cache user",
@@ -92,7 +93,7 @@ class TestGoldenExecution(unittest.TestCase):
 
     def test_golden_meets_its_own_response_slo(self):
         doc = compile_golden()
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={"entity.user": {row_key("entity.user", PAYLOAD): dict(PAYLOAD)}})
         result = interp.run_workflow("wf.login", PAYLOAD)
         self.assertTrue(result["slo_met"], "golden run exceeded response < 50ms")
 
