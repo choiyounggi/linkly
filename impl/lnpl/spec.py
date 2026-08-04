@@ -17,7 +17,7 @@ Manifest shape:
                 "given": [...], "when": [...], "expect": [...]}]}
 """
 
-from .interp import Interpreter, RunError, sample_payload
+from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import COMPARATORS
 from .repo_policy import default_rows
 
@@ -121,7 +121,7 @@ EXPECTATIONS = {
 }
 
 
-def _payload_from_given(given, entity_node):
+def _payload_from_given(given, entity_node, refinements=None):
     """`given` lines describe the input. Recognized forms:
         `valid <...>`        a narrative fixture marker (any noun) — no field effect
         `empty repository`   run against an empty repository
@@ -133,7 +133,7 @@ def _payload_from_given(given, entity_node):
     assignment — a `given` nobody can build is not a fixture (issue #28).
     """
     fields = {f["name"] for f in entity_node["fields"]} if entity_node else set()
-    payload = sample_payload([entity_node] if entity_node else [])
+    payload = sample_payload([entity_node] if entity_node else [], refinements)
     for phrase in given:
         tokens = phrase.split()
         if tokens[0] == "valid" or phrase == "empty repository":
@@ -154,7 +154,8 @@ def run_manifest(manifest, document):
     entity = next((n for n in document["nodes"] if n["kind"] == "Entity"), None)
     passed, failed, lines = 0, 0, []
     for case in manifest["cases"]:
-        payload = _payload_from_given(case["given"], entity)
+        payload = _payload_from_given(case["given"], entity,
+                                      refinement_index(document))
         empty_repo = any(g == "empty repository" for g in case["given"])
         rows = {} if empty_repo else default_rows(document, case["workflow"], payload)
         interp = Interpreter(document, repo_rows=rows)

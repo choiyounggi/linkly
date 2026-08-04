@@ -14,6 +14,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
+from .refinements import BASE_CATEGORY
 from .repo_policy import row_key
 from .types import SEMANTIC_TYPES
 
@@ -269,11 +270,20 @@ def _condition_holds(condition, payload):
 
 
 def mask_payload(payload, entity_node):
-    """Replace values whose declared semantic type is masked (RFC-0003 §Observability)."""
+    """Replace values whose declared semantic type is masked (RFC-0003 §Observability).
+
+    A field's declared type is resolved to its 18-type `base` first, so
+    `refine ApiKey of Password` inherits Password's masking obligation: a
+    refinement strengthens its base and cannot shed the base's obligations. The
+    list of masked names is never extended — a second hardcoded name would break
+    again for the next refinement someone writes. Entity nodes that carry no
+    resolved `base` (a hand-built node, or one from outside the interpreter) fall
+    back to the declared type, which is the pre-refinement behavior.
+    """
     if not isinstance(payload, dict) or entity_node is None:
         return payload
     masked_names = {f["name"] for f in entity_node.get("fields", [])
-                    if f.get("type") in MASKED_TYPES}
+                    if f.get("base", f.get("type")) in MASKED_TYPES}
     return {k: (MASK if k in masked_names else v) for k, v in payload.items()}
 
 
@@ -281,6 +291,7 @@ class Interpreter:
     def __init__(self, document, clock=None, repo_rows=None, correlation_id="cid-0001"):
         self.doc = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
+        self.refinements = refinement_index(document)
         self.clock = clock or Clock()
         self.repo = FakeRepository(repo_rows)
         self.cache = FakeCache(self.clock)
@@ -325,9 +336,24 @@ class Interpreter:
         return out
 
     def _entity_node(self):
+        """The Entity in scope, as an observability view: every field carries the
+        18-type `base` its declared type resolves to, so masking honours a
+        refinement of `Password` without each call site having to know the
+        document.
+
+        RFC-0003 §Observability requires exactly one masking chokepoint and calls
+        per-call-site masking a contract violation — the call site that forgets
+        is the leak. Resolving the base here rather than at each
+        `mask_payload(...)` covers both sinks (the workflow-start log and the
+        outbox emission) with one change. `type` is left untouched: `_validate`
+        needs the refinement's own name to apply its facets.
+        """
         for n in self.doc["nodes"]:
             if n["kind"] == "Entity":
-                return n
+                fields = [dict(f, base=self.refinements.get(f.get("type"), {})
+                               .get("base", f.get("type")))
+                          for f in n.get("fields", [])]
+                return dict(n, fields=fields)
         return None
 
     # ---- execution ---------------------------------------------------------
@@ -474,12 +500,14 @@ class Interpreter:
             for field in entity.get("fields", []):
                 if field["name"] not in payload:
                     raise RunError("missing required field %r" % field["name"])
-                check_semantic_type(field["type"], payload[field["name"]], field["name"])
+                check_semantic_type(field["type"], payload[field["name"]],
+                                    field["name"], self.refinements)
         else:
             field_name = effect["target"].rsplit(".", 1)[-1]
             if field_name not in payload:
                 raise RunError("missing required field %r" % field_name)
-            check_semantic_type(rule, payload[field_name], field_name)
+            check_semantic_type(rule, payload[field_name], field_name,
+                                self.refinements)
 
     def _retryable(self, step, con, attempts, deadline=None):
         if attempts > con["retry"]:
@@ -499,18 +527,103 @@ class Interpreter:
         return True
 
 
-def check_semantic_type(type_name, value, field_name):
+def refinement_index(document):
+    """Every `Refinement` node in `document`, keyed by the name a field's `type`
+    (or a `Validation.rule`) spells — RFC-0001 부록 A.6.1 resolution order ②.
+
+    This is the ONLY source of refinements at runtime. `refinements.PRESETS` is
+    deliberately not consulted: a built-in preset a field uses is already emitted
+    into the document as a structurally identical node (A.6.4 emit-on-use), while
+    a user-declared `refine` exists ONLY here — reading the preset table would
+    silently skip every user declaration, which is the class of bug issue #31
+    exists to eliminate.
+
+    The returned dicts are the document's own objects, not copies; callers treat
+    them as read-only.
+    """
+    return {n["name"]: {"base": n["base"], "facets": n["facets"]}
+            for n in document.get("nodes", []) if n["kind"] == "Refinement"}
+
+
+def _check_facets(base, facets, value, field_name, type_name):
+    """Apply a refinement's facets on top of its base's own rule (부록 A.6.3).
+
+    `pattern` is applied with `re.search`: JSON Schema defines `pattern` as an
+    unanchored ECMA-262 partial match, and the OpenAPI projection of these same
+    facets must accept exactly what this accepts. The three built-in presets
+    carry their own `^...$`, so anchoring only ever matters for a user pattern.
+    (`types.SEMANTIC_TYPES`'s own base rules keep `re.match` — a different
+    registry with a different owner.)
+
+    Numeric facets compare as `decimal.Decimal`, never `float`: `Decimal` is
+    serialized as a string and float coercion would round the comparison.
+    """
+    import decimal
+    import re
+    if "enum" in facets:
+        # `True == 1` in Python, so an unguarded membership test would let a
+        # boolean satisfy `enum 1`. `Integer`'s base rule excludes bool for the
+        # same reason; the facet layer holds the same line.
+        if isinstance(value, bool) or value not in facets["enum"]:
+            raise RunError("field %r is not one of %s's enum values %r"
+                           % (field_name, type_name, facets["enum"]))
+    category = BASE_CATEGORY[base]
+    if category == "text":
+        text = str(value)
+        if "minLength" in facets and len(text) < facets["minLength"]:
+            raise RunError("field %r is shorter than %s's minLength %d (%d)"
+                           % (field_name, type_name, facets["minLength"], len(text)))
+        if "maxLength" in facets and len(text) > facets["maxLength"]:
+            raise RunError("field %r is longer than %s's maxLength %d (%d)"
+                           % (field_name, type_name, facets["maxLength"], len(text)))
+        if "pattern" in facets and not re.search(facets["pattern"], text):
+            raise RunError("field %r does not match %s's pattern %r"
+                           % (field_name, type_name, facets["pattern"]))
+    elif category == "numeric":
+        for name in ("min", "max"):
+            if name not in facets:
+                continue
+            try:
+                number = decimal.Decimal(str(value))
+            except (decimal.InvalidOperation, ValueError):
+                raise RunError("field %r is not a number, so %s's %s cannot be "
+                               "applied" % (field_name, type_name, name))
+            limit = decimal.Decimal(str(facets[name]))
+            if number < limit if name == "min" else number > limit:
+                raise RunError("field %r violates %s's %s %s"
+                               % (field_name, type_name, name, facets[name]))
+    # `boolean` and `composite` admit no facets at all (A.6.3), so there is
+    # nothing to apply and no branch to write.
+
+
+def check_semantic_type(type_name, value, field_name, refinements=None):
     """Validate a value against its semantic type's rule (RFC-0001).
 
     The rule is data on `types.SEMANTIC_TYPES[type_name]["check"]`; this applies
-    it. A type not in the registry (a refinement, etc.) is not the registry's to
-    judge — a present, non-null value passes. RFC-0001 owns the full table.
+    it. When `type_name` names a `Refinement` in `refinements` (built by
+    `refinement_index(document)`), the value must satisfy the base type's own
+    rule AND every facet — a refinement strengthens its base, it never replaces
+    it (부록 A.6.2).
+
+    A name that is neither a base type nor a refinement in this document still
+    passes: resolving `fields[].type` is the compiler's boundary, and it raises
+    `LowerError` for a name that resolves to nothing (부록 A.7 ⓐ). Re-deciding
+    that here would duplicate a check that already failed closed upstream.
+    RFC-0001 owns the full table.
     """
     import re
     if type_name == "semantic-types":
         return
     if value is None:
         raise RunError("field %r is null" % field_name)
+    refinement = None if refinements is None else refinements.get(type_name)
+    if refinement is not None:
+        # `base` is one of the 18 by construction (A.6.2 forbids refining a
+        # refinement), so the recursive call needs no index of its own.
+        check_semantic_type(refinement["base"], value, field_name)
+        _check_facets(refinement["base"], refinement["facets"], value,
+                      field_name, type_name)
+        return
     spec = SEMANTIC_TYPES.get(type_name)
     if spec is None:
         return
@@ -536,19 +649,85 @@ def check_semantic_type(type_name, value, field_name):
 SAMPLE_VALUES = {name: spec["sample"] for name, spec in SEMANTIC_TYPES.items()}
 
 
-def sample_payload(entities):
+# Shapes none of the 18 bases exhibits as a top-level sample. This list grows by
+# SHAPE, never by refinement name — keying it on a name would make the built-in
+# presets privileged, which 부록 A.6.4 forbids. Every entry goes through
+# `check_semantic_type` before it is used, exactly like every other candidate, so
+# an entry that fits nothing simply never wins.
+EXTRA_TEXT_SAMPLES = ("https://example.com/a",)
+
+
+def sample_for_type(type_name, refinements=None):
+    """A valid sample value for a field of `type_name`, or None if none can be
+    derived (RFC-0001 부록 A.6).
+
+    For a refinement this PROPOSES candidates and VERIFIES each one, in this
+    order: the base's own sample, the first `enum` member, the numeric bound, a
+    length-adjusted derivation of the base sample, the registry's other string
+    samples, then EXTRA_TEXT_SAMPLES. The first candidate that passes
+    `check_semantic_type` wins. Deriving a string that satisfies an arbitrary
+    regex is not decidable, so this never inverts a pattern — it proposes and
+    checks. When nothing passes, the caller gets None and skips the field: an
+    absent value is recoverable, while a value that fails its own validation
+    turns a fixture into a false green.
+
+    Returns None for "no sample" — test it with `is None`, because `{}`, `0` and
+    `False` are all legitimate sample values.
+    """
+    refinement = None if refinements is None else refinements.get(type_name)
+    if refinement is None:
+        return SAMPLE_VALUES.get(type_name)
+    base = refinement["base"]
+    facets = refinement["facets"]
+    base_sample = SAMPLE_VALUES.get(base)
+    candidates = [base_sample]
+    if "enum" in facets:
+        candidates.append(facets["enum"][0])
+    category = BASE_CATEGORY[base]
+    if category == "numeric":
+        for name in ("min", "max"):
+            if name in facets:
+                # `Decimal`'s own sample is a string, so a Decimal-based
+                # refinement keeps that shape instead of turning into a number.
+                candidates.append(str(facets[name])
+                                  if isinstance(base_sample, str)
+                                  else facets[name])
+    elif category == "text" and isinstance(base_sample, str):
+        unit = base_sample or "x"
+        if "minLength" in facets and len(base_sample) < facets["minLength"]:
+            candidates.append(unit * -(-facets["minLength"] // len(unit)))
+        if "maxLength" in facets and len(base_sample) > facets["maxLength"]:
+            candidates.append(base_sample[:facets["maxLength"]])
+        candidates.extend(v for v in SAMPLE_VALUES.values()
+                          if isinstance(v, str))
+        candidates.extend(EXTRA_TEXT_SAMPLES)
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            check_semantic_type(type_name, candidate, "sample", refinements)
+        except RunError:
+            continue
+        return candidate
+    return None
+
+
+def sample_payload(entities, refinements=None):
     """Synthesize a default input fixture covering every field of `entities`.
 
-    The value for each field is `SAMPLE_VALUES[field.type]`. Fields whose type is
-    not a base RFC-0001 type (e.g. a refinement) are skipped — the caller can
-    still override with an explicit payload. Replaces the hardcoded login payload
-    so `run`/`diff` work for any module (issue #23).
+    The value for each field comes from `sample_for_type`. With `refinements`
+    (from `refinement_index(document)`) a refinement-typed field gets a value
+    too, derived against its facets and verified against its own type before it
+    is used; a field no valid value can be derived for is left out, and the
+    caller can still override with an explicit payload. Replaces the hardcoded
+    login payload so `run`/`diff` work for any module (issue #23, #31).
     """
     payload = {}
     for entity in entities:
         for field in entity.get("fields", []):
-            if field["type"] in SAMPLE_VALUES:
-                payload[field["name"]] = SAMPLE_VALUES[field["type"]]
+            value = sample_for_type(field["type"], refinements)
+            if value is not None:
+                payload[field["name"]] = value
     return payload
 
 
