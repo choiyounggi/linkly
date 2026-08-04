@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-from .interp import Interpreter, RunError, sample_payload
+from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
@@ -76,7 +76,7 @@ def cmd_run(args):
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
     else:
-        payload = sample_payload(_entities(doc))
+        payload = sample_payload(_entities(doc), refinement_index(doc))
 
     workflows = [n for n in doc["nodes"] if n["kind"] == "Workflow"]
     if not workflows:
@@ -195,7 +195,7 @@ def cmd_diff(args):
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
     else:
-        payload = sample_payload(_entities(doc))
+        payload = sample_payload(_entities(doc), refinement_index(doc))
     ok, report = verify_modes(doc, target, payload,
                               _repo_rows(doc, payload, empty=args.no_row),
                               args.workdir)

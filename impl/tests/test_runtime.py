@@ -161,6 +161,93 @@ class TestValidationAndMasking(unittest.TestCase):
         self.assertEqual(out["password"], "***")
 
 
+# A refinement of Password. `ApiKey` is a name the registry has never heard of,
+# so nothing but base resolution can make it masked. One entity only: masking
+# consults the first Entity in the document and stops (pre-existing behavior).
+API_KEY = """
+capability postgres
+refine ApiKey of Password
+    minLength 8
+entity Token
+    field
+        id UUID
+        token ApiKey
+event TokenIssued on Token create
+service TokenService
+    policy
+        retry 0
+workflow Issue
+    create token
+    emit TokenIssued
+"""
+
+SECRET = "SUPER-SECRET-VALUE"
+API_KEY_PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "token": SECRET}
+
+
+class TestRefinementInheritsMasking(unittest.TestCase):
+    """RFC-0001's Password row forbids exposure in logs, serialization and error
+    messages; RFC-0003 owns the runtime contract and puts masking at ONE central
+    chokepoint. A refinement strengthens its base — it cannot shed the base's
+    obligations, so `refine ApiKey of Password` is masked too.
+    """
+
+    def _run(self, src=API_KEY, payload=None):
+        doc = lower(parse(src), "tok").to_document()
+        interp = Interpreter(doc, repo_rows={})
+        result = interp.run_workflow("wf.issue",
+                                     dict(API_KEY_PAYLOAD if payload is None
+                                          else payload))
+        return interp, result
+
+    def test_password_refinement_is_masked_in_logs(self):
+        interp, result = self._run()
+        self.assertEqual(result["status"], "completed")
+        blob = repr(interp.trace.logs)
+        self.assertNotIn(SECRET, blob)
+        self.assertIn("***", blob)
+
+    def test_password_refinement_is_masked_in_the_outbox(self):
+        # The second sink: an event leaves the process, so its payload is masked
+        # too. Fixing only the log path would leak here.
+        interp, _ = self._run()
+        self.assertEqual(len(interp.outbox), 1)
+        self.assertEqual(interp.outbox[0]["payload"]["token"], "***")
+        self.assertNotIn(SECRET, repr(interp.outbox))
+
+    def test_an_unmasked_field_of_the_same_entity_is_untouched(self):
+        # Guards against over-masking: only the Password-derived field changes.
+        interp, _ = self._run()
+        self.assertEqual(interp.outbox[0]["payload"]["id"],
+                         API_KEY_PAYLOAD["id"])
+
+    def test_a_refinement_of_a_non_masked_base_is_not_masked(self):
+        src = API_KEY.replace("refine ApiKey of Password",
+                              "refine ApiKey of Text")
+        interp, _ = self._run(src=src)
+        self.assertEqual(interp.outbox[0]["payload"]["token"], SECRET)
+
+    def test_a_plain_password_field_is_still_masked(self):
+        # The pre-existing contract, restated on the same code path.
+        src = API_KEY.replace("        token ApiKey", "        token Password")
+        interp, _ = self._run(src=src)
+        self.assertEqual(interp.outbox[0]["payload"]["token"], "***")
+
+    def test_mask_payload_still_accepts_an_entity_without_resolved_bases(self):
+        # Boundary: a hand-built entity node (no `base` key) must keep working —
+        # `mask_payload` is a module-level function with callers outside the
+        # interpreter.
+        entity = {"fields": [{"name": "token", "type": "Password"},
+                             {"name": "id", "type": "UUID"}]}
+        out = mask_payload({"token": SECRET, "id": "x"}, entity)
+        self.assertEqual(out["token"], "***")
+        self.assertEqual(out["id"], "x")
+
+    def test_mask_payload_leaves_a_none_entity_alone(self):
+        self.assertEqual(mask_payload({"token": SECRET}, None),
+                         {"token": SECRET})
+
+
 class TestGuardExecution(unittest.TestCase):
     """RFC-0003 Guard semantics: when skips, repeat multiplies, until loops."""
 
