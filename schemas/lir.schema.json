@@ -31,6 +31,9 @@
             "$ref": "#/$defs/nodeCapability"
           },
           {
+            "$ref": "#/$defs/nodeRefinement"
+          },
+          {
             "$ref": "#/$defs/nodeBusinessRule"
           },
           {
@@ -118,7 +121,8 @@
             "type": "string"
           },
           "type": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^[A-Z][A-Za-z0-9]*$"
           },
           "required": {
             "type": "boolean"
@@ -136,6 +140,58 @@
         "string",
         "number"
       ]
+    },
+    "baseTypeName": {
+      "type": "string",
+      "enum": [
+        "UUID",
+        "Money",
+        "Email",
+        "Phone",
+        "Password",
+        "Address",
+        "Image",
+        "File",
+        "Currency",
+        "GeoLocation",
+        "Json",
+        "Html",
+        "Markdown",
+        "Text",
+        "Integer",
+        "Decimal",
+        "Boolean",
+        "DateTime"
+      ]
+    },
+    "facets": {
+      "type": "object",
+      "properties": {
+        "minLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/valueScalar"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "nodeEntity": {
       "type": "object",
@@ -310,6 +366,40 @@
         "kind",
         "id",
         "name"
+      ],
+      "additionalProperties": false
+    },
+    "nodeRefinement": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Refinement"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "base": {
+          "$ref": "#/$defs/baseTypeName"
+        },
+        "facets": {
+          "$ref": "#/$defs/facets"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "name",
+        "base",
+        "facets"
       ],
       "additionalProperties": false
     },

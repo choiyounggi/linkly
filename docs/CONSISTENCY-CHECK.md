@@ -175,7 +175,7 @@ FileWrite        0
 
 ### 음성 대조
 
-**N1 부재 대조.** 카탈로그 19종에 없는 가짜 kind `FileWrite`를 같은 명령에 넣으면 `0`이다
+**N1 부재 대조.** 카탈로그 21종에 없는 가짜 kind `FileWrite`를 같은 명령에 넣으면 `0`이다
 (위 출력 마지막 행). 이 검사는 임의 문자열을 통과시키지 않는다 — 표에 실제로 존재하는 행만
 센다. 6종 중 하나라도 표에서 빠지면 그 행이 `0`으로 나타나 FAIL이 된다.
 
@@ -610,7 +610,7 @@ $ for f in rfcs/000[1-6]*.md; do n=$(grep -c 'LNPL' "$f"); first=$(grep -n 'LNPL
 |---|------|----------------|------|
 | 1 | Intent | `0001:32-40` "개발자는 코드를 쓰지 않고 의도를 선언한다 … 구현 방법 — 어떤 라이브러리로 JWT를 만들지 … 는 IR에 없다. 그것은 선언된 Capability와 제약을 보고 컴파일러가 결정한다" | 일치 |
 | 2 | Semantic IR | `0001:9-18` "LNPP는 AST를 버린다 … Semantic IR은 플랫폼의 설계 허브다(plan.md D1)"; `0002:11-13` "모든 문법 구성은 Semantic IR 노드로 lowering되는 표기일 뿐"; `0004:16-19` 두 상류 위임 인용 | 일치 (허브 이전 없음) |
-| 3 | Semantic Type | `0001:169-171` "**사용자 정의 타입은 refinement만 허용한다** … 새 원시 타입의 창설은 금지한다"; `0002:136-139` "`TypeName`은 … 18종 PascalCase 표기를 그대로 쓰는 **닫힌 열거**다. 임의 타입명은 문법 오류다" | 일치 (문법이 IR 카탈로그를 좁히기만 함) |
+| 3 | Semantic Type | `0001` "**사용자 정의 타입은 refinement만 허용한다** … 새 원시 타입의 창설은 금지한다"(문장 유지); `0002` §Lexical 타입명 항은 `TypeName`을 `BaseTypeName`(18종 닫힌 열거) + `RefinedTypeName`(PascalName)의 합으로 적는다 — 2026-08-04 개정 | 일치 (base 표는 18행 그대로이고 19번째 원시 타입 행이 없다. refinement는 `Refinement` 노드라는 별도 kind이지 19번째 Semantic Type이 아니다. 18종 제한은 이제 문법이 아니라 IR 쪽 `base` enum과 이름 해소 패스가 강제한다 — RFC-0001 부록 A.6.1·A.7 ⓐ) |
 | 4 | Capability | `0004:187`(S3-1) "capability 구현체 선택 … 자동 생성물 산출 지점"; `0002:223` `database` 절은 `CapabilityName` 참조일 뿐 구현체 지정이 아니다; `0002:226-228` "정책·보안·성능 어휘가 닫힌 열거인 것은 RFC-0001 Constraint 카탈로그(consume-only)의 귀결이다" | 일치 (구현체 선택 주체 = 컴파일러) |
 | 5 | Workflow | `0003:74-77` "Workflow의 `children` 배열 순서(RFC-0001 구조 규칙 3)가 **실행 순서**다"; `0001:78-80` 구조 규칙 3 "순서 유의미"; `0002:469-471` "workflow 6단계는 소스 28~33행과 … **순서까지 1:1**로 대응한다" | 일치 |
 | 6 | Policy | `0004:131-132`(M4) "단 Constraint 노드(Policy·Security·Performance)의 값은 제외한다. **제약은 최적화의 입력이며 대상이 아니다**"; `0003:100-103` Constraint의 런타임 의미; `0004:199`(B2) "어느 패스도 그 값을 변경하지 않는다" | 일치 (값 불변이 명문화) |
@@ -692,6 +692,10 @@ $ for f in rfcs/000[1-6]*.md; do printf "%-30s Pipeline=%s 파이프라인=%s\n"
 GLOSSARY `Lowering`은 "상위 표현을 **의미를 보존하며** 더 낮은 수준의 표현으로 변환하는 것"
 (`docs/GLOSSARY.md:78`)이다. 그런데 RFC-0002 부록 A.4-①은 이렇게 등재한다:
 
+(아래 인용은 **당시의** A.4-① 원문이다 — 인용이므로 원문을 보존한다. 그 뒤
+`Guard` 신설로 ①이 해소됐고, 2026-08-04 `Refinement` 신설로 카탈로그는 **21종**이
+됐다. 즉 인용 안의 "19종"은 인용 시점의 값이며 현재 값이 아니다.)
+
 > "`when`·`repeat`·`until` 가드와 `Condition`에 대응하는 IR kind가 없다(카탈로그 19종).
 > RFC-0003도 가드의 실행 의미를 규정하지 않는다. **결과: 가드는 lowering에서 소실되고 피가드
 > 항목만 노드가 된다**"
@@ -756,7 +760,7 @@ EXIT=0
 | negative | 파괴 방식 | 무엇을 증명하는가 |
 |----------|----------|------------------|
 | `required field removed: wf.login.name` | 필수 필드 제거 | 스키마의 `required` 강제가 실효함 |
-| `undefined kind injected: Foo` | 카탈로그 19종 밖 kind 주입 | `anyOf` 19분기 판별이 실효함 |
+| `undefined kind injected: Foo` | 카탈로그 21종 밖 kind 주입 | `anyOf` 21분기 판별이 실효함 |
 | `undefined extra field injected: svc.login.extra` | 미정의 추가 필드 주입 | `additionalProperties: false`가 실효함 |
 
 3건이 전부 REJECTED이고 positive 1건이 통과했으므로, 이 검증기는 통과와 실패를 실제로 분별한다.
@@ -1430,7 +1434,7 @@ kind의 노드에 참조를 쓴다"이므로 그 지점만은 막아야 했다. 
 - `rfcs/0001-semantic-ir.md:90` "19개" → "20개"
 - `rfcs/0004-compiler.md:130` "19 kind" → "20 kind"
 - `docs/ROADMAP.md:79` "19 kind" → "20 kind"
-- `schemas/lir.schema.json` anyOf 20개 ref 검증 ✓
+- `schemas/lir.schema.json` anyOf 21개 ref 검증 ✓
 
 **판정:** PASS — 오탈자 수정, 실질 변경 없음.
 
