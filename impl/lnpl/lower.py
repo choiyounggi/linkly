@@ -18,6 +18,8 @@ R1 — Effect derivation (A.4-3). A step line's first token is a Verb (the gramm
 import re
 
 from .lexer import COMPARATORS, is_duration
+from .refinements import (BASE_CATEGORY, FACET_NAMES, PRESETS, facets_for_base,
+                          preset)
 
 KIND_PREFIX = {
     "Entity": "entity",
@@ -25,6 +27,7 @@ KIND_PREFIX = {
     "Workflow": "wf",
     "Event": "event",
     "Capability": "cap",
+    "Refinement": "refine",
     "Policy": "policy",
     "Security": "security",
     "Performance": "perf",
@@ -73,6 +76,11 @@ VERB_LEXICON = {
     "publish": ("EventEmit", {}),
     "authorize": ("Authorization", {}),
 }
+
+# Refinement surface forms (RFC-0002 §Full grammar).
+PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")      # PascalName
+NUMBER_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?$")    # Number
+WORD_RE = re.compile(r"^[a-z][a-zA-Z0-9]*$")        # Word
 
 POLICY_NAMES = ("retry", "rollback", "timeout", "parallel")
 PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
@@ -198,13 +206,148 @@ def _parse_security_line(tokens, lineno):
                      "(allowed: jwt, role <r>, encrypt <field>)" % (lineno, head))
 
 
+def _number(tok):
+    """RFC-0002 `Number` -> int when it has no fraction, else float.
+
+    `min 1` must stay `1`: the A.6.4 fragment for PositiveInteger writes an
+    integer, and a float would serialize as 1.0 and stop matching it.
+    """
+    return float(tok) if "." in tok else int(tok)
+
+
+def _enum_value(tok, lineno):
+    """RFC-0002 `EnumValue ::= Word | Number`."""
+    if NUMBER_RE.match(tok):
+        return _number(tok)
+    if WORD_RE.match(tok):
+        return tok
+    raise LowerError("line %d: %r is not a valid enum value (a Word or a Number)"
+                     % (lineno, tok))
+
+
+def _parse_facet_line(tokens, lineno, allowed, base):
+    """One FacetLine -> (name, value). RFC-0001 A.6.3 / RFC-0002 §Full grammar.
+
+    The order of the checks is a contract the tests rely on: vocabulary, then
+    applicability to the base's category, then arity, then value form. So
+    `maxLength` on a Boolean fails as inapplicable, not as a bad number.
+    """
+    name = tokens[0]
+    if name not in FACET_NAMES:
+        raise LowerError("line %d: unknown facet %r (allowed: %s)"
+                         % (lineno, name, ", ".join(FACET_NAMES)))
+    if name not in allowed:
+        raise LowerError(
+            "line %d: facet %r does not apply to base %r (allowed: %s)"
+            % (lineno, name, base,
+               ", ".join(sorted(allowed)) or "none — this base admits no facets"))
+    if name == "enum":
+        if len(tokens) < 2:
+            raise LowerError("line %d: `enum` needs at least one value" % lineno)
+        return name, [_enum_value(t, lineno) for t in tokens[1:]]
+    if len(tokens) != 2:
+        raise LowerError("line %d: `%s` needs exactly one value" % (lineno, name))
+    if name == "pattern":
+        # A space or `#` inside the regex is removed by the lexer before we see
+        # it, so compiling the value is what catches a truncation that breaks a
+        # construct (`^a[b#c]$` -> `^a[b`). A truncation that still compiles
+        # (`^a#b$` -> `^a`) survives — see test_KNOWN_LIMITATION_* in test_lower.
+        try:
+            re.compile(tokens[1])
+        except re.error as exc:
+            raise LowerError(
+                "line %d: `pattern` is not a valid regex: %s (a space or `#` "
+                "inside the regex is removed by the lexer — RFC-0002 §Full grammar)"
+                % (lineno, exc))
+        return name, tokens[1]
+    if name in ("minLength", "maxLength"):
+        if not tokens[1].isdigit():
+            raise LowerError("line %d: `%s` needs a non-negative integer, got %r"
+                             % (lineno, name, tokens[1]))
+        return name, int(tokens[1])
+    if not NUMBER_RE.match(tokens[1]):
+        raise LowerError("line %d: `%s` needs a number, got %r"
+                         % (lineno, name, tokens[1]))
+    return name, _number(tokens[1])
+
+
+def _refinement_node(name, base, facets):
+    """A.6.2 — the one Refinement node shape.
+
+    A user declaration and a built-in preset both come through here, so a preset
+    serializes to exactly the node the user would have written (A.6.4: presets
+    are not privileged).
+    """
+    return _node("Refinement", derive_id(name, "Refinement"),
+                 name=name, base=base, facets=facets)
+
+
+def _lower_refine(decl, taken):
+    """One `refine` block -> a Refinement node. A.7 invariants b/c/d/e live here."""
+    if not PASCAL_RE.match(decl.name):
+        raise LowerError("line %d: refinement name %r must be PascalCase"
+                         % (decl.lineno, decl.name))
+    base = decl.extra["base"]
+    if base not in BASE_CATEGORY:
+        raise LowerError(
+            "line %d: %r is not one of the 18 semantic types — a refinement's "
+            "base cannot itself be a refinement (RFC-0001 A.6.2)"
+            % (decl.lineno, base))
+    if decl.name in taken:
+        raise LowerError(
+            "line %d: %r is already a semantic type, a built-in preset, or a "
+            "refinement declared in this module (RFC-0001 A.6.2)"
+            % (decl.lineno, decl.name))
+    allowed = facets_for_base(base)
+    facets = {}
+    for line in decl.items:
+        name, value = _parse_facet_line(line.tokens, line.lineno, allowed, base)
+        if name in facets:
+            raise LowerError("line %d: facet %r is given twice" % (line.lineno, name))
+        facets[name] = value
+    if not facets:
+        raise LowerError("refinement %s declares no facets" % decl.name)
+    return _refinement_node(decl.name, base, facets)
+
+
+def _resolve_type(name, refined_names, used_presets, lineno):
+    """A.6.1 name resolution. Returns `name` unchanged — `fields[].type` holds a
+    type name, never a node id.
+
+    Order: the 18 base names, then this document's Refinements. A built-in preset
+    a field names joins that second group and is recorded so it gets emitted
+    (A.6.4 emit-on-use), which is what makes the document self-contained.
+    """
+    if name in BASE_CATEGORY or name in refined_names:
+        return name
+    if name in PRESETS:
+        if name not in used_presets:
+            used_presets.append(name)      # first-use order keeps output stable
+        return name
+    raise LowerError(
+        "line %d: %r is not one of the 18 semantic types, a refinement declared "
+        "in this module, or a built-in preset (RFC-0001 A.6.1)" % (lineno, name))
+
+
 def lower(decls, module_name):
     """[Decl] -> Module, emitting nodes in RFC-0001 canonical order."""
     mod = Module(module_name)
 
-    by_kind = {"capability": [], "entity": [], "event": [], "service": [], "workflow": []}
+    by_kind = {"capability": [], "entity": [], "event": [], "service": [],
+               "workflow": [], "refine": []}
     for d in decls:
         by_kind[d.kind].append(d)
+
+    # ---- Refinements (RFC-0001 A.6). A declared block becomes a node whether or
+    # not a field names it; the built-in presets are appended on use, below.
+    taken = set(BASE_CATEGORY) | set(PRESETS)
+    refine_nodes = []
+    refined_names = set()
+    used_presets = []
+    for d in by_kind["refine"]:
+        refine_nodes.append(_lower_refine(d, taken))
+        taken.add(d.name)
+        refined_names.add(d.name)
 
     # Entity registry. A module may declare several entities; a step selects one
     # by naming it as its object (`load order`), which the grammar already gives us.
@@ -215,7 +358,9 @@ def lower(decls, module_name):
         for line in decl.clauses.get("field", []):
             if len(line.tokens) != 2:
                 raise LowerError("line %d: field must be `<name> <Type>`" % line.lineno)
-            fields.append({"name": line.tokens[0], "type": line.tokens[1]})
+            fields.append({"name": line.tokens[0],
+                           "type": _resolve_type(line.tokens[1], refined_names,
+                                                 used_presets, line.lineno)})
         if not fields:
             raise LowerError("entity %s declares no fields" % decl.name)
         eid = derive_id(decl.name, "Entity")
@@ -304,6 +449,16 @@ def lower(decls, module_name):
             constraints=constraints or None,
             children=children or None))
         service_nodes.extend(goal_nodes)
+
+    # A.6.4 emit-on-use: a preset a field named rides into this document as a
+    # node, built by the same function a declaration uses. An unused preset is
+    # not emitted.
+    for name in used_presets:
+        spec = preset(name)
+        refine_nodes.append(_refinement_node(name, spec["base"], spec["facets"]))
+
+    for n in refine_nodes:
+        mod.add(n)
 
     for n in service_nodes:
         mod.add(n)

@@ -6,7 +6,7 @@ RFC-0002 §Lexical / §Block structure:
   - blocks are delimited by keywords, never by indentation
 """
 
-KEYWORDS_TOP = ("entity", "service", "workflow", "event", "capability")
+KEYWORDS_TOP = ("entity", "service", "workflow", "event", "capability", "refine")
 KEYWORDS_CLAUSE = ("field", "goal", "policy", "security", "performance",
                    "database", "spec", "given", "when", "expect")
 KEYWORDS_CONTROL = ("when", "repeat", "parallel", "until", "pipeline", "merge")
