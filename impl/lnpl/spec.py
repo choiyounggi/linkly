@@ -121,23 +121,30 @@ EXPECTATIONS = {
 
 
 def _payload_from_given(given, entity_node):
-    """`given` lines describe the input. Two forms only:
-        `<field> <value>`    set a field
-        `no <field>`         leave a field out
-    Everything else is refused — a `given` nobody can build is not a fixture.
+    """`given` lines describe the input. Recognized forms:
+        `valid <...>`        a narrative fixture marker (any noun) — no field effect
+        `empty repository`   run against an empty repository
+        `<field> <value>`    set a declared field
+        `no <field>`         drop a declared field
+
+    Field forms must name a field the entity declares; anything else is refused.
+    A `given` the runner cannot interpret is not silently absorbed as a field
+    assignment — a `given` nobody can build is not a fixture (issue #28).
     """
+    fields = {f["name"] for f in entity_node["fields"]} if entity_node else set()
     payload = sample_payload([entity_node] if entity_node else [])
     for phrase in given:
         tokens = phrase.split()
-        if tokens[0] == "no" and len(tokens) == 2:
+        if tokens[0] == "valid" or phrase == "empty repository":
+            continue        # narrative fixture handled by `when`
+        elif tokens[0] == "no" and len(tokens) == 2 and tokens[1] in fields:
             payload.pop(tokens[1], None)
-        elif len(tokens) == 2:
+        elif len(tokens) == 2 and tokens[0] in fields:
             payload[tokens[0]] = tokens[1]
-        elif phrase in ("valid account", "empty repository"):
-            continue        # narrative fixtures handled by `when`
         else:
-            raise SpecError("unsupported given: %r (use `<field> <value>` or `no <field>`)"
-                            % phrase)
+            raise SpecError(
+                "unsupported given: %r (use `valid <...>`, `empty repository`, "
+                "`<field> <value>`, or `no <field>` naming a declared field)" % phrase)
     return payload
 
 
