@@ -5,7 +5,7 @@ import unittest
 
 from lnpl.lower import lower
 from lnpl.parser import parse
-from lnpl.spec import SpecError, extract, run_manifest
+from lnpl.spec import SpecError, extract, run_manifest, _payload_from_given
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -116,3 +116,55 @@ class TestGoldenSpec(unittest.TestCase):
         passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 0, lines)
         self.assertGreaterEqual(passed, 4)
+
+
+ENTITY = {"id": "entity.link", "name": "Link",
+          "fields": [{"name": "slug", "type": "Text"},
+                     {"name": "target", "type": "Text"}]}
+
+
+class TestPayloadFromGiven(unittest.TestCase):
+    """A `given` line the runner cannot interpret must be refused, not silently
+    absorbed as a field assignment (issue #28)."""
+
+    def test_unrecognized_given_is_rejected_not_absorbed(self):
+        # Was silently stored as payload["frobnicate"] = "widgets".
+        with self.assertRaises(SpecError):
+            _payload_from_given(["frobnicate widgets"], ENTITY)
+
+    def test_field_set_requires_a_declared_field(self):
+        with self.assertRaises(SpecError):
+            _payload_from_given(["bogus value"], ENTITY)
+
+    def test_declared_field_is_set(self):
+        payload = _payload_from_given(["slug abc123"], ENTITY)
+        self.assertEqual(payload["slug"], "abc123")
+
+    def test_no_field_requires_a_declared_field(self):
+        # `no slog` (typo for slug) must error rather than no-op silently.
+        with self.assertRaises(SpecError):
+            _payload_from_given(["no slog"], ENTITY)
+
+    def test_no_declared_field_drops_it(self):
+        payload = _payload_from_given(["no slug"], ENTITY)
+        self.assertNotIn("slug", payload)
+
+    def test_valid_narrative_is_generic_not_login_specific(self):
+        # `valid <anything>` is a narrative marker, not a field assignment.
+        payload = _payload_from_given(["valid link"], ENTITY)
+        self.assertNotIn("valid", payload)
+        self.assertNotIn("link", payload)
+
+    def test_valid_account_and_empty_repository_still_accepted(self):
+        _payload_from_given(["valid account"], ENTITY)     # must not raise
+        _payload_from_given(["empty repository"], ENTITY)  # must not raise
+
+
+class TestGenericNarrativeSpecRuns(unittest.TestCase):
+    def test_spec_with_generic_valid_narrative_runs(self):
+        src = SRC.replace("            valid account", "            valid session")
+        decls = parse(src)
+        doc = lower(decls, "login").to_document()
+        manifest = extract(decls, "login")
+        passed, failed, lines = run_manifest(manifest, doc)
+        self.assertEqual(failed, 0, lines)
