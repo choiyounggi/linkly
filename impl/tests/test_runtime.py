@@ -5,6 +5,7 @@ import unittest
 from lnpl.interp import Clock, Interpreter, RunError, mask_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
+from lnpl.repo_policy import row_key
 
 SOURCE = """
 capability postgres
@@ -37,7 +38,7 @@ PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
 
 def build(**kw):
     doc = lower(parse(SOURCE), "login").to_document()
-    rows = kw.pop("rows", {"entity.user": dict(PAYLOAD)})
+    rows = kw.pop("rows", {"entity.user": {row_key("entity.user", PAYLOAD): dict(PAYLOAD)}})
     return Interpreter(doc, repo_rows=rows, **kw)
 
 
@@ -73,7 +74,7 @@ class TestHappyPath(unittest.TestCase):
         # Remove the `cache 5m` budget: RFC-0003 forbids a TTL-less cache write.
         src = SOURCE.replace("        cache 5m\n", "")
         doc = lower(parse(src), "login").to_document()
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={"entity.user": {row_key("entity.user", PAYLOAD): dict(PAYLOAD)}})
         result = interp.run_workflow("wf.login", PAYLOAD)
         self.assertEqual(result["failed_step"], "cache user")
 
@@ -92,7 +93,7 @@ class TestPolicyEnforcement(unittest.TestCase):
         # a failing non-idempotent effect this rule cannot be observed.
         src = SOURCE.replace("    authenticate", "    create user")
         doc = lower(parse(src), "login").to_document()
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={"entity.user": {row_key("entity.user", PAYLOAD): dict(PAYLOAD)}})
         result = interp.run_workflow("wf.login", PAYLOAD)
         failed = [s for s in result["steps"] if s["step"] == "create user"][0]
         self.assertEqual(result["status"], "failed")
@@ -170,7 +171,7 @@ class TestGuardExecution(unittest.TestCase):
 
     def _run(self, src, payload):
         doc = lower(parse(src), "login").to_document()
-        interp = Interpreter(doc, repo_rows={"entity.user": dict(PAYLOAD)})
+        interp = Interpreter(doc, repo_rows={"entity.user": {row_key("entity.user", PAYLOAD): dict(PAYLOAD)}})
         return interp, interp.run_workflow("wf.login", payload)
 
     def test_when_false_skips_the_guarded_step(self):
