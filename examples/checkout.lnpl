@@ -1,0 +1,58 @@
+# checkout.lnpl — 골든 시나리오 "Checkout" (issue #35: read-then-create)
+#
+# Product를 읽고 Order를 만든다. Wave 1의 역할 기반 시드 규칙
+# (impl/lnpl/repo_policy.py) 아래에서만 초록이 된다: 읽는 Product만 시드되고,
+# 만들기만 하는 Order의 테이블은 비어 있어 create가 충돌 대신 삽입된다.
+#
+# 기계(mechanism)인 선언과 서술(documentation)인 선언을 구분한다:
+#   기계 — Product.id/Order.id(행 키), Product.stock(가드 필드),
+#          performance/cache 5m(CacheAccess set은 TTL 없이 RunError),
+#          policy/retry 3(빈 저장소에서 재시도 4회를 관측 가능하게)
+#   서술 — name/price/quantity/total/placedAt, capability redis, event OrderPlaced
+
+capability postgres
+capability redis
+capability jwt
+
+entity Product
+    field
+        id UUID
+        name Text
+        stock Integer
+        price Money
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Money
+        placedAt DateTime
+
+event OrderPlaced on Order create
+
+service CheckoutService
+    policy
+        retry 3
+        timeout 3s
+    security
+        jwt
+    performance
+        response < 50ms
+        cache 5m
+
+workflow Checkout
+    validate product
+    find product
+    cache product
+    when stock > 0
+    create order
+    spec
+        given
+            valid product
+        when
+            checkout
+        expect
+            completed
+            steps 4
+            slo met
+            cache written

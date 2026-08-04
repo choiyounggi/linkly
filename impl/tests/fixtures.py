@@ -31,7 +31,21 @@ so that adding the budget here does not bury it.
 
 Sources only. **No payloads** — a test's payload is what explains why it passes,
 so it belongs in the test body where a reader can see it.
+
+The `CHECKOUT_*` names below are the one exception to "sources", and they are
+still the same rule: `examples/checkout.lnpl` is a *committed file*, so its one
+home is that path — not a second copy of its text pasted here. They are paths so
+that `test_golden.py` and the equivalence regression resolve the same file
+instead of each deriving the repo root for itself.
 """
+
+import os
+
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# The read-then-create example (issue #35) and its generated IR golden.
+CHECKOUT_LNPL = os.path.join(_REPO, "examples", "checkout.lnpl")
+CHECKOUT_LIR = os.path.join(_REPO, "examples", "checkout.lir.json")
 
 GUARDED = """
 capability postgres
