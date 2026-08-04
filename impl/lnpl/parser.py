@@ -21,7 +21,7 @@ class Decl:
     __slots__ = ("kind", "name", "lineno", "clauses", "items", "extra")
 
     def __init__(self, kind, name, lineno):
-        self.kind = kind          # entity | service | workflow | event | capability
+        self.kind = kind          # entity | service | workflow | event | capability | refine
         self.name = name
         self.lineno = lineno
         self.clauses = {}         # clause keyword -> [Line]
@@ -141,6 +141,14 @@ def parse(source):
                 cur.extra["on"] = (rest[1], rest[2])
             elif head == "capability" and len(line.tokens) > 2:
                 cur.extra["version"] = line.tokens[2]
+            elif head == "refine":
+                # RefineDecl ::= 'refine' PascalName 'of' BaseTypeName EOL FacetLine+
+                rest = line.tokens[2:]
+                if len(rest) != 2 or rest[0] != "of":
+                    raise ParseError(
+                        "line %d: refinement must be `refine <Name> of <BaseType>`"
+                        % line.lineno)
+                cur.extra["base"] = rest[1]
             elif head != "event" and len(line.tokens) > 2:
                 raise ParseError(
                     "line %d: unexpected trailing tokens after `%s %s`"
@@ -163,7 +171,7 @@ def parse(source):
                 raise ParseError(
                     "line %d: service allows %s, got %r"
                     % (line.lineno, "/".join(SERVICE_CLAUSES), head))
-            if cur.kind in ("event", "capability"):
+            if cur.kind in ("event", "capability", "refine"):
                 raise ParseError(
                     "line %d: %s takes no clauses" % (line.lineno, cur.kind))
             cur_clause = head
@@ -172,6 +180,13 @@ def parse(source):
 
         if cur.kind == "workflow" and cur_clause is None:
             _append_workflow_item(cur, line)
+            continue
+
+        if cur.kind == "refine" and cur_clause is None:
+            # FacetLine+ sits directly under the declaration: `refine` has no
+            # clause keyword (RFC-0002 §Full grammar). Values are checked when
+            # lowering, where the base decides which facets apply.
+            cur.items.append(line)
             continue
 
         if cur_clause is None:
