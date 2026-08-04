@@ -1,0 +1,225 @@
+{
+  "lir_version": "0.1",
+  "module": "shorten",
+  "nodes": [
+    {
+      "kind": "Refinement",
+      "id": "refine.click.count",
+      "name": "ClickCount",
+      "base": "Integer",
+      "facets": {
+        "min": 0
+      }
+    },
+    {
+      "kind": "Refinement",
+      "id": "refine.slug",
+      "name": "Slug",
+      "base": "Text",
+      "facets": {
+        "pattern": "^[a-z0-9-]{1,64}$",
+        "maxLength": 64
+      }
+    },
+    {
+      "kind": "Refinement",
+      "id": "refine.url",
+      "name": "Url",
+      "base": "Text",
+      "facets": {
+        "pattern": "^https?://[^\\s]+$",
+        "maxLength": 2048
+      }
+    },
+    {
+      "kind": "Service",
+      "id": "svc.shorten",
+      "name": "ShortenService",
+      "requires": [
+        "cap.postgres",
+        "cap.redis",
+        "cap.jwt"
+      ],
+      "constraints": [
+        "policy.shorten",
+        "security.shorten",
+        "perf.shorten"
+      ],
+      "children": [
+        "wf.shorten"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.link",
+      "name": "Link",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "slug",
+          "type": "Slug"
+        },
+        {
+          "name": "target",
+          "type": "Url"
+        },
+        {
+          "name": "owner",
+          "type": "UUID"
+        },
+        {
+          "name": "clicks",
+          "type": "ClickCount"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Event",
+      "id": "event.link.created",
+      "name": "LinkCreated",
+      "source": {
+        "ref": "entity.link",
+        "on": "create"
+      }
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.shorten",
+      "name": "Shorten",
+      "children": [
+        "wf.shorten.step.1",
+        "wf.shorten.step.2",
+        "wf.shorten.step.3",
+        "wf.shorten.step.4",
+        "wf.shorten.step.5",
+        "wf.shorten.step.6"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.shorten.step.1",
+      "name": "validate input",
+      "children": [
+        "wf.shorten.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.shorten.step.1.check",
+      "target": "entity.link",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.shorten.step.2",
+      "name": "authorize owner",
+      "children": [
+        "wf.shorten.step.2.authz"
+      ]
+    },
+    {
+      "kind": "Authorization",
+      "id": "wf.shorten.step.2.authz",
+      "requirement": "owner"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.shorten.step.3",
+      "name": "create link",
+      "children": [
+        "wf.shorten.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.shorten.step.3.repo",
+      "entity": "entity.link",
+      "operation": "create"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.shorten.step.4",
+      "name": "cache link",
+      "children": [
+        "wf.shorten.step.4.cache"
+      ]
+    },
+    {
+      "kind": "CacheAccess",
+      "id": "wf.shorten.step.4.cache",
+      "key": "link:{id}",
+      "operation": "set"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.shorten.step.5",
+      "name": "emit linkCreated",
+      "children": [
+        "wf.shorten.step.5.emit"
+      ]
+    },
+    {
+      "kind": "EventEmit",
+      "id": "wf.shorten.step.5.emit",
+      "event": "event.link.created"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.shorten.step.6",
+      "name": "return slug"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.shorten",
+      "rules": [
+        {
+          "name": "timeout",
+          "value": "2s"
+        }
+      ]
+    },
+    {
+      "kind": "Security",
+      "id": "security.shorten",
+      "mechanisms": [
+        "jwt"
+      ]
+    },
+    {
+      "kind": "Performance",
+      "id": "perf.shorten",
+      "budgets": [
+        {
+          "metric": "response",
+          "value": "<40ms"
+        },
+        {
+          "metric": "cache",
+          "value": "10m"
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.redis",
+      "name": "redis"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.jwt",
+      "name": "jwt"
+    }
+  ]
+}

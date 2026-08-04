@@ -36,7 +36,8 @@ The `CHECKOUT_*` names below are the one exception to "sources", and they are
 still the same rule: `examples/checkout.lnpl` is a *committed file*, so its one
 home is that path — not a second copy of its text pasted here. They are paths so
 that `test_golden.py` and the equivalence regression resolve the same file
-instead of each deriving the repo root for itself.
+instead of each deriving the repo root for itself. `SHORTEN_*` follows that same
+rule for the refinement example and its three generated goldens.
 """
 
 import os
@@ -46,6 +47,13 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # The read-then-create example (issue #35) and its generated IR golden.
 CHECKOUT_LNPL = os.path.join(_REPO, "examples", "checkout.lnpl")
 CHECKOUT_LIR = os.path.join(_REPO, "examples", "checkout.lir.json")
+
+# The refinement example (issue #31): `Url`/`Slug` instead of `Text`, and the
+# three artifacts `lnpl compile` / `spec` / `openapi` generate from it.
+SHORTEN_LNPL = os.path.join(_REPO, "examples", "shorten.lnpl")
+SHORTEN_LIR = os.path.join(_REPO, "examples", "shorten.lir.json")
+SHORTEN_SPEC = os.path.join(_REPO, "examples", "shorten.spec.json")
+SHORTEN_OPENAPI = os.path.join(_REPO, "examples", "shorten.openapi.json")
 
 GUARDED = """
 capability postgres
