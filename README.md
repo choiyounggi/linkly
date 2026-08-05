@@ -183,6 +183,23 @@ through `ir.propose` (which never mutates) and a Reviewer's `agent.report` appro
 before the node reaches the document, carrying provenance:
 `meta.source = "kb:security-jwt-issuance@0.1.0"`.
 
+### Claude Code plugin
+
+`.lnpl`을 쓸 때 Claude가 닫힌 어휘로 라우팅되고, 저장 직후 컴파일 진단을 받게 하려면:
+
+```
+/plugin marketplace add choiyounggi/linkly
+/plugin install lnpl@linkly
+```
+
+훅이 동작하려면 `lnpl`이 PATH에 있어야 한다 — `pip install .`.
+자세한 내용은 [plugins/lnpl/README.md](plugins/lnpl/README.md).
+
+> 개발자용: 테스트 스위트도 `.venv`에 `lnpl` 콘솔 스크립트가 있어야 전부 통과한다
+> (훅·doctor 테스트가 `command -v lnpl`로 CLI를 찾는다). venv를 만든 뒤
+> `.venv/bin/pip install .`을 한 번 돌려라. `impl/lnpl/`을 고친 뒤에는
+> `pip install --force-reinstall --no-deps .`로 재설치한다.
+
 ### Mode B — a native binary
 
 Mode B needs the MLIR/LLVM tools (`brew install llvm`; ~1.8 GB, keg-only). That is
