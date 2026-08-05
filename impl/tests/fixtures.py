@@ -59,7 +59,7 @@ CHECKOUT_LIR = os.path.join(_REPO, "examples", "checkout.lir.json")
 CHECKOUT_SPEC = os.path.join(_REPO, "examples", "checkout.spec.json")
 CHECKOUT_OPENAPI = os.path.join(_REPO, "examples", "checkout.openapi.json")
 
-# The refinement example (issue #31): `Url`/`Slug` instead of `Text`, and the
+# The refinement example (issue #31): `URL`/`Slug` instead of `Text`, and the
 # three artifacts `lnpl compile` / `spec` / `openapi` generate from it.
 SHORTEN_LNPL = os.path.join(_REPO, "examples", "shorten.lnpl")
 SHORTEN_LIR = os.path.join(_REPO, "examples", "shorten.lir.json")

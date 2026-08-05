@@ -278,7 +278,7 @@ refinement 직렬화"를 **해소한다**: refinement는 객체로 직렬화하�
   "name": "Link",
   "fields": [
     {"name": "slug", "type": "Slug"},
-    {"name": "target", "type": "Url"}
+    {"name": "target", "type": "URL"}
   ]
 }
 ```
@@ -314,7 +314,7 @@ base 18종은 네 범주로 나뉘며 범주가 적용 가능한 facet을 정한
 
 | `name` | `id` | `base` | `facets` |
 |--------|------|--------|----------|
-| `Url` | `refine.url` | `Text` | `pattern` = `^https?://[^\s]+$`, `maxLength` = `2048` |
+| `URL` | `refine.url` | `Text` | `pattern` = `^https?://[^\s]+$`, `maxLength` = `2048` |
 | `Slug` | `refine.slug` | `Text` | `pattern` = `^[a-z0-9-]{1,64}$`, `maxLength` = `64` |
 | `PositiveInteger` | `refine.positive.integer` | `Integer` | `min` = `1` |
 
@@ -324,7 +324,7 @@ preset은 싣지 않는다. 이로써 문서는 자기완결적이다 — 소비
 표를 따로 읽지 않고도 A.6.1의 해소를 문서 안에서 끝낼 수 있다.
 
 **A.6.5 `id` 도출.** 새 규칙을 만들지 않는다. RFC-0002 부록 A.4-⑦의 균일 규칙에
-kind 접두 **`refine`** 을 추가하는 것으로 족하다(`Url` → `refine.url`,
+kind 접두 **`refine`** 을 추가하는 것으로 족하다(`URL` → `refine.url`,
 `PositiveInteger` → `refine.positive.integer`).
 
 **A.6.6 OpenAPI 투영(비규범 note).** 각 `Refinement`는

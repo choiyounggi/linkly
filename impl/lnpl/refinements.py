@@ -58,7 +58,7 @@ BASE_CATEGORY = {
 
 # A.6.4. The names are reserved: a module may not redeclare them.
 PRESETS = {
-    "Url": {"base": "Text",
+    "URL": {"base": "Text",
             "facets": {"pattern": r"^https?://[^\s]+$", "maxLength": 2048}},
     "Slug": {"base": "Text",
              "facets": {"pattern": r"^[a-z0-9-]{1,64}$", "maxLength": 64}},

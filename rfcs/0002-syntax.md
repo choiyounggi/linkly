@@ -260,7 +260,7 @@ facet 이름 6종(`pattern` `minLength` `maxLength` `min` `max` `enum`)은
   delete}` 필드의 표면 표기다. enum 3값은 IR 표기를 그대로 쓴다.
 - `refine`은 블록형이다 — 선언 라인 뒤에 facet 라인이 **1개 이상** 와야 하며,
   다음 최상위 키워드에서 닫힌다. facet 어휘 6종과 base별 적용 가능성은
-  RFC-0001 부록 A.6.3이 소유하는 닫힌 열거다. `Url`·`Slug`·`PositiveInteger`는
+  RFC-0001 부록 A.6.3이 소유하는 닫힌 열거다. `URL`·`Slug`·`PositiveInteger`는
   선언 없이 쓰는 내장 preset이고 그 이름은 재선언할 수 없다(부록 A.6.4).
 - **귀속(인접성) 규칙** — `workflow` 선언은 소스에서 가장 가까운 *선행*
   `service` 선언에 귀속된다(선언 순서 유의미). 선행 service가 없으면 독립
@@ -690,7 +690,7 @@ workflow Login
    `refine Slug of Text` + facet 라인. `FieldLine ::= CamelName TypeName`은
    두 토큰 그대로 유지되고(인라인 제약 문법 없음), 필드는 refinement의 *이름*만
    참조한다. facet 어휘 6종(`pattern` `minLength` `maxLength` `min` `max` `enum`)
-   과 base별 적용 가능성, 내장 preset 3종(`Url`·`Slug`·`PositiveInteger`)의 정확한
+   과 base별 적용 가능성, 내장 preset 3종(`URL`·`Slug`·`PositiveInteger`)의 정확한
    제약값은 RFC-0001 부록 A.6이 소유하는 닫힌 열거다. IR 쪽은 `Refinement`
    노드(카탈로그 21번째 kind)로 직렬화된다 | 해소됨 — facet 어휘 확장은 RFC-0001 개정 사항
 4. **Duration 단위 확장과 필드 optional 표기** — 단위는 실증 3종(`ms`/`s`/

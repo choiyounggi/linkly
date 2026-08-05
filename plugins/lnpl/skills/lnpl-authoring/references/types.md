@@ -35,7 +35,7 @@
 
 | 프리셋 | base | facet |
 |--------|------|-------|
-| `Url` | `Text` | maxLength=2048, pattern=^https?://[^\s]+$ |
+| `URL` | `Text` | maxLength=2048, pattern=^https?://[^\s]+$ |
 | `Slug` | `Text` | maxLength=64, pattern=^[a-z0-9-]{1,64}$ |
 | `PositiveInteger` | `Integer` | min=1 |
 

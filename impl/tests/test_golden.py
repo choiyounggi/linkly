@@ -247,13 +247,13 @@ class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase
 
     def test_the_openapi_projection_carries_the_refinement_constraints(self):
         # The facets must survive into the API contract, not just the IR — that
-        # projection is what makes `Slug`/`Url` visible to a client generator,
+        # projection is what makes `Slug`/`URL` visible to a client generator,
         # and it is the half of issue #31 a runtime test cannot observe.
         schemas = self._committed(SHORTEN_OPENAPI)["components"]["schemas"]
         self.assertEqual(schemas["Slug"],
                          {"type": "string", "pattern": "^[a-z0-9-]{1,64}$",
                           "maxLength": 64})
-        self.assertEqual(schemas["Url"],
+        self.assertEqual(schemas["URL"],
                          {"type": "string", "pattern": "^https?://[^\\s]+$",
                           "maxLength": 2048})
         self.assertEqual(schemas["ClickCount"],
@@ -261,7 +261,7 @@ class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase
         self.assertEqual(schemas["Link"]["properties"]["slug"],
                          {"$ref": "#/components/schemas/Slug"})
         self.assertEqual(schemas["Link"]["properties"]["target"],
-                         {"$ref": "#/components/schemas/Url"})
+                         {"$ref": "#/components/schemas/URL"})
 
 
 class TestCheckoutShape(unittest.TestCase):
@@ -408,7 +408,7 @@ SHORTEN_WORKFLOW = "wf.shorten"
 
 
 class TestShortenRefinementIsLoadBearing(unittest.TestCase):
-    """Issue #31 criterion 3: `Slug`/`Url`/`ClickCount` are not decoration.
+    """Issue #31 criterion 3: `Slug`/`URL`/`ClickCount` are not decoration.
 
     Naming a field `Slug` proves nothing on its own — what proves it is that a
     value the facet forbids is REJECTED. Every case below runs the same
@@ -469,7 +469,7 @@ class TestShortenRefinementIsLoadBearing(unittest.TestCase):
         # doubled: four here is two in the message the caller reads.
         self.assertEqual(
             reasons,
-            ["field 'target' does not match Url's pattern "
+            ["field 'target' does not match URL's pattern "
              "'^https?://[^\\\\s]+$'"])
 
     def test_a_slug_with_uppercase_is_rejected(self):
@@ -505,7 +505,7 @@ class TestShortenRefinementIsLoadBearing(unittest.TestCase):
 
     def test_the_url_length_limit_is_exact(self):
         doc = self._doc()
-        prefix = "https://e.co/"                       # 13 chars, matches Url
+        prefix = "https://e.co/"                       # 13 chars, matches URL
         at_limit, reasons = self._run(
             doc, self._payload(doc, target=prefix + "a" * (2048 - len(prefix))))
         self.assertEqual(at_limit["status"], "completed")
@@ -515,7 +515,7 @@ class TestShortenRefinementIsLoadBearing(unittest.TestCase):
         self.assertEqual(over["status"], "failed")
         self.assertEqual(over["failed_step"], "validate input")
         self.assertEqual(
-            reasons, ["field 'target' is longer than Url's maxLength 2048 (2049)"])
+            reasons, ["field 'target' is longer than URL's maxLength 2048 (2049)"])
 
     def test_a_missing_refined_field_is_rejected(self):
         # Boundary: the absent value. `validate input` requires every declared
@@ -547,7 +547,7 @@ class TestShortenTextDegradationControl(unittest.TestCase):
             source = fh.read()
         degraded = source
         for refined, base in (("\n        slug Slug\n", "\n        slug Text\n"),
-                              ("\n        target Url\n", "\n        target Text\n")):
+                              ("\n        target URL\n", "\n        target Text\n")):
             self.assertIn(refined, degraded,
                           "this control is anchored on the exact field line %r; "
                           "examples/shorten.lnpl no longer declares it, so the "
@@ -596,7 +596,7 @@ class TestShortenTextDegradationControl(unittest.TestCase):
                          if n["id"] == "entity.link")
         committed_types = {f["name"]: f["type"] for f in committed["fields"]}
         self.assertEqual(committed_types["slug"], "Slug")
-        self.assertEqual(committed_types["target"], "Url")
+        self.assertEqual(committed_types["target"], "URL")
         self.assertNotIn("Text", committed_types.values())
 
 
