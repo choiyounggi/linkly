@@ -1,0 +1,13 @@
+$ .venv/bin/lnpl build qa/cases/batch-report/batch-report.lnpl --workdir .claude/tmp/final-build --run  # final source (spec 포함)
+native binary: .claude/tmp/final-build/module
+step 1 validate order
+effect validate order Validation
+step 2 load order
+effect load order RepositoryCall
+step 3 create report
+effect create report RepositoryCall
+step 4 emit reportBuilt
+effect emit reportBuilt EventEmit
+status completed
+exit=0
+exit=0

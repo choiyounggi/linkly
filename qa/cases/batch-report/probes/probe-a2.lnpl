@@ -1,0 +1,24 @@
+# probe-a2 — H-a2: 어휘 내 동사만으로는 엔티티 생성까지만, 파생값 계산은 불가인가
+# 변수 1개: probe-a1에서 사전 밖 동사(sum/count) 2개를 제거 — 표 안 동사만 남김.
+# 예측: 컴파일 클린, mode A에서 Report 생성되나 orderCount/totalAmount에
+#       주문 합산값이 채워질 방법 없음(값이 집계와 무관).
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Money
+        placedAt DateTime
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Money
+
+workflow AggregateDaily
+    validate order
+    load order
+    create report

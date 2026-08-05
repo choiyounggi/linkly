@@ -1,0 +1,16 @@
+$ .venv/bin/lnpl build examples/shorten.lnpl --workdir .claude/tmp/control-build --run
+native binary: .claude/tmp/control-build/module
+step 1 validate input
+effect validate input Validation
+step 2 authorize owner
+effect authorize owner Authorization
+step 3 create link
+effect create link RepositoryCall
+step 4 cache link
+effect cache link CacheAccess
+step 5 emit linkCreated
+effect emit linkCreated EventEmit
+step 6 return slug
+status completed
+exit=0
+exit=0

@@ -1,0 +1,3 @@
+$ .venv/bin/lnpl compile qa/cases/batch-report/probes/probe-b2.lnpl -o qa/cases/batch-report/evidence/artifacts/probe-b/probe-b2.lir.json
+compile error: line 16: unknown policy 'schedule' (allowed: retry, rollback, timeout, parallel)
+exit=2

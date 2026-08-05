@@ -1,0 +1,12 @@
+$ .venv/bin/lnpl spec qa/cases/batch-report/batch-report.lnpl --run  # retry2: 1 case/workflow + CheckOrder boundary workflow
+warning: declared-measured-only [perf.report] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+1 warning(s), 0 error(s)
+PASS BuildReport spec — completed (status=completed)
+PASS BuildReport spec — steps 4 (steps=4 want=4)
+PASS BuildReport spec — slo met (slo_met=True)
+PASS BuildReport spec — rows Report 1 (Report rows=1 want=1)
+PASS GetReport spec — failed (status=failed)
+PASS GetReport spec — attempts 3 (max attempts=3 want=3)
+PASS CheckOrder spec — failed (status=failed)
+spec: 7 passed, 0 failed
+exit=0

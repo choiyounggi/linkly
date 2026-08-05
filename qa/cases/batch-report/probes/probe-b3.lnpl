@@ -1,0 +1,20 @@
+# probe-b3 — H-b3: `performance batch`는 파싱 후 무시되며, 진단이 알려주는가
+# 변수 1개: performance 절의 허용 이름이지만 unenforced인 `batch` 선언.
+# 예측: compile exit 0 + declared-not-enforced 계열 진단 1건(batch).
+
+capability postgres
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Money
+
+service ReportService
+    performance
+        batch
+
+workflow NightlyBatch
+    validate report
+    create report

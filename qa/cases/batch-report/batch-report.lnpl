@@ -1,0 +1,78 @@
+# batch-report.lnpl — 일별 주문 집계 리포트: lnpl 0.2.0로 표현 가능한 부분집합
+#
+# 제품 요구 3개 중 표현 가능 범위 (근거: evidence/03-vocab-survey.md, hypothesis-log.md):
+#   (a) 일별 주문 집계(sum/count) — 표현 불가. 집계 동사·산술·파생값 문법 부재
+#       (F-2, F-3 참조). 아래 BuildReport는 "주문을 읽고 리포트 행을 만든다"까지만
+#       표현한 잔여 부분이며, orderCount/totalAmount 값은 계산되지 않는다(H-a2).
+#   (b) 배치 트리거(매일 자정) — 표현 불가. 시간 트리거 어휘 부재(H-b1, H-b2).
+#       중복실행 방지·재실행 멱등도 어휘 부재로 N/A. 아래 event ReportBuilt는
+#       엔티티 생명주기 훅으로, 시간 스케줄의 대체물이 아니다.
+#   (c) 집계 결과 조회 — 표현 가능. GetReport가 공식 예제(checkout의 find) 동형.
+#
+# 엔티티명은 단일 단어(Report)로 강제 — 다단어(DailyReport)는 스텝 객체로 참조
+# 불가(F-2). 선언은 집행 매트릭스의 enforced 항목만 사용(policy timeout).
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Money
+        placedAt DateTime
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Money
+
+event ReportBuilt on Report create
+
+service ReportService
+    policy
+        retry 2
+        timeout 2s
+    performance
+        response < 50ms
+
+workflow BuildReport
+    validate order
+    load order
+    create report
+    emit reportBuilt
+    spec
+        given
+            valid order
+        when
+            build report
+        expect
+            completed
+            steps 4
+            slo met
+            rows Report 1
+
+workflow GetReport
+    validate report
+    find report
+    spec
+        given
+            empty repository
+        when
+            get report
+        expect
+            failed
+            attempts 3
+
+# 경계 케이스 전용 워크플로 — spec 블록은 워크플로당 1케이스만 지원(복수 triplet은
+# 조용히 병합됨: F-6). 경계값(필드 부재) 케이스를 분리 수용하기 위한 우회.
+workflow CheckOrder
+    validate order
+    load order
+    spec
+        given
+            no amount
+        when
+            check order
+        expect
+            failed

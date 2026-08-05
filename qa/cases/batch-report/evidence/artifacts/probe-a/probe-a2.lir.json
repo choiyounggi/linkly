@@ -1,0 +1,105 @@
+{
+  "lir_version": "0.1",
+  "module": "probe-a2",
+  "nodes": [
+    {
+      "kind": "Entity",
+      "id": "entity.order",
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "amount",
+          "type": "Money"
+        },
+        {
+          "name": "placedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.report",
+      "name": "Report",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "reportDate",
+          "type": "DateTime"
+        },
+        {
+          "name": "orderCount",
+          "type": "Integer"
+        },
+        {
+          "name": "totalAmount",
+          "type": "Money"
+        }
+      ]
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.aggregate.daily",
+      "name": "AggregateDaily",
+      "children": [
+        "wf.aggregate.daily.step.1",
+        "wf.aggregate.daily.step.2",
+        "wf.aggregate.daily.step.3"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.aggregate.daily.step.1",
+      "name": "validate order",
+      "children": [
+        "wf.aggregate.daily.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.aggregate.daily.step.1.check",
+      "target": "entity.order",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.aggregate.daily.step.2",
+      "name": "load order",
+      "children": [
+        "wf.aggregate.daily.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.aggregate.daily.step.2.repo",
+      "entity": "entity.order",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.aggregate.daily.step.3",
+      "name": "create report",
+      "children": [
+        "wf.aggregate.daily.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.aggregate.daily.step.3.repo",
+      "entity": "entity.report",
+      "operation": "create"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    }
+  ]
+}

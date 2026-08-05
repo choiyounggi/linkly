@@ -1,0 +1,11 @@
+$ .venv/bin/lnpl spec examples/shorten.lnpl --run
+warning: declared-not-enforced [security.shorten] security jwt — declared but unenforced: no token is issued or verified; the mechanism reaches the OpenAPI document only
+warning: declared-measured-only [perf.shorten] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: unknown-verb [line 57] return — `return slug` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+3 warning(s), 0 error(s)
+PASS Shorten spec — completed (status=completed)
+PASS Shorten spec — steps 6 (steps=6 want=6)
+PASS Shorten spec — slo met (slo_met=True)
+PASS Shorten spec — cache written (cache entries=1)
+spec: 4 passed, 0 failed
+exit=0
