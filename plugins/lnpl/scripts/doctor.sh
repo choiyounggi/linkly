@@ -52,7 +52,11 @@ fi
 
 # CLI가 실제로 컴파일까지 가는지 본다 — PATH에 있다는 것만으로는 부족하다.
 # 프로브는 플러그인 설치 경로가 아니라 사용자 상태 디렉터리에 쓴다(훅의 마커와 같은 곳).
-PROBE_DIR="${HOME}/.claude/lnpl-plugin/doctor-probe"
+# 경로는 호출마다 유일해야 한다: 고정 경로를 쓰면 동시에 돌던 두 doctor 중 한쪽의
+# 정리가 다른 쪽 프로브를 지워, 멀쩡한 설치를 "컴파일 실패"로 보고한다(실측 플래키).
+PROBE_BASE="${HOME}/.claude/lnpl-plugin"
+mkdir -p "$PROBE_BASE" 2>/dev/null
+PROBE_DIR="$(mktemp -d "${PROBE_BASE}/probe.XXXXXX" 2>/dev/null)" || PROBE_DIR="${PROBE_BASE}/probe.$$"
 mkdir -p "$PROBE_DIR" 2>/dev/null
 PROBE="${PROBE_DIR}/probe.lnpl"
 printf 'entity Note\n    field\n        id UUID\n\nworkflow Save\n    validate input\n    create note\n' > "$PROBE" 2>/dev/null

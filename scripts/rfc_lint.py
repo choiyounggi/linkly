@@ -8,7 +8,8 @@
   §3 번호 체계   파일명 `NNNN-<kebab-slug>.md`, 번호 중복 없음, 번호 공백 없음,
                  제목 줄의 번호가 파일명과 일치
   §2.1 수명주기  Status가 있고 어휘(Draft/Review/Accepted/Superseded) 안에 있음
-  §7 템플릿      설계 RFC는 고정 7섹션을 전부 가짐
+  §7 템플릿      설계 RFC의 섹션이 고정 7개와 **이름·순서까지** 일치
+                 (§7은 추가·삭제·개명을 명시적으로 금지한다)
 
 검사하지 않는 것: 내용의 정합성, Supersedes/Updates가 가리키는 대상의 존재
 여부(§2.2는 연쇄 갱신까지 요구해서 기계적 판정이 모호하다), 골든 시나리오 사용.
@@ -96,10 +97,30 @@ def check_document(filename, text):
                          % (status, " / ".join(STATUSES))))
 
     if number not in PROCESS_RFCS:
-        have = set(sections(text))
-        missing = [s for s in REQUIRED_SECTIONS if s not in have]
-        if missing:
-            problems.append(("§7", "템플릿 섹션 누락: %s" % ", ".join(missing)))
+        problems.extend(check_sections(sections(text)))
+    return problems
+
+
+def check_sections(have):
+    """§7: 7개 섹션의 이름과 순서가 고정이고 추가·삭제·개명이 금지된다.
+
+    누락 / 초과 / 순서를 따로 보고한다 — 한 줄로 뭉치면 무엇을 고쳐야 하는지
+    읽히지 않는다.
+    """
+    problems = []
+    missing = [s for s in REQUIRED_SECTIONS if s not in have]
+    if missing:
+        problems.append(("§7", "템플릿 섹션 누락: %s" % ", ".join(missing)))
+
+    extra = [s for s in have if s not in REQUIRED_SECTIONS]
+    if extra:
+        problems.append(("§7", "템플릿에 없는 섹션: %s — §7은 섹션 추가를 "
+                         "금지한다(내용은 기존 7섹션 안으로 옮겨라)"
+                         % ", ".join(extra)))
+
+    # 순서는 누락·초과가 없을 때만 판정한다. 그 둘이 있으면 순서 지적이 소음이다.
+    if not missing and not extra and list(have) != list(REQUIRED_SECTIONS):
+        problems.append(("§7", "섹션 순서가 템플릿과 다르다: %s" % " → ".join(have)))
     return problems
 
 
