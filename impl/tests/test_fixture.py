@@ -11,7 +11,8 @@ import unittest
 from argparse import Namespace
 
 from lnpl import backend, cli
-from lnpl.interp import Interpreter, sample_payload, check_semantic_type
+from lnpl.interp import (Interpreter, check_semantic_type, refinement_index,
+                         sample_payload)
 from lnpl.lower import lower
 from lnpl.parser import parse
 
@@ -25,8 +26,8 @@ capability redis
 entity Link
     field
         id UUID
-        slug Text
-        target Text
+        slug Slug
+        target Url
         createdAt DateTime
 event LinkCreated on Link create
 service ShortenService
@@ -58,18 +59,47 @@ def entities(doc):
     return [n for n in doc["nodes"] if n["kind"] == "Entity"]
 
 
+def shorten_payload(doc):
+    # The two-argument form is what production uses (`cli.py:80,195`,
+    # `spec.py:136,158`); without the index a refinement-typed field is dropped
+    # from the fixture entirely, so `slug`/`target` would go missing here.
+    return sample_payload(entities(doc), refinement_index(doc))
+
+
 class TestSamplePayload(unittest.TestCase):
     def test_covers_every_field_of_the_entity(self):
-        payload = sample_payload(entities(shorten_doc()))
+        payload = shorten_payload(shorten_doc())
         self.assertEqual(set(payload), {"id", "slug", "target", "createdAt"})
 
     def test_samples_pass_their_own_semantic_type_validation(self):
         # A derived value must be a *valid* instance of its field's type, or the
-        # fixture would fail the very validation it exists to satisfy.
-        payload = sample_payload(entities(shorten_doc()))
-        entity = entities(shorten_doc())[0]
+        # fixture would fail the very validation it exists to satisfy. With
+        # `slug Slug` / `target Url` that now means satisfying the refinement's
+        # facets, not just the base type.
+        doc = shorten_doc()
+        payload = shorten_payload(doc)
+        refs = refinement_index(doc)
+        entity = entities(doc)[0]
         for field in entity["fields"]:
-            check_semantic_type(field["type"], payload[field["name"]], field["name"])
+            check_semantic_type(field["type"], payload[field["name"]],
+                                field["name"], refs)
+
+    def test_KNOWN_LIMITATION_one_arg_derivation_drops_refinement_fields(self):
+        """`sample_payload(entities)` with no index omits every refined field.
+
+        `refinements` defaults to None, and `sample_for_type` has no entry for a
+        name outside the 18 bases, so a `slug Slug` field is silently left out of
+        the fixture rather than raising. The workflow then dies at `validate
+        target` with a null-field error that points nowhere near the cause.
+
+        Every production caller passes the index (`cli.py:80,195`,
+        `spec.py:136,158`), so this is a footgun for new call sites only. Closing
+        it would mean making the parameter required, which ripples through a
+        signature Wave 3 froze — out of scope here. Asserted so the next reader
+        finds it pinned instead of stepping in it.
+        """
+        payload = sample_payload(entities(shorten_doc()))
+        self.assertEqual(set(payload), {"id", "createdAt"})
 
     def test_every_rfc0001_type_has_a_sample(self):
         # No declared field of a valid type can be left out of the fixture.
@@ -86,7 +116,7 @@ class TestSamplePayload(unittest.TestCase):
 class TestDerivedFixtureRunsNonLoginApi(unittest.TestCase):
     def test_shorten_workflow_completes_on_derived_fixture(self):
         doc = shorten_doc()
-        payload = sample_payload(entities(doc))
+        payload = shorten_payload(doc)
         interp = Interpreter(doc, repo_rows={})   # empty repo: it is a create
         result = interp.run_workflow("wf.shorten", payload)
         self.assertEqual(result["status"], "completed")

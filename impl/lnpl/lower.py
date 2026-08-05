@@ -225,6 +225,25 @@ def _enum_value(tok, lineno):
                      % (lineno, tok))
 
 
+def _check_enum_member(value, base, lineno):
+    """RFC-0011 A.6.3 — a member must be a value the base can actually hold.
+
+    `Integer` is narrower than its category: `enum` enumerates the admissible
+    values, so a member with a fractional part is dead. `min`/`max` are bounds
+    and stay category-wide — `min 1.5` on an Integer still admits every int >= 2.
+    """
+    if BASE_CATEGORY[base] == "text":
+        ok, form = isinstance(value, str), "a Word"
+    elif base == "Integer":
+        ok, form = isinstance(value, int), "a Number with no fractional part"
+    else:                       # Decimal -- the only other base admitting enum
+        ok, form = isinstance(value, (int, float)), "a Number"
+    if not ok:
+        raise LowerError("line %d: enum value %r cannot be a value of base %r "
+                         "(allowed: %s — RFC-0011 A.6.3)"
+                         % (lineno, value, base, form))
+
+
 def _parse_facet_line(tokens, lineno, allowed, base):
     """One FacetLine -> (name, value). RFC-0001 A.6.3 / RFC-0002 §Full grammar.
 
@@ -244,7 +263,10 @@ def _parse_facet_line(tokens, lineno, allowed, base):
     if name == "enum":
         if len(tokens) < 2:
             raise LowerError("line %d: `enum` needs at least one value" % lineno)
-        return name, [_enum_value(t, lineno) for t in tokens[1:]]
+        values = [_enum_value(t, lineno) for t in tokens[1:]]
+        for value in values:
+            _check_enum_member(value, base, lineno)
+        return name, values
     if len(tokens) != 2:
         raise LowerError("line %d: `%s` needs exactly one value" % (lineno, name))
     if name == "pattern":
@@ -295,8 +317,9 @@ def _lower_refine(decl, taken):
             % (decl.lineno, base))
     if decl.name in taken:
         raise LowerError(
-            "line %d: %r is already a semantic type, a built-in preset, or a "
-            "refinement declared in this module (RFC-0001 A.6.2)"
+            "line %d: %r is already a semantic type, a built-in preset, an "
+            "entity, or a refinement declared in this module "
+            "(RFC-0001 A.6.2, RFC-0011 A.7)"
             % (decl.lineno, decl.name))
     allowed = facets_for_base(base)
     facets = {}
@@ -340,7 +363,11 @@ def lower(decls, module_name):
 
     # ---- Refinements (RFC-0001 A.6). A declared block becomes a node whether or
     # not a field names it; the built-in presets are appended on use, below.
-    taken = set(BASE_CATEGORY) | set(PRESETS)
+    # RFC-0011 A.7 (e): an entity and a refinement land in one
+    # `components/schemas` name space, so a collision must fail here rather than
+    # at generation time. `by_kind` is built above, so an entity declared later
+    # in the file than the `refine` still takes its name.
+    taken = set(BASE_CATEGORY) | set(PRESETS) | {d.name for d in by_kind["entity"]}
     refine_nodes = []
     refined_names = set()
     used_presets = []

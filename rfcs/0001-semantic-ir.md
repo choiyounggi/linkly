@@ -3,6 +3,7 @@
 ## Status
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
+- Updated-by: RFC-0011 (§부록 A.6.3, §부록 A.7)
 
 ## Motivation
 
@@ -282,6 +283,8 @@ refinement 직렬화"를 **해소한다**: refinement는 객체로 직렬화하�
 }
 ```
 
+> 갱신됨: RFC-0011
+
 **A.6.3 facet 어휘.** **정확히 6종의 닫힌 열거**이며, 본문이 허용한 강화
 방향("범위·패턴·열거·길이 추가") 4계열의 전개다. 어휘의 추가·삭제는 이 RFC의
 개정 사항이지 문법의 확장이 아니다.
@@ -329,6 +332,8 @@ kind 접두 **`refine`** 을 추가하는 것으로 족하다(`Url` → `refine.
 이를 `$ref`한다. facet 이름이 JSON Schema/OpenAPI 키워드와 같으므로 투영은
 기계적이다. 생성의 정본은 RFC-0004이며 이 문단은 계약이 아니다. `Decimal`은
 OpenAPI에서 `string`으로 인코딩되므로 그 `min`/`max` 투영은 RFC-0004가 정한다.
+
+> 갱신됨: RFC-0011
 
 **A.7 스키마 검증의 범위.** JSON Schema는 노드 단위 구조·타입(필수 필드,
 kind별 허용 필드, enum 값, id 형식)만 검증한다. 문서 수준 불변식 — id 유일성,

@@ -1,5 +1,6 @@
 """IR -> OpenAPI: every fact in the output must trace to a node in the IR."""
 
+import copy
 import json
 import os
 import unittest
@@ -479,21 +480,47 @@ workflow W
     validate input
 """
 
-    def test_the_compiler_does_not_reject_this_collision(self):
-        # RFC-0001 A.7 invariant 5 lists the 18 base types, the presets and
-        # other refinements -- not entity names. So the compiler lets this
-        # through and the generator is the last line of defence. If the
-        # compiler ever starts rejecting it, this reddens first.
-        doc = lower(parse(self.SRC), "login").to_document()
-        self.assertEqual(sorted(n["kind"] for n in doc["nodes"]
-                                if n.get("name") == "Link"),
-                         ["Entity", "Refinement"])
+    # `lower` refuses this source now, so the generator's guard can only be
+    # reached with IR that never went through the compiler -- an agent emitting
+    # IR directly, or a `.lir.json` written by a third-party tool. A backstop
+    # with no test is not a backstop, so it gets one built by hand.
+    COLLIDING_DOC = {
+        "lir_version": "0.1", "module": "collide",
+        "nodes": [
+            {"kind": "Refinement", "id": "refine.link", "name": "Link",
+             "base": "Text", "facets": {"maxLength": 8}},
+            {"kind": "Entity", "id": "entity.link", "name": "Link",
+             "fields": [{"name": "code", "type": "Text"}]},
+        ],
+    }
+
+    def test_the_compiler_now_rejects_this_collision(self):
+        # INVERTED 2026-08-05. This used to assert the opposite: RFC-0001 A.7
+        # invariant 5 listed the 18 base types, the presets and other
+        # refinements -- not entity names -- so the compiler let the collision
+        # through and the generator below was the only defence. RFC-0011 adds
+        # the module's entity names to that invariant, so `lower` is now the
+        # first line of defence and the generator guard is the backstop for IR
+        # it never saw (COLLIDING_DOC above).
+        with self.assertRaises(LowerError) as ctx:
+            lower(parse(self.SRC), "login")
+        self.assertIn("an entity", str(ctx.exception))
+        self.assertIn("'Link'", str(ctx.exception))
 
     def test_an_entity_named_like_a_refinement_is_refused(self):
         with self.assertRaises(OpenApiError) as ctx:
-            spec_for(self.SRC)
+            generate(self.COLLIDING_DOC)
         self.assertIn("name collision", str(ctx.exception))
         self.assertIn("Link", str(ctx.exception))
+
+    def test_a_hand_built_document_without_the_collision_generates_both(self):
+        # The negative control for the test above: the guard must fire on the
+        # shared NAME, not on hand-built IR in general. Same document, entity
+        # renamed -- and both schemas come out.
+        ok = copy.deepcopy(self.COLLIDING_DOC)
+        ok["nodes"][1]["name"] = "Code"
+        schemas = generate(ok)["components"]["schemas"]
+        self.assertEqual(list(schemas), ["Link", "Code"])
 
     def test_a_merely_similar_name_is_not_a_collision(self):
         schemas = schemas_for(self.SRC.replace("refine Link of",
