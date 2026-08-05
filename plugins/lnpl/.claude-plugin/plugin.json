@@ -1,6 +1,6 @@
 {
   "name": "lnpl",
-  "description": "Write `.lnpl` for the linkly LLM-native platform. LNPL's vocabulary is closed and absent from model training data, so a plausible-looking source compiles and then silently does nothing — an unknown verb derives no effect, and most declarations are never enforced. This plugin routes the model to the vocabulary generated from the compiler's own tables, and surfaces `lnpl compile` diagnostics the moment a file is written.",
+  "description": "Author `.lnpl` for the linkly LLM-native platform. LNPL's vocabulary is closed and absent from model training data, so a plausible-looking source compiles and then silently does nothing — an unknown verb derives no effect, and most declarations are never enforced. This plugin routes the model to the vocabulary generated from the compiler's own tables, surfaces `lnpl compile` diagnostics the moment a file is written, derives spec cases from declarations, consults the knowledge base before design decisions, and gates completion on evidence.",
   "version": "0.2.0",
   "author": {
     "name": "choiyounggi",

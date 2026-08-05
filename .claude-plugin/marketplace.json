@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "lnpl",
-      "description": "Authoring support for `.lnpl` — closed-vocabulary routing generated from the compiler's own tables, plus write-time compile diagnostics.",
+      "description": "Authoring, verification, and KB routing for `.lnpl` — closed-vocabulary references generated from the compiler's own tables, write-time compile diagnostics, a completion gate, and spec-case derivation.",
       "category": "development",
       "author": {
         "name": "choiyounggi",
@@ -18,7 +18,14 @@
       "source": "./plugins/lnpl",
       "homepage": "https://github.com/choiyounggi/linkly",
       "version": "0.2.0",
-      "tags": ["lnpl", "linkly", "dsl", "compiler", "authoring", "claude-code"]
+      "tags": [
+        "lnpl",
+        "linkly",
+        "dsl",
+        "compiler",
+        "authoring",
+        "claude-code"
+      ]
     }
   ]
 }

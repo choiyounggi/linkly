@@ -20,8 +20,14 @@ LNPL의 어휘는 닫혀 있고 모델의 학습 데이터에 없다. 그래서 
 | 구성요소 | 하는 일 |
 |----------|---------|
 | `lnpl-authoring` 스킬 | 어휘 라우팅. 본문은 컴파일러 테이블에서 생성된 `references/` |
+| `lnpl-verify` 스킬 | 완료 게이트 — compile 진단 → `spec --run` → (툴체인이 있으면) `diff` |
+| `lnpl-spec` 스킬 | 선언에서 spec 케이스를 기계적으로 도출하는 규칙 |
+| `lnpl-kb` 스킬 | 설계 결정 전에 KB를 조회(RFC-0005 라우팅) |
 | `lnpl-doctor` 스킬 | 설치·버전 불일치 진단 |
 | PostToolUse 훅 | `*.lnpl` 저장 직후 `lnpl compile` 진단을 모델에게 전달 |
+
+작성(`lnpl-authoring`) → 검증 도출(`lnpl-spec`) → 완료 판정(`lnpl-verify`)이
+한 루프이고, 설계 결정이 필요한 순간마다 `lnpl-kb`가 끼어든다.
 
 어휘 문서는 `scripts/gen_plugin_references.py`의 산출물이고, 손으로 고치면
 `impl/tests/test_plugin_references.py`가 실패한다. 정본은 언제나 소스다.
