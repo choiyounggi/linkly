@@ -1,0 +1,1 @@
+compile error: workflow Approval: guard condition 'payment.amount <= 10000' reads entity.payment, but this workflow never reads it — no binding can ever exist, so the guard would be false forever
