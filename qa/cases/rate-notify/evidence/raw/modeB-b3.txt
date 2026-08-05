@@ -1,0 +1,9 @@
+native binary: .claude/tmp/lnpl-build/module
+step 1 validate measurement
+effect validate measurement Validation
+step 2 find measurement
+effect find measurement RepositoryCall
+step 4 emit notificationSent
+effect emit notificationSent EventEmit
+status completed
+exit=0

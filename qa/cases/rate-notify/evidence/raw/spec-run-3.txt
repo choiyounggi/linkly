@@ -1,0 +1,7 @@
+warning: declared-measured-only [perf.rate.notify] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+1 warning(s), 0 error(s)
+FAIL Report spec — completed (status=failed)
+FAIL Report spec — steps 4 (steps=1 want=4)
+FAIL Report spec — slo met (slo_met=False)
+FAIL Report spec — rows Notification 1 (Notification rows=0 want=1)
+spec: 0 passed, 4 failed

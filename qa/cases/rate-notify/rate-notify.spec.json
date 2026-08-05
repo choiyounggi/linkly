@@ -1,0 +1,25 @@
+{
+  "spec_version": "0.1",
+  "module": "rate-notify",
+  "cases": [
+    {
+      "name": "Report spec",
+      "workflow": "wf.report",
+      "given": [
+        "valid measurement",
+        "id 3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "value 150",
+        "acknowledged 1"
+      ],
+      "when": [
+        "report"
+      ],
+      "expect": [
+        "completed",
+        "steps 4",
+        "slo met",
+        "rows Notification 1"
+      ]
+    }
+  ]
+}

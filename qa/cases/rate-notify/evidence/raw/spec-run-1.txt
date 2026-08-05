@@ -1,0 +1,3 @@
+warning: declared-measured-only [perf.rate.notify] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+1 warning(s), 0 error(s)
+compile error: unsupported given: 'no priorNotification' (use `valid <...>`, `empty repository`, `<field> <value>`, `no <field>` naming a declared field, or `stored <entity> <field> <value>`)

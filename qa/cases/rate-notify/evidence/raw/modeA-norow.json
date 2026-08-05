@@ -1,0 +1,181 @@
+{
+  "result": {
+    "status": "failed",
+    "steps": [
+      {
+        "step": "validate measurement",
+        "attempts": 1,
+        "duration_ms": 6,
+        "effects": [
+          "Validation"
+        ]
+      },
+      {
+        "step": "find measurement",
+        "attempts": 4,
+        "duration_ms": 704,
+        "effects": [
+          "RepositoryCall"
+        ]
+      }
+    ],
+    "failed_step": "find measurement",
+    "skipped": [],
+    "failure_reason": "repository read found no row for entity.measurement",
+    "bindings": {},
+    "duration_ms": 710,
+    "correlation_id": "cid-0001",
+    "slo_ms": 50,
+    "slo_met": false
+  },
+  "trace": {
+    "correlation_id": "cid-0001",
+    "span": {
+      "name": "Report",
+      "kind": "Workflow",
+      "duration_ms": 710,
+      "attrs": {},
+      "children": [
+        {
+          "name": "validate measurement",
+          "kind": "WorkflowStep",
+          "duration_ms": 6,
+          "attrs": {
+            "attempts": 1
+          },
+          "children": [
+            {
+              "name": "check",
+              "kind": "Validation",
+              "duration_ms": 1,
+              "attrs": {},
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "find measurement",
+          "kind": "WorkflowStep",
+          "duration_ms": 704,
+          "attrs": {
+            "attempts": 4
+          },
+          "children": [
+            {
+              "name": "repo",
+              "kind": "RepositoryCall",
+              "duration_ms": 1,
+              "attrs": {
+                "found": false
+              },
+              "children": []
+            },
+            {
+              "name": "repo",
+              "kind": "RepositoryCall",
+              "duration_ms": 1,
+              "attrs": {
+                "found": false
+              },
+              "children": []
+            },
+            {
+              "name": "repo",
+              "kind": "RepositoryCall",
+              "duration_ms": 1,
+              "attrs": {
+                "found": false
+              },
+              "children": []
+            },
+            {
+              "name": "repo",
+              "kind": "RepositoryCall",
+              "duration_ms": 1,
+              "attrs": {
+                "found": false
+              },
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    "metrics": [
+      {
+        "name": "step.duration_ms",
+        "labels": {
+          "workflow": "Report",
+          "step": "validate measurement"
+        },
+        "value": 6
+      },
+      {
+        "name": "step.duration_ms",
+        "labels": {
+          "workflow": "Report",
+          "step": "find measurement"
+        },
+        "value": 704
+      },
+      {
+        "name": "workflow.duration_ms",
+        "labels": {
+          "workflow": "Report"
+        },
+        "value": 710
+      }
+    ],
+    "logs": [
+      {
+        "level": "INFO",
+        "message": "workflow start",
+        "correlation_id": "cid-0001",
+        "workflow": "Report",
+        "payload": {
+          "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+          "value": 150,
+          "acknowledged": 1
+        }
+      },
+      {
+        "level": "WARN",
+        "message": "step retry",
+        "correlation_id": "cid-0001",
+        "step": "find measurement",
+        "attempt": 1,
+        "reason": "repository read found no row for entity.measurement"
+      },
+      {
+        "level": "WARN",
+        "message": "step retry",
+        "correlation_id": "cid-0001",
+        "step": "find measurement",
+        "attempt": 2,
+        "reason": "repository read found no row for entity.measurement"
+      },
+      {
+        "level": "WARN",
+        "message": "step retry",
+        "correlation_id": "cid-0001",
+        "step": "find measurement",
+        "attempt": 3,
+        "reason": "repository read found no row for entity.measurement"
+      },
+      {
+        "level": "ERROR",
+        "message": "step failed",
+        "correlation_id": "cid-0001",
+        "step": "find measurement",
+        "reason": "repository read found no row for entity.measurement"
+      },
+      {
+        "level": "WARN",
+        "message": "response SLO exceeded (measured, not enforced)",
+        "correlation_id": "cid-0001",
+        "measured_ms": 710,
+        "slo_ms": 50
+      }
+    ]
+  }
+}
