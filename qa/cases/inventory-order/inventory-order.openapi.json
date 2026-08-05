@@ -1,0 +1,128 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "inventory-order API",
+    "version": "0.1.0",
+    "description": "Generated from Semantic IR (lir_version 0.1). Do not edit by hand."
+  },
+  "paths": {
+    "/order-service/place-order": {
+      "post": {
+        "operationId": "order_service_place_order",
+        "summary": "PlaceOrder workflow",
+        "description": "Steps: validate order -> find product -> create order -> update product",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Order"
+              }
+            }
+          }
+        },
+        "x-response-slo-ms": 50,
+        "x-retry": 3,
+        "x-timeout-ms": 3000,
+        "x-conditional-steps": [
+          "create order",
+          "update product"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "OrderStatus": {
+        "type": "string",
+        "enum": [
+          "created",
+          "confirmed"
+        ]
+      },
+      "PositiveInteger": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "stock": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "price": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "string",
+                "format": "decimal"
+              },
+              "currency": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "stock",
+          "price"
+        ]
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/PositiveInteger"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrderStatus"
+          },
+          "placedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "quantity",
+          "status",
+          "placedAt"
+        ]
+      }
+    }
+  }
+}

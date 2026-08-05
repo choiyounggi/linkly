@@ -1,0 +1,61 @@
+# inventory-order.lnpl — 주문·재고 서비스 (QA 케이스 t1)
+#
+# CASE-SPEC.md S1~S5를 lnpl 0.2.0 어휘로 표현한다. 어휘 결정 규칙(D5):
+# 모든 낱말은 생성 레퍼런스 표의 행에서만. 표에 없는 요구사항은 지어내지 않고
+# FINDINGS에 "표현 불가"로 기록한다.
+#
+# 기계(mechanism)와 서술(documentation)의 구분:
+#   기계 — Product.id/Order.id(행 키), Product.stock(가드가 읽는 필드),
+#          quantity PositiveInteger(min=1 → S4 수량 0 거부),
+#          policy retry 3(실패 케이스 attempts 4 도출), policy timeout 3s(enforced)
+#   서술 — name/price/status/placedAt, event OrderConfirmed
+
+capability postgres
+
+entity Product
+    field
+        id UUID
+        name Text
+        stock Integer
+        price Money
+
+entity Order
+    field
+        id UUID
+        quantity PositiveInteger
+        status OrderStatus
+        placedAt DateTime
+
+refine OrderStatus of Text
+    enum created confirmed
+
+event OrderConfirmed on Order create
+
+service OrderService
+    policy
+        retry 3
+        timeout 3s
+    performance
+        response < 50ms
+
+workflow PlaceOrder
+    validate order
+    find product
+    when product.stock > 0
+    create order
+    when product.stock > 0
+    update product
+    # spec 케이스는 워크플로당 1개만 표현 가능(복수 블록은 침묵 병합됨 — FINDINGS
+    # F-7). 에러 케이스(retry→failed/attempts 4)와 경계 케이스(stored stock 0)는
+    # spec으로 공존 불가 → evidence/04(modeA)·05(modeB)의 런타임 실측으로 대체.
+    spec
+        given
+            valid order
+        when
+            place order
+        expect
+            completed
+            steps 4
+            rows Order 1
+            effects 4
+            effects complete
