@@ -19,6 +19,7 @@ Mapping (each row cites the IR that produces it):
 """
 
 from .interp import _duration_ms
+from .refinements import BASE_CATEGORY, facets_for_base
 from .types import SEMANTIC_TYPES
 
 # Semantic type -> OpenAPI schema, projected from the one type registry
@@ -39,15 +40,50 @@ FACET_KEYWORD = {"minLength": "minLength", "maxLength": "maxLength",
 # already uses for IR facts OpenAPI has no keyword for (`x-retry`, ...).
 DECIMAL_FACET_KEYWORD = {"min": "x-min", "max": "x-max", "enum": "x-enum"}
 
+# The Python types an `enum` member may take, keyed by the base's JSON Schema
+# `type`. A.6.3 permits `enum` on the text and numeric categories and does not
+# tie the member type to the base, so both directions of mismatch are
+# constructible -- and each produces a schema no instance satisfies. `bool` is
+# excluded everywhere: Python's bool subclasses int, and JSON `true` is not a
+# number instance. `Decimal` is absent by design -- its base encodes as
+# `string` while its members are legitimately numeric, and its facets ride
+# `x-enum`, which the check below does not key on.
+ENUM_MEMBER_TYPES = {"string": (str,), "integer": (int,), "number": (int, float)}
+
+# How a facet composes onto a keyword the base already fixes. RFC-0001 A.6.2:
+# a refinement NARROWS its base, so the answer is per keyword and directional --
+# an upper bound narrows downward (intersect by taking the smaller), a lower
+# bound narrows upward (take the larger). The facet is legal only when the
+# intersection IS the facet; otherwise it widens the base, which is not a
+# refinement and is refused. `pattern` is deliberately not in this table: two
+# regexes have no intersection expressible as one `pattern`, so they compose as
+# an `allOf` conjunction -- which can only remove instances, so a `pattern`
+# never widens and has no refusal case (at the cost of not detecting two
+# disjoint patterns). A keyword in neither place -- today only `enum`, which no
+# base carries -- is refused rather than silently overwritten.
+#
+# The rule is about narrowing, not about which keyword the base happened to
+# use, which is why it gives `Phone` (regex as a real `pattern`, types.py:48)
+# and `UUID`/`Email`/`DateTime` (regex as a non-assertive `format`) the same
+# answer where the old rule gave them opposite ones.
+NARROWING = {"minLength": max, "minimum": max, "maxLength": min, "maximum": min}
+
 
 class OpenApiError(Exception):
     """Raised when the IR states something this generator cannot express."""
 
 
 def _slug(name):
+    # Word boundary rule, identical to `lower.split_pascal`'s: a capital starts
+    # a new word only when it is not inside a run of capitals, or is the last
+    # capital of a run before a lowercase letter. Without the run test an
+    # acronym explodes -- `APIKey` slugs to `a-p-i-key`. Keep this in step with
+    # `lower.split_pascal`: both derive names for the same declarations, and a
+    # disagreement puts a node id and its URL out of sync.
     out = []
     for i, ch in enumerate(name):
-        if ch.isupper() and i:
+        if i and ch.isupper() and (not name[i - 1].isupper()
+                                   or (i + 1 < len(name) and name[i + 1].islower())):
             out.append("-")
         out.append(ch.lower())
     return "".join(out)
@@ -56,18 +92,84 @@ def _slug(name):
 def _refinement_schema(node):
     """A Refinement node -> its named schema: the base schema, strengthened."""
     base = node["base"]
+    if base not in TYPE_SCHEMA or base not in BASE_CATEGORY:
+        raise OpenApiError(
+            "refinement %s: %r is not one of the 18 semantic types RFC-0001 "
+            "A.6.2 allows as a base" % (node["name"], base))
+    # Which facets the base's category admits (A.6.3). RFC-0001 A.7 puts this
+    # invariant (ⓓ) outside what `schemas/lir.schema.json` checks, so a
+    # schema-valid document can carry a facet the category forbids -- and
+    # `generate` is a public entry point, not only the tail of `compile_source`.
+    # Consulting the category rather than a per-base keyword table is what makes
+    # the lookup below total: every facet a category admits has a projection for
+    # every base in it (pinned by the test of that name in test_openapi.py).
+    # Facet *values* are not checked here -- the IR schema types them
+    # (`lir.schema.json:167-195`), so only a hand-built dict can carry a wrong
+    # one, and that is a different invariant from ⓓ.
+    allowed = facets_for_base(base)
     keywords = DECIMAL_FACET_KEYWORD if base == "Decimal" else FACET_KEYWORD
     schema = dict(TYPE_SCHEMA[base])
     for facet, value in node["facets"].items():
+        if facet not in allowed:
+            raise OpenApiError(
+                "refinement %s: facet %r does not apply to base %s "
+                "(RFC-0001 A.6.3)" % (node["name"], facet, base))
         keyword = keywords[facet]
         if keyword in schema and schema[keyword] != value:
-            raise OpenApiError(
-                "refinement %s cannot set %s to %r: base %s already fixes it "
-                "at %r, and a refinement strengthens its base rather than "
-                "replacing it" % (node["name"], keyword, value, base,
-                                  schema[keyword]))
+            if keyword in NARROWING:
+                if NARROWING[keyword](schema[keyword], value) != value:
+                    raise OpenApiError(
+                        "refinement %s cannot set %s to %r: base %s fixes it "
+                        "at %r and %r widens it, but a refinement narrows its "
+                        "base (RFC-0001 A.6.2)"
+                        % (node["name"], keyword, value, base, schema[keyword],
+                           value))
+            elif keyword == "pattern":
+                schema.setdefault("allOf", []).append({"pattern": value})
+                continue
+            else:
+                raise OpenApiError(
+                    "refinement %s cannot compose %s onto base %s: the "
+                    "composition rule defines no intersection for that keyword"
+                    % (node["name"], keyword, base))
         schema[keyword] = value
+    _reject_uninhabited(node["name"], base, schema)
     return schema
+
+
+def _reject_uninhabited(name, base, schema):
+    """Refuse a composition no instance can satisfy.
+
+    RFC-0001 A.6.2: a refinement narrows its base. Narrowing to nothing is a
+    mistake, not a type -- and nothing downstream catches it, because an
+    uninhabited schema is still a structurally valid one (`check_schema` asks
+    whether a schema is well-formed, not whether anything satisfies it).
+
+    Deliberately narrow: this checks the ordered bound pairs and the `enum`,
+    and nothing else. Full satisfiability -- does any `enum` member match the
+    `pattern`, is a `pattern` inhabited, are two `pattern`s disjoint -- is a
+    much larger problem and is NOT attempted here. That is a decision, not an
+    oversight; the cases below are the ones a user actually hits.
+    """
+    for lo, hi in (("minLength", "maxLength"), ("minimum", "maximum"),
+                   ("x-min", "x-max")):
+        if lo in schema and hi in schema and schema[lo] > schema[hi]:
+            raise OpenApiError("refinement %s is unsatisfiable: %s %r exceeds "
+                               "%s %r" % (name, lo, schema[lo], hi, schema[hi]))
+    if "enum" in schema:
+        if not schema["enum"]:
+            raise OpenApiError("refinement %s is unsatisfiable: an empty enum "
+                               "admits no value (RFC-0001 A.6.3 requires at "
+                               "least one member)" % name)
+        want = ENUM_MEMBER_TYPES.get(schema.get("type"))
+        if want is not None:
+            bad = [m for m in schema["enum"]
+                   if isinstance(m, bool) or not isinstance(m, want)]
+            if bad:
+                raise OpenApiError(
+                    "refinement %s is unsatisfiable: enum member(s) %r cannot "
+                    "be a %s, which is what base %s encodes as"
+                    % (name, bad, schema["type"], base))
 
 
 def generate(document, version="0.1.0"):
