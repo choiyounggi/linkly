@@ -1,0 +1,1 @@
+compile error: line 46: invalid condition: unsupported condition form: 'refund.requestedAt - payment.createdAt <= 30d' (RFC-0008 supports only `<field> exists|missing` and `<field> <op> <value>`, where <value> is Integer or Duration)

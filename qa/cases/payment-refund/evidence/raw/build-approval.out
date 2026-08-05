@@ -1,0 +1,9 @@
+native binary: .claude/tmp/t2-build/module
+step 1 validate payment
+effect validate payment Validation
+step 2 find payment
+effect find payment RepositoryCall
+step 3 update payment
+effect update payment RepositoryCall
+status completed
+exit=0

@@ -1,0 +1,5 @@
+$ .venv/bin/lnpl compile qa/cases/batch-report/probes/probe-b3.lnpl -o qa/cases/batch-report/evidence/artifacts/probe-b/probe-b3.lir.json
+warning: declared-not-enforced [perf.report] performance batch — declared but unenforced: parsed, but the execution plan never reads it
+1 warning(s), 0 error(s)
+wrote qa/cases/batch-report/evidence/artifacts/probe-b/probe-b3.lir.json (9 nodes)
+exit=0

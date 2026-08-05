@@ -1,0 +1,7 @@
+$ .venv/bin/lnpl diff examples/shorten.lnpl --workdir .claude/tmp/control-diff
+PASS 1/4 execution order — 6 step(s): validate input -> authorize owner -> create link -> cache link -> emit linkCreated -> return slug
+PASS 2/4 policy outcome — status=completed
+PASS 3/4 observability signals — 5 effect(s) per step match
+PASS 4/4 masking — no secret marker in either mode's output
+differential: EQUIVALENT
+exit=0

@@ -1,0 +1,211 @@
+{
+  "lir_version": "0.1",
+  "module": "inventory-order",
+  "nodes": [
+    {
+      "kind": "Refinement",
+      "id": "refine.order.status",
+      "name": "OrderStatus",
+      "base": "Text",
+      "facets": {
+        "enum": [
+          "created",
+          "confirmed"
+        ]
+      }
+    },
+    {
+      "kind": "Refinement",
+      "id": "refine.positive.integer",
+      "name": "PositiveInteger",
+      "base": "Integer",
+      "facets": {
+        "min": 1
+      }
+    },
+    {
+      "kind": "Service",
+      "id": "svc.order",
+      "name": "OrderService",
+      "requires": [
+        "cap.postgres"
+      ],
+      "constraints": [
+        "policy.order",
+        "perf.order"
+      ],
+      "children": [
+        "wf.place.order"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.product",
+      "name": "Product",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "name",
+          "type": "Text"
+        },
+        {
+          "name": "stock",
+          "type": "Integer"
+        },
+        {
+          "name": "price",
+          "type": "Money"
+        }
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.order",
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "quantity",
+          "type": "PositiveInteger"
+        },
+        {
+          "name": "status",
+          "type": "OrderStatus"
+        },
+        {
+          "name": "placedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Event",
+      "id": "event.order.confirmed",
+      "name": "OrderConfirmed",
+      "source": {
+        "ref": "entity.order",
+        "on": "create"
+      }
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.place.order",
+      "name": "PlaceOrder",
+      "children": [
+        "wf.place.order.step.1",
+        "wf.place.order.step.2",
+        "wf.place.order.guard.1",
+        "wf.place.order.guard.2"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.1",
+      "name": "validate order",
+      "children": [
+        "wf.place.order.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.place.order.step.1.check",
+      "target": "entity.order",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.2",
+      "name": "find product",
+      "children": [
+        "wf.place.order.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.place.order.step.2.repo",
+      "entity": "entity.product",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.3",
+      "name": "create order",
+      "children": [
+        "wf.place.order.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.place.order.step.3.repo",
+      "entity": "entity.order",
+      "operation": "create"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.place.order.guard.1",
+      "children": [
+        "wf.place.order.step.3"
+      ],
+      "mode": "when",
+      "condition": "product.stock > 0"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.4",
+      "name": "update product",
+      "children": [
+        "wf.place.order.step.4.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.place.order.step.4.repo",
+      "entity": "entity.product",
+      "operation": "update"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.place.order.guard.2",
+      "children": [
+        "wf.place.order.step.4"
+      ],
+      "mode": "when",
+      "condition": "product.stock > 0"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.order",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 3
+        },
+        {
+          "name": "timeout",
+          "value": "3s"
+        }
+      ]
+    },
+    {
+      "kind": "Performance",
+      "id": "perf.order",
+      "budgets": [
+        {
+          "metric": "response",
+          "value": "<50ms"
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+warning: declared-not-enforced [security.payment] security jwt — declared but unenforced: no token is issued or verified; the mechanism reaches the OpenAPI document only
+warning: declared-not-enforced [security.payment] security encrypt — declared but unenforced: the field is not encrypted (Password masking is a separate, type-driven behaviour)
+2 warning(s), 0 error(s)
+compile error: `empty repository` and `stored ...` contradict each other: there is no row to store into an empty store. Drop one.

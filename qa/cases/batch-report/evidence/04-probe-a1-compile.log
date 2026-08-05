@@ -1,0 +1,6 @@
+$ .venv/bin/lnpl compile qa/cases/batch-report/probes/probe-a1.lnpl -o qa/cases/batch-report/evidence/artifacts/probe-a/probe-a1.lir.json  # retry4 (entity renamed to single-word Report)
+warning: unknown-verb [line 23] sum — `sum order.amount` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+warning: unknown-verb [line 24] count — `count order` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+2 warning(s), 0 error(s)
+wrote qa/cases/batch-report/evidence/artifacts/probe-a/probe-a1.lir.json (12 nodes)
+exit=0

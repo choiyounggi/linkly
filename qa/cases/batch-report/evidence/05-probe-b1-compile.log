@@ -1,0 +1,5 @@
+$ .venv/bin/lnpl compile qa/cases/batch-report/probes/probe-b1.lnpl -o qa/cases/batch-report/evidence/artifacts/probe-b/probe-b1.lir.json
+warning: unknown-verb [line 16] schedule — `schedule daily at midnight` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+1 warning(s), 0 error(s)
+wrote qa/cases/batch-report/evidence/artifacts/probe-b/probe-b1.lir.json (8 nodes)
+exit=0

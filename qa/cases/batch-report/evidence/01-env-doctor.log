@@ -1,0 +1,17 @@
+$ bash scripts/dev_doctor.sh   # 2026-08-05 21:20:58 KST, HEAD=713a4cb
+linkly 기여자 환경 진단
+------------------------
+python3.13  : Python 3.13.1
+venv        : Python 3.13.1
+jsonschema  : 설치됨
+lnpl 스크립트: lnpl 0.2.0
+MLIR/LLVM   : /opt/homebrew/opt/llvm/bin/clang
+SDK 경로    : CPATH/LIBRARY_PATH 설정됨
+
+준비됨. 전체 스위트:
+  PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl \
+    2>&1 | grep -E "^(OK|FAILED|Ran )"
+
+결과 줄은 반드시 grep으로 읽어라 — 테스트가 런타임 트레이스를 stdout에
+찍어서 tail만 쓰면 요약이 묻힌다.
+exit=0

@@ -1,0 +1,5 @@
+PASS 1/4 execution order — 4 step(s): validate measurement -> find measurement -> create notification -> emit notificationSent
+PASS 2/4 policy outcome — status=completed
+PASS 3/4 observability signals — 4 effect(s) per step match
+PASS 4/4 masking — no secret marker in either mode's output
+differential: EQUIVALENT

@@ -1,0 +1,7 @@
+$ .venv/bin/lnpl compile examples/shorten.lnpl -o qa/cases/batch-report/evidence/artifacts/control/shorten.lir.json
+warning: declared-not-enforced [security.shorten] security jwt — declared but unenforced: no token is issued or verified; the mechanism reaches the OpenAPI document only
+warning: declared-measured-only [perf.shorten] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: unknown-verb [line 57] return — `return slug` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+3 warning(s), 0 error(s)
+wrote qa/cases/batch-report/evidence/artifacts/control/shorten.lir.json (24 nodes)
+exit=0

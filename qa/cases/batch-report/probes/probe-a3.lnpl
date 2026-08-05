@@ -1,0 +1,25 @@
+# probe-a3 — H-a3: repeat/until 제어 어휘로 누적 계산이 표현되는가
+# 변수 1개: probe-a2의 create를 repeat/until 블록(update 반복 + 비교 종료 조건)으로 교체.
+# 예측: 파스 에러이거나, 파싱돼도 IR에 누적 의미 없음 — 산술/대입 어휘가 문법에 없음.
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Money
+        placedAt DateTime
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Money
+
+workflow AggregateDaily
+    validate order
+    load order
+    repeat 3
+        update report
+    create report

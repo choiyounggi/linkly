@@ -1,0 +1,243 @@
+{
+  "lir_version": "0.1",
+  "module": "batch-report",
+  "nodes": [
+    {
+      "kind": "Service",
+      "id": "svc.report",
+      "name": "ReportService",
+      "requires": [
+        "cap.postgres"
+      ],
+      "constraints": [
+        "policy.report",
+        "perf.report"
+      ],
+      "children": [
+        "wf.build.report",
+        "wf.get.report",
+        "wf.check.order"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.order",
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "amount",
+          "type": "Money"
+        },
+        {
+          "name": "placedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.report",
+      "name": "Report",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "reportDate",
+          "type": "DateTime"
+        },
+        {
+          "name": "orderCount",
+          "type": "Integer"
+        },
+        {
+          "name": "totalAmount",
+          "type": "Money"
+        }
+      ]
+    },
+    {
+      "kind": "Event",
+      "id": "event.report.built",
+      "name": "ReportBuilt",
+      "source": {
+        "ref": "entity.report",
+        "on": "create"
+      }
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.build.report",
+      "name": "BuildReport",
+      "children": [
+        "wf.build.report.step.1",
+        "wf.build.report.step.2",
+        "wf.build.report.step.3",
+        "wf.build.report.step.4"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.build.report.step.1",
+      "name": "validate order",
+      "children": [
+        "wf.build.report.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.build.report.step.1.check",
+      "target": "entity.order",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.build.report.step.2",
+      "name": "load order",
+      "children": [
+        "wf.build.report.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.build.report.step.2.repo",
+      "entity": "entity.order",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.build.report.step.3",
+      "name": "create report",
+      "children": [
+        "wf.build.report.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.build.report.step.3.repo",
+      "entity": "entity.report",
+      "operation": "create"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.build.report.step.4",
+      "name": "emit reportBuilt",
+      "children": [
+        "wf.build.report.step.4.emit"
+      ]
+    },
+    {
+      "kind": "EventEmit",
+      "id": "wf.build.report.step.4.emit",
+      "event": "event.report.built"
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.get.report",
+      "name": "GetReport",
+      "children": [
+        "wf.get.report.step.1",
+        "wf.get.report.step.2"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.get.report.step.1",
+      "name": "validate report",
+      "children": [
+        "wf.get.report.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.get.report.step.1.check",
+      "target": "entity.report",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.get.report.step.2",
+      "name": "find report",
+      "children": [
+        "wf.get.report.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.get.report.step.2.repo",
+      "entity": "entity.report",
+      "operation": "read"
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.check.order",
+      "name": "CheckOrder",
+      "children": [
+        "wf.check.order.step.1",
+        "wf.check.order.step.2"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.check.order.step.1",
+      "name": "validate order",
+      "children": [
+        "wf.check.order.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.check.order.step.1.check",
+      "target": "entity.order",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.check.order.step.2",
+      "name": "load order",
+      "children": [
+        "wf.check.order.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.check.order.step.2.repo",
+      "entity": "entity.order",
+      "operation": "read"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.report",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 2
+        },
+        {
+          "name": "timeout",
+          "value": "2s"
+        }
+      ]
+    },
+    {
+      "kind": "Performance",
+      "id": "perf.report",
+      "budgets": [
+        {
+          "metric": "response",
+          "value": "<50ms"
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    }
+  ]
+}

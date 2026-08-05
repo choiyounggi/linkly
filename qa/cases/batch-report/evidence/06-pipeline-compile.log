@@ -1,0 +1,5 @@
+$ .venv/bin/lnpl compile qa/cases/batch-report/batch-report.lnpl -o qa/cases/batch-report/evidence/artifacts/final/batch-report.lir.json  # final source (spec 포함)
+warning: declared-measured-only [perf.report] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+1 warning(s), 0 error(s)
+wrote qa/cases/batch-report/evidence/artifacts/final/batch-report.lir.json (26 nodes)
+exit=0

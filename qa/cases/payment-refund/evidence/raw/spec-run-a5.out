@@ -1,0 +1,5 @@
+FAIL Approval spec — completed (status=failed)
+FAIL Approval spec — steps 2 (steps=1 want=2)
+PASS RefundRequest spec — failed (status=failed)
+PASS RefundRequest spec — attempts 3 (max attempts=3 want=3)
+spec: 2 passed, 2 failed
