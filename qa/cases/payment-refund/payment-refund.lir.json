@@ -1,0 +1,244 @@
+{
+  "lir_version": "0.1",
+  "module": "payment-refund",
+  "nodes": [
+    {
+      "kind": "Service",
+      "id": "svc.payment",
+      "name": "PaymentService",
+      "requires": [
+        "cap.postgres",
+        "cap.jwt"
+      ],
+      "constraints": [
+        "policy.payment",
+        "security.payment"
+      ],
+      "children": [
+        "wf.approval",
+        "wf.refund.request"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.payment",
+      "name": "Payment",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "cardNumber",
+          "type": "Password"
+        },
+        {
+          "name": "amount",
+          "type": "Money"
+        },
+        {
+          "name": "amountCents",
+          "type": "Integer"
+        },
+        {
+          "name": "ageDays",
+          "type": "Integer"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.refund",
+      "name": "Refund",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "paymentId",
+          "type": "UUID"
+        },
+        {
+          "name": "amount",
+          "type": "Money"
+        },
+        {
+          "name": "amountCents",
+          "type": "Integer"
+        },
+        {
+          "name": "requestedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Event",
+      "id": "event.refund.issued",
+      "name": "RefundIssued",
+      "source": {
+        "ref": "entity.refund",
+        "on": "create"
+      }
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.approval",
+      "name": "Approval",
+      "children": [
+        "wf.approval.step.1",
+        "wf.approval.step.2",
+        "wf.approval.guard.1"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.approval.step.1",
+      "name": "validate payment",
+      "children": [
+        "wf.approval.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.approval.step.1.check",
+      "target": "entity.payment",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.approval.step.2",
+      "name": "find payment",
+      "children": [
+        "wf.approval.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.approval.step.2.repo",
+      "entity": "entity.payment",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.approval.step.3",
+      "name": "update payment",
+      "children": [
+        "wf.approval.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.approval.step.3.repo",
+      "entity": "entity.payment",
+      "operation": "update"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.approval.guard.1",
+      "children": [
+        "wf.approval.step.3"
+      ],
+      "mode": "when",
+      "condition": "payment.amountCents <= 1000000"
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.refund.request",
+      "name": "RefundRequest",
+      "children": [
+        "wf.refund.request.step.1",
+        "wf.refund.request.step.2",
+        "wf.refund.request.guard.1"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.refund.request.step.1",
+      "name": "validate refund",
+      "children": [
+        "wf.refund.request.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.refund.request.step.1.check",
+      "target": "entity.refund",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.refund.request.step.2",
+      "name": "find payment",
+      "children": [
+        "wf.refund.request.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.refund.request.step.2.repo",
+      "entity": "entity.payment",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.refund.request.step.3",
+      "name": "create refund",
+      "children": [
+        "wf.refund.request.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.refund.request.step.3.repo",
+      "entity": "entity.refund",
+      "operation": "create"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.refund.request.guard.1",
+      "children": [
+        "wf.refund.request.step.3"
+      ],
+      "mode": "when",
+      "condition": "payment.ageDays <= 30"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.payment",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 2
+        },
+        {
+          "name": "timeout",
+          "value": "3s"
+        }
+      ]
+    },
+    {
+      "kind": "Security",
+      "id": "security.payment",
+      "mechanisms": [
+        "jwt",
+        "encrypt cardNumber"
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.jwt",
+      "name": "jwt"
+    }
+  ]
+}

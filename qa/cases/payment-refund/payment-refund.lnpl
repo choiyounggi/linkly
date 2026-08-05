@@ -1,0 +1,82 @@
+# payment-refund.lnpl — QA 케이스 t2: 결제 승인·환불 (마스킹·정책·경계값 실측)
+#
+# 의도적 프로브 선언(집행되지 않음을 알고 쓴다 — declarations.md 집행 매트릭스):
+#   security jwt              — unenforced, OpenAPI 문서에만 도달 (진단 품질 측정)
+#   security encrypt          — unenforced (마스킹은 Password 타입 주도)
+# 기계(집행됨): policy retry 2(spec attempts=3 도출), policy timeout 3s,
+#   cardNumber Password(타입 주도 마스킹), when 가드(금액 경계)
+# 한도: 0 < amount <= 10000 USD. 환불: 원결제 존재 + 30일 이내(30일째 포함).
+
+capability postgres
+capability jwt
+
+# 우회(F-기록 참조): Money 필드는 가드에서 런타임 TypeError(dict vs int)로 크래시 —
+# 가드 대상은 amountCents Integer로 대체(한도 1000000센트 = 10000 USD), Money는 문서 표면용으로 유지.
+entity Payment
+    field
+        id UUID
+        cardNumber Password
+        amount Money
+        amountCents Integer
+        ageDays Integer
+        createdAt DateTime
+
+entity Refund
+    field
+        id UUID
+        paymentId UUID
+        amount Money
+        amountCents Integer
+        requestedAt DateTime
+
+event RefundIssued on Refund create
+
+service PaymentService
+    policy
+        retry 2
+        timeout 3s
+    security
+        jwt
+        encrypt cardNumber
+
+# 우회(F-기록 참조): 가드는 read된 저장 행만 참조 가능(RFC-0012 실행 스코프) —
+# 입력값 검증 의미는 표현 불가라, "기존 pending 결제의 승인"으로 재해석한다.
+workflow Approval
+    validate payment
+    find payment
+    # 주의(F-기록): 연쇄 when 2개 중 첫 가드가 진단 없이 IR에서 탈락 — 하한(> 0)은
+    # 집행되지 않는다. AND 결합 표현 불가로 범위 검증은 상한 하나만 남긴다.
+    when payment.amountCents <= 1000000
+    update payment
+    # spec 제약(F-기록 참조): 워크플로당 시나리오 1개(블록 간 given 병합)이고,
+    # 경계 케이스는 표현 불가 — given이 payload를 통째 대체하는데 필수 필드 amount(Money)를
+    # given 값으로 쓸 수단이 없다. 경계 실측은 mode A payload 실행(evidence/04)으로 대체.
+    # 여기는 도출 표의 정상 케이스: completed + steps(가드 비계수로 3).
+    spec
+        given
+            valid payment
+        when
+            approval
+        expect
+            completed
+            steps 3
+
+workflow RefundRequest
+    validate refund
+    find payment
+    # 표현 불가로 실측된 정책(주석으로만 문서화 — F-기록 참조):
+    #   전액/부분 환불 상한 refund.amount <= payment.amount — 필드 간 비교 미지원(RFC-0008)
+    #   30일 창: DateTime 산술 불가(RFC-0008), day 단위 없음, DateTime<=Duration은
+    #   런타임 거부("Cannot compare non-numeric"), 입력(refund.*) 가드는 스코프 밖.
+    #   최종 우회: read된 Payment에 사전 계산 숫자 필드 ageDays를 두고 걸었다.
+    when payment.ageDays <= 30
+    create refund
+    # 에러 케이스: policy retry 2에서 도출(attempts = N+1 = 3), 빈 저장소로 find 실패 유도.
+    spec
+        given
+            empty repository
+        when
+            refund request
+        expect
+            failed
+            attempts 3

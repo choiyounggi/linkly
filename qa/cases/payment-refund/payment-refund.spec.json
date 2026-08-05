@@ -1,0 +1,34 @@
+{
+  "spec_version": "0.1",
+  "module": "payment-refund",
+  "cases": [
+    {
+      "name": "Approval spec",
+      "workflow": "wf.approval",
+      "given": [
+        "valid payment"
+      ],
+      "when": [
+        "approval"
+      ],
+      "expect": [
+        "completed",
+        "steps 3"
+      ]
+    },
+    {
+      "name": "RefundRequest spec",
+      "workflow": "wf.refund.request",
+      "given": [
+        "empty repository"
+      ],
+      "when": [
+        "refund request"
+      ],
+      "expect": [
+        "failed",
+        "attempts 3"
+      ]
+    }
+  ]
+}
