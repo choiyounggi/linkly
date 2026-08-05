@@ -1,0 +1,13 @@
+$ git status --porcelain   # 2026-08-05 21:32 KST
+?? qa/
+
+$ git status --porcelain --ignored | head -8
+?? qa/
+!! .groundwork/
+!! .venv/
+!! impl/lnpl.egg-info/
+!! impl/lnpl/__pycache__/
+
+판정: tracked 변경 0건. 미추적 항목은 qa/(이 케이스의 산출물 qa/cases/rate-notify/** 전부)뿐.
+무시 목록의 .venv/·.claude/는 환경 산출물(워크트리 자체 venv — 브리프 in_scope)이며 플랫폼 코드가 아니다.
+impl/ plugins/ scripts/ rfcs/ mlir/ schemas/ examples/ kb/ docs/ 무변경 — out_of_scope 준수.

@@ -1,0 +1,1 @@
+PASS: qa/cases/rate-notify/rate-notify.lir.json
