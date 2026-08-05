@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "linkly",
+  "description": "linkly — an LLM-native programming platform: a language, a semantic IR, a native compiler, a runtime, a knowledge base, and an agent protocol.",
+  "owner": {
+    "name": "choiyounggi",
+    "url": "https://github.com/choiyounggi"
+  },
+  "plugins": [
+    {
+      "name": "lnpl",
+      "description": "Authoring support for `.lnpl` — closed-vocabulary routing generated from the compiler's own tables, plus write-time compile diagnostics.",
+      "category": "development",
+      "author": {
+        "name": "choiyounggi",
+        "url": "https://github.com/choiyounggi"
+      },
+      "source": "./plugins/lnpl",
+      "homepage": "https://github.com/choiyounggi/linkly",
+      "version": "0.2.0",
+      "tags": ["lnpl", "linkly", "dsl", "compiler", "authoring", "claude-code"]
+    }
+  ]
+}

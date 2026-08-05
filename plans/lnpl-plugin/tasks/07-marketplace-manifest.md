@@ -252,7 +252,7 @@ pip install /path/to/linkly
 ```bash
 PYTHONPATH=impl .venv/bin/python -m unittest impl.tests.test_plugin_manifest -v 2>&1 | tail -15
 ```
-Expected: PASS (13 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 7: 매니페스트가 실제로 로드되는지 확인한다**
 
@@ -311,7 +311,7 @@ git commit -m "feat(plugin): publish linkly as a marketplace hosting the lnpl pl
 - `.claude-plugin/marketplace.json`
 - `plugins/lnpl/.claude-plugin/plugin.json`
 - `plugins/lnpl/README.md`
-- `impl/tests/test_plugin_manifest.py` — 13건
+- `impl/tests/test_plugin_manifest.py` — 12건 (4 + 5 + 3)
 - `README.md` 설치 안내 절
 
 ## Acceptance
