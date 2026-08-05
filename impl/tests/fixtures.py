@@ -37,16 +37,27 @@ still the same rule: `examples/checkout.lnpl` is a *committed file*, so its one
 home is that path — not a second copy of its text pasted here. They are paths so
 that `test_golden.py` and the equivalence regression resolve the same file
 instead of each deriving the repo root for itself. `SHORTEN_*` follows that same
-rule for the refinement example and its three generated goldens.
+rule for the refinement example and its three generated goldens, and
+`LOGIN_SPEC`/`LOGIN_OPENAPI` and `CHECKOUT_SPEC`/`CHECKOUT_OPENAPI` follow it for
+the `spec` and `openapi` halves of the other two quartets, which `test_golden.py`
+regenerates and compares the same way.
 """
 
 import os
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# The read-then-create example (issue #35) and its generated IR golden.
+# The first quartet's generated halves. Login's `.lnpl` and `.lir.json` stay as
+# `test_golden.py` locals: the pair that already resolves them there passes, and
+# moving it here would rewrite a working test for no gain.
+LOGIN_SPEC = os.path.join(_REPO, "examples", "login.spec.json")
+LOGIN_OPENAPI = os.path.join(_REPO, "examples", "login.openapi.json")
+
+# The read-then-create example (issue #35) and its generated goldens.
 CHECKOUT_LNPL = os.path.join(_REPO, "examples", "checkout.lnpl")
 CHECKOUT_LIR = os.path.join(_REPO, "examples", "checkout.lir.json")
+CHECKOUT_SPEC = os.path.join(_REPO, "examples", "checkout.spec.json")
+CHECKOUT_OPENAPI = os.path.join(_REPO, "examples", "checkout.openapi.json")
 
 # The refinement example (issue #31): `Url`/`Slug` instead of `Text`, and the
 # three artifacts `lnpl compile` / `spec` / `openapi` generate from it.
