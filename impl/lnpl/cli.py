@@ -9,6 +9,7 @@ import json
 import os
 import sys
 
+from . import __version__
 from .diagnostics import format_lines
 from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import LexError
@@ -290,6 +291,8 @@ def cmd_agents(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="lnpl", description="compile and run LNPL sources")
+    ap.add_argument("--version", action="version",
+                    version="lnpl %s" % __version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("compile", help="parse and lower to Semantic IR")
