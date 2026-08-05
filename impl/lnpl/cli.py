@@ -140,7 +140,12 @@ def _print_human(result, interp):
 
 
 def cmd_spec(args):
-    doc, decls, module_name, _ = _compile(args.source)
+    # The diagnostics matter most here: `spec` is the command whose job is
+    # verification, so a step that derives no Effect (#36) is exactly what its
+    # operator needs told. `compile` and `run` already report them; this dropped
+    # the accumulator on the floor.
+    doc, decls, module_name, diagnostics = _compile(args.source)
+    _emit_diagnostics(diagnostics)
     manifest = extract(decls, module_name)
     if not manifest["cases"]:
         print("no `spec` block found in %s" % args.source, file=sys.stderr)

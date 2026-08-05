@@ -220,7 +220,7 @@ class TestResultExpectation(unittest.TestCase):
     """`result <ref> …` — issue #39's return-value assertion.
 
     It is deliberately the SAME grammar and the SAME resolver the guards use
-    (RFC-0011): the expectation is parsed by `parse_condition` and evaluated
+    (RFC-0012): the expectation is parsed by `parse_condition` and evaluated
     against `result["bindings"]`. That is what makes "guards and expect share one
     scope" a fact about the code rather than a claim.
     """
@@ -453,3 +453,142 @@ class TestExistingVocabularyIsUnchanged(unittest.TestCase):
         passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 0, lines)
         self.assertEqual(passed, 3, lines)
+
+
+# ---- issue #39 acceptance item 2: a no-op step (#36) must fail its spec ------
+
+# Same shape as SHOP, with one extra step whose verb is outside VERB_LEXICON.
+# `ponder` derives no Effect, so the step runs and does nothing — issue #36's
+# no-op. `expect steps N` still counts it, which is exactly the blindness issue
+# #39 names.
+SHOP_WITH_NOOP = SHOP.replace(
+    "    find product\n",
+    "    find product\n    ponder existence\n")
+
+
+def run_shop_src(src, given, expect):
+    src = src % ("\n".join("            " + g for g in given),
+                 "\n".join("            " + e for e in expect))
+    decls = parse(src)
+    doc = lower(decls, "shop").to_document()
+    return run_manifest(extract(decls, "shop"), doc)
+
+
+class TestNoOpStepFailsTheSpec(unittest.TestCase):
+    """`effects complete` — every step that ran performed at least one Effect.
+
+    Issue #39's second acceptance item. A verb outside `VERB_LEXICON` derives no
+    Effect (issue #36), so the step executes and does nothing; `expect steps N`
+    counts it just the same, and the spec stays GREEN while the implementation is
+    missing. This assertion is the one that goes RED.
+
+    It is deliberately OPT-IN rather than an automatic failure for every module
+    carrying an `unknown-verb` diagnostic: the golden `examples/login.lnpl`
+    declares three descriptive steps (`generate token`, `audit login`,
+    `return token`) and `diagnostics.py` records that as a legitimate way to
+    write LNPL. Failing every such spec would reject the golden scenario.
+    """
+
+    # ---- the negative control, both directions -----------------------------
+    def test_a_no_op_step_fails_the_assertion(self):
+        passed, failed, lines = run_shop_src(SHOP_WITH_NOOP, ["valid product"],
+                                             ["effects complete"])
+        self.assertEqual(failed, 1,
+                         "a step whose verb derives no Effect must fail "
+                         "`effects complete`. Report: %s" % lines)
+        self.assertEqual(passed, 0, lines)
+
+    def test_the_same_assertion_passes_when_every_step_is_effective(self):
+        # The other direction. Without this the check could simply always fail.
+        passed, failed, lines = run_shop_src(SHOP, ["valid product"],
+                                             ["effects complete"])
+        self.assertEqual(failed, 0,
+                         "every step in the clean workflow derives an Effect, so "
+                         "the assertion must hold. Report: %s" % lines)
+        self.assertEqual(passed, 1, lines)
+
+    def test_the_failure_names_the_offending_step(self):
+        _passed, _failed, lines = run_shop_src(SHOP_WITH_NOOP, ["valid product"],
+                                               ["effects complete"])
+        self.assertTrue(any("ponder existence" in l for l in lines),
+                        "the report must name the step that did nothing, or the "
+                        "author cannot find it. Report: %s" % lines)
+
+    # ---- the blindness this closes -----------------------------------------
+    def test_step_count_alone_stays_green_on_the_same_workflow(self):
+        # The point of issue #39: `steps` counts the no-op step and passes, so a
+        # spec asserting only the count is GREEN while a step does nothing. Both
+        # assertions run against the SAME source here, so the contrast is the
+        # measurement, not two different fixtures.
+        passed, failed, lines = run_shop_src(SHOP_WITH_NOOP, ["valid product"],
+                                             ["steps 4"])
+        self.assertEqual(failed, 0,
+                         "`steps 4` counts the no-op step and passes — this is "
+                         "the blindness `effects complete` closes, and it must "
+                         "still be demonstrable. Report: %s" % lines)
+        self.assertEqual(passed, 1, lines)
+
+    # ---- boundary cases ----------------------------------------------------
+    def test_a_workflow_whose_every_step_is_a_no_op_fails(self):
+        src = SHOP.replace("    find product\n    when product.stock > 0\n"
+                           "    create order\n    emit orderPlaced\n",
+                           "    ponder existence\n    muse quietly\n")
+        passed, failed, lines = run_shop_src(src, ["valid product"],
+                                             ["effects complete"])
+        self.assertEqual(failed, 1, lines)
+        self.assertEqual(passed, 0, lines)
+
+    def test_a_skipped_no_op_step_does_not_fail_it(self):
+        # Boundary: the no-op sits under a guard that closes, so it never runs.
+        # `effects complete` is an assertion about what THIS RUN did; a step that
+        # did not execute did nothing wrong. The compile-time `unknown-verb`
+        # diagnostic is what reports it in that case.
+        src = SHOP.replace("    create order\n",
+                           "    create order\n    when product.stock > 99\n"
+                           "    ponder existence\n")
+        passed, failed, lines = run_shop_src(src, ["valid product"],
+                                             ["effects complete"])
+        self.assertEqual(failed, 0,
+                         "the guarded no-op never ran, so there is no executed "
+                         "step without an Effect. Report: %s" % lines)
+
+    # ---- error case --------------------------------------------------------
+    def test_an_unknown_effects_form_is_refused(self):
+        with self.assertRaises(SpecError):
+            run_shop_src(SHOP, ["valid product"], ["effects wobbled"])
+
+    def test_the_numeric_form_still_works(self):
+        # Control: extending `effects` must not move `effects <N>`.
+        passed, failed, lines = run_shop_src(SHOP, ["valid product"], ["effects 3"])
+        self.assertEqual(failed, 0, lines)
+
+
+class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
+    """`lnpl spec` reports compile diagnostics like `compile` and `run` do.
+
+    PR #41 made `unknown-verb` visible, but `cmd_spec` dropped the accumulator on
+    the floor — so the one command whose whole job is verification was the one
+    that stayed silent about a step doing nothing.
+    """
+
+    def test_the_unknown_verb_diagnostic_reaches_stderr(self):
+        import contextlib
+        import io
+        import os
+        import tempfile
+        from lnpl import cli
+        src = SHOP_WITH_NOOP % ("            valid product", "            completed")
+        tmpdir = os.path.join(REPO, ".claude", "tmp")
+        os.makedirs(tmpdir, exist_ok=True)
+        fd, path = tempfile.mkstemp(dir=tmpdir, suffix=".lnpl")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(src)
+        self.addCleanup(os.remove, path)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err):
+            cli.main(["spec", path, "--run"])
+        self.assertIn("unknown-verb", err.getvalue(),
+                      "`lnpl spec` must report that a step derives no Effect; "
+                      "got %r" % err.getvalue())
+        self.assertIn("ponder", err.getvalue())

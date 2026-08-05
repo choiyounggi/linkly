@@ -650,7 +650,7 @@ class _WfContext:
 
 
 def _check_scoped_conditions(emitted, registry, workflow_name):
-    """Refuse a qualified guard reference that can never resolve (RFC-0011 §G11.5).
+    """Refuse a qualified guard reference that can never resolve (RFC-0012 §G12.5).
 
     A bare reference names an input payload field and is not checked here — the
     payload is not part of the document, and `when token missing` asks about the

@@ -504,7 +504,7 @@ class TestTheShippedExampleCanStillDiverge(unittest.TestCase):
             "else. Report:\n%s" % "\n".join(report))
 
 
-# ---- RFC-0011 §G11.6: mode B reads the same scope mode A builds --------------
+# ---- RFC-0012 §G12.6: mode B reads the same scope mode A builds --------------
 
 def scoped_checkout():
     """The shipped checkout document, asserted to carry the qualified guard.
@@ -519,7 +519,7 @@ def scoped_checkout():
     guards = [n for n in doc["nodes"] if n["kind"] == "Guard"]
     assert [g.get("condition") for g in guards] == ["product.stock > 0"], (
         "examples/checkout.lnpl must carry the qualified guard for this module "
-        "to be testing RFC-0011's scope; got %r"
+        "to be testing RFC-0012's scope; got %r"
         % [g.get("condition") for g in guards])
     return doc
 
@@ -535,7 +535,7 @@ class TestModeBResolvesTheSameScope(unittest.TestCase):
     def test_the_default_seed_compares_equivalent_with_a_qualified_guard(self):
         rows = cli._repo_rows(self.doc, self.payload, WORKFLOW)
         ok, report = verify(self.doc, WORKFLOW, self.payload, rows, self.workdir)
-        self.assertTrue(ok, "RFC-0011 G11.6: mode B derives `product.stock` from "
+        self.assertTrue(ok, "RFC-0012 G12.6: mode B derives `product.stock` from "
                             "the seed rule, so the two modes must still agree. "
                             "Report:\n%s" % "\n".join(report))
 
@@ -599,7 +599,7 @@ class TestModeBResolvesTheSameScope(unittest.TestCase):
 
 
 class TestUnreproducibleRowsAreRefusedNotCompared(unittest.TestCase):
-    """RFC-0011 §G11.6: mode B projects rows from the seed rule, so a row whose
+    """RFC-0012 §G12.6: mode B projects rows from the seed rule, so a row whose
     content the rule cannot produce is outside what the comparison can mean.
 
     Comparing anyway would report a caller's wiring choice as a mode A/B

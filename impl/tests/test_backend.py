@@ -1362,7 +1362,7 @@ workflow Checkout
 
 
 class TestScopedConditionFieldIdentifier(unittest.TestCase):
-    """RFC-0011: a qualified reference reaches mode B as `product.stock`.
+    """RFC-0012: a qualified reference reaches mode B as `product.stock`.
 
     A dot is legal in the logical name and in an MLIR SSA name, but not in a C
     identifier — `int64_t product.stock;` does not compile. One mangling function
@@ -1414,7 +1414,7 @@ class TestScopedConditionFieldIdentifier(unittest.TestCase):
         self.assertEqual(backend._field_ident("counter"), "counter")
 
     def test_the_bare_c_shim_is_byte_identical_to_the_unmangled_form(self):
-        # Every pre-RFC-0011 document has only bare condition fields, so this is
+        # Every pre-RFC-0012 document has only bare condition fields, so this is
         # the regression guard for the committed golden MLIR files.
         self.assertIn("int64_t counter", backend.runtime_c(["counter"]))
         self.assertIn("lnpl_run(skip, counter)", backend.runtime_c(["counter"]))

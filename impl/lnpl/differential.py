@@ -64,7 +64,7 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
     """
     bin_path = backend.build(document, workflow_id, workdir, seeded=seeded)
 
-    # RFC-0011 §G11.6: values are resolved through the SAME scope rule mode A
+    # RFC-0012 §G12.6: values are resolved through the SAME scope rule mode A
     # evaluates, so a qualified reference (`product.stock`) reaches the compiled
     # guard as the row's value rather than as a missing payload key. The scope is
     # projected from the seed rule because mode B's module models no repository
@@ -163,7 +163,7 @@ def _derive_skip_from_payload(document, workflow_id, payload, seeded=None):
     # refused, masking a real divergence behind a false verdict.
     from .interp import _condition_holds
     from .repo_policy import seed_bindings
-    # RFC-0011: a Presence guard may name a bound row (`product.name exists`), so
+    # RFC-0012: a Presence guard may name a bound row (`product.name exists`), so
     # the skip flag is derived against the same execution scope mode A will build.
     # Mode B's module models no repository state, so the scope is projected
     # statically from the seed rule — the one input both modes already share.
@@ -201,7 +201,7 @@ def _check_seed_agreement(document, workflow_id, repo_rows, seeded):
 
 
 def _check_rows_are_reproducible(document, workflow_id, payload, repo_rows, seeded):
-    """Refuse a comparison whose mode A rows the seed rule cannot reproduce (RFC-0011 §G11.6).
+    """Refuse a comparison whose mode A rows the seed rule cannot reproduce (RFC-0012 §G12.6).
 
     Mode B is handed a scope PROJECTED from the seed rule, because its module
     models no repository state. That projection can only say what the rule says: a

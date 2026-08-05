@@ -4,7 +4,7 @@
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 - Updated-by: RFC-0008 (§Guard)
-- Updated-by: RFC-0011 (§Guard)
+- Updated-by: RFC-0012 (§Guard)
 
 ## Motivation
 

@@ -18,7 +18,8 @@
         "cache written",
         "result product.stock > 0",
         "rows Order 1",
-        "effects 4"
+        "effects 4",
+        "effects complete"
       ]
     }
   ]

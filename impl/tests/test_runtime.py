@@ -374,7 +374,7 @@ class TestObservabilityContract(unittest.TestCase):
             build().run_workflow("wf.nope", PAYLOAD)
 
 
-# ---- RFC-0011: execution scope (issue #37) ---------------------------------
+# ---- RFC-0012: execution scope (issue #37) ---------------------------------
 
 CHECKOUT_WORKFLOW = "wf.checkout"
 GUARD_ID = "wf.checkout.guard.1"
@@ -471,25 +471,25 @@ class TestStepResultBinding(unittest.TestCase):
                          "not the input payload.")
 
     def test_a_bare_reference_still_reads_the_payload(self):
-        # Control (RFC-0011 G11.3): the bare form must not have moved. Payload 5,
+        # Control (RFC-0012 G12.3): the bare form must not have moved. Payload 5,
         # row 0 — bare `stock > 0` reads the payload, so the guard HOLDS. This is
         # the exact input where the two forms give opposite answers.
         _interp, result = self._run(condition="stock > 0",
                                     payload={"stock": 5}, row={"stock": 0})
         self.assertEqual(result["skipped"], [],
-                         "RFC-0011 G11.3: bare `stock` names the input payload, "
+                         "RFC-0012 G12.3: bare `stock` names the input payload, "
                          "which is 5 here, so the guard holds. If this flipped, "
-                         "every guard written before RFC-0011 changed meaning.")
+                         "every guard written before RFC-0012 changed meaning.")
 
     # ---- boundary cases ----------------------------------------------------
     def test_an_unbound_reference_is_false_not_an_error(self):
         # Boundary: the guard runs BEFORE any read, so nothing is bound.
-        # RFC-0011 G11.4 — an unresolved reference compares false.
+        # RFC-0012 G12.4 — an unresolved reference compares false.
         _interp, result = self._run(payload={"stock": 5}, row={"stock": 5},
                                     guard_first=True)
         self.assertEqual(result["status"], "completed")
         self.assertIn(GUARD_ID, result["skipped"],
-                      "RFC-0011 G11.4: no RepositoryCall has completed, so "
+                      "RFC-0012 G12.4: no RepositoryCall has completed, so "
                       "`product.stock` resolves to nothing and the comparison "
                       "is false — not an error, and not vacuously true.")
 
@@ -497,24 +497,24 @@ class TestStepResultBinding(unittest.TestCase):
         _interp, result = self._run(condition="product.stock exists",
                                     guard_first=True)
         self.assertIn(GUARD_ID, result["skipped"],
-                      "RFC-0011 G11.4: `exists` on an unbound reference is false.")
+                      "RFC-0012 G12.4: `exists` on an unbound reference is false.")
 
     def test_a_field_absent_from_the_row_is_false(self):
         # Boundary: the binding exists, but the row has no such field.
         _interp, result = self._run(condition="product.nosuch > 0")
         self.assertIn(GUARD_ID, result["skipped"],
-                      "RFC-0011 G11.4: a field the row does not carry compares "
+                      "RFC-0012 G12.4: a field the row does not carry compares "
                       "false rather than raising.")
 
     def test_a_field_absent_from_the_row_is_missing(self):
         _interp, result = self._run(condition="product.nosuch missing")
         self.assertEqual(result["skipped"], [],
-                         "RFC-0011 G11.4: `missing` holds for a field the row "
+                         "RFC-0012 G12.4: `missing` holds for a field the row "
                          "does not carry.")
 
     # ---- error case --------------------------------------------------------
     def test_comparing_a_non_numeric_bound_field_is_an_error(self):
-        # `name` is Text. RFC-0011 G11.4's last row: present-but-not-numeric is
+        # `name` is Text. RFC-0012 G12.4's last row: present-but-not-numeric is
         # an error, not absence.
         with self.assertRaises(RunError) as caught:
             self._run(condition="product.name > 0")
@@ -551,7 +551,7 @@ class TestStepResultBinding(unittest.TestCase):
 
 
 class TestScopeResolution(unittest.TestCase):
-    """The single resolver both guards and `spec … expect` call (RFC-0011)."""
+    """The single resolver both guards and `spec … expect` call (RFC-0012)."""
 
     def test_bare_name_resolves_against_the_payload(self):
         from lnpl.interp import resolve_reference
@@ -583,7 +583,7 @@ class TestScopeResolution(unittest.TestCase):
         self.assertEqual(binding_name({"name": "Product"}), "product")
 
     def test_binding_name_keeps_inner_capitals(self):
-        # RFC-0011 G11.2: derived from the declared name, NOT the node id — the
+        # RFC-0012 G12.2: derived from the declared name, NOT the node id — the
         # id splits multi-word names on dots (`entity.order.item`), which is not
         # a single CamelName.
         from lnpl.interp import binding_name

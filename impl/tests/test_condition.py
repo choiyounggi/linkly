@@ -134,12 +134,12 @@ class TestConditionParsing(unittest.TestCase):
 
 
 class TestScopedReference(unittest.TestCase):
-    """RFC-0011 §Full grammar: `Reference ::= CamelName | CamelName '.' CamelName`.
+    """RFC-0012 §Full grammar: `Reference ::= CamelName | CamelName '.' CamelName`.
 
     A qualified reference names a bound row's field (`product.stock`) rather than
     an input payload field. `condition.py` owns the SYNTAX only — whether the
-    entity exists and declares the field is `lower.py`'s judgement (RFC-0011
-    §G11.5), because this module never sees the document.
+    entity exists and declares the field is `lower.py`'s judgement (RFC-0012
+    §G12.5), because this module never sees the document.
     """
 
     def test_qualified_comparison_keeps_the_whole_reference_as_the_field(self):
@@ -157,7 +157,7 @@ class TestScopedReference(unittest.TestCase):
         self.assertEqual(c.kind, "exists")
 
     def test_qualified_binding_may_be_multiword_camelcase(self):
-        # `OrderItem` -> binding `orderItem` (RFC-0011 G11.2 derives the binding
+        # `OrderItem` -> binding `orderItem` (RFC-0012 G12.2 derives the binding
         # name from the declared name, so it can carry inner capitals).
         c = parse_condition("orderItem.unitPrice >= 100")
         self.assertEqual(c.field, "orderItem.unitPrice")
@@ -180,7 +180,7 @@ class TestScopedReference(unittest.TestCase):
 
     # ---- error cases -------------------------------------------------------
     def test_rejects_pascalcase_binding(self):
-        # The binding name is camelCase (RFC-0011 G11.2), not the declared
+        # The binding name is camelCase (RFC-0012 G12.2), not the declared
         # PascalCase entity name.
         with self.assertRaises(ConditionError):
             parse_condition("Product.stock > 0")
@@ -190,7 +190,7 @@ class TestScopedReference(unittest.TestCase):
             parse_condition("product.Stock > 0")
 
     def test_rejects_three_segment_path(self):
-        # RFC-0011 rejects paths of 3+ segments: a bound row is flat, so there is
+        # RFC-0012 rejects paths of 3+ segments: a bound row is flat, so there is
         # nothing for a nested walk to evaluate.
         with self.assertRaises(ConditionError):
             parse_condition("a.b.c > 0")
@@ -209,8 +209,8 @@ class TestScopedReference(unittest.TestCase):
             parse_condition(". exists")
 
     def test_bare_reference_is_unchanged(self):
-        # Control (RFC-0011 G11.3): widening the grammar must not move the
-        # existing form. If this breaks, every guard written before RFC-0011
+        # Control (RFC-0012 G12.3): widening the grammar must not move the
+        # existing form. If this breaks, every guard written before RFC-0012
         # changed meaning.
         c = parse_condition("stock > 0")
         self.assertEqual(c.field, "stock")

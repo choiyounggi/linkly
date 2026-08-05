@@ -118,7 +118,7 @@ def _expect_attempts(phrase, result, _interp):
 def _expect_result(phrase, result, _interp):
     """`result <ref> <op> <value>` / `result <ref> exists|missing`.
 
-    The condition grammar and the resolver are the guards' own (RFC-0011): the
+    The condition grammar and the resolver are the guards' own (RFC-0012): the
     text after `result` goes through `parse_condition`, and evaluation goes
     through `_condition_holds` against this run's bindings. Re-implementing
     either here would create a second scope — the outcome this task exists to
@@ -187,7 +187,7 @@ def _expect_emitted(phrase, _result, interp):
     if len(tokens) == 5 and tokens[2] == "payload" and tokens[4] in ("exists", "missing"):
         field = tokens[3]
         # An empty outbox carries no payload, so `exists` is false and `missing`
-        # is true — the same rule an absent field follows (RFC-0011 §G11.4).
+        # is true — the same rule an absent field follows (RFC-0012 §G12.4).
         present = any(e["payload"].get(field) is not None for e in emissions)
         ok = present if tokens[4] == "exists" else not present
         return ok, "%s payload %s present=%s (emissions=%d)" % (
@@ -217,16 +217,33 @@ def _expect_error(phrase, result, _interp):
 
 
 def _expect_effects(phrase, result, _interp):
-    """`effects <N>` — how many effects the run actually performed.
+    """`effects <N>` — the total effect count; `effects complete` — no no-op step.
 
-    The total, not a per-step figure: a step name carries spaces, and per-step
-    assertion belongs to the issue #36 follow-up that will need it. A step which
-    derives no effect lowers this total, which is the hook that follow-up uses.
+    `effects complete` closes issue #39's second acceptance item. A verb outside
+    `lower.VERB_LEXICON` derives no Effect (issue #36), so the step runs and does
+    nothing — while `expect steps N` counts it and passes, leaving the spec GREEN
+    with the implementation missing. This form asserts that every step which RAN
+    performed at least one effect, and names the ones that did not.
+
+    It is opt-in rather than an automatic failure whenever the module carries an
+    `unknown-verb` diagnostic, because a descriptive step is a legitimate way to
+    write LNPL: the golden `examples/login.lnpl` declares three (`generate
+    token`, `audit login`, `return token`), and `diagnostics.py` records that as
+    intended usage. Failing every such spec would reject the golden scenario, so
+    the author states the guarantee where the author means it.
+
+    Scope is what this run executed. A no-op under a guard that closed never ran
+    and is not counted here; the compile-time `unknown-verb` diagnostic is what
+    reports that one, and `lnpl spec` now prints it.
     """
     tokens = phrase.split()
+    if len(tokens) == 2 and tokens[1] == "complete":
+        idle = [s["step"] for s in result["steps"] if not s.get("effects")]
+        return not idle, ("steps with no effect: %s" % ", ".join(idle) if idle
+                          else "every step performed an effect")
     if len(tokens) != 2 or not tokens[1].isdigit():
-        raise SpecError("unsupported effects expectation: %r (use `effects <N>`)"
-                        % phrase)
+        raise SpecError("unsupported effects expectation: %r "
+                        "(use `effects <N>` or `effects complete`)" % phrase)
     got = sum(len(s.get("effects", [])) for s in result["steps"])
     want = int(tokens[1])
     return got == want, "effects=%d want=%d" % (got, want)

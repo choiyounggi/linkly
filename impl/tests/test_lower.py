@@ -971,9 +971,9 @@ workflow Checkout
 
 
 class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
-    """RFC-0011 §G11.5: a qualified reference is resolved where the document is
+    """RFC-0012 §G12.5: a qualified reference is resolved where the document is
     in scope, so a reference that can never bind fails the build instead of
-    silently evaluating false at run time (the failure mode §G11.4 would give it).
+    silently evaluating false at run time (the failure mode §G12.4 would give it).
     """
 
     def _lower(self, condition):
@@ -1017,7 +1017,7 @@ class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
 
     # ---- boundary: the bare form must be untouched -------------------------
     def test_a_bare_reference_is_not_checked(self):
-        # RFC-0011 G11.3: bare names are payload fields. They are NOT entity
+        # RFC-0012 G12.3: bare names are payload fields. They are NOT entity
         # fields, so applying the entity checks to them would reject correct
         # programs — `when token missing` asks about the request, not a row.
         mod = self._lower("stock > 0")

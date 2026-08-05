@@ -3,7 +3,7 @@
 RFC-0008: All condition interpretation passes through parse_condition().
 No condition is evaluated differently in parser vs. runtime vs. compiler.
 
-Syntax (RFC-0002 §Full grammar as updated by RFC-0008, then RFC-0011):
+Syntax (RFC-0002 §Full grammar as updated by RFC-0008, then RFC-0012):
   Condition ::= Presence | Comparison
   Reference ::= CamelName | CamelName '.' CamelName
   Presence  ::= Reference ('exists' | 'missing')
@@ -12,10 +12,10 @@ Syntax (RFC-0002 §Full grammar as updated by RFC-0008, then RFC-0011):
   Duration  ::= Integer ('ms' | 's' | 'm')
 
 A qualified `Reference` (`product.stock`) names a bound row's field; a bare one
-names an input payload field (RFC-0011 §G11.1). This module owns the SYNTAX of
+names an input payload field (RFC-0012 §G12.1). This module owns the SYNTAX of
 that distinction only. Whether the binding names a declared entity, and whether
 that entity declares the field, is decided where the document is in scope
-(`lower.py`, RFC-0011 §G11.5) — this module never sees the document.
+(`lower.py`, RFC-0012 §G12.5) — this module never sees the document.
 """
 
 from dataclasses import dataclass
@@ -117,7 +117,7 @@ def _is_camel_name(s: str) -> bool:
 
 
 def _is_reference_name(s: str) -> bool:
-    """Check if s matches `Reference` (RFC-0011): CamelName ('.' CamelName)?.
+    """Check if s matches `Reference` (RFC-0012): CamelName ('.' CamelName)?.
 
     Exactly one or two segments. `a.b.c` is refused: a bound row is a flat
     mapping, so a three-segment path names nothing an evaluator could walk —

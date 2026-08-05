@@ -138,7 +138,7 @@ def verify_lnpl_module(text, stage="S4 (lnpl dialect verification)", path=None):
 
 
 def _field_ident(name):
-    """The emitted identifier for a condition field's logical name (RFC-0011).
+    """The emitted identifier for a condition field's logical name (RFC-0012).
 
     `product.stock` is a legal `Reference` and a legal MLIR SSA name, but not a
     legal C identifier — `int64_t product.stock` does not compile. This is the

@@ -40,7 +40,7 @@ READ_OPS = ("read", "query")
 
 
 def binding_name(entity_node):
-    """The name a read entity is bound under in the execution scope (RFC-0011 §G11.2).
+    """The name a read entity is bound under in the execution scope (RFC-0012 §G12.2).
 
     The declared name, camelCased: `Product` -> `product`, `OrderItem` ->
     `orderItem`. Derived from `name`, never from the node id: `derive_segments`
@@ -116,7 +116,7 @@ def default_rows(document, workflow_id, payload):
 
 
 def seed_bindings(document, workflow_id, payload, seeded=None):
-    """The execution scope the seed rule implies (RFC-0011 §G11.6).
+    """The execution scope the seed rule implies (RFC-0012 §G12.6).
 
     Mode A builds its scope by binding what each read actually returned. Mode B's
     module models no repository state, so its host has to answer the same question

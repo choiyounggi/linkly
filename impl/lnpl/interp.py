@@ -216,12 +216,12 @@ _UNTIL_ROUND_CAP = 16
 
 
 def resolve_reference(name, payload, bindings):
-    """Resolve a condition/expectation `Reference` to a value (RFC-0011 §G11.1).
+    """Resolve a condition/expectation `Reference` to a value (RFC-0012 §G12.1).
 
     Bare `stock` names an input payload field; qualified `product.stock` names a
     field of the row bound when that entity was read. The two forms never fall
-    back to each other — the split is by grammar, not by precedence (§G11.3), so
-    a program written before RFC-0011 resolves exactly as it did.
+    back to each other — the split is by grammar, not by precedence (§G12.3), so
+    a program written before RFC-0012 resolves exactly as it did.
 
     Returns None for anything unresolved: no such binding, no such field, no such
     payload key. An unresolved reference is an expected outcome the caller
@@ -246,7 +246,7 @@ def _condition_holds(condition, payload, bindings):
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
     Invalid conditions are rejected at parse time, so runtime sees only valid forms.
 
-    RFC-0011: `bindings` is the execution scope — the rows read so far, keyed by
+    RFC-0012: `bindings` is the execution scope — the rows read so far, keyed by
     `repo_policy.binding_name`. It is a required argument rather than a defaulted
     one on purpose: a call site that forgot it would silently evaluate every
     qualified reference as absent, which is issue #37 reappearing as a false
@@ -411,7 +411,7 @@ class Interpreter:
 
         result = {"status": "completed", "steps": [], "failed_step": None,
                   "skipped": [], "failure_reason": None}
-        # RFC-0011 §G11.2: the execution scope, created per run and threaded
+        # RFC-0012 §G12.2: the execution scope, created per run and threaded
         # through as an argument. Not an attribute of `self`: `run_workflow` can
         # be called twice on one Interpreter, and a shared map would carry the
         # first run's rows into the second — the same aliasing `FakeRepository`
@@ -499,7 +499,7 @@ class Interpreter:
                                     row_key(effect["entity"], payload))
             child.attrs["found"] = row is not None
             if effect["operation"] in READ_OPS and isinstance(row, dict):
-                # RFC-0011 §G11.2: a completed read binds its row into the
+                # RFC-0012 §G12.2: a completed read binds its row into the
                 # execution scope, last write wins. Only reads bind — create /
                 # update / delete answer with an affected-row count, so there is
                 # no row content to name.
