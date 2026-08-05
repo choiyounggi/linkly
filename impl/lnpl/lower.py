@@ -99,10 +99,20 @@ class LowerError(Exception):
 
 
 def split_pascal(name):
-    """`UserCreated` -> ['user', 'created']; `postgres` -> ['postgres']."""
+    """`UserCreated` -> ['user', 'created']; `postgres` -> ['postgres'].
+
+    A run of capitals is one word (`HTTPSEndpoint` -> ['https', 'endpoint']).
+    When the run is followed by a lowercase letter, its last capital starts
+    that next word: `APIKey` -> ['api', 'key'], not ['apik', 'ey']. Digits
+    stay with the word they follow (`X509Certificate` -> ['x509',
+    'certificate']).
+    """
     parts, cur = [], ""
-    for ch in name:
-        if ch.isupper() and cur:
+    for i, ch in enumerate(name):
+        starts_word = ch.isupper() and cur and (
+            not name[i - 1].isupper()
+            or (i + 1 < len(name) and name[i + 1].islower()))
+        if starts_word:
             parts.append(cur)
             cur = ch
         else:

@@ -15,6 +15,13 @@ not just the green, so a silent widening of the seed rule fails loudly here.
 Both pairs run the same five assertions through `GoldenPairContract`. Neither
 `.lir.json` is ever hand-edited: when one goes stale the fix is to regenerate it
 with the command in the failure message.
+
+The `.spec.json` and `.openapi.json` halves of all three quartets are pinned the
+same way, through `GeneratedArtifactContract`. An unchecked generated artifact is
+a spec that can drift silently once its generator changes, which is the failure
+this module exists to prevent — so the committed file is the must-pass input, and
+each comparison calls the generator exactly the way `cli.cmd_spec` /
+`cli.cmd_openapi` do.
 """
 
 import json
@@ -31,8 +38,10 @@ from lnpl.openapi import generate as generate_openapi
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows, row_key, seeded_entities
 from lnpl.spec import extract
-from tests.fixtures import (CHECKOUT_LIR, CHECKOUT_LNPL, SHORTEN_LIR,
-                            SHORTEN_LNPL, SHORTEN_OPENAPI, SHORTEN_SPEC)
+from tests.fixtures import (CHECKOUT_LIR, CHECKOUT_LNPL, CHECKOUT_OPENAPI,
+                            CHECKOUT_SPEC, LOGIN_OPENAPI, LOGIN_SPEC,
+                            SHORTEN_LIR, SHORTEN_LNPL, SHORTEN_OPENAPI,
+                            SHORTEN_SPEC)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(REPO, "examples", "login.lnpl")
@@ -162,8 +171,19 @@ class TestShortenGoldenPair(GoldenPairContract, unittest.TestCase):
                  "-o examples/shorten.lir.json")
 
 
-class TestShortenGeneratedArtifacts(unittest.TestCase):
-    """The `.spec.json` and `.openapi.json` halves of the quartet.
+def _regen_cmd(verb, src, artifact):
+    """The exact `lnpl` invocation that rewrites `artifact` from `src`.
+
+    Derived from the two paths rather than written out per artifact: a
+    hand-copied command drifts away from the file it claims to regenerate
+    exactly the way an unchecked artifact drifts from its generator.
+    """
+    return "python3 -m lnpl %s %s -o %s" % (verb, os.path.relpath(src, REPO),
+                                            os.path.relpath(artifact, REPO))
+
+
+class GeneratedArtifactContract:
+    """The `.spec.json` and `.openapi.json` halves of a quartet.
 
     `GoldenPairContract` pins only the IR. These two files are generated from
     the same source by `lnpl spec` / `lnpl openapi`, so an unchecked copy is a
@@ -171,27 +191,59 @@ class TestShortenGeneratedArtifacts(unittest.TestCase):
     is the must-pass input. Each comparison calls the generator exactly the way
     `cli.cmd_spec` / `cli.cmd_openapi` do, so it compares against the same call
     that produced the golden.
+
+    A plain mixin, not a `TestCase`, for the same reason as
+    `GoldenPairContract`: these run once per concrete quartet below and never on
+    their own.
     """
+
+    SRC = None
+    SPEC = None
+    OPENAPI = None
+
+    @classmethod
+    def _module(cls):
+        # What `cli._compile` derives the module name from, so the manifest
+        # under test is the one the CLI would have written.
+        return os.path.splitext(os.path.basename(cls.SRC))[0]
 
     def _committed(self, path):
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
 
     def test_the_committed_spec_manifest_is_what_the_cli_emits(self):
-        with open(SHORTEN_LNPL, encoding="utf-8") as fh:
+        with open(self.SRC, encoding="utf-8") as fh:
             decls = parse(fh.read())
-        self.assertEqual(extract(decls, "shorten"),
-                         self._committed(SHORTEN_SPEC),
-                         "examples/shorten.spec.json is stale — regenerate it "
-                         "with `python3 -m lnpl spec examples/shorten.lnpl "
-                         "-o examples/shorten.spec.json`")
+        self.assertEqual(extract(decls, self._module()),
+                         self._committed(self.SPEC),
+                         "%s is stale — regenerate it with `%s`"
+                         % (os.path.relpath(self.SPEC, REPO),
+                            _regen_cmd("spec", self.SRC, self.SPEC)))
 
     def test_the_committed_openapi_document_is_what_the_cli_emits(self):
-        self.assertEqual(generate_openapi(compile_module(SHORTEN_LNPL)),
-                         self._committed(SHORTEN_OPENAPI),
-                         "examples/shorten.openapi.json is stale — regenerate "
-                         "it with `python3 -m lnpl openapi "
-                         "examples/shorten.lnpl -o examples/shorten.openapi.json`")
+        self.assertEqual(generate_openapi(compile_module(self.SRC)),
+                         self._committed(self.OPENAPI),
+                         "%s is stale — regenerate it with `%s`"
+                         % (os.path.relpath(self.OPENAPI, REPO),
+                            _regen_cmd("openapi", self.SRC, self.OPENAPI)))
+
+
+class TestLoginGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = SRC
+    SPEC = LOGIN_SPEC
+    OPENAPI = LOGIN_OPENAPI
+
+
+class TestCheckoutGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = CHECKOUT_LNPL
+    SPEC = CHECKOUT_SPEC
+    OPENAPI = CHECKOUT_OPENAPI
+
+
+class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = SHORTEN_LNPL
+    SPEC = SHORTEN_SPEC
+    OPENAPI = SHORTEN_OPENAPI
 
     def test_the_openapi_projection_carries_the_refinement_constraints(self):
         # The facets must survive into the API contract, not just the IR — that
