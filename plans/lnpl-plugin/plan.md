@@ -73,6 +73,25 @@ Baseline: HEAD `a90a8f6`, working tree clean(실측). `lnpl.__version__ == "0.2.
 | A12 | 버전 정합 확인 | `lnpl --version`을 추가하고(`lnpl.__version__` 출력), `plugin.json`의 `version`을 같은 값으로 유지한다. `lnpl-doctor`가 둘을 비교해 불일치를 보고한다 | 플러그인은 레포에 묶여 커밋 단위로 정합하지만(A2), 사용자가 설치한 `lnpl`은 다른 버전일 수 있다. drift 문제가 배포 경계에서 다시 나타나는 지점이라 여기서만 런타임 검사가 필요하다 |
 | A13 | 골든 예제 취급 | `examples/*.lnpl`은 **고치지 않는다**. `login.lnpl`의 `return token`(F2)도 그대로 둔다 | 그 파일들은 issue #36/#38의 증상을 보존하는 교보재이고, 파생 산출물은 바이트 동일해야 한다(수용 기준 6). 어휘를 가르치는 것과 예제를 고치는 것은 별개의 결정이다 |
 
+## Global Constraints
+
+모든 태스크의 요구사항에 암묵적으로 포함된다. 태스크 파일은 이것을 반복하지 않는다.
+
+- **Python**: `>=3.9` 선언, 개발 venv는 `.venv`(3.13.1). 테스트는
+  `PYTHONPATH=impl .venv/bin/python -m unittest ...`로 돌린다.
+- **런타임 의존 추가 금지.** 기존 의존은 `jsonschema` 하나뿐이다. 플러그인 자산은
+  Markdown / JSON / POSIX `sh`만 쓴다.
+- **문서 언어**: 본문 한국어, 식별자·키워드·스키마 필드는 영어(RFC-0007 §4).
+- **골든 무변경**: `examples/*.lir.json`, `*.spec.json`, `*.openapi.json`은 바이트
+  동일해야 한다. `examples/*.lnpl`도 수정 금지(A13).
+- **임시 파일**: `/tmp`·`$TMPDIR` 사용 금지. 반드시 `.claude/tmp/` 아래에 만든다.
+- **훅 계약(실측)**: 입력은 stdin JSON(`.tool_name`, `.tool_input.file_path`, `.cwd`),
+  플러그인 경로는 `${CLAUDE_PLUGIN_ROOT}`. PostToolUse에서 **exit 0 = 조용,
+  exit 2 = stderr가 모델에게 전달**. PostToolUse는 도구 실행 뒤에 돌기 때문에
+  exit 2가 쓰기를 되돌리지 않는다 — A6과 정합한다.
+- **버전 단일 출처**: `impl/lnpl/__init__.py`의 `__version__`(현재 `"0.2.0"`).
+  `pyproject.toml`과 `plugin.json`이 이 값을 따른다(A12).
+
 ## Task order
 
 | Task | Depends on | Parallel-ok |
