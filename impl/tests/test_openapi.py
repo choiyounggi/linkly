@@ -678,33 +678,61 @@ class TestUninhabitedRefusals(unittest.TestCase):
     def test_a_numeric_enum_on_a_text_base_is_refused(self):
         # `refine HttpStatus of Text` + `enum 200 404` is a thing a user would
         # write, and it used to emit {"type": "string", "enum": [200, 404]} --
-        # a request schema that rejects every payload. A.6.3 permits `enum` on
-        # both the text and numeric categories without tying the member type to
-        # the base, and `lower._enum_value` resolves 200 to an int, so the
-        # mismatch is constructible from a `.lnpl` file.
-        src = "refine HttpStatus of Text\n    enum 200 404\n" + self.TAIL
+        # a request schema that rejects every payload. RFC-0011 A.6.3 now ties
+        # the member type to the base in `lower`, so a `.lnpl` file no longer
+        # reaches here (`test_both_layers_refuse_a_mismatched_enum` pins that);
+        # hand-built, because `generate` takes an IR document from any producer.
         with self.assertRaises(OpenApiError) as ctx:
-            spec_for(src)
+            _refinement_schema(_refine("HttpStatus", "Text",
+                                       {"enum": [200, 404]}))
         self.assertIn("unsatisfiable", str(ctx.exception))
         self.assertIn("[200, 404]", str(ctx.exception))
         self.assertIn("string", str(ctx.exception))
 
     def test_a_string_enum_on_a_numeric_base_is_refused(self):
         # The other direction.
-        src = "refine R of Integer\n    enum alpha beta\n" + self.TAIL
         with self.assertRaises(OpenApiError) as ctx:
-            spec_for(src)
+            _refinement_schema(_refine("R", "Integer",
+                                       {"enum": ["alpha", "beta"]}))
         self.assertIn("unsatisfiable", str(ctx.exception))
+        self.assertIn("['alpha', 'beta']", str(ctx.exception))
         self.assertIn("integer", str(ctx.exception))
 
-    def test_the_compiler_still_accepts_what_the_generator_now_refuses(self):
-        # The premise of the two tests above: this is a generator-side refusal
-        # of a module the rest of the toolchain accepts, not a parse error. If
-        # the check ever moves into `lower`, this reddens and says so.
+    def test_both_layers_refuse_a_mismatched_enum(self):
+        # REPLACES `test_the_compiler_still_accepts_what_the_generator_now_
+        # refuses` (2026-08-05). That test asserted the compiler let this
+        # through and the generator was the only defence; RFC-0011 added the
+        # member-type rule to `lower`, so its premise is dead.
+        #
+        # Both layers holding is deliberate, not duplication. `lower` guards
+        # the `.lnpl` path and speaks first. `generate` is a public entry point
+        # (`cli.cmd_openapi`, and any agent or third-party tool emitting a
+        # `.lir.json`) that takes an IR document which need never have gone
+        # through the compiler -- and RFC-0001 A.7 puts invariant ⓓ outside
+        # what `lir.schema.json` checks, so a schema-valid document can still
+        # carry the mismatch. That is the same argument the category guard in
+        # `TestGeneratorOwnedRefusals` rests on. Drop either layer and one path
+        # is left emitting a schema no payload satisfies.
         src = "refine HttpStatus of Text\n    enum 200 404\n" + self.TAIL
-        node = [n for n in lower(parse(src), "login").to_document()["nodes"]
-                if n["kind"] == "Refinement"][0]
-        self.assertEqual(node["facets"], {"enum": [200, 404]})
+        with self.assertRaises(LowerError) as low:
+            lower(parse(src), "login")
+        self.assertIn("cannot be a value of base 'Text'", str(low.exception))
+        self.assertIn("200", str(low.exception))
+
+        doc = lower(parse(SRC), "login").to_document()
+        doc["nodes"].insert(0, _refine("HttpStatus", "Text",
+                                       {"enum": [200, 404]}))
+        with self.assertRaises(OpenApiError) as gen:
+            generate(doc)
+        self.assertIn("unsatisfiable", str(gen.exception))
+        self.assertIn("[200, 404]", str(gen.exception))
+
+        # Negative control: the guard must fire on the mismatch, not on
+        # hand-built IR in general. Same document, members the base admits.
+        ok = lower(parse(SRC), "login").to_document()
+        ok["nodes"].insert(0, _refine("HttpStatus", "Text", {"enum": ["ok"]}))
+        self.assertEqual(generate(ok)["components"]["schemas"]["HttpStatus"],
+                         {"type": "string", "enum": ["ok"]})
 
     def test_a_boolean_enum_member_is_refused(self):
         # Python's bool subclasses int, so a naive isinstance(m, int) admits
