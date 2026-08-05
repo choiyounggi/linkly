@@ -3,12 +3,19 @@
 RFC-0008: All condition interpretation passes through parse_condition().
 No condition is evaluated differently in parser vs. runtime vs. compiler.
 
-Syntax (RFC-0002 §Full grammar as updated by RFC-0008):
+Syntax (RFC-0002 §Full grammar as updated by RFC-0008, then RFC-0012):
   Condition ::= Presence | Comparison
-  Presence  ::= CamelName ('exists' | 'missing')
-  Comparison ::= CamelName Comparator (Integer | Duration)
+  Reference ::= CamelName | CamelName '.' CamelName
+  Presence  ::= Reference ('exists' | 'missing')
+  Comparison ::= Reference Comparator (Integer | Duration)
   Comparator ::= '<' | '<=' | '>' | '>=' | '==' | '!='
   Duration  ::= Integer ('ms' | 's' | 'm')
+
+A qualified `Reference` (`product.stock`) names a bound row's field; a bare one
+names an input payload field (RFC-0012 §G12.1). This module owns the SYNTAX of
+that distinction only. Whether the binding names a declared entity, and whether
+that entity declares the field, is decided where the document is in scope
+(`lower.py`, RFC-0012 §G12.5) — this module never sees the document.
 """
 
 from dataclasses import dataclass
@@ -66,8 +73,9 @@ def parse_condition(text: Optional[str]) -> Condition:
         raise ConditionError(f"condition too short: {text!r}")
 
     field = tokens[0]
-    if not _is_camel_name(field):
-        raise ConditionError(f"field must be camelCase: {text!r}")
+    if not _is_reference_name(field):
+        raise ConditionError(
+            f"field must be camelCase or binding.field: {text!r}")
 
     if len(tokens) == 2 and tokens[1] in ('exists', 'missing'):
         return Presence(field, tokens[1])
@@ -106,6 +114,19 @@ def _is_camel_name(s: str) -> bool:
     if not s[0].islower():
         return False
     return all(c.isalnum() for c in s)
+
+
+def _is_reference_name(s: str) -> bool:
+    """Check if s matches `Reference` (RFC-0012): CamelName ('.' CamelName)?.
+
+    Exactly one or two segments. `a.b.c` is refused: a bound row is a flat
+    mapping, so a three-segment path names nothing an evaluator could walk —
+    the same judgement RFC-0008 made about productions with no evaluator.
+    """
+    segments = s.split(".")
+    if len(segments) > 2:
+        return False
+    return all(_is_camel_name(segment) for segment in segments)
 
 
 def condition_to_string(cond: Condition) -> Optional[str]:

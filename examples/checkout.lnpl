@@ -5,7 +5,8 @@
 # 만들기만 하는 Order의 테이블은 비어 있어 create가 충돌 대신 삽입된다.
 #
 # 기계(mechanism)인 선언과 서술(documentation)인 선언을 구분한다:
-#   기계 — Product.id/Order.id(행 키), Product.stock(가드 필드),
+#   기계 — Product.id/Order.id(행 키), Product.stock(가드 필드 — `find product`가
+#          조회한 행을 읽는다: RFC-0012 실행 스코프),
 #          performance/cache 5m(CacheAccess set은 TTL 없이 RunError),
 #          policy/retry 3(빈 저장소에서 재시도 4회를 관측 가능하게)
 #   서술 — name/price/quantity/total/placedAt, capability redis, event OrderPlaced
@@ -44,7 +45,7 @@ workflow Checkout
     validate product
     find product
     cache product
-    when stock > 0
+    when product.stock > 0
     create order
     spec
         given
@@ -56,3 +57,7 @@ workflow Checkout
             steps 4
             slo met
             cache written
+            result product.stock > 0
+            rows Order 1
+            effects 4
+            effects complete

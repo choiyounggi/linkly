@@ -504,6 +504,49 @@ class TestRefinementLowering(unittest.TestCase):
                "entity L\n    field\n        s Short\n")
         self.assertIn("already a semantic type", str(ctx.exception))
 
+    # RFC-0011 widened ⓔ to the module's entity names (2026-08-05). An entity
+    # and a refinement land in one `components/schemas` key space, so a shared
+    # name silently overwrote one of them; `openapi.py` caught it at generation
+    # time, which is one layer too late for consumers that skip the generator.
+
+    def test_a_refinement_named_like_an_entity_is_rejected(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir("refine Link of Text\n    maxLength 8\n"
+               "entity Link\n    field\n        code Text\n")
+        self.assertIn("an entity", str(ctx.exception))
+        self.assertIn("'Link'", str(ctx.exception))
+
+    def test_the_entity_may_be_declared_before_or_after_the_refine(self):
+        # `lower` groups declarations by kind before lowering any of them, so
+        # the collision is found whichever order the file uses. Both orders are
+        # asserted because only one of them is the "obvious" one to implement.
+        after = ("refine Link of Text\n    maxLength 8\n"
+                 "entity Link\n    field\n        code Text\n")
+        before = ("entity Link\n    field\n        code Text\n"
+                  "refine Link of Text\n    maxLength 8\n")
+        for src in (after, before):
+            with self.assertRaises(LowerError) as ctx:
+                ir(src)
+            self.assertIn("an entity", str(ctx.exception))
+
+    def test_a_name_differing_only_in_case_is_not_a_collision(self):
+        # `components/schemas` keys are case-sensitive, so `Link` and `link` are
+        # two distinct keys and neither overwrites the other -- there is no harm
+        # to prevent. RFC-0011 A.7 fixes the judgment as exact equality.
+        doc = ir("refine Link of Text\n    maxLength 8\n"
+                 "entity link\n    field\n        code Text\n")
+        named = [(n["kind"], n["name"]) for n in doc["nodes"]
+                 if n.get("name") in ("Link", "link")]
+        self.assertEqual(sorted(named), [("Entity", "link"),
+                                         ("Refinement", "Link")])
+
+    def test_a_merely_similar_entity_name_is_not_a_collision(self):
+        doc = ir("refine Linkish of Text\n    maxLength 8\n"
+                 "entity Link\n    field\n        code Text\n")
+        self.assertEqual(sorted(n["name"] for n in doc["nodes"]
+                                if n["kind"] in ("Entity", "Refinement")),
+                         ["Link", "Linkish"])
+
     # ---- base must be one of the 18: no refinement of a refinement ----
 
     def test_refining_a_refinement_is_rejected(self):
@@ -608,12 +651,82 @@ class TestRefinementLowering(unittest.TestCase):
                "entity L\n    field\n        n Positive\n")
         self.assertIn("needs a number", str(ctx.exception))
 
-    def test_enum_mixes_words_and_numbers(self):
+    # ---- RFC-0011 A.6.3: an enum member must be a value its base can hold ----
+    #
+    # INVERTED 2026-08-05. This case used to assert that `enum draft 1 2.5` on a
+    # `Text` base lowers with all three members, which was correct under the
+    # pre-RFC-0011 A.6.3 ("배열(문자열 또는 수치)", with no member/base rule). A
+    # `Text` field holds a string, so `1` and `2.5` were members no value could
+    # ever match -- an unsatisfiable schema with no diagnostic. RFC-0011 narrows
+    # the rule and the compiler now rejects the source instead of lowering it.
+
+    def test_enum_mixing_words_and_numbers_on_text_is_rejected(self):
         src = ("refine Kind of Text\n    enum draft 1 2.5\n"
                "entity L\n    field\n        k Kind\n")
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        self.assertIn("cannot be a value of base", str(ctx.exception))
+        self.assertIn("'Text'", str(ctx.exception))
+        # The first offending member is named, not just the fact of a violation.
+        self.assertIn("enum value 1 ", str(ctx.exception))
+
+    def test_enum_of_words_on_text_is_accepted(self):
+        src = ("refine Kind of Text\n    enum draft published\n"
+               "entity L\n    field\n        k Kind\n")
         values = refinements_of(ir(src))[0]["facets"]["enum"]
-        self.assertEqual(values, ["draft", 1, 2.5])
-        self.assertEqual([type(v) for v in values], [str, int, float])
+        self.assertEqual(values, ["draft", "published"])
+        self.assertEqual([type(v) for v in values], [str, str])
+
+    def test_text_enum_rejects_a_numeric_member(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir("refine Kind of Text\n    enum 1\n"
+               "entity L\n    field\n        k Kind\n")
+        self.assertIn("cannot be a value of base", str(ctx.exception))
+        self.assertIn("a Word", str(ctx.exception))
+
+    def test_decimal_enum_accepts_an_int_and_a_float(self):
+        # `Decimal` admits both notations, so the mix that fails on Integer
+        # below is legal here. The two tests differ only in the base.
+        src = ("refine Price of Decimal\n    enum 1 2.5\n"
+               "entity L\n    field\n        p Price\n")
+        values = refinements_of(ir(src))[0]["facets"]["enum"]
+        self.assertEqual(values, [1, 2.5])
+        self.assertEqual([type(v) for v in values], [int, float])
+
+    def test_integer_enum_rejects_a_fractional_member(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir("refine Score of Integer\n    enum 1 2.5\n"
+               "entity L\n    field\n        s Score\n")
+        self.assertIn("enum value 2.5 ", str(ctx.exception))
+        self.assertIn("no fractional part", str(ctx.exception))
+
+    def test_integer_enum_rejects_a_decimal_notation_whole_number(self):
+        # The rule keys on NOTATION, not numeric value: `2.0` parses to a float
+        # via the same `_number` rule `min`/`max` use, and an Integer field holds
+        # an int. Numerically 2.0 == 2, which is exactly why this needs pinning.
+        with self.assertRaises(LowerError) as ctx:
+            ir("refine Score of Integer\n    enum 2.0\n"
+               "entity L\n    field\n        s Score\n")
+        self.assertIn("enum value 2.0 ", str(ctx.exception))
+        self.assertIn("no fractional part", str(ctx.exception))
+
+    def test_integer_enum_accepts_whole_numbers(self):
+        src = ("refine Score of Integer\n    enum 1 2 3\n"
+               "entity L\n    field\n        s Score\n")
+        values = refinements_of(ir(src))[0]["facets"]["enum"]
+        self.assertEqual(values, [1, 2, 3])
+        self.assertEqual([type(v) for v in values], [int, int, int])
+
+    def test_a_pascal_enum_value_still_fails_on_form_first(self):
+        # Check order is a contract (`_parse_facet_line`'s docstring): value FORM
+        # is judged before member/base compatibility, so `Draft` reports "not a
+        # valid enum value" rather than the RFC-0011 message. A future refactor
+        # that reorders the two would redden here.
+        with self.assertRaises(LowerError) as ctx:
+            ir("refine Kind of Text\n    enum Draft\n"
+               "entity L\n    field\n        k Kind\n")
+        self.assertIn("not a valid enum value", str(ctx.exception))
+        self.assertNotIn("cannot be a value of base", str(ctx.exception))
 
     def test_enum_rejects_a_pascal_value(self):
         # EnumValue ::= Word | Number, and Word starts lowercase.
@@ -880,6 +993,93 @@ entity Link
         for field in entity["fields"]:
             self.assertTrue(field["type"] in SEMANTIC_TYPES or field["type"] in names,
                             "%r resolves to nothing in this document" % field["type"])
+
+
+SCOPED_SOURCE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+        name Text
+entity Order
+    field
+        id UUID
+        total Money
+service ShopService
+    policy
+        retry 0
+workflow Checkout
+    find product
+    when %s
+    create order
+"""
+
+
+class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
+    """RFC-0012 §G12.5: a qualified reference is resolved where the document is
+    in scope, so a reference that can never bind fails the build instead of
+    silently evaluating false at run time (the failure mode §G12.4 would give it).
+    """
+
+    def _lower(self, condition):
+        return lower(parse(SCOPED_SOURCE % condition), "shop")
+
+    def test_a_reference_to_a_read_entity_lowers(self):
+        # Normal case: `find product` reads entity.product, and Product declares
+        # `stock`, so all three checks hold.
+        mod = self._lower("product.stock > 0")
+        guard = mod.get("wf.checkout.guard.1")
+        self.assertEqual(guard["condition"], "product.stock > 0")
+
+    def test_an_undeclared_binding_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("widget.stock > 0")
+        self.assertIn("not a declared entity", str(caught.exception))
+        self.assertIn("widget", str(caught.exception),
+                      "the refusal must name the binding that resolved to "
+                      "nothing; got %r" % str(caught.exception))
+
+    def test_an_undeclared_field_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.nosuch > 0")
+        self.assertIn("does not declare", str(caught.exception))
+        self.assertIn("nosuch", str(caught.exception))
+
+    def test_a_reference_to_an_entity_the_workflow_never_reads_is_refused(self):
+        # `Order` is created, never read, so no read can ever bind it. Without
+        # this check the guard would quietly compare against nothing and be
+        # false forever — a declared guard that is really a no-op.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("order.total > 0")
+        self.assertIn("never reads it", str(caught.exception))
+        self.assertIn("entity.order", str(caught.exception))
+
+    def test_a_presence_reference_is_checked_the_same_way(self):
+        # The check is on the reference, not on the comparison form.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("widget.name exists")
+        self.assertIn("not a declared entity", str(caught.exception))
+
+    # ---- boundary: the bare form must be untouched -------------------------
+    def test_a_bare_reference_is_not_checked(self):
+        # RFC-0012 G12.3: bare names are payload fields. They are NOT entity
+        # fields, so applying the entity checks to them would reject correct
+        # programs — `when token missing` asks about the request, not a row.
+        mod = self._lower("stock > 0")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"], "stock > 0")
+
+    def test_a_bare_reference_naming_no_declared_field_still_lowers(self):
+        mod = self._lower("anythingAtAll > 0")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "anythingAtAll > 0")
+
+    def test_a_repeat_guard_has_no_condition_to_check(self):
+        # Boundary: `repeat` carries `count`, not `condition`. The check must not
+        # trip over a guard with no condition at all.
+        source = SCOPED_SOURCE.replace("when %s", "repeat 2")
+        mod = lower(parse(source), "shop")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["count"], 2)
 
 
 if __name__ == "__main__":

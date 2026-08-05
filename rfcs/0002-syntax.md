@@ -5,6 +5,7 @@
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 - Updated-by: RFC-0008 (§Full grammar)
 - Updated-by: RFC-0009 (§Open Questions)
+- Updated-by: RFC-0012 (§Full grammar)
 
 ## Motivation
 
