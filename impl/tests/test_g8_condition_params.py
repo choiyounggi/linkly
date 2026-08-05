@@ -15,6 +15,7 @@ vacuously.
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +107,9 @@ class _Built(unittest.TestCase):
     def setUp(self):
         os.makedirs(TMP, exist_ok=True)
         self.workdir = tempfile.mkdtemp(prefix="lnpl-g8-", dir=TMP)
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
 
     def _build(self, src):
         doc = _doc(src)

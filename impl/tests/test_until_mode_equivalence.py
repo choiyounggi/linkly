@@ -16,6 +16,7 @@ vacuously.
 """
 
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -57,6 +58,9 @@ class TestUntilModeEquivalence(unittest.TestCase):
         os.makedirs(TMP, exist_ok=True)
         self.workdir = tempfile.mkdtemp(prefix="lnpl-until-", dir=TMP)
         self.doc = lower(parse(SRC), "t").to_document()
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
 
     def _both(self, counter):
         payload = {"counter": counter}
