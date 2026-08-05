@@ -26,6 +26,25 @@
         "authoring",
         "claude-code"
       ]
+    },
+    {
+      "name": "lnpl-dev",
+      "description": "Contributor tooling for linkly itself — environment preconditions, RFC process lint, and the mutation-harness traps.",
+      "category": "development",
+      "author": {
+        "name": "choiyounggi",
+        "url": "https://github.com/choiyounggi"
+      },
+      "source": "./plugins/lnpl-dev",
+      "homepage": "https://github.com/choiyounggi/linkly",
+      "version": "0.2.0",
+      "tags": [
+        "linkly",
+        "contributor",
+        "rfc",
+        "mutation-testing",
+        "claude-code"
+      ]
     }
   ]
 }

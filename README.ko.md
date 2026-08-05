@@ -18,8 +18,9 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 개발자는 구현을 쓰지 않는다. 목표와 비즈니스 규칙(*무엇을*)만 선언하고, 컴파일러와 AI
 에이전트 파이프라인이 나머지(*어떻게*)를 설계·구현·검증·최적화·배포한다.
 
-> **상태: RFC 11편 — 8편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`,
-> RFC-0007 자신은 유효 프로세스인데 아직 `Draft`
+> **상태: RFC 13편 — 12편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.
+> RFC-0007은 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된
+> 2026-07-31부터였다
 > ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)). 로드맵 3 Phase
 > 전부 완료.**
 > `.lnpl`이 파싱되고 Semantic IR로 lowering돼 IR 인터프리터에서 실행되며(모드 A),
@@ -101,7 +102,8 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 | [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | 문법이 확정됐으므로 RFC-0002 미결 ②를 해소. *0002 §Open Questions 갱신* |
 | [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | 역할이 저작 권한 없는 노드에 자기 노드를 부착하는 법, 그리고 참조가 이동할 때의 의미론. *0006 §Agent Roles & IR Access·§Methods/ir.propose 갱신* |
 
-8편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007 자신은 아직 `Draft`다(이슈 #11).
+12편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+Accepted가 됐다(이슈 #11).
 교차 정합성 전항 통과와 소유자 승인은 — 교차 정합성 전항 통과와 소유자 승인이 모두
 충족됐다. 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -347,7 +349,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0008              RFC (0000은 Superseded, 0001~0007은 Accepted, 0008은 Draft)
+rfcs/0000~0012              RFC (0000은 Superseded, 나머지 12편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR

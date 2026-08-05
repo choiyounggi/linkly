@@ -19,8 +19,9 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: 11 RFCs — 8 `Accepted`, RFC-0000 `Superseded` by RFC-0007, and
-> RFC-0007 itself still `Draft` while being the effective process
+> **Status: 13 RFCs — 12 `Accepted` and RFC-0000 `Superseded` by RFC-0007.
+> RFC-0007 was formally accepted 2026-08-03, having been the binding process
+> since RFC-0000 was superseded on 2026-07-31
 > ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). All three
 > roadmap phases complete.**
 > `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter (mode A) — and
@@ -108,8 +109,8 @@ prefixes stay reusable.
 | [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | Retires RFC-0002's open question ② now that the grammar is settled. *Updates 0002 §Open Questions* |
 | [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | How a role attaches a node it may not author, and what happens to a reference that moves. *Updates 0006 §Agent Roles & IR Access, §Methods/ir.propose* |
 
-Eight are `Accepted`; 0000 is superseded by 0007, which is itself still `Draft`
-(issue #11). Cross-consistency checks pass and the owner approved: every cross-consistency check passes and the
+Twelve are `Accepted`; 0000 is superseded by 0007, which was itself formally
+accepted 2026-08-03 (issue #11). Cross-consistency checks pass and the owner approved: every cross-consistency check passes and the
 owner approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
 replaces an RFC whole and closes it; **Updates** revises named *sections* while the RFC

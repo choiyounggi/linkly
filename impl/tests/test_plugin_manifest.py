@@ -27,16 +27,33 @@ class MarketplaceTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(MARKET))
         self.assertIsInstance(load(MARKET), dict)
 
-    def test_marketplace_declares_one_plugin_named_lnpl(self):
+    def test_marketplace_declares_both_plugins(self):
+        # `lnpl`은 .lnpl 작성자용, `lnpl-dev`는 linkly 기여자용 — 대상 사용자가
+        # 달라 하나로 합치지 않는다.
         entries = load(MARKET)["plugins"]
-        self.assertEqual([e["name"] for e in entries], ["lnpl"])
+        self.assertEqual(sorted(e["name"] for e in entries), ["lnpl", "lnpl-dev"])
 
-    def test_marketplace_source_resolves_to_a_real_directory(self):
-        entry = load(MARKET)["plugins"][0]
-        resolved = os.path.normpath(os.path.join(REPO, entry["source"]))
-        self.assertTrue(os.path.isdir(resolved),
-                        "source가 실재하지 않는다: %s" % entry["source"])
-        self.assertEqual(resolved, os.path.normpath(PLUGIN_DIR))
+    def test_plugin_names_are_unique(self):
+        names = [e["name"] for e in load(MARKET)["plugins"]]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_every_source_resolves_to_a_real_directory(self):
+        for entry in load(MARKET)["plugins"]:
+            resolved = os.path.normpath(os.path.join(REPO, entry["source"]))
+            self.assertTrue(os.path.isdir(resolved),
+                            "source가 실재하지 않는다: %s" % entry["source"])
+            self.assertEqual(os.path.basename(resolved), entry["name"],
+                             "source 디렉터리명이 플러그인 이름과 다르다")
+
+    def test_every_source_carries_its_own_plugin_manifest(self):
+        for entry in load(MARKET)["plugins"]:
+            manifest = os.path.join(REPO, entry["source"],
+                                    ".claude-plugin", "plugin.json")
+            self.assertTrue(os.path.isfile(manifest),
+                            "%s에 plugin.json이 없다" % entry["name"])
+            self.assertEqual(load(manifest)["name"], entry["name"])
+            self.assertEqual(load(manifest)["version"], entry["version"])
+            self.assertEqual(load(manifest)["version"], lnpl.__version__)
 
     def test_marketplace_has_an_owner(self):
         self.assertIn("name", load(MARKET)["owner"])

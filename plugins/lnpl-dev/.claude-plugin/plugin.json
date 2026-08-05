@@ -1,0 +1,10 @@
+{
+  "name": "lnpl-dev",
+  "description": "Contributor tooling for the linkly platform itself — not for writing `.lnpl`. This repo has four environment preconditions that all fail silently, an RFC process with non-reusable numbering and a fixed seven-section template, and a mutation harness whose stale copy list makes every mutant fail identically. These skills route to the repo's own doctor and lint scripts and record the traps that have actually been hit.",
+  "version": "0.2.0",
+  "author": {
+    "name": "choiyounggi",
+    "url": "https://github.com/choiyounggi"
+  },
+  "homepage": "https://github.com/choiyounggi/linkly"
+}
