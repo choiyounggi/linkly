@@ -374,5 +374,253 @@ class TestObservabilityContract(unittest.TestCase):
             build().run_workflow("wf.nope", PAYLOAD)
 
 
+# ---- RFC-0012: execution scope (issue #37) ---------------------------------
+
+CHECKOUT_WORKFLOW = "wf.checkout"
+GUARD_ID = "wf.checkout.guard.1"
+PRODUCT = "entity.product"
+
+
+def checkout_doc(condition="product.stock > 0", guard_first=False):
+    """The shipped checkout document, with its guard condition substituted.
+
+    The subject is the real shipped shape — `find product` -> guard ->
+    `create order` — rather than a fixture invented to make the feature look
+    good. The default `condition` is what `examples/checkout.lnpl` now carries;
+    passing another lets one test vary the condition without a second fixture.
+
+    `guard_first` moves the guard ahead of the read, which is how the "nothing is
+    bound yet" boundary is reached without inventing a `query` verb: no
+    RepositoryCall has completed when the condition is evaluated.
+    """
+    from tests.fixtures import CHECKOUT_LNPL
+    with open(CHECKOUT_LNPL, encoding="utf-8") as fh:
+        doc = lower(parse(fh.read()), "checkout").to_document()
+    for node in doc["nodes"]:
+        if node["id"] == GUARD_ID:
+            node["condition"] = condition
+        if node["id"] == CHECKOUT_WORKFLOW and guard_first:
+            children = list(node["children"])
+            children.remove(GUARD_ID)
+            node["children"] = [GUARD_ID] + children
+    return doc
+
+
+def checkout_payload(**overrides):
+    """The derived sample payload, with explicit overrides."""
+    from lnpl.interp import refinement_index, sample_payload
+    doc = checkout_doc()
+    payload = sample_payload([n for n in doc["nodes"] if n["kind"] == "Entity"],
+                             refinement_index(doc))
+    payload.update(overrides)
+    return payload
+
+
+def product_rows(payload, **row_overrides):
+    """Seed `entity.product` with a row that may DIFFER from the payload.
+
+    This is the whole point of the issue #37 tests. `repo_policy.default_rows`
+    seeds the row as `dict(payload)`, so under the default seed the row and the
+    input carry the same `stock` and a guard reading either one gives the same
+    answer — the bug and the fix are indistinguishable. Only a row that differs
+    from the payload can tell them apart.
+    """
+    row = dict(payload)
+    row.update(row_overrides)
+    return {PRODUCT: {row_key(PRODUCT, payload): row}}
+
+
+class TestStepResultBinding(unittest.TestCase):
+    """Issue #37: `when product.stock > 0` must read the row `find product` got."""
+
+    def _run(self, condition="product.stock > 0", guard_first=False, **kw):
+        payload = checkout_payload(**kw.pop("payload", {}))
+        rows = product_rows(payload, **kw.pop("row", {}))
+        doc = checkout_doc(condition=condition, guard_first=guard_first)
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, interp.run_workflow(CHECKOUT_WORKFLOW, payload)
+
+    def test_the_guard_reads_the_fetched_row_not_the_input_payload(self):
+        # The input says 5 (guard would be TRUE on the payload); the stored row
+        # says 0 (guard is FALSE on the row). If `create order` runs, the guard
+        # read the payload — which is issue #37.
+        _interp, result = self._run(payload={"stock": 5}, row={"stock": 0})
+        self.assertEqual(result["status"], "completed")
+        self.assertIn(GUARD_ID, result["skipped"],
+                      "issue #37: the stored row has stock=0, so `when "
+                      "product.stock > 0` is false and the guarded item is "
+                      "skipped. The payload's stock=5 must not decide this.")
+        self.assertEqual([s["step"] for s in result["steps"]],
+                         ["validate product", "find product", "cache product"],
+                         "issue #37: `create order` is guarded and the guard is "
+                         "false, so it must not run.")
+
+    def test_the_guard_opens_on_the_row_even_when_the_payload_would_close_it(self):
+        # The mirror image: payload 0 (would be FALSE), row 5 (is TRUE).
+        _interp, result = self._run(payload={"stock": 0}, row={"stock": 5})
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["skipped"], [],
+                         "issue #37: the stored row has stock=5, so the guard "
+                         "holds even though the payload's stock=0 would close it.")
+        self.assertIn("create order", [s["step"] for s in result["steps"]])
+
+    def test_the_binding_carries_the_stored_row(self):
+        _interp, result = self._run(payload={"stock": 5}, row={"stock": 0})
+        self.assertEqual(result["bindings"]["product"]["stock"], 0,
+                         "the binding must hold the row the repository returned, "
+                         "not the input payload.")
+
+    def test_a_bare_reference_still_reads_the_payload(self):
+        # Control (RFC-0012 G12.3): the bare form must not have moved. Payload 5,
+        # row 0 — bare `stock > 0` reads the payload, so the guard HOLDS. This is
+        # the exact input where the two forms give opposite answers.
+        _interp, result = self._run(condition="stock > 0",
+                                    payload={"stock": 5}, row={"stock": 0})
+        self.assertEqual(result["skipped"], [],
+                         "RFC-0012 G12.3: bare `stock` names the input payload, "
+                         "which is 5 here, so the guard holds. If this flipped, "
+                         "every guard written before RFC-0012 changed meaning.")
+
+    # ---- boundary cases ----------------------------------------------------
+    def test_an_unbound_reference_is_false_not_an_error(self):
+        # Boundary: the guard runs BEFORE any read, so nothing is bound.
+        # RFC-0012 G12.4 — an unresolved reference compares false.
+        _interp, result = self._run(payload={"stock": 5}, row={"stock": 5},
+                                    guard_first=True)
+        self.assertEqual(result["status"], "completed")
+        self.assertIn(GUARD_ID, result["skipped"],
+                      "RFC-0012 G12.4: no RepositoryCall has completed, so "
+                      "`product.stock` resolves to nothing and the comparison "
+                      "is false — not an error, and not vacuously true.")
+
+    def test_an_unbound_reference_does_not_exist(self):
+        _interp, result = self._run(condition="product.stock exists",
+                                    guard_first=True)
+        self.assertIn(GUARD_ID, result["skipped"],
+                      "RFC-0012 G12.4: `exists` on an unbound reference is false.")
+
+    def test_a_field_absent_from_the_row_is_false(self):
+        # Boundary: the binding exists, but the row has no such field.
+        _interp, result = self._run(condition="product.nosuch > 0")
+        self.assertIn(GUARD_ID, result["skipped"],
+                      "RFC-0012 G12.4: a field the row does not carry compares "
+                      "false rather than raising.")
+
+    def test_a_field_absent_from_the_row_is_missing(self):
+        _interp, result = self._run(condition="product.nosuch missing")
+        self.assertEqual(result["skipped"], [],
+                         "RFC-0012 G12.4: `missing` holds for a field the row "
+                         "does not carry.")
+
+    # ---- error case --------------------------------------------------------
+    def test_comparing_a_non_numeric_bound_field_is_an_error(self):
+        # `name` is Text. RFC-0012 G12.4's last row: present-but-not-numeric is
+        # an error, not absence.
+        with self.assertRaises(RunError) as caught:
+            self._run(condition="product.name > 0")
+        message = str(caught.exception)
+        self.assertIn("product.name", message,
+                      "the refusal must name the reference that could not be "
+                      "compared; got %r" % message)
+
+    # ---- isolation (mutable-state trap) ------------------------------------
+    def test_bindings_do_not_leak_between_runs_of_one_interpreter(self):
+        # The guard runs BEFORE the read here, and the row says stock=5. So:
+        #   correct  — run 2's guard finds nothing bound yet   -> skips
+        #   leaking  — run 2's guard sees run 1's row (stock=5) -> OPENS
+        # `create order` in run 2's steps is therefore the observable signature
+        # of a binding map shared across runs.
+        payload = checkout_payload(stock=0)
+        doc = checkout_doc(guard_first=True)
+        interp = Interpreter(doc, repo_rows=product_rows(payload, stock=5))
+        first = interp.run_workflow(CHECKOUT_WORKFLOW, payload)
+        self.assertEqual(first["bindings"]["product"]["stock"], 5,
+                         "precondition: run 1 must end with the row bound, "
+                         "otherwise run 2 has nothing to leak from.")
+        first["bindings"]["product"] = {"stock": 999}
+        second = interp.run_workflow(CHECKOUT_WORKFLOW, payload)
+        self.assertIsNot(first["bindings"], second["bindings"],
+                         "each run must get its own binding map; sharing one "
+                         "object across runs is the mutable-state trap that "
+                         "carries one run's rows into the next.")
+        self.assertIn(GUARD_ID, second["skipped"],
+                      "the second run's guard is evaluated before its own read, "
+                      "so nothing is bound yet and it must skip. If it opened, "
+                      "it read the FIRST run's binding.")
+        self.assertNotIn("create order", [s["step"] for s in second["steps"]])
+
+
+class TestScopeResolution(unittest.TestCase):
+    """The single resolver both guards and `spec … expect` call (RFC-0012)."""
+
+    def test_bare_name_resolves_against_the_payload(self):
+        from lnpl.interp import resolve_reference
+        self.assertEqual(resolve_reference("stock", {"stock": 7}, {}), 7)
+
+    def test_qualified_name_resolves_against_the_binding(self):
+        from lnpl.interp import resolve_reference
+        self.assertEqual(
+            resolve_reference("product.stock", {"stock": 7},
+                              {"product": {"stock": 0}}), 0,
+            "a qualified reference must never fall back to the payload — that "
+            "fallback is what makes the two forms indistinguishable.")
+
+    def test_unknown_binding_resolves_to_none(self):
+        from lnpl.interp import resolve_reference
+        self.assertIsNone(resolve_reference("widget.stock", {"stock": 7}, {}))
+
+    def test_unknown_field_resolves_to_none(self):
+        from lnpl.interp import resolve_reference
+        self.assertIsNone(
+            resolve_reference("product.nosuch", {}, {"product": {"stock": 1}}))
+
+    def test_missing_payload_field_resolves_to_none(self):
+        from lnpl.interp import resolve_reference
+        self.assertIsNone(resolve_reference("stock", {}, {}))
+
+    def test_binding_name_is_the_camelcase_declared_name(self):
+        from lnpl.interp import binding_name
+        self.assertEqual(binding_name({"name": "Product"}), "product")
+
+    def test_binding_name_keeps_inner_capitals(self):
+        # RFC-0012 G12.2: derived from the declared name, NOT the node id — the
+        # id splits multi-word names on dots (`entity.order.item`), which is not
+        # a single CamelName.
+        from lnpl.interp import binding_name
+        self.assertEqual(binding_name({"name": "OrderItem"}), "orderItem")
+
+
+class TestRunResultAdditions(unittest.TestCase):
+    """The result keys `spec`'s new expectations read (issue #39 groundwork)."""
+
+    def test_effects_are_recorded_per_step(self):
+        payload = checkout_payload(stock=5)
+        doc = checkout_doc()
+        interp = Interpreter(doc, repo_rows=product_rows(payload, stock=5))
+        result = interp.run_workflow(CHECKOUT_WORKFLOW, payload)
+        by_step = {s["step"]: s["effects"] for s in result["steps"]}
+        self.assertEqual(by_step["find product"], ["RepositoryCall"])
+        self.assertEqual(by_step["validate product"], ["Validation"])
+
+    def test_failure_reason_is_none_on_success(self):
+        payload = checkout_payload(stock=5)
+        doc = checkout_doc()
+        interp = Interpreter(doc, repo_rows=product_rows(payload, stock=5))
+        result = interp.run_workflow(CHECKOUT_WORKFLOW, payload)
+        self.assertIsNone(result["failure_reason"])
+
+    def test_failure_reason_records_why_the_step_failed(self):
+        # Empty repository: `find product` reads nothing and fails.
+        payload = checkout_payload(stock=5)
+        doc = checkout_doc()
+        interp = Interpreter(doc, repo_rows={})
+        result = interp.run_workflow(CHECKOUT_WORKFLOW, payload)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "find product")
+        self.assertIn("no row", result["failure_reason"],
+                      "the reason must carry the repository's own message so a "
+                      "spec can assert on it; got %r" % result["failure_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

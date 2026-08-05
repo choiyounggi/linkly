@@ -224,11 +224,13 @@ class TestCheckoutShape(unittest.TestCase):
         self.assertEqual(nodes["wf.checkout.step.4.repo"]["operation"], "create")
 
     def test_the_guard_owns_only_the_create(self):
-        # `when stock > 0` guards exactly one item, so nothing downstream of the
-        # create can run when the guard is false.
+        # `when product.stock > 0` guards exactly one item, so nothing downstream
+        # of the create can run when the guard is false. The reference is
+        # qualified (RFC-0012): it reads the row `find product` fetched, not the
+        # input payload.
         guard = {n["id"]: n for n in compile_checkout()["nodes"]}["wf.checkout.guard.1"]
         self.assertEqual(guard["mode"], "when")
-        self.assertEqual(guard["condition"], "stock > 0")
+        self.assertEqual(guard["condition"], "product.stock > 0")
         self.assertEqual(guard["children"], ["wf.checkout.step.4"])
 
 

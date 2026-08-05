@@ -149,7 +149,7 @@
         "wf.checkout.step.4"
       ],
       "mode": "when",
-      "condition": "stock > 0"
+      "condition": "product.stock > 0"
     },
     {
       "kind": "Policy",
