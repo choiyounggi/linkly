@@ -172,11 +172,18 @@ workflow LoadDashboard
   타입명), `CamelName`(소문자 시작: 필드명), `CapabilityName`(소문자·숫자만:
   `postgres`·`redis`·`jwt`), `Word`(소문자 시작 일반 단어: step·구 내용).
   키워드(아래 카탈로그 전체)와 예약어는 식별자·Word로 사용할 수 없다.
-- **타입명** — `TypeName`은 RFC-0001 Semantic Type 표의 18종 PascalCase 표기를
-  그대로 쓰는 닫힌 열거다: `UUID` `Money` `Email` `Phone` `Password` `Address`
-  `Image` `File` `Currency` `GeoLocation` `Json` `Html` `Markdown` `Text`
-  `Integer` `Decimal` `Boolean` `DateTime`. 임의 타입명은 문법 오류다
-  (refinement 타입의 표면 표기는 Open Questions ③).
+- **타입명** — `TypeName`은 `BaseTypeName`과 `RefinedTypeName`의 합이다
+  (2026-08-04 개정 — Open Questions ③ 해소). `BaseTypeName`은 RFC-0001 Semantic
+  Type 표의 18종 PascalCase 표기를 그대로 쓰는 닫힌 열거다: `UUID` `Money`
+  `Email` `Phone` `Password` `Address` `Image` `File` `Currency` `GeoLocation`
+  `Json` `Html` `Markdown` `Text` `Integer` `Decimal` `Boolean` `DateTime`.
+  `RefinedTypeName`은 `refine` 선언(아래 Declarations)이 만든 이름 또는 내장
+  preset 이름이며 형태는 `PascalName`이다. 어휘 우선순위는
+  `BaseTypeName` > `RefinedTypeName`.
+  따라서 **임의 타입명은 더 이상 문법 오류가 아니다** — 선언되지 않은 이름은
+  문법이 아니라 **이름 해소** 단계에서 걸리며, 컴파일 패스가 오류를 일으켜야
+  한다(RFC-0001 부록 A.6.1의 해소 순서와 A.7 불변식 ⓐ). 이는 규범이며 v0.1
+  참조 구현에는 아직 그 검사가 없다.
 - **리터럴** — `Integer`(십진 정수: `3`, `200`), `Duration`(정수+단위:
   `3s`, `5m`, `50ms`). 단위 카탈로그는 골든 시나리오 실증 3종 `ms`/`s`/`m`만
   (확장은 Open Questions ④).
@@ -188,13 +195,17 @@ workflow LoadDashboard
 
 | 분류 | 키워드 | 개수 |
 |------|--------|------|
-| 최상위 선언 | `entity` `service` `workflow` `event` `capability` | 5 |
+| 최상위 선언 | `entity` `service` `workflow` `event` `capability` `refine` | 6 |
 | 절 | `field` `goal` `policy` `security` `performance` `database` `spec` `given` `when` `expect` | 10 |
 | 제어 | `when` `repeat` `parallel` `until` `pipeline` `merge` | 6 |
-| 선언 수식 | `on` (+ enum `create` `update` `delete`) | 1(+3) |
+| 선언 수식 | `on` (+ enum `create` `update` `delete`) `of` | 2(+3) |
 
-최상위 선언 키워드 5종은 RFC-0001 Declaration kind 5종(Entity/Service/
-Workflow/Event/Capability)과 1:1이다. 키워드는 전부 소문자다.
+최상위 선언 키워드 6종은 RFC-0001 Declaration kind 6종(Entity/Service/
+Workflow/Event/Capability/Refinement)과 1:1이다. 키워드는 전부 소문자다.
+
+facet 이름 6종(`pattern` `minLength` `maxLength` `min` `max` `enum`)은
+키워드가 **아니다** — `policy` 절의 `retry`·`rollback`처럼 소속 블록의 내용
+라인 어휘이며, 블록 밖에서는 평범한 `Word`로 남는다.
 
 **문맥 한정 규칙** — 두 키워드는 블록 문맥으로 판별된다(파서 상태는 "현재
 블록 종류" 하나로 충분하며 판별은 결정적이다):
@@ -240,11 +251,16 @@ Workflow/Event/Capability)과 1:1이다. 키워드는 전부 소문자다.
 | `workflow <PascalName>` + step 본문 | Workflow |
 | `event <PascalName> [on <PascalName> (create\|update\|delete)]` | Event(`on …` → `source={ref, on}`) |
 | `capability <CapabilityName> [<Version>]` | Capability |
+| `refine <PascalName> of <BaseTypeName>` + facet 라인 1개 이상 | Refinement(`name`/`base`/`facets` → RFC-0001 부록 A.6) |
 
 - `capability`는 한 줄이 한 선언이다(블록형 아님 — Alternatives ③). 골든
   시나리오의 3개 capability는 3개의 선언 라인이다.
 - `event`의 `on` 수식은 RFC-0001 Event의 `source={ref, on: create|update|
   delete}` 필드의 표면 표기다. enum 3값은 IR 표기를 그대로 쓴다.
+- `refine`은 블록형이다 — 선언 라인 뒤에 facet 라인이 **1개 이상** 와야 하며,
+  다음 최상위 키워드에서 닫힌다. facet 어휘 6종과 base별 적용 가능성은
+  RFC-0001 부록 A.6.3이 소유하는 닫힌 열거다. `Url`·`Slug`·`PositiveInteger`는
+  선언 없이 쓰는 내장 preset이고 그 이름은 재선언할 수 없다(부록 A.6.4).
 - **귀속(인접성) 규칙** — `workflow` 선언은 소스에서 가장 가까운 *선행*
   `service` 선언에 귀속된다(선언 순서 유의미). 선행 service가 없으면 독립
   진입 선언이다(RFC-0001 구조 규칙 2 — Declaration만 진입 노드). 이 귀속의
@@ -295,7 +311,7 @@ workflow 본문의 각 라인은 step이거나 제어 구조다:
 /* ---- 구조 ---- */
 SourceFile        ::= (Declaration | Comment | BlankLine)*
 Declaration       ::= EntityDecl | ServiceDecl | WorkflowDecl | EventDecl
-                    | CapabilityDecl
+                    | CapabilityDecl | RefineDecl
 
 EntityDecl        ::= 'entity' PascalName EOL FieldClause+
 ServiceDecl       ::= 'service' PascalName EOL ServiceClause*
@@ -305,6 +321,10 @@ WorkflowDecl      ::= 'workflow' PascalName EOL WorkflowItem* SpecClause?
 EventDecl         ::= 'event' PascalName EventSource? EOL
 EventSource       ::= 'on' PascalName ('create' | 'update' | 'delete')
 CapabilityDecl    ::= 'capability' CapabilityName Version? EOL
+RefineDecl        ::= 'refine' PascalName 'of' BaseTypeName EOL FacetLine+
+FacetLine         ::= ('pattern' Regex | 'minLength' Integer
+                    | 'maxLength' Integer | 'min' Number | 'max' Number
+                    | 'enum' EnumValue+) EOL
 
 /* ---- 절 ---- */
 FieldClause       ::= 'field' EOL FieldLine+
@@ -349,10 +369,15 @@ CamelName         ::= [a-z] [a-zA-Z0-9]*
 CapabilityName    ::= [a-z] [a-z0-9]*
 Word              ::= [a-z] [a-zA-Z0-9]*
 Version           ::= [0-9] [A-Za-z0-9.]*
-TypeName          ::= 'UUID' | 'Money' | 'Email' | 'Phone' | 'Password'
+TypeName          ::= BaseTypeName | RefinedTypeName
+BaseTypeName      ::= 'UUID' | 'Money' | 'Email' | 'Phone' | 'Password'
                     | 'Address' | 'Image' | 'File' | 'Currency' | 'GeoLocation'
                     | 'Json' | 'Html' | 'Markdown' | 'Text' | 'Integer'
                     | 'Decimal' | 'Boolean' | 'DateTime'
+RefinedTypeName   ::= PascalName
+Regex             ::= [^#x9#xA#xD#x20#x23]+
+Number            ::= '-'? [0-9]+ ('.' [0-9]+)?
+EnumValue         ::= Word | Number
 Integer           ::= [0-9]+
 Duration          ::= Integer DurationUnit
 DurationUnit      ::= 'ms' | 's' | 'm'
@@ -364,6 +389,14 @@ EOL               ::= #xA | #xD #xA
 주: 생산규칙 이름들은 후속 lowering 매핑 표의 좌변이 되는 안정 계약이다 —
 이름 변경은 이 RFC의 개정 사항이다. 키워드·예약어는 `PascalName`·`CamelName`·
 `CapabilityName`·`Word`의 값에서 제외된다(렉시컬 우선순위: 키워드 > 식별자).
+같은 층위에서 `BaseTypeName` > `RefinedTypeName`이다 — 18종과 같은 철자는
+언제나 base로 읽히므로 `TypeName`의 두 분기는 중의적이지 않다.
+
+`Regex`가 공백·탭·`#`를 배제하는 것은 임의 제약이 아니라 렉서의 귀결이다:
+토큰은 공백으로 분리되고(`Line.tokens = body.split()`), `#`부터 행 끝은 주석으로
+버려지며, 탭은 거부된다(본문 §Block structure). 따라서 정규식 안에 공백이
+필요하면 `\s`나 `[ ]`로, `#`가 필요하면 `\x23`으로 쓴다. 부록 A.6.4의 내장
+preset 정규식 3종은 모두 이 제약을 만족한다.
 
 ### 경계
 
@@ -407,13 +440,13 @@ IR 직렬화는 RFC-0001 부록 A가 소유한다.
 (dot-path 정규식)만 규정하며, A.3의 id는 골든 예제의 실제 값을 대조 대상으로
 인용한 것이다(A.4-⑦).
 
-**A.2 생산규칙 → IR 노드 kind 매핑.** 본문 §Full grammar의 51개 생산규칙 전량이
+**A.2 생산규칙 → IR 노드 kind 매핑.** 본문 §Full grammar의 58개 생산규칙 전량이
 행으로 존재한다(행 순서 = EBNF 등장 순서).
 
 | 생산규칙 | IR 노드 kind | 매핑 규칙 비고 |
 |----------|-------------|----------------|
 | `SourceFile` | — | `[구문]` R1 — 파일 1개가 IR 문서 1개에 대응하며 그 자체로는 노드가 아니다 |
-| `Declaration` | — | `[구문]` 5택 선택 규칙 — 노드는 각 하위 규칙이 만든다 |
+| `Declaration` | — | `[구문]` 6택 선택 규칙 — 노드는 각 하위 규칙이 만든다 |
 | `EntityDecl` | Entity | 노드 1개. `name` = PascalName, `fields` = FieldClause의 내용 |
 | `ServiceDecl` | Service | 노드 1개. `name` = PascalName. 절이 `constraints`(R4)를, 귀속 workflow가 `children`(R2)을, R3가 `requires`를 채운다 |
 | `ServiceClause` | — | `[구문]` 5택 선택 규칙 |
@@ -421,6 +454,8 @@ IR 직렬화는 RFC-0001 부록 A가 소유한다.
 | `EventDecl` | Event | 노드 1개. `name` = PascalName. children 없음 |
 | `EventSource` | — | `[필드흡수]` 부모 Event의 `source = {ref: 대상 Entity 노드 id, on: create\|update\|delete}`. enum 3값은 IR 표기 그대로 |
 | `CapabilityDecl` | Capability | 노드 1개. `name` = CapabilityName, `Version`이 있으면 `version`(문자열). 추가로 R3(**잠정** — A.4-⑧)에 따라 각 Service의 `requires`에 등재 |
+| `RefineDecl` | Refinement | 선언 1개 = 노드 1개. `name` = PascalName, `base` = BaseTypeName, `facets` = FacetLine들이 채운다. 진입 노드이며 어떤 `children`에도 등장하지 않는다(RFC-0001 구조 규칙 2). id는 A.4-⑦ 규칙 + kind 접두 `refine`(`Slug` → `refine.slug`). 사용된 내장 preset도 같은 형태의 노드로 방출된다(RFC-0001 부록 A.6.4 emit-on-use) |
+| `FacetLine` | — | `[필드흡수]` 부모 Refinement의 `facets` 객체에 키 1개. `pattern`/`min`/`max`는 값 1개, `enum`은 `EnumValue+`를 배열로. 같은 facet의 중복 지정은 오류다(객체 키는 유일) |
 | `FieldClause` | — | `[구문]` 구획 키워드 — 내용은 부모 Entity의 `fields`로 간다 |
 | `FieldLine` | — | `[필드흡수]` `fields[]` 항목 `{name: CamelName, type: TypeName}`. `required` 키를 생략하면 필수(true)로 해석된다(RFC-0001 부록 A.4) |
 | `GoalClause` | — | `[구문]` 구획 키워드 — 생성 노드의 소유자는 소속 Service |
@@ -457,7 +492,12 @@ IR 직렬화는 RFC-0001 부록 A가 소유한다.
 | `CapabilityName` | — | `[필드흡수]` Capability의 `name`, DatabaseLine의 참조 대상 |
 | `Word` | — | `[필드흡수]` step·구·`role <r>`의 토큰 — 문자열 값의 성분 |
 | `Version` | — | `[필드흡수]` Capability의 `version`(문자열) |
-| `TypeName` | — | `[필드흡수]` `fields[].type` 문자열 — v0.1은 Semantic Type명을 문자열로 담는다(RFC-0001 부록 A.6) |
+| `TypeName` | — | `[필드흡수]` `fields[].type` 문자열 — base 이름 또는 Refinement 이름을 담는다. 노드 id가 아니라 **이름**이며 해소 순서는 RFC-0001 부록 A.6.1 |
+| `BaseTypeName` | — | `[필드흡수]` `Refinement.base`(18종 닫힌 열거), 그리고 `TypeName`으로 쓰일 때는 `fields[].type` |
+| `RefinedTypeName` | — | `[필드흡수]` `fields[].type` — 선언된 refinement 또는 내장 preset의 이름. 해소되지 않는 이름은 문법 오류가 아니라 이름 해소 오류다(A.6.1) |
+| `Regex` | — | `[필드흡수]` `facets.pattern` 문자열. 공백·탭·`#` 불가(본문 §Full grammar 주) |
+| `Number` | — | `[필드흡수]` `facets.min`·`facets.max`의 값, `EnumValue`의 수치 분기 |
+| `EnumValue` | — | `[필드흡수]` `facets.enum` 배열의 항목(문자열 또는 수치) |
 | `Integer` | — | `[필드흡수]` Policy `retry`의 value(수치), PhraseToken의 성분. RepeatGuard 문맥은 A.4-① |
 | `Duration` | — | `[필드흡수]` Policy `timeout`의 value 문자열(`"3s"`), Performance value의 성분 |
 | `DurationUnit` | — | `[구문]` Duration 리터럴의 단위 성분(`ms`·`s`·`m`) |
@@ -465,9 +505,10 @@ IR 직렬화는 RFC-0001 부록 A가 소유한다.
 | `Comparison` | — | `[필드흡수]` PerformanceLine `response` 예산의 값 문자열. Condition 문맥은 A.4-① |
 | `EOL` | — | `[구문]` 논리 라인의 종결자 |
 
-집계: 노드를 만드는 규칙 12개(EntityDecl · ServiceDecl · WorkflowDecl ·
-EventDecl · CapabilityDecl · GoalLine · PolicyClause · SecurityClause ·
-PerformanceClause · ParallelBlock · PipelineBlock · StepLine) + `—` 39개 = 51.
+집계: 노드를 만드는 규칙 13개(EntityDecl · ServiceDecl · WorkflowDecl ·
+EventDecl · CapabilityDecl · RefineDecl · GoalLine · PolicyClause ·
+SecurityClause · PerformanceClause · ParallelBlock · PipelineBlock · StepLine)
++ `—` 45개 = 58.
 
 **A.3 골든 예제 대응표.** `examples/login.lnpl`(위 §Examples 코드 블록을 그대로
 추출한 33줄)의 각 줄과 `examples/login.lir.json`의 노드를 짝지운다. `줄`은
@@ -641,9 +682,16 @@ workflow Login
    일부다. 참조 인터프리터(plan.md D14·D20) 단계에서 실측 후 재검토한다.
 2. **가드 조건식의 표현력** — `Condition`은 현재 비교식+1~4토큰 구가 전부다.
    부정·논리 결합(and/or)·멤버십 검사가 필요해지면 문법 확장이 필요하다.
-3. **refinement 타입의 표면 표기** — RFC-0001은 사용자 정의 타입을 기존 18종
+3. ~~**refinement 타입의 표면 표기** — RFC-0001은 사용자 정의 타입을 기존 18종
    base의 제약 강화(refinement)로만 허용하는데, 그 표면 문법(`field age
-   Integer …범위…` 류)은 미정이다.
+   Integer …범위…` 류)은 미정이다.~~ → **해소(2026-08-04)**: 제약을 `FieldLine`에
+   인라인으로 붙이지 않고 **최상위 블록 선언 `refine`** 을 신설했다 —
+   `refine Slug of Text` + facet 라인. `FieldLine ::= CamelName TypeName`은
+   두 토큰 그대로 유지되고(인라인 제약 문법 없음), 필드는 refinement의 *이름*만
+   참조한다. facet 어휘 6종(`pattern` `minLength` `maxLength` `min` `max` `enum`)
+   과 base별 적용 가능성, 내장 preset 3종(`Url`·`Slug`·`PositiveInteger`)의 정확한
+   제약값은 RFC-0001 부록 A.6이 소유하는 닫힌 열거다. IR 쪽은 `Refinement`
+   노드(카탈로그 21번째 kind)로 직렬화된다 | 해소됨 — facet 어휘 확장은 RFC-0001 개정 사항
 4. **Duration 단위 확장과 필드 optional 표기** — 단위는 실증 3종(`ms`/`s`/
    `m`)만 규정했다(`h`/`d` 등 확장 미정). `FieldLine`의 required 기본 true에
    대한 optional 표기도 미정이다.

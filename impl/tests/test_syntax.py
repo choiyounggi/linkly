@@ -112,5 +112,126 @@ class TestParser(unittest.TestCase):
         self.assertIn("nesting depth", str(ctx.exception))
 
 
+REFINE = """
+refine Slug of Text
+    pattern ^[a-z0-9-]{1,64}$
+    maxLength 64
+"""
+
+
+class TestRefineDecl(unittest.TestCase):
+    """RefineDecl ::= 'refine' PascalName 'of' BaseTypeName EOL FacetLine+
+
+    Facet lines sit directly under the declaration — `refine` has no clause
+    keyword, so the parser treats the body the way it treats a workflow body.
+    Facet *values* are not judged here; that is lowering's job.
+    """
+
+    def test_refine_declaration_parses(self):
+        decls = parse(REFINE)
+        self.assertEqual(len(decls), 1)
+        d = decls[0]
+        self.assertEqual(d.kind, "refine")
+        self.assertEqual(d.name, "Slug")
+        self.assertEqual(d.extra["base"], "Text")
+        self.assertEqual([l.tokens for l in d.items],
+                         [["pattern", "^[a-z0-9-]{1,64}$"], ["maxLength", "64"]])
+
+    def test_refine_takes_no_clauses_dict(self):
+        self.assertEqual(parse(REFINE)[0].clauses, {})
+
+    def test_refine_and_entity_coexist(self):
+        decls = parse(REFINE + "entity Link\n    field\n        slug Slug\n")
+        self.assertEqual([d.kind for d in decls], ["refine", "entity"])
+        # The entity's field line must not leak into the refine block's body.
+        self.assertEqual(len(decls[0].items), 2)
+        self.assertEqual([l.tokens for l in decls[1].clauses["field"]],
+                         [["slug", "Slug"]])
+
+    def test_field_line_is_still_two_tokens(self):
+        decls = parse(REFINE + "entity Link\n    field\n        slug Slug\n")
+        for line in decls[1].clauses["field"]:
+            self.assertEqual(len(line.tokens), 2)
+
+    def test_refine_is_a_top_level_keyword(self):
+        # A `refine` line closes whatever block precedes it.
+        decls = parse("entity Link\n    field\n        slug Text\n" + REFINE)
+        self.assertEqual([d.kind for d in decls], ["entity", "refine"])
+
+    def test_missing_of_is_a_parse_error(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("refine Slug Text\n    maxLength 64\n")
+        self.assertIn("of <BaseType>", str(ctx.exception))
+
+    def test_trailing_tokens_are_a_parse_error(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("refine Slug of Text Extra\n    maxLength 64\n")
+        self.assertIn("of <BaseType>", str(ctx.exception))
+
+    def test_refine_without_a_base_is_a_parse_error(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("refine Slug\n    maxLength 64\n")
+        self.assertIn("of <BaseType>", str(ctx.exception))
+
+    def test_refine_takes_no_clauses(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("refine Slug of Text\n    field\n")
+        self.assertIn("takes no clauses", str(ctx.exception))
+
+    def test_refine_without_a_name_is_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("refine\n")
+        self.assertIn("needs a name", str(ctx.exception))
+
+    def test_refine_with_no_facet_lines_parses(self):
+        # The parser cannot know the block is empty until it closes, so the
+        # "at least one facet" rule (RFC-0001 A.7 ⓑ) belongs to lowering. This
+        # test pins that contract: parsing succeeds, the body is empty.
+        d = parse("refine Slug of Text\n")[0]
+        self.assertEqual(d.items, [])
+        self.assertEqual(d.extra["base"], "Text")
+
+    def test_facet_values_are_not_judged_by_the_parser(self):
+        d = parse("refine Slug of Bogus\n    maxLenght notanumber\n")[0]
+        self.assertEqual(d.extra["base"], "Bogus")
+        self.assertEqual([l.tokens for l in d.items], [["maxLenght", "notanumber"]])
+
+
+class TestRegexTokenization(unittest.TestCase):
+    """RFC-0002 §Full grammar: `Regex` excludes space/tab/`#` as a CONSEQUENCE of
+    the lexer — tokens split on whitespace and `#` starts a comment. These tests
+    pin what the lexer actually does with each, because the downstream error (or
+    the lack of one) depends on the token count it produces.
+    """
+
+    def test_a_space_splits_the_pattern_into_three_tokens(self):
+        self.assertEqual([l.tokens for l in tokenize("pattern ^a b$")],
+                         [["pattern", "^a", "b$"]])
+
+    def test_a_leading_hash_leaves_the_facet_with_no_value(self):
+        self.assertEqual([l.tokens for l in tokenize("pattern #abc")],
+                         [["pattern"]])
+
+    def test_a_well_formed_pattern_is_one_token(self):
+        self.assertEqual([l.tokens for l in tokenize("pattern ^[a-z0-9-]{1,64}$")],
+                         [["pattern", "^[a-z0-9-]{1,64}$"]])
+
+    def test_KNOWN_LIMITATION_mid_regex_hash_truncates_silently(self):
+        """A `#` inside a regex yields a well-formed 2-token line, truncated.
+
+        `^a#b$` becomes `^a` — the author's intent is silently widened. This is
+        not a lexer bug: `#` is genuinely outside `Regex`'s alphabet per
+        RFC-0002, so the comment rule is behaving as specified. It cannot be
+        turned into a lex error without amending frozen Wave 1 lexer behavior.
+        Lowering compiles the value, which catches truncations that break a
+        construct (`^a[b#c]$` -> `^a[b`), but `^a` compiles and survives.
+        Named so a reader sees a known limitation, not an accident.
+        """
+        self.assertEqual([l.tokens for l in tokenize("pattern ^a#b$")],
+                         [["pattern", "^a"]])
+        self.assertEqual([l.tokens for l in tokenize("pattern ^a[b#c]$")],
+                         [["pattern", "^a[b"]])
+
+
 if __name__ == "__main__":
     unittest.main()
