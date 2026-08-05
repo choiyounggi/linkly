@@ -407,13 +407,20 @@ NOOP_CONTROL = ("CONTROL (must survive): reword a docstring",
 # Copied into each mutant tree. The tests resolve the repo from __file__, so they
 # need the data they read, not just the package.
 #
+# `plugins` and `.claude-plugin` arrived with the Claude Code plugin: the plugin
+# tests read SKILL.md files, hooks.json, doctor.sh and the two manifests through
+# REPO-relative paths, and the hook tests execute `plugins/lnpl/hooks/*.sh`.
+# Omitting them cost 60 failures in every mutant tree (measured) — the same
+# "cannot tell a caught mutation from a broken tree" failure described below.
+#
 # `mlir` and `CHARTER.md` arrived with the RFC-0004 S4 work: `build()` loads the
 # dialect from `mlir/lnpl.irdl.mlir`, and a test asserts `CHARTER.md` to pin that
 # `backend.REPO_ROOT` resolves to this repository. Omitting them made every
 # mutant tree fail at the baseline — 41 errors reading a missing .irdl.mlir — so
 # the harness could not tell a caught mutation from a broken tree.
 TREE_CONTENTS = ("impl", "examples", "schemas", "scripts", "kb", "rfcs", "docs",
-                 "plans", "mlir", "CHARTER.md", ".venv")
+                 "plans", "mlir", "CHARTER.md", ".venv",
+                 "plugins", ".claude-plugin")
 
 
 def make_tree(dest):
