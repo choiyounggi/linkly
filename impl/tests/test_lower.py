@@ -40,6 +40,52 @@ class TestIdDerivation(unittest.TestCase):
         self.assertEqual(split_pascal("UserCreated"), ["user", "created"])
         self.assertEqual(split_pascal("postgres"), ["postgres"])
 
+    def test_pascal_split_keeps_a_capital_run_whole(self):
+        # A run of capitals is one word. When a lowercase letter follows the
+        # run, the run's LAST capital opens that next word — `APIKey` is
+        # api+key, not apik+ey.
+        self.assertEqual(split_pascal("URL"), ["url"])
+        self.assertEqual(split_pascal("APIKey"), ["api", "key"])
+        self.assertEqual(split_pascal("HTTPSEndpoint"), ["https", "endpoint"])
+        self.assertEqual(split_pascal("FetchAPIToken"), ["fetch", "api", "token"])
+        self.assertEqual(split_pascal("AB"), ["ab"])
+        self.assertEqual(split_pascal("ABc"), ["a", "bc"])
+        # Not a PascalName, but `split_pascal` also takes already-lowercase
+        # names (`capability postgres`), so its behavior here is defined.
+        self.assertEqual(split_pascal("aBC"), ["a", "bc"])
+
+    def test_pascal_split_digits_stay_with_their_word(self):
+        # A digit is not uppercase, so it joins the word it follows; an
+        # uppercase letter after a digit opens a new one.
+        self.assertEqual(split_pascal("Api2Key"), ["api2", "key"])
+        self.assertEqual(split_pascal("X509Certificate"), ["x509", "certificate"])
+        # Documented limitation: `IPv6` mixes a two-letter acronym with a
+        # lowercase-led token, so `P` (before lowercase `v`) opens a word. No
+        # case-only rule recovers `ipv6` — that needs a dictionary. This is
+        # also what the pre-fix rule produced, so it is not a new regression.
+        self.assertEqual(split_pascal("IPv6Address"), ["i", "pv6", "address"])
+
+    def test_pascal_split_boundary_inputs(self):
+        self.assertEqual(split_pascal(""), [])
+        self.assertEqual(split_pascal("A"), ["a"])
+        self.assertEqual(split_pascal("Url"), ["url"])
+        self.assertEqual(split_pascal("postgres"), ["postgres"])
+
+    def test_acronym_id_composes_with_the_kind_word_strip(self):
+        # The acronym run survives the redundant-kind-word strip: `svc.a.p.i`
+        # (pre-fix) was also a collision risk once the suffix was dropped.
+        self.assertEqual(derive_id("APIService", "Service"), "svc.api")
+        self.assertEqual(derive_id("APIKey", "Entity"), "entity.api.key")
+
+    def test_shipped_names_keep_their_ids(self):
+        # Every declared name in the three shipped examples, plus the presets
+        # emitted on use. None has consecutive capitals, so none may move.
+        self.assertEqual(derive_id("UserCreated", "Event"), "event.user.created")
+        self.assertEqual(derive_id("LoginService", "Service"), "svc.login")
+        self.assertEqual(derive_id("ClickCount", "Refinement"), "refine.click.count")
+        self.assertEqual(derive_id("Url", "Refinement"), "refine.url")
+        self.assertEqual(derive_id("postgres", "Capability"), "cap.postgres")
+
     def test_strips_segment_that_repeats_the_kind(self):
         # `LoginService` as a Service: the trailing `service` is redundant.
         self.assertEqual(derive_id("LoginService", "Service"), "svc.login")
