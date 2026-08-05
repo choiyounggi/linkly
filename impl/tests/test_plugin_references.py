@@ -86,5 +86,69 @@ class GeneratorTest(unittest.TestCase):
             self.assertIn("`%s %s`" % (clause, name), text)
 
 
+SKILL_DIR = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-authoring")
+SKILL_MD = os.path.join(SKILL_DIR, "SKILL.md")
+
+
+def read_frontmatter(path):
+    """`---`로 감싼 YAML 머리말을 아주 단순하게 읽는다 (key: value만)."""
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().split("\n")
+    if lines[0].strip() != "---":
+        raise AssertionError("%s가 `---`로 시작하지 않는다" % path)
+    out = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if ":" in line:
+            key, _, value = line.partition(":")
+            out[key.strip()] = value.strip()
+    return out
+
+
+class AuthoringSkillTest(unittest.TestCase):
+    def test_skill_file_exists(self):
+        self.assertTrue(os.path.isfile(SKILL_MD))
+
+    def test_frontmatter_name_matches_directory(self):
+        meta = read_frontmatter(SKILL_MD)
+        self.assertEqual(meta.get("name"), "lnpl-authoring")
+
+    def test_frontmatter_has_a_triggering_description(self):
+        meta = read_frontmatter(SKILL_MD)
+        desc = meta.get("description", "")
+        self.assertGreater(len(desc), 40, "description이 너무 짧아 트리거되지 않는다")
+        self.assertIn(".lnpl", desc)
+
+    def test_every_reference_file_is_linked(self):
+        with open(SKILL_MD, encoding="utf-8") as fh:
+            text = fh.read()
+        for name in EXPECTED:
+            self.assertIn("references/%s" % name, text,
+                          "%s로 가는 경로가 SKILL.md에 없다" % name)
+
+    def test_skill_body_stays_a_routing_layer(self):
+        # A4: 어휘를 SKILL.md에 인라인하면 .lnpl을 안 쓰는 세션까지 비용을 낸다.
+        with open(SKILL_MD, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertLess(len(text), 4000,
+                        "SKILL.md가 라우팅 계층을 넘어섰다 — 본문은 references/로")
+
+    def test_skill_does_not_inline_the_verb_table(self):
+        from lnpl.lower import VERB_LEXICON
+        with open(SKILL_MD, encoding="utf-8") as fh:
+            text = fh.read()
+        hits = sum(1 for verb in VERB_LEXICON if "`%s`" % verb in text)
+        self.assertLessEqual(hits, 4,
+                             "동사 표가 SKILL.md에 복사됐다 — verbs.md로 라우팅만 하라")
+
+    def test_reserved_keywords_are_called_out_at_the_routing_layer(self):
+        # if/for/while/switch는 LLM의 기본 반사라 라우팅 단계에서 막아야 한다.
+        with open(SKILL_MD, encoding="utf-8") as fh:
+            text = fh.read()
+        for word in ("if", "for", "while", "switch"):
+            self.assertIn("`%s`" % word, text)
+
+
 if __name__ == "__main__":
     unittest.main()
