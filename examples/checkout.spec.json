@@ -15,7 +15,10 @@
         "completed",
         "steps 4",
         "slo met",
-        "cache written"
+        "cache written",
+        "result product.stock > 0",
+        "rows Order 1",
+        "effects 4"
       ]
     }
   ]

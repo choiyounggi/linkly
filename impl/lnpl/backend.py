@@ -137,6 +137,23 @@ def verify_lnpl_module(text, stage="S4 (lnpl dialect verification)", path=None):
             os.remove(staged)
 
 
+def _field_ident(name):
+    """The emitted identifier for a condition field's logical name (RFC-0011).
+
+    `product.stock` is a legal `Reference` and a legal MLIR SSA name, but not a
+    legal C identifier — `int64_t product.stock` does not compile. This is the
+    ONE place the logical name becomes an identifier; `emit_mlir`'s signature and
+    guard comparisons and `runtime_c`'s declaration and call site all route
+    through it.
+
+    Every other surface keeps the logical name: `condition_field_names`, the
+    field order persisted next to the binary, `run_binary`'s value mapping, and
+    the CLI's `--field NAME=VALUE`. Mangling is what the emitter needs, not what
+    the operator types.
+    """
+    return name.replace(".", "__")
+
+
 def _extract_condition_field(cond_str):
     """RFC-0008 G8: Extract field name from condition string.
 
@@ -190,7 +207,7 @@ def _compile_condition(cond_str, field_var_name):
         if not pred:
             return "%c1"
         # Generate: %cond = arith.cmpi <pred>, %field, %const : i64
-        return f"arith.cmpi {pred}, {field_var_name}, %c{value} : i64"
+        return f"arith.cmpi {pred}, {_field_ident(field_var_name)}, %c{value} : i64"
     return "%c1"
 
 
@@ -581,7 +598,7 @@ def _lnpl_ops(document, workflow_id, seeded=None):
     # compile time. Reported rather than papered over.
     #
     # A shipped example now contains a guarded repository call: `create order` in
-    # `examples/checkout.lnpl` sits under `when stock > 0`, which is the exact
+    # `examples/checkout.lnpl` sits under `when product.stock > 0`, the exact
     # read-then-create shape issue #35 names. It is safe for a reason, not by
     # exemption — `entity.order` is create-only, so the role-based seed never
     # writes it and no earlier call creates it, and a create against an entity
@@ -769,7 +786,7 @@ def _render_std(module_attrs, ops):
     # condition_field_names defines (see its docstring for why that matters).
     params = ["%skip : i32"]
     for field in module_attrs["lnpl.condition_fields"]:
-        params.append(f"%{field} : i64")
+        params.append(f"%{_field_ident(field)} : i64")
     params_str = ", ".join(params)
 
     lines.append(f"  func.func @lnpl_run({params_str}) -> i32 {{")
@@ -816,7 +833,8 @@ def _render_std(module_attrs, ops):
                 pred = op_map.get(op, 'eq')
                 # Generate comparison: %cond_idx = arith.cmpi pred, %field, %const : i64
                 # Use pre-declared constant %c<value>_i64
-                lines.append(f"    %cond{idx} = arith.cmpi {pred}, %{field}, %c{value}_i64 : i64")
+                lines.append(f"    %cond{idx} = arith.cmpi {pred}, "
+                             f"%{_field_ident(field)}, %c{value}_i64 : i64")
                 lines.append(f"    scf.if %cond{idx} {{")
             else:
                 # Presence or unparseable: use caller-supplied skip flag
@@ -851,7 +869,8 @@ def _render_std(module_attrs, ops):
                 negated = _NEGATED_CMP.get(op)
                 if negated:
                     round_guard = ("    %%ucond%d = arith.cmpi %s, %%%s, %%c%s_i64 "
-                                   ": i64" % (idx, negated, field, value))
+                                   ": i64" % (idx, negated, _field_ident(field),
+                                              value))
 
             if round_guard:
                 lines.append(round_guard)
@@ -936,12 +955,13 @@ def runtime_c(field_names):
     Kept in lockstep with `emit_mlir` by taking the same list, so the arity and
     the positional meaning of `lnpl_run`'s parameters cannot drift.
     """
-    decl_params = ", ".join(["int skip"] + ["int64_t %s" % f for f in field_names])
+    idents = [_field_ident(f) for f in field_names]
+    decl_params = ", ".join(["int skip"] + ["int64_t %s" % f for f in idents])
     reads = "\n".join(
         "  int64_t %s = (argc > %d) ? strtoll(argv[%d], NULL, 10) : 0;"
         % (f, i, i)
-        for i, f in enumerate(field_names, start=2))
-    call_args = ", ".join(["skip"] + list(field_names))
+        for i, f in enumerate(idents, start=2))
+    call_args = ", ".join(["skip"] + idents)
     fields_note = ", ".join("argv[%d]=%s" % (i, f)
                             for i, f in enumerate(field_names, start=2)) or "none"
     return (

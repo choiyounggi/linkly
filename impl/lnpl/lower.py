@@ -487,6 +487,7 @@ def lower(decls, module_name):
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None))
         for node in ctx.emitted:
             mod.add(node)
+        _check_scoped_conditions(ctx.emitted, registry, d.name)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -565,6 +566,55 @@ class _WfContext:
             fields["condition"] = guard["arg"]
         self.emitted.append(_node("Guard", node_id, children=[inner_id], **fields))
         return node_id
+
+
+def _check_scoped_conditions(emitted, registry, workflow_name):
+    """Refuse a qualified guard reference that can never resolve (RFC-0011 §G11.5).
+
+    A bare reference names an input payload field and is not checked here — the
+    payload is not part of the document, and `when token missing` asks about the
+    request rather than about a row.
+
+    A qualified one names a bound row, and a binding exists only where this
+    workflow READS that entity. All three conditions are decidable from the
+    document, so they are decided here rather than left to produce a guard that
+    is quietly false forever.
+    """
+    from .condition import ConditionError, parse_condition
+    from .repo_policy import READ_OPS, binding_name
+
+    by_binding = {binding_name(ent): ent for ent in registry.values()}
+    read_entities = {node["entity"] for node in emitted
+                     if node["kind"] == "RepositoryCall"
+                     and node.get("operation") in READ_OPS}
+
+    for node in emitted:
+        if node["kind"] != "Guard":
+            continue
+        text = node.get("condition")
+        if not text:
+            continue                      # `repeat` carries a count, not a condition
+        try:
+            cond = parse_condition(text)
+        except ConditionError:
+            continue                      # the parser already refused it
+        if cond is None or "." not in cond.field:
+            continue                      # bare reference — a payload field
+        binding, _, field = cond.field.partition(".")
+        entity = by_binding.get(binding)
+        if entity is None:
+            raise LowerError(
+                "workflow %s: guard condition %r names %r, which is not a "
+                "declared entity" % (workflow_name, text, binding))
+        if field not in {f["name"] for f in entity["fields"]}:
+            raise LowerError(
+                "workflow %s: guard condition %r names field %r, which entity %s "
+                "does not declare" % (workflow_name, text, field, entity["name"]))
+        if entity["id"] not in read_entities:
+            raise LowerError(
+                "workflow %s: guard condition %r reads %s, but this workflow "
+                "never reads it — no binding can ever exist, so the guard would "
+                "be false forever" % (workflow_name, text, entity["id"]))
 
 
 def _derive_effect(step_id, verb, obj, registry, lineno):

@@ -1345,5 +1345,86 @@ class TestGuardedRepositoryLimitationIsDocumented(unittest.TestCase):
                                         "wf.missing"), [])
 
 
+SCOPED_GUARD_SOURCE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+service ShopService
+    policy
+        retry 0
+workflow Checkout
+    find product
+    when product.stock > 0
+    create order
+"""
+
+
+class TestScopedConditionFieldIdentifier(unittest.TestCase):
+    """RFC-0011: a qualified reference reaches mode B as `product.stock`.
+
+    A dot is legal in the logical name and in an MLIR SSA name, but not in a C
+    identifier — `int64_t product.stock;` does not compile. One mangling function
+    owns the translation and every emission point calls it, so the MLIR signature,
+    the C declaration and the C call site cannot drift into an arity or name
+    mismatch (which C linkage would surface as an uninitialised register rather
+    than a link error).
+    """
+
+    def _doc(self):
+        return lower(parse(SCOPED_GUARD_SOURCE), "shop").to_document()
+
+    def test_the_logical_name_keeps_its_dot(self):
+        # The logical name is what `--field NAME=VALUE`, the persisted field
+        # order, and `run_binary`'s mapping all use. Mangling must not leak there.
+        self.assertEqual(backend.condition_field_names(self._doc(), "wf.checkout"),
+                         ["product.stock"])
+
+    def test_the_c_shim_declares_a_legal_identifier(self):
+        c_source = backend.runtime_c(["product.stock"])
+        self.assertIn("int64_t product__stock", c_source)
+        self.assertNotIn("int64_t product.stock", c_source,
+                         "a dot is not legal in a C identifier, so emitting the "
+                         "logical name verbatim would not compile.")
+
+    def test_the_c_shim_passes_the_same_identifier_it_declared(self):
+        c_source = backend.runtime_c(["product.stock"])
+        self.assertIn("lnpl_run(skip, product__stock)", c_source,
+                      "the declaration and the call must use one name; if they "
+                      "drift the argument arrives uninitialised.")
+
+    def test_the_c_shim_still_names_the_logical_field_for_a_reader(self):
+        # The comment is the human-facing half — it should say what the operator
+        # would type after `--field`.
+        self.assertIn("product.stock", backend.runtime_c(["product.stock"]))
+
+    def test_the_mlir_signature_uses_the_mangled_name(self):
+        mlir = backend.emit_mlir(self._doc(), "wf.checkout")
+        self.assertIn("%product__stock : i64", mlir)
+
+    def test_the_mlir_comparison_reads_the_declared_parameter(self):
+        mlir = backend.emit_mlir(self._doc(), "wf.checkout")
+        self.assertIn("arith.cmpi sgt, %product__stock", mlir,
+                      "the guard must compare against the parameter the "
+                      "signature declares, not against an undeclared %product.stock.")
+
+    # ---- boundary: an unqualified name must be untouched -------------------
+    def test_a_bare_field_name_is_unchanged_by_mangling(self):
+        self.assertEqual(backend._field_ident("counter"), "counter")
+
+    def test_the_bare_c_shim_is_byte_identical_to_the_unmangled_form(self):
+        # Every pre-RFC-0011 document has only bare condition fields, so this is
+        # the regression guard for the committed golden MLIR files.
+        self.assertIn("int64_t counter", backend.runtime_c(["counter"]))
+        self.assertIn("lnpl_run(skip, counter)", backend.runtime_c(["counter"]))
+
+    def test_an_empty_field_list_still_produces_a_shim(self):
+        # Boundary: a workflow with no comparison guard at all.
+        c_source = backend.runtime_c([])
+        self.assertIn("int lnpl_run(int skip);", c_source)
+        self.assertIn("lnpl_run(skip)", c_source)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -504,5 +504,158 @@ class TestTheShippedExampleCanStillDiverge(unittest.TestCase):
             "else. Report:\n%s" % "\n".join(report))
 
 
+# ---- RFC-0011 §G11.6: mode B reads the same scope mode A builds --------------
+
+def scoped_checkout():
+    """The shipped checkout document, asserted to carry the qualified guard.
+
+    `examples/checkout.lnpl` now declares `when product.stock > 0` itself, so this
+    reads the committed file rather than substituting a condition into it — the
+    point of this module is that the SHIPPED artifact is the one verified. The
+    assertion keeps that honest: if the example's guard is ever unqualified again,
+    these tests fail instead of quietly re-qualifying it and passing.
+    """
+    doc = compile_checkout()
+    guards = [n for n in doc["nodes"] if n["kind"] == "Guard"]
+    assert [g.get("condition") for g in guards] == ["product.stock > 0"], (
+        "examples/checkout.lnpl must carry the qualified guard for this module "
+        "to be testing RFC-0011's scope; got %r"
+        % [g.get("condition") for g in guards])
+    return doc
+
+
+class TestModeBResolvesTheSameScope(unittest.TestCase):
+    """A qualified guard must decide the same way in both modes."""
+
+    def setUp(self):
+        self.doc = scoped_checkout()
+        self.payload = checkout_payload(self.doc)
+        self.workdir = _tmp_workdir(self)
+
+    def test_the_default_seed_compares_equivalent_with_a_qualified_guard(self):
+        rows = cli._repo_rows(self.doc, self.payload, WORKFLOW)
+        ok, report = verify(self.doc, WORKFLOW, self.payload, rows, self.workdir)
+        self.assertTrue(ok, "RFC-0011 G11.6: mode B derives `product.stock` from "
+                            "the seed rule, so the two modes must still agree. "
+                            "Report:\n%s" % "\n".join(report))
+
+    def test_the_empty_store_compares_equivalent_with_a_qualified_guard(self):
+        # `--no-row`: nothing is seeded, so nothing binds. Mode A's read fails
+        # before the guard is reached and mode B models the same failure.
+        ok, report = verify(self.doc, WORKFLOW, self.payload, {}, self.workdir,
+                            seeded=frozenset())
+        self.assertTrue(ok, "Report:\n%s" % "\n".join(report))
+
+    def test_the_guard_boundary_agrees_in_both_modes(self):
+        # stock=0 is the limit itself. Under the default seed the row is a copy
+        # of the payload, so both modes see 0 and both close the guard.
+        payload = dict(self.payload)
+        payload["stock"] = 0
+        rows = cli._repo_rows(self.doc, payload, WORKFLOW)
+        ok, report = verify(self.doc, WORKFLOW, payload, rows, self.workdir)
+        self.assertTrue(ok, "Report:\n%s" % "\n".join(report))
+        for mode, seen in (("A", observe_mode_a(self.doc, WORKFLOW, payload, rows)),
+                           ("B", observe_mode_b(self.doc, WORKFLOW, self.workdir,
+                                                payload=payload))):
+            self.assertNotIn("create order", seen["order"],
+                             "mode %s must close the guard at stock=0" % mode)
+
+    def test_mode_a_runtime_bindings_match_the_static_projection(self):
+        # The invariant that keeps the two derivations from drifting: what mode A
+        # binds at run time must equal what `seed_bindings` projects statically,
+        # because mode B is handed the projection. If these ever diverge, mode B
+        # is evaluating a guard against values mode A never saw.
+        from lnpl.repo_policy import seed_bindings
+        rows = cli._repo_rows(self.doc, self.payload, WORKFLOW)
+        interp = Interpreter(self.doc, repo_rows=rows)
+        result = interp.run_workflow(WORKFLOW, self.payload)
+        projected = seed_bindings(self.doc, WORKFLOW, self.payload, None)
+        self.assertEqual(result["bindings"], projected,
+                         "mode A bound %r but the static projection mode B reads "
+                         "says %r." % (result["bindings"], projected))
+
+    def test_the_projection_is_empty_without_a_seed(self):
+        # Boundary: `--no-row`. Nothing seeded means nothing bound.
+        from lnpl.repo_policy import seed_bindings
+        self.assertEqual(
+            seed_bindings(self.doc, WORKFLOW, self.payload, frozenset()), {})
+
+    def test_a_qualified_presence_guard_derives_the_same_skip_flag(self):
+        from lnpl.differential import _derive_skip_from_payload
+        from lnpl.interp import _condition_holds
+        from lnpl.repo_policy import seed_bindings
+        doc = compile_checkout()
+        for node in doc["nodes"]:
+            if node["kind"] == "Guard":
+                node["condition"] = "product.name missing"
+        bindings = seed_bindings(doc, WORKFLOW, self.payload, None)
+        mode_a = _condition_holds("product.name missing", self.payload, bindings)
+        skip = _derive_skip_from_payload(doc, WORKFLOW, self.payload, None)
+        self.assertEqual(skip, not mode_a,
+                         "the skip flag is the negation of mode A's verdict; a "
+                         "qualified Presence guard must not change that.")
+        self.assertTrue(skip, "the seeded row carries `name`, so `name missing` "
+                              "is false and the guarded item is skipped.")
+
+
+class TestUnreproducibleRowsAreRefusedNotCompared(unittest.TestCase):
+    """RFC-0011 §G11.6: mode B projects rows from the seed rule, so a row whose
+    content the rule cannot produce is outside what the comparison can mean.
+
+    Comparing anyway would report a caller's wiring choice as a mode A/B
+    divergence — the same false verdict `_check_seed_agreement` refuses for the
+    seed SET. Refusing keeps a DIVERGENT report meaning what it says.
+    """
+
+    def setUp(self):
+        self.doc = scoped_checkout()
+        self.payload = checkout_payload(self.doc)
+        self.workdir = _tmp_workdir(self)
+
+    def _rows_with(self, **overrides):
+        rows = cli._repo_rows(self.doc, self.payload, WORKFLOW)
+        for table in rows.values():
+            for row in table.values():
+                row.update(overrides)
+        return rows
+
+    def test_a_row_that_differs_from_the_payload_is_refused(self):
+        with self.assertRaises(DifferentialError) as caught:
+            verify(self.doc, WORKFLOW, self.payload, self._rows_with(stock=0),
+                   self.workdir)
+        message = str(caught.exception)
+        self.assertIn("stock", message,
+                      "the refusal must NAME the field whose value the seed rule "
+                      "cannot reproduce, so the caller can find it; got %r"
+                      % message)
+        self.assertIn("entity.product", message)
+
+    def test_the_refusal_says_it_is_not_a_divergence(self):
+        with self.assertRaises(DifferentialError) as caught:
+            verify(self.doc, WORKFLOW, self.payload, self._rows_with(stock=0),
+                   self.workdir)
+        self.assertIn("reproduce", str(caught.exception),
+                      "the message must explain that the row is unreproducible, "
+                      "not report a disagreement between the modes.")
+
+    def test_mode_a_alone_still_accepts_such_a_row(self):
+        # The refusal belongs to the COMPARISON, not to mode A. Issue #37's own
+        # proof runs mode A against exactly this input, so blocking it here would
+        # break the thing this task exists to enable.
+        rows = self._rows_with(stock=0)
+        seen = observe_mode_a(self.doc, WORKFLOW, self.payload, rows)
+        self.assertEqual(seen["status"], "completed")
+        self.assertNotIn("create order", seen["order"],
+                         "mode A reads the stored row (stock=0), so the guard "
+                         "closes even though the payload's stock would open it.")
+
+    def test_a_faithful_row_is_not_refused(self):
+        # Control: the refusal must be about unreproducibility, not about
+        # refusing every explicit row.
+        rows = cli._repo_rows(self.doc, self.payload, WORKFLOW)
+        ok, report = verify(self.doc, WORKFLOW, self.payload, rows, self.workdir)
+        self.assertTrue(ok, "Report:\n%s" % "\n".join(report))
+
+
 if __name__ == "__main__":
     unittest.main()

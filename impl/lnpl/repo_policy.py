@@ -39,6 +39,23 @@ and a cycle would break the build.
 READ_OPS = ("read", "query")
 
 
+def binding_name(entity_node):
+    """The name a read entity is bound under in the execution scope (RFC-0011 §G11.2).
+
+    The declared name, camelCased: `Product` -> `product`, `OrderItem` ->
+    `orderItem`. Derived from `name`, never from the node id: `derive_segments`
+    splits a multi-word declaration into dotted id segments (`entity.order.item`),
+    and a dotted string is not the single `CamelName` the grammar's binding
+    position accepts.
+
+    Lives here rather than in `interp` because both execution modes need it —
+    mode A to bind at run time, mode B's host to project the same names from the
+    seed rule — and this module is the one both already read.
+    """
+    name = entity_node.get("name") or ""
+    return name[:1].lower() + name[1:]
+
+
 def repository_calls(document, workflow_id):
     """Every RepositoryCall reachable from `workflow_id`, in declared order.
 
@@ -96,3 +113,31 @@ def default_rows(document, workflow_id, payload):
     """
     return {entity_id: {row_key(entity_id, payload): dict(payload)}
             for entity_id in seeded_entities(document, workflow_id)}
+
+
+def seed_bindings(document, workflow_id, payload, seeded=None):
+    """The execution scope the seed rule implies (RFC-0011 §G11.6).
+
+    Mode A builds its scope by binding what each read actually returned. Mode B's
+    module models no repository state, so its host has to answer the same question
+    from the document: under the SEED RULE above, a seeded entity's row is a copy
+    of the payload, so reading it binds a row equal to the payload.
+
+    `seeded` is the run's seed condition — `None` for the default role-based
+    policy, `frozenset()` for `--no-row`. With no seed nothing binds, which is
+    also what mode A observes: the read finds no row and the step fails before any
+    guard is reached.
+
+    This is a projection of the same rule `default_rows` materialises, not a
+    reading of mode A's store — keeping mode B independent of how `FakeRepository`
+    happens to lay rows out, exactly as `seeded` itself does.
+    """
+    entities = (seeded_entities(document, workflow_id) if seeded is None
+                else set(seeded))
+    nodes = {n["id"]: n for n in document["nodes"]}
+    scope = {}
+    for entity_id in entities:
+        node = nodes.get(entity_id)
+        if node is not None:
+            scope[binding_name(node)] = dict(payload)
+    return scope

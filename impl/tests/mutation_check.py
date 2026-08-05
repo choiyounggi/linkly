@@ -63,10 +63,34 @@ MUTATIONS = [
      "lnpl/interp.py",
      "        if ttl_ms is None:\n            raise RunError",
      "        if False:\n            raise RunError"),
+    # Re-anchored 2026-08-05: RFC-0011 added the execution scope, so
+    # `_condition_holds` takes the bindings as a third argument and the old
+    # anchor's text no longer exists in the file.
     ("Guard: ignore `when` and always run the guarded item",
      "lnpl/interp.py",
-     'if not _condition_holds(node.get("condition"), payload):',
+     'if not _condition_holds(node.get("condition"), payload, bindings):',
      "if False:"),
+    # RFC-0011 / issue #37. The guard must read the row a completed read bound,
+    # not the input payload. Reverting the qualified branch to a payload lookup
+    # restores exactly the defect the issue reports, so the suite must kill it.
+    ("Guard: resolve a qualified reference against the payload instead of the bound row",
+     "lnpl/interp.py",
+     '    binding, _, field = name.partition(".")\n'
+     '    row = bindings.get(binding)\n'
+     '    if not isinstance(row, dict):\n'
+     '        return None\n'
+     '    return row.get(field)',
+     '    binding, _, field = name.partition(".")\n'
+     '    _unused = bindings.get(binding)\n'
+     '    return payload.get(field)'),
+    # RFC-0011: guards and `spec … expect` must share ONE scope. Cutting the
+    # bindings out of the expectation path forks it into two, which is the
+    # failure this task exists to prevent — so a test must notice.
+    ("spec: evaluate `result` against an empty scope instead of the run's bindings",
+     "lnpl/spec.py",
+     '        ok = _condition_holds(text, result.get("payload", {}),\n'
+     '                              result.get("bindings", {}))',
+     '        ok = _condition_holds(text, result.get("payload", {}), {})'),
     ("Guard: run `repeat` once instead of `count` times",
      "lnpl/interp.py",
      'for _ in range(int(node["count"])):',

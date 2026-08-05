@@ -633,15 +633,15 @@ class TestCliAndSpecUseTheRefinedFixture(unittest.TestCase):
     def test_spec_given_derives_a_refined_fixture(self):
         doc = ir(SHORTENER)
         entity = entities(doc)[0]
-        payload = _payload_from_given(["valid link"], entity,
-                                      refinement_index(doc))
+        payload, _stored = _payload_from_given(["valid link"], entity,
+                                               refinement_index(doc))
         self.assertEqual(set(payload), {"id", "slug", "target"})
 
     def test_spec_given_without_an_index_keeps_its_old_shape(self):
         # Boundary: the parameter is optional, so existing 2-argument callers
         # (impl/tests/test_spec.py) keep working unchanged.
         doc = ir(SHORTENER)
-        payload = _payload_from_given(["valid link"], entities(doc)[0])
+        payload, _stored = _payload_from_given(["valid link"], entities(doc)[0])
         self.assertEqual(set(payload), {"id"})
 
 

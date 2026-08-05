@@ -19,8 +19,9 @@ self-check below proves a deliberate divergence is detected.
 """
 
 from . import backend
-from .interp import Interpreter
-from .repo_policy import repository_calls, seeded_entities
+from .interp import Interpreter, resolve_reference
+from .repo_policy import (default_rows, repository_calls, seed_bindings,
+                          seeded_entities)
 
 
 class DifferentialError(Exception):
@@ -63,12 +64,18 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
     """
     bin_path = backend.build(document, workflow_id, workdir, seeded=seeded)
 
+    # RFC-0011 §G11.6: values are resolved through the SAME scope rule mode A
+    # evaluates, so a qualified reference (`product.stock`) reaches the compiled
+    # guard as the row's value rather than as a missing payload key. The scope is
+    # projected from the seed rule because mode B's module models no repository
+    # state — see `repo_policy.seed_bindings`.
+    bindings = seed_bindings(document, workflow_id, payload or {}, seeded)
     values = {}
     for name in backend.condition_field_names(document, workflow_id):
-        raw = (payload or {}).get(name, 0)
+        raw = resolve_reference(name, payload or {}, bindings)
         values[name] = raw if isinstance(raw, int) else 0
 
-    skip = _derive_skip_from_payload(document, workflow_id, payload or {})
+    skip = _derive_skip_from_payload(document, workflow_id, payload or {}, seeded)
     rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=values)
     order, effects, status = [], {}, None
     for line in lines:
@@ -104,7 +111,7 @@ def _text_of(steps, status):
 SECRET_MARKERS = ("s3cret", "password=", "BEGIN PRIVATE KEY")
 
 
-def _derive_skip_from_payload(document, workflow_id, payload):
+def _derive_skip_from_payload(document, workflow_id, payload, seeded=None):
     """Derive the skip flag from Presence guards in the workflow.
 
     RFC-0008: Presence conditions are evaluated against the payload in mode A.
@@ -155,9 +162,15 @@ def _derive_skip_from_payload(document, workflow_id, payload):
     # than swallow it — silently returning skip=False would run a step mode A
     # refused, masking a real divergence behind a false verdict.
     from .interp import _condition_holds
+    from .repo_policy import seed_bindings
+    # RFC-0011: a Presence guard may name a bound row (`product.name exists`), so
+    # the skip flag is derived against the same execution scope mode A will build.
+    # Mode B's module models no repository state, so the scope is projected
+    # statically from the seed rule — the one input both modes already share.
+    bindings = seed_bindings(document, workflow_id, payload, seeded)
     # token present -> "token missing" is false -> skip=True;
     # token absent  -> "token missing" is true  -> skip=False.
-    return not _condition_holds(presence_cond_str, payload)
+    return not _condition_holds(presence_cond_str, payload, bindings)
 
 
 def _check_seed_agreement(document, workflow_id, repo_rows, seeded):
@@ -187,6 +200,63 @@ def _check_seed_agreement(document, workflow_id, repo_rows, seeded):
                sorted(set(seeded) & touched)))
 
 
+def _check_rows_are_reproducible(document, workflow_id, payload, repo_rows, seeded):
+    """Refuse a comparison whose mode A rows the seed rule cannot reproduce (RFC-0011 §G11.6).
+
+    Mode B is handed a scope PROJECTED from the seed rule, because its module
+    models no repository state. That projection can only say what the rule says: a
+    seeded row is a copy of the payload. If the caller seeded mode A with a row
+    carrying a different value, the two modes are evaluating the guard against
+    different inputs, and any disagreement they produce describes the caller's
+    wiring rather than a backend defect.
+
+    So the comparison is refused, not run — the same stance `_check_seed_agreement`
+    takes for the seed SET. Mode A alone is unaffected: `observe_mode_a` and the
+    interpreter accept any rows, which is what lets issue #37's proof use a row
+    that deliberately differs from the payload.
+
+    Only fields a guard actually reads are compared. Requiring every column to
+    match would reject rows that differ in ways no guard can observe.
+    """
+    watched = set()
+    for name in backend.condition_field_names(document, workflow_id):
+        if "." in name:
+            watched.add(name)
+    if not watched:
+        return
+
+    expected = default_rows(document, workflow_id, payload)
+    resolved = (seeded_entities(document, workflow_id) if seeded is None
+                else set(seeded))
+    nodes = {n["id"]: n for n in document["nodes"]}
+    from .repo_policy import binding_name
+
+    for entity_id in sorted(resolved):
+        node = nodes.get(entity_id)
+        if node is None:
+            continue
+        prefix = binding_name(node) + "."
+        fields = sorted(n.split(".", 1)[1] for n in watched
+                        if n.startswith(prefix))
+        if not fields:
+            continue
+        for key, row in sorted((repo_rows.get(entity_id) or {}).items()):
+            reference = (expected.get(entity_id) or {}).get(key)
+            if reference is None:
+                continue
+            for field in fields:
+                if row.get(field) != reference.get(field):
+                    raise DifferentialError(
+                        "mode A's row for %s carries %s=%r, but the seed rule "
+                        "would produce %r. Mode B derives that value from the "
+                        "seed rule, so it cannot reproduce this row, and "
+                        "comparing the two modes anyway would report the "
+                        "difference as a divergence. Run mode A on its own for "
+                        "this input, or seed a row the rule produces."
+                        % (entity_id, field, row.get(field),
+                           reference.get(field)))
+
+
 def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     """Compare the two modes. Returns (ok, report_lines).
 
@@ -207,6 +277,8 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     resolved = (seeded_entities(document, workflow_id) if seeded is None
                 else seeded)
     _check_seed_agreement(document, workflow_id, repo_rows, resolved)
+    _check_rows_are_reproducible(document, workflow_id, payload, repo_rows,
+                                 resolved)
 
     a = observe_mode_a(document, workflow_id, payload, repo_rows)
     b = observe_mode_b(document, workflow_id, workdir, payload=payload,

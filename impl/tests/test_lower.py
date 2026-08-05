@@ -836,5 +836,92 @@ entity Link
                             "%r resolves to nothing in this document" % field["type"])
 
 
+SCOPED_SOURCE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+        name Text
+entity Order
+    field
+        id UUID
+        total Money
+service ShopService
+    policy
+        retry 0
+workflow Checkout
+    find product
+    when %s
+    create order
+"""
+
+
+class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
+    """RFC-0011 §G11.5: a qualified reference is resolved where the document is
+    in scope, so a reference that can never bind fails the build instead of
+    silently evaluating false at run time (the failure mode §G11.4 would give it).
+    """
+
+    def _lower(self, condition):
+        return lower(parse(SCOPED_SOURCE % condition), "shop")
+
+    def test_a_reference_to_a_read_entity_lowers(self):
+        # Normal case: `find product` reads entity.product, and Product declares
+        # `stock`, so all three checks hold.
+        mod = self._lower("product.stock > 0")
+        guard = mod.get("wf.checkout.guard.1")
+        self.assertEqual(guard["condition"], "product.stock > 0")
+
+    def test_an_undeclared_binding_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("widget.stock > 0")
+        self.assertIn("not a declared entity", str(caught.exception))
+        self.assertIn("widget", str(caught.exception),
+                      "the refusal must name the binding that resolved to "
+                      "nothing; got %r" % str(caught.exception))
+
+    def test_an_undeclared_field_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.nosuch > 0")
+        self.assertIn("does not declare", str(caught.exception))
+        self.assertIn("nosuch", str(caught.exception))
+
+    def test_a_reference_to_an_entity_the_workflow_never_reads_is_refused(self):
+        # `Order` is created, never read, so no read can ever bind it. Without
+        # this check the guard would quietly compare against nothing and be
+        # false forever — a declared guard that is really a no-op.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("order.total > 0")
+        self.assertIn("never reads it", str(caught.exception))
+        self.assertIn("entity.order", str(caught.exception))
+
+    def test_a_presence_reference_is_checked_the_same_way(self):
+        # The check is on the reference, not on the comparison form.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("widget.name exists")
+        self.assertIn("not a declared entity", str(caught.exception))
+
+    # ---- boundary: the bare form must be untouched -------------------------
+    def test_a_bare_reference_is_not_checked(self):
+        # RFC-0011 G11.3: bare names are payload fields. They are NOT entity
+        # fields, so applying the entity checks to them would reject correct
+        # programs — `when token missing` asks about the request, not a row.
+        mod = self._lower("stock > 0")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"], "stock > 0")
+
+    def test_a_bare_reference_naming_no_declared_field_still_lowers(self):
+        mod = self._lower("anythingAtAll > 0")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "anythingAtAll > 0")
+
+    def test_a_repeat_guard_has_no_condition_to_check(self):
+        # Boundary: `repeat` carries `count`, not `condition`. The check must not
+        # trip over a guard with no condition at all.
+        source = SCOPED_SOURCE.replace("when %s", "repeat 2")
+        mod = lower(parse(source), "shop")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
 """
 
 from .refinements import BASE_CATEGORY
-from .repo_policy import row_key
+from .repo_policy import READ_OPS, binding_name, row_key
 from .types import SEMANTIC_TYPES
 
 IDEMPOTENT_OPS = {
@@ -148,7 +148,7 @@ class Trace:
                 "logs": self.logs}
 
 
-def _flatten_items(nodes, ids, interp, result, root, con, payload):
+def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
     """Yield the WorkflowStep ids to execute, applying Guard/Concurrency/Pipeline.
 
     RFC-0003 evaluation semantics for the Guard kind:
@@ -166,24 +166,24 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload):
             yield node_id
         elif kind in ("Concurrency", "Pipeline"):
             for inner in _flatten_items(nodes, node.get("children", []), interp,
-                                        result, root, con, payload):
+                                        result, root, con, payload, bindings):
                 yield inner
         elif kind == "Guard":
             mode = node["mode"]
             inner_ids = node.get("children", [])
             if mode == "when":
-                if not _condition_holds(node.get("condition"), payload):
+                if not _condition_holds(node.get("condition"), payload, bindings):
                     result["skipped"].append(node_id)
                     interp.trace.log("INFO", "guard skipped the guarded item",
                                      guard=node_id, condition=node.get("condition"))
                     continue
                 for inner in _flatten_items(nodes, inner_ids, interp, result, root,
-                                            con, payload):
+                                            con, payload, bindings):
                     yield inner
             elif mode == "repeat":
                 for _ in range(int(node["count"])):
                     for inner in _flatten_items(nodes, inner_ids, interp, result,
-                                                root, con, payload):
+                                                root, con, payload, bindings):
                         yield inner
             elif mode == "until":
                 # RFC-0003 §Guard: bounded loop with two stop conditions.
@@ -191,7 +191,7 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload):
                 # Whichever hits first causes termination; reason is logged separately.
                 rounds = 0
                 deadline = None if con["timeout_ms"] is None else interp.clock.now + con["timeout_ms"]
-                while not _condition_holds(node.get("condition"), payload):
+                while not _condition_holds(node.get("condition"), payload, bindings):
                     # Check both boundaries before iteration
                     if deadline is not None and interp.clock.now >= deadline:
                         interp.trace.log("WARN", "until loop hit deadline",
@@ -203,7 +203,7 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload):
                         break
                     rounds += 1
                     for inner in _flatten_items(nodes, inner_ids, interp, result,
-                                                root, con, payload):
+                                                root, con, payload, bindings):
                         yield inner
             else:
                 raise RunError("unknown guard mode %r" % mode)
@@ -214,11 +214,42 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload):
 _UNTIL_ROUND_CAP = 16
 
 
-def _condition_holds(condition, payload):
+def resolve_reference(name, payload, bindings):
+    """Resolve a condition/expectation `Reference` to a value (RFC-0011 §G11.1).
+
+    Bare `stock` names an input payload field; qualified `product.stock` names a
+    field of the row bound when that entity was read. The two forms never fall
+    back to each other — the split is by grammar, not by precedence (§G11.3), so
+    a program written before RFC-0011 resolves exactly as it did.
+
+    Returns None for anything unresolved: no such binding, no such field, no such
+    payload key. An unresolved reference is an expected outcome the caller
+    branches on, not a fault, so it is a return value rather than an exception.
+
+    This is the ONE resolver. `_condition_holds` (guards) and `spec._expect_result`
+    (assertions) both call it, which is what makes "guards and expect share one
+    scope" a property of the code rather than a claim in a document.
+    """
+    if "." not in name:
+        return payload.get(name)
+    binding, _, field = name.partition(".")
+    row = bindings.get(binding)
+    if not isinstance(row, dict):
+        return None
+    return row.get(field)
+
+
+def _condition_holds(condition, payload, bindings):
     """Mode A condition evaluation: Presence + Comparison.
 
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
     Invalid conditions are rejected at parse time, so runtime sees only valid forms.
+
+    RFC-0011: `bindings` is the execution scope — the rows read so far, keyed by
+    `repo_policy.binding_name`. It is a required argument rather than a defaulted
+    one on purpose: a call site that forgot it would silently evaluate every
+    qualified reference as absent, which is issue #37 reappearing as a false
+    negative instead of a crash.
     """
     if condition is None:
         return True
@@ -235,11 +266,11 @@ def _condition_holds(condition, payload):
         return True
 
     if isinstance(cond, Presence):
-        present = payload.get(cond.field) is not None
+        present = resolve_reference(cond.field, payload, bindings) is not None
         return present if cond.kind == "exists" else not present
 
     if isinstance(cond, Comparison):
-        value = payload.get(cond.field)
+        value = resolve_reference(cond.field, payload, bindings)
         if value is None:
             # Missing field: comparison against None
             # Treat None as "field does not exist"
@@ -373,9 +404,15 @@ class Interpreter:
                        workflow=wf["name"], payload=mask_payload(payload, entity))
 
         result = {"status": "completed", "steps": [], "failed_step": None,
-                  "skipped": []}
+                  "skipped": [], "failure_reason": None}
+        # RFC-0011 §G11.2: the execution scope, created per run and threaded
+        # through as an argument. Not an attribute of `self`: `run_workflow` can
+        # be called twice on one Interpreter, and a shared map would carry the
+        # first run's rows into the second — the same aliasing `FakeRepository`
+        # copies its seed to avoid (issue #35).
+        bindings = {}
         for item_id in _flatten_items(self.nodes, wf.get("children", []), self, result,
-                                     root, con, payload):
+                                     root, con, payload, bindings):
             step = self.nodes[item_id]
             span = Span(step["name"], "WorkflowStep", self.clock.now)
             root.children.append(span)
@@ -384,7 +421,7 @@ class Interpreter:
             while True:
                 attempts += 1
                 try:
-                    self._run_step(step, span, con, payload, deadline)
+                    self._run_step(step, span, con, payload, deadline, bindings)
                     last_error = None
                     break
                 except RunError as exc:
@@ -400,10 +437,13 @@ class Interpreter:
                               {"workflow": wf["name"], "step": step["name"]},
                               span.duration_ms)
             result["steps"].append({"step": step["name"], "attempts": attempts,
-                                    "duration_ms": span.duration_ms})
+                                    "duration_ms": span.duration_ms,
+                                    "effects": [self.nodes[c]["kind"]
+                                                for c in step.get("children", [])]})
             if last_error is not None:
                 result["status"] = "failed"
                 result["failed_step"] = step["name"]
+                result["failure_reason"] = str(last_error)
                 self.trace.log("ERROR", "step failed",
                                step=step["name"], reason=str(last_error))
                 if con["rollback"]:
@@ -413,12 +453,15 @@ class Interpreter:
             if deadline is not None and self.clock.now > deadline:
                 result["status"] = "failed"
                 result["failed_step"] = step["name"]
+                result["failure_reason"] = ("deadline exceeded after step %r"
+                                            % step["name"])
                 self.trace.log("ERROR", "deadline exceeded",
                                step=step["name"], deadline_ms=con["timeout_ms"])
                 break
 
         root.end_ms = self.clock.now
         total = root.duration_ms
+        result["bindings"] = bindings
         result["duration_ms"] = total
         result["correlation_id"] = self.trace.correlation_id
         if con["response_slo_ms"] is not None:
@@ -430,15 +473,15 @@ class Interpreter:
         self.trace.metric("workflow.duration_ms", {"workflow": wf["name"]}, total)
         return result
 
-    def _run_step(self, step, span, con, payload, deadline):
+    def _run_step(self, step, span, con, payload, deadline, bindings):
         if deadline is not None and self.clock.now >= deadline:
             raise RunError("deadline exhausted before step %r" % step["name"])
         for child_id in step.get("children", []):
             effect = self.nodes[child_id]
-            self._run_effect(effect, span, con, payload)
+            self._run_effect(effect, span, con, payload, bindings)
         self.clock.advance()
 
-    def _run_effect(self, effect, span, con, payload):
+    def _run_effect(self, effect, span, con, payload, bindings):
         kind = effect["kind"]
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
@@ -449,6 +492,14 @@ class Interpreter:
             row = self.repo.execute(effect["entity"], effect["operation"],
                                     row_key(effect["entity"], payload))
             child.attrs["found"] = row is not None
+            if effect["operation"] in READ_OPS and isinstance(row, dict):
+                # RFC-0011 §G11.2: a completed read binds its row into the
+                # execution scope, last write wins. Only reads bind — create /
+                # update / delete answer with an affected-row count, so there is
+                # no row content to name.
+                entity_node = self.nodes.get(effect["entity"])
+                if entity_node is not None:
+                    bindings[binding_name(entity_node)] = row
             if effect["operation"] == "read" and row is None:
                 self.clock.advance(1)
                 child.end_ms = self.clock.now
