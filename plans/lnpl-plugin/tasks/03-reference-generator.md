@@ -34,7 +34,11 @@
   `PERF_METRICS`, `VALUELESS_PERF`, `ARGUMENT_MECHANISMS`
 - `impl/lnpl/types.py:26` — `SEMANTIC_TYPES`
 - `impl/lnpl/diagnostics.py:35-80` — `CODES`, `ENFORCEMENT`
-- `impl/lnpl/refinements.py:28-66` — `FACET_NAMES`, `CATEGORY_FACETS`, `BASE_CATEGORY`, `PRESETS`
+- `impl/lnpl/refinements.py:28-66` — `FACET_NAMES`, `CATEGORY_FACETS`, `BASE_CATEGORY`, `PRESETS`.
+  **주의: `CATEGORY_FACETS`의 값은 `frozenset`이다.** 정렬 없이 순회해 렌더링하면
+  `PYTHONHASHSEED`에 따라 출력 순서가 달라져 `--check`가 무작위로 실패한다.
+  facet을 찍는 자리에서는 반드시 `sorted(...)`를 거친다. 검증은
+  `PYTHONHASHSEED=1`과 `PYTHONHASHSEED=99`로 각각 `--check`를 돌려 둘 다 exit 0인지 본다.
 - `impl/lnpl/spec.py:252` — `EXPECTATIONS`
 - `impl/tests/test_golden.py:108` — 스크립트를 `subprocess.run([sys.executable, SCRIPT, ...])`로
   구동하는 이 레포의 방식. 그대로 따른다.

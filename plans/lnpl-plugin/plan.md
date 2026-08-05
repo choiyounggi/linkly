@@ -84,6 +84,23 @@ Baseline: HEAD `a90a8f6`, working tree clean(실측). `lnpl.__version__ == "0.2.
   만들어진다(실측). `pip install`을 검증하는 단계가 조용히 막히는 원인이다.
   `.venv`가 없는 워크트리에서 작업한다면 먼저
   `python3.13 -m venv .venv && .venv/bin/pip -q install jsonschema`로 만든다.
+  venv는 **상대경로** `.venv/bin/python`으로 부른다 — 메인 체크아웃의 venv를
+  절대경로로 공유하면 `worktree_escape` 가드레일에 막히고, 막힌 명령은 출력이
+  없어서 "돌지 않은 스위트"를 통과로 오독하게 된다.
+- **전체 스위트를 돌리기 전에 툴체인 환경변수를 export한다.** 없으면 mode B
+  테스트가 무더기로 깨진다(실측: 7 failures / 62 errors). 이것은 코드 문제가
+  아니라 환경 문제이니, 이 상태를 회귀로 오독하지 마라.
+
+  ```
+  export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+  SDK="$(xcrun --show-sdk-path)"
+  export CPATH="$SDK/usr/include"        # homebrew clang은 SDKROOT를 무시한다
+  export LIBRARY_PATH="$SDK/usr/lib"
+  ```
+
+  적용 후 기준선(실측, `a90a8f6` + 계획 문서): **1037 tests, OK**.
+- **스위트 결과는 `grep -E "^(OK|FAILED|Ran )"`로 읽는다.** 테스트가 런타임
+  트레이스를 stdout에 찍기 때문에 `tail`만 쓰면 요약 줄이 묻혀서 보이지 않는다.
 - **런타임 의존 추가 금지.** 기존 의존은 `jsonschema` 하나뿐이다. 플러그인 자산은
   Markdown / JSON / POSIX `sh`만 쓴다.
 - **문서 언어**: 본문 한국어, 식별자·키워드·스키마 필드는 영어(RFC-0007 §4).
