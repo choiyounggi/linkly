@@ -1,0 +1,3 @@
+$ .venv/bin/lnpl openapi qa/cases/batch-report/batch-report.lnpl -o qa/cases/batch-report/evidence/artifacts/final/batch-report.openapi.json  # final source (spec 포함)
+wrote qa/cases/batch-report/evidence/artifacts/final/batch-report.openapi.json (3 path(s))
+exit=0

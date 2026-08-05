@@ -1,0 +1,7 @@
+$ .venv/bin/lnpl diff qa/cases/batch-report/batch-report.lnpl --workdir .claude/tmp/final-diff  # final source (spec 포함)
+PASS 1/4 execution order — 4 step(s): validate order -> load order -> create report -> emit reportBuilt
+PASS 2/4 policy outcome — status=completed
+PASS 3/4 observability signals — 4 effect(s) per step match
+PASS 4/4 masking — no secret marker in either mode's output
+differential: EQUIVALENT
+exit=0

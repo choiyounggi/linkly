@@ -1,0 +1,77 @@
+{
+  "lir_version": "0.1",
+  "module": "probe-b1",
+  "nodes": [
+    {
+      "kind": "Entity",
+      "id": "entity.report",
+      "name": "Report",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "reportDate",
+          "type": "DateTime"
+        },
+        {
+          "name": "orderCount",
+          "type": "Integer"
+        },
+        {
+          "name": "totalAmount",
+          "type": "Money"
+        }
+      ]
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.nightly.batch",
+      "name": "NightlyBatch",
+      "children": [
+        "wf.nightly.batch.step.1",
+        "wf.nightly.batch.step.2",
+        "wf.nightly.batch.step.3"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.nightly.batch.step.1",
+      "name": "validate report",
+      "children": [
+        "wf.nightly.batch.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.nightly.batch.step.1.check",
+      "target": "entity.report",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.nightly.batch.step.2",
+      "name": "schedule daily at midnight"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.nightly.batch.step.3",
+      "name": "create report",
+      "children": [
+        "wf.nightly.batch.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.nightly.batch.step.3.repo",
+      "entity": "entity.report",
+      "operation": "create"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    }
+  ]
+}

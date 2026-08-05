@@ -1,0 +1,25 @@
+# probe-a1 — H-a1: 그럴듯한 집계 동사(sum/count)는 no-op인가
+# 변수 1개: VERB_LEXICON 밖 집계 동사 스텝 2개(sum, count)의 존재.
+# 예측: compile exit 0 + unknown-verb 2건 + IR에 해당 스텝 Effect 없음 + mode A 완주.
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Money
+        placedAt DateTime
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Money
+
+workflow AggregateDaily
+    validate order
+    load order
+    sum order.amount
+    count order
+    create report

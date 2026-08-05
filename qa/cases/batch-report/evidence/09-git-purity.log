@@ -1,0 +1,5 @@
+$ git status --porcelain   # 2026-08-05 21:39:14 KST, HEAD=713a4cb
+?? qa/
+exit=0
+$ git diff --stat  # tracked 변경 없음 증명
+(diff 출력 없음 = tracked 파일 무변경)

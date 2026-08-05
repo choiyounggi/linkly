@@ -1,0 +1,3 @@
+$ .venv/bin/python scripts/validate_ir.py qa/cases/batch-report/evidence/artifacts/probe-b/probe-b3.lir.json
+PASS: qa/cases/batch-report/evidence/artifacts/probe-b/probe-b3.lir.json
+exit=0

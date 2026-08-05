@@ -1,0 +1,3 @@
+$ .venv/bin/python scripts/validate_ir.py qa/cases/batch-report/evidence/artifacts/probe-a/probe-a3.lir.json  # a3-retry3: until 제거, repeat 3 + update만
+PASS: qa/cases/batch-report/evidence/artifacts/probe-a/probe-a3.lir.json
+exit=0

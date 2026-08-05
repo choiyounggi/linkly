@@ -1,0 +1,109 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "shorten API",
+    "version": "0.1.0",
+    "description": "Generated from Semantic IR (lir_version 0.1). Do not edit by hand."
+  },
+  "paths": {
+    "/shorten-service/shorten": {
+      "post": {
+        "operationId": "shorten_service_shorten",
+        "summary": "Shorten workflow",
+        "description": "Steps: validate input -> authorize owner -> create link -> cache link -> emit linkCreated -> return slug",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          },
+          "401": {
+            "description": "authentication failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Link"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-response-slo-ms": 40,
+        "x-timeout-ms": 2000
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ClickCount": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "Slug": {
+        "type": "string",
+        "pattern": "^[a-z0-9-]{1,64}$",
+        "maxLength": 64
+      },
+      "URL": {
+        "type": "string",
+        "pattern": "^https?://[^\\s]+$",
+        "maxLength": 2048
+      },
+      "Link": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slug": {
+            "$ref": "#/components/schemas/Slug"
+          },
+          "target": {
+            "$ref": "#/components/schemas/URL"
+          },
+          "owner": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clicks": {
+            "$ref": "#/components/schemas/ClickCount"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "slug",
+          "target",
+          "owner",
+          "clicks",
+          "createdAt"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}

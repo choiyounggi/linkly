@@ -1,0 +1,3 @@
+$ .venv/bin/lnpl compile qa/cases/batch-report/probes/probe-a2.lnpl -o qa/cases/batch-report/evidence/artifacts/probe-a/probe-a2.lir.json  # retry4 (entity renamed to single-word Report)
+wrote qa/cases/batch-report/evidence/artifacts/probe-a/probe-a2.lir.json (10 nodes)
+exit=0

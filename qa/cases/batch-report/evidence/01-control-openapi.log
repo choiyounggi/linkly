@@ -1,0 +1,3 @@
+$ .venv/bin/lnpl openapi examples/shorten.lnpl -o qa/cases/batch-report/evidence/artifacts/control/shorten.openapi.json
+wrote qa/cases/batch-report/evidence/artifacts/control/shorten.openapi.json (1 path(s))
+exit=0
