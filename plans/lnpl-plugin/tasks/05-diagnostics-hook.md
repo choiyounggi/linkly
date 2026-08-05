@@ -31,6 +31,26 @@
 **레포의 어떤 `examples/*.lnpl`도 진단 0건이 아니다**(셋 다 경고를 낸다). 그래서
 "깨끗한 파일 → exit 0" 테스트는 소스를 직접 만들어야 한다.
 
+## 선행 조건 — `lnpl` 콘솔 스크립트가 venv에 있어야 한다
+
+훅은 `command -v lnpl`로 CLI를 찾는다. 테스트는 `<repo>/.venv/bin`을 PATH 앞에
+붙이는데, venv를 `python3.13 -m venv .venv && pip install jsonschema`로만 만들면
+거기에 `lnpl`이 **없다**. 그러면 훅이 "CLI 없음" 분기로 빠져 진단 테스트가 전부
+엉뚱하게 실패한다.
+
+Step 1 전에 반드시:
+
+```bash
+.venv/bin/pip -q install .
+```
+
+Task 01의 `pyproject.toml`이 `lnpl = "lnpl.cli:main"`을 선언하므로 이 한 줄이
+`.venv/bin/lnpl`을 만든다. 확인:
+
+```bash
+ls -l .venv/bin/lnpl && .venv/bin/lnpl --help >/dev/null && echo "console script OK"
+```
+
 ## Steps
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
