@@ -9,6 +9,7 @@ import json
 import os
 import sys
 
+from .diagnostics import format_lines
 from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import LexError
 from .lower import LowerError, lower
@@ -46,12 +47,13 @@ def compile_source(path):
 
 
 def _compile(path):
-    """Returns (ir_document, decls, module_name)."""
+    """Returns (ir_document, decls, module_name, diagnostics)."""
     with open(path, encoding="utf-8") as fh:
         source = fh.read()
     module_name = os.path.splitext(os.path.basename(path))[0]
     decls = parse(source)
-    return lower(decls, module_name).to_document(), decls, module_name
+    module = lower(decls, module_name)
+    return module.to_document(), decls, module_name, module.diagnostics
 
 
 def _dump(document):
@@ -59,8 +61,20 @@ def _dump(document):
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
 
 
+def _emit_diagnostics(diagnostics):
+    """Show diagnostics on stderr — the one place any command prints them.
+
+    stderr, not stdout: `compile` without `-o` writes the IR document to stdout,
+    and a warning mixed into it would corrupt the artifact. The lines themselves
+    come from `diagnostics.format_lines`, so `compile` and `run` cannot drift
+    into two different reports of the same fact.
+    """
+    for line in format_lines(diagnostics):
+        print(line, file=sys.stderr)
+
+
 def cmd_compile(args):
-    doc = compile_source(args.source)
+    doc, _, _, diagnostics = _compile(args.source)
     text = _dump(doc)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
@@ -68,11 +82,12 @@ def cmd_compile(args):
         print("wrote %s (%d nodes)" % (args.output, len(doc["nodes"])))
     else:
         sys.stdout.write(text)
+    _emit_diagnostics(diagnostics)
     return 0
 
 
 def cmd_run(args):
-    doc = compile_source(args.source)
+    doc, _, _, diagnostics = _compile(args.source)
     if args.payload:
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -82,17 +97,23 @@ def cmd_run(args):
     workflows = [n for n in doc["nodes"] if n["kind"] == "Workflow"]
     if not workflows:
         print("no workflow to run", file=sys.stderr)
+        # A module can declare `security jwt` and never run a step; the
+        # declaration is unenforced either way, so the report still goes out.
+        _emit_diagnostics(diagnostics)
         return 1
     target = args.workflow or workflows[0]["id"]
 
     rows = _repo_rows(doc, payload, target, empty=args.no_row)
     interp = Interpreter(doc, repo_rows=rows)
     result = interp.run_workflow(target, payload)
+    # Compile-time and run-time findings are one report, not two.
+    diagnostics.extend(interp.diagnostics)
 
     if args.json:
         sys.stdout.write(_dump({"result": result, "trace": interp.trace.to_dict()}))
     else:
         _print_human(result, interp)
+    _emit_diagnostics(diagnostics)
     return 0 if result["status"] == "completed" else 1
 
 
@@ -119,7 +140,12 @@ def _print_human(result, interp):
 
 
 def cmd_spec(args):
-    doc, decls, module_name = _compile(args.source)
+    # The diagnostics matter most here: `spec` is the command whose job is
+    # verification, so a step that derives no Effect (#36) is exactly what its
+    # operator needs told. `compile` and `run` already report them; this dropped
+    # the accumulator on the floor.
+    doc, decls, module_name, diagnostics = _compile(args.source)
+    _emit_diagnostics(diagnostics)
     manifest = extract(decls, module_name)
     if not manifest["cases"]:
         print("no `spec` block found in %s" % args.source, file=sys.stderr)
