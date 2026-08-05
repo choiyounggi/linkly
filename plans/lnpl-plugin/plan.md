@@ -79,6 +79,11 @@ Baseline: HEAD `a90a8f6`, working tree clean(실측). `lnpl.__version__ == "0.2.
 
 - **Python**: `>=3.9` 선언, 개발 venv는 `.venv`(3.13.1). 테스트는
   `PYTHONPATH=impl .venv/bin/python -m unittest ...`로 돌린다.
+- **venv를 새로 만들 때는 반드시 `python3.13`을 쓴다.** 이 머신의 `python3`는
+  3.14.6이고 `python3 -m venv`가 `ensurepip`에서 실패해 **pip 없는 venv**가
+  만들어진다(실측). `pip install`을 검증하는 단계가 조용히 막히는 원인이다.
+  `.venv`가 없는 워크트리에서 작업한다면 먼저
+  `python3.13 -m venv .venv && .venv/bin/pip -q install jsonschema`로 만든다.
 - **런타임 의존 추가 금지.** 기존 의존은 `jsonschema` 하나뿐이다. 플러그인 자산은
   Markdown / JSON / POSIX `sh`만 쓴다.
 - **문서 언어**: 본문 한국어, 식별자·키워드·스키마 필드는 영어(RFC-0007 §4).

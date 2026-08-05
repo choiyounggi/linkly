@@ -118,7 +118,7 @@ Expected: PASS — 기존 CLI 테스트 전부 + 신규 4건.
 - [ ] **Step 5: 설치된 스크립트에서도 동작하는지 확인한다**
 
 ```bash
-mkdir -p .claude/tmp/verchk && python3 -m venv .claude/tmp/verchk/venv && \
+mkdir -p .claude/tmp/verchk && python3.13 -m venv .claude/tmp/verchk/venv && \
 .claude/tmp/verchk/venv/bin/pip -q install . && \
 .claude/tmp/verchk/venv/bin/lnpl --version; echo "exit=$?"; \
 rm -rf .claude/tmp/verchk lnpl.egg-info

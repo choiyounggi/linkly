@@ -130,7 +130,7 @@ Expected: PASS (6 tests)
 
 ```bash
 mkdir -p .claude/tmp/pkgtest && \
-python3 -m venv .claude/tmp/pkgtest/venv && \
+python3.13 -m venv .claude/tmp/pkgtest/venv && \
 .claude/tmp/pkgtest/venv/bin/pip -q install . && \
 printf 'capability postgres\n\nentity Note\n    field\n        id UUID\n\nworkflow Save\n    validate input\n    create note\n' > .claude/tmp/pkgtest/probe.lnpl && \
 cd .claude/tmp/pkgtest && ./venv/bin/lnpl compile probe.lnpl | head -5; echo "exit=$?"
