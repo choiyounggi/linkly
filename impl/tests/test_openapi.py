@@ -74,7 +74,7 @@ refine Handle of Text
 entity Link
     field
         slug Slug
-        target Url
+        target URL
         hits PositiveInteger
         owner Handle
         alias Handle
@@ -221,7 +221,7 @@ class TestRefinementSchemas(unittest.TestCase):
              "maxLength": 64})
         self.assertEqual(
             _refinement_schema({"kind": "Refinement", "id": "refine.url",
-                                "name": "Url", "base": "Text",
+                                "name": "URL", "base": "Text",
                                 "facets": {"pattern": r"^https?://[^\s]+$",
                                            "maxLength": 2048}}),
             {"type": "string", "pattern": r"^https?://[^\s]+$",
@@ -774,7 +774,7 @@ class TestUninhabitedRefusals(unittest.TestCase):
         # The check must not over-refuse: every refinement the real example
         # declares still composes.
         self.assertEqual(sorted(schemas_for(SHORTEN_SRC)),
-                         ["Handle", "Link", "PositiveInteger", "Slug", "Url"])
+                         ["Handle", "Link", "PositiveInteger", "Slug", "URL"])
 
 
 def _all_refs(obj):
@@ -807,7 +807,7 @@ class TestRefinementFields(unittest.TestCase):
         self.assertEqual(self.schemas["Slug"],
                          {"type": "string", "pattern": r"^[a-z0-9-]{1,64}$",
                           "maxLength": 64})
-        self.assertEqual(self.schemas["Url"],
+        self.assertEqual(self.schemas["URL"],
                          {"type": "string", "pattern": r"^https?://[^\s]+$",
                           "maxLength": 2048})
         self.assertEqual(self.schemas["PositiveInteger"],
@@ -857,7 +857,7 @@ class TestRefResolution(unittest.TestCase):
         self.assertEqual(sorted(refs), [
             "#/components/schemas/Handle", "#/components/schemas/Handle",
             "#/components/schemas/Link", "#/components/schemas/PositiveInteger",
-            "#/components/schemas/Slug", "#/components/schemas/Url"])
+            "#/components/schemas/Slug", "#/components/schemas/URL"])
         for ref in refs:
             self.assertTrue(ref.startswith("#/components/schemas/"), ref)
             self.assertIn(ref.rsplit("/", 1)[1], spec["components"]["schemas"])

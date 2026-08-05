@@ -24,7 +24,7 @@
     {
       "kind": "Refinement",
       "id": "refine.url",
-      "name": "Url",
+      "name": "URL",
       "base": "Text",
       "facets": {
         "pattern": "^https?://[^\\s]+$",
@@ -64,7 +64,7 @@
         },
         {
           "name": "target",
-          "type": "Url"
+          "type": "URL"
         },
         {
           "name": "owner",

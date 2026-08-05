@@ -57,7 +57,7 @@
         "pattern": "^[a-z0-9-]{1,64}$",
         "maxLength": 64
       },
-      "Url": {
+      "URL": {
         "type": "string",
         "pattern": "^https?://[^\\s]+$",
         "maxLength": 2048
@@ -73,7 +73,7 @@
             "$ref": "#/components/schemas/Slug"
           },
           "target": {
-            "$ref": "#/components/schemas/Url"
+            "$ref": "#/components/schemas/URL"
           },
           "owner": {
             "type": "string",

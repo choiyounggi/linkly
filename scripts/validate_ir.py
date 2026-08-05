@@ -45,7 +45,7 @@ GOLDEN_PATH = REPO_ROOT / "examples" / "login.lir.json"
 # 골든 예제에는 Refinement 노드가 없어서 그것을 변형해 만드는 부정 케이스로는
 # 새 표기의 수용/거부를 한 건도 증명할 수 없다. `examples/`는 다른 태스크가
 # 소유하므로 픽스처를 게이트 옆에 인라인으로 둔다.
-# 세 preset(Url/Slug/PositiveInteger)을 전부 실어 A.6.4의 emit-on-use 자기완결성
+# 세 preset(URL/Slug/PositiveInteger)을 전부 실어 A.6.4의 emit-on-use 자기완결성
 # — 소비자가 컴파일러 내장표 없이 문서 안에서 이름을 해소할 수 있음 — 을 보인다.
 REFINEMENT_FIXTURE = {
     "lir_version": "0.1",
@@ -61,7 +61,7 @@ REFINEMENT_FIXTURE = {
         {
             "kind": "Refinement",
             "id": "refine.url",
-            "name": "Url",
+            "name": "URL",
             "base": "Text",
             "facets": {"pattern": "^https?://[^\\s]+$", "maxLength": 2048},
         },
@@ -78,7 +78,7 @@ REFINEMENT_FIXTURE = {
             "name": "Link",
             "fields": [
                 {"name": "slug", "type": "Slug"},
-                {"name": "target", "type": "Url"},
+                {"name": "target", "type": "URL"},
                 {"name": "hits", "type": "PositiveInteger"},
             ],
         },

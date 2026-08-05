@@ -83,7 +83,7 @@ class TestIdDerivation(unittest.TestCase):
         self.assertEqual(derive_id("UserCreated", "Event"), "event.user.created")
         self.assertEqual(derive_id("LoginService", "Service"), "svc.login")
         self.assertEqual(derive_id("ClickCount", "Refinement"), "refine.click.count")
-        self.assertEqual(derive_id("Url", "Refinement"), "refine.url")
+        self.assertEqual(derive_id("URL", "Refinement"), "refine.url")
         self.assertEqual(derive_id("postgres", "Capability"), "cap.postgres")
 
     def test_strips_segment_that_repeats_the_kind(self):
@@ -397,7 +397,7 @@ class TestRefinementLowering(unittest.TestCase):
     def test_refinement_id_comes_from_derive_id(self):
         # A.6.5: no new id rule — the existing R2 derivation plus the `refine`
         # kind prefix. These three are the ids A.6.4 fixes for the presets.
-        self.assertEqual(derive_id("Url", "Refinement"), "refine.url")
+        self.assertEqual(derive_id("URL", "Refinement"), "refine.url")
         self.assertEqual(derive_id("Slug", "Refinement"), "refine.slug")
         self.assertEqual(derive_id("PositiveInteger", "Refinement"),
                          "refine.positive.integer")
@@ -491,7 +491,7 @@ class TestRefinementLowering(unittest.TestCase):
         # A.6.4: the three preset names are reserved and cannot be redeclared,
         # even to the identical content. This is what keeps A.6.1's resolution
         # order deterministic.
-        for name in ("Url", "Slug", "PositiveInteger"):
+        for name in ("URL", "Slug", "PositiveInteger"):
             with self.assertRaises(LowerError) as ctx:
                 ir("refine %s of Text\n    maxLength 8\n"
                    "entity L\n    field\n        s Text\n" % name)
@@ -788,20 +788,20 @@ class TestTypeResolution(unittest.TestCase):
     """
 
     def test_preset_is_emitted_when_a_field_uses_it(self):
-        src = "entity Link\n    field\n        slug Slug\n        target Url\n"
+        src = "entity Link\n    field\n        slug Slug\n        target URL\n"
         nodes = by_id(ir(src))
         self.assertEqual(nodes["refine.slug"], {
             "kind": "Refinement", "id": "refine.slug", "name": "Slug",
             "base": "Text",
             "facets": {"pattern": "^[a-z0-9-]{1,64}$", "maxLength": 64}})
         self.assertEqual(nodes["refine.url"], {
-            "kind": "Refinement", "id": "refine.url", "name": "Url",
+            "kind": "Refinement", "id": "refine.url", "name": "URL",
             "base": "Text",
             "facets": {"pattern": r"^https?://[^\s]+$", "maxLength": 2048}})
         # the field keeps the NAME, not the node id
         self.assertEqual(nodes["entity.link"]["fields"],
                          [{"name": "slug", "type": "Slug"},
-                          {"name": "target", "type": "Url"}])
+                          {"name": "target", "type": "URL"}])
 
     def test_positive_integer_preset_emits_its_rfc_value(self):
         src = "entity Link\n    field\n        hits PositiveInteger\n"
@@ -860,9 +860,9 @@ class TestTypeResolution(unittest.TestCase):
                          ["refine.slug"])
 
     def test_preset_emission_follows_first_use_order(self):
-        src = ("entity Link\n    field\n        target Url\n        slug Slug\n")
+        src = ("entity Link\n    field\n        target URL\n        slug Slug\n")
         self.assertEqual([n["name"] for n in refinements_of(ir(src))],
-                         ["Url", "Slug"])
+                         ["URL", "Slug"])
 
     # ---- A.7 ⓐ: every fields[].type resolves ----
 
@@ -884,6 +884,15 @@ class TestTypeResolution(unittest.TestCase):
         with self.assertRaises(LowerError) as ctx:
             ir("entity L\n    field\n        s Slugg\n")
         self.assertIn("RFC-0001 A.6.1", str(ctx.exception))
+
+    def test_the_old_url_spelling_no_longer_resolves(self):
+        # The preset is `URL` (issue #31). `Url` was the shipped misspelling,
+        # forced by a since-fixed `split_pascal` defect that derived
+        # `refine.u.r.l`; it is a plain unknown name now, not an alias.
+        with self.assertRaises(LowerError) as ctx:
+            ir("entity L\n    field\n        target Url\n")
+        self.assertIn("RFC-0001 A.6.1", str(ctx.exception))
+        self.assertIn("Url", str(ctx.exception))
 
     def test_base_type_field_still_resolves(self):
         src = "entity User\n    field\n        id UUID\n        email Email\n"
@@ -960,7 +969,7 @@ entity Link
         id UUID
         code Code
         slug Slug
-        target Url
+        target URL
         hits PositiveInteger
 """
 
@@ -978,7 +987,7 @@ entity Link
         # one declared + three presets, so the document resolves every field
         # name without reading the compiler's built-in table (A.6.4).
         self.assertEqual([n["name"] for n in refinements_of(self._document())],
-                         ["Code", "Slug", "Url", "PositiveInteger"])
+                         ["Code", "Slug", "URL", "PositiveInteger"])
 
     def test_each_refinement_node_has_exactly_the_required_fields(self):
         # The schema sets additionalProperties:false on nodeRefinement; pin the

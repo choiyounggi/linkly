@@ -4,13 +4,13 @@
 # Text로 낮춰야 했다. 이 파일이 그 강등을 되돌린 결과다.
 #
 # refinement 두 가지 표면을 한 파일에서 보여준다:
-#   프리셋   — Slug/Url. 선언 없이 쓰면 A.6.4 emit-on-use로 refine.slug /
+#   프리셋   — Slug/URL. 선언 없이 쓰면 A.6.4 emit-on-use로 refine.slug /
 #              refine.url 노드가 문서에 실려 나간다 (impl/lnpl/refinements.py:60).
 #   선언     — ClickCount. 프리셋이 못 덮는 자리다. PositiveInteger는 min 1이라
 #              클릭 0회인 새 링크를 거부한다.
 #
 # 기계(mechanism)인 선언과 서술(documentation)인 선언을 구분한다:
-#   기계 — slug Slug / target Url / clicks ClickCount(validate input이 세 facet을
+#   기계 — slug Slug / target URL / clicks ClickCount(validate input이 세 facet을
 #          모두 집행한다), performance/cache 10m(CacheAccess set은 TTL 없이
 #          RunError), performance/response < 40ms(측정 35ms)
 #   서술 — authorize owner(선언만 되고 집행 없음 — issue #38),
@@ -32,7 +32,7 @@ entity Link
     field
         id UUID
         slug Slug
-        target Url
+        target URL
         owner UUID
         clicks ClickCount
         createdAt DateTime

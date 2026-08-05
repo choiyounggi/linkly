@@ -27,7 +27,7 @@ entity Link
     field
         id UUID
         slug Slug
-        target Url
+        target URL
         createdAt DateTime
 event LinkCreated on Link create
 service ShortenService
@@ -74,7 +74,7 @@ class TestSamplePayload(unittest.TestCase):
     def test_samples_pass_their_own_semantic_type_validation(self):
         # A derived value must be a *valid* instance of its field's type, or the
         # fixture would fail the very validation it exists to satisfy. With
-        # `slug Slug` / `target Url` that now means satisfying the refinement's
+        # `slug Slug` / `target URL` that now means satisfying the refinement's
         # facets, not just the base type.
         doc = shorten_doc()
         payload = shorten_payload(doc)

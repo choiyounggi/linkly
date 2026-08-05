@@ -49,7 +49,7 @@ entity Thing
         id UUID
 """
 
-# The shortener probe: `Slug` and `Url` are built-in presets, so lowering emits
+# The shortener probe: `Slug` and `URL` are built-in presets, so lowering emits
 # their Refinement nodes on use (A.6.4 emit-on-use). `validate slug` copies the
 # field's type name into `Validation.rule`, which is the interpreter's input.
 SHORTENER = """
@@ -58,7 +58,7 @@ entity Link
     field
         id UUID
         slug Slug
-        target Url
+        target URL
 service ShortenService
     policy
         retry 0
@@ -222,7 +222,7 @@ class TestPresetAndDeclarationTakeTheSamePath(unittest.TestCase):
 
     def test_preset_url_is_enforced(self):
         with self.assertRaises(RunError) as ctx:
-            check_semantic_type("Url", "nope", "target", refs(SHORTENER))
+            check_semantic_type("URL", "nope", "target", refs(SHORTENER))
         self.assertIn("pattern", str(ctx.exception))
 
     def test_declared_refinement_is_enforced_identically(self):
@@ -563,7 +563,7 @@ entity Thing
 
 
 class TestRefinementWorkflowEndToEnd(unittest.TestCase):
-    """A module whose entity uses `slug Slug` / `target Url` runs to completion
+    """A module whose entity uses `slug Slug` / `target URL` runs to completion
     on nothing but its own derived fixture. This is the shape task 5's golden
     URL-shortener example needs; it is written inline here rather than against
     impl/tests/test_fixture.py, which task 5 owns."""

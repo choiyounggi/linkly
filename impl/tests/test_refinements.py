@@ -89,8 +89,8 @@ class TestPresets(unittest.TestCase):
     """The three built-ins (A.6.4) — exact values, and no shared mutable state."""
 
     def test_preset_values_match_the_rfc(self):
-        self.assertEqual(set(PRESETS), {"Url", "Slug", "PositiveInteger"})
-        self.assertEqual(PRESETS["Url"],
+        self.assertEqual(set(PRESETS), {"URL", "Slug", "PositiveInteger"})
+        self.assertEqual(PRESETS["URL"],
                          {"base": "Text",
                           "facets": {"pattern": r"^https?://[^\s]+$",
                                      "maxLength": 2048}})
