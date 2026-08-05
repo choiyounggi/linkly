@@ -23,6 +23,18 @@
 (없으면 버전 비교만 건너뛴다). 이렇게 두면 Task 순서가 순환하지 않고, 사용자가
 플러그인 없이 스크립트만 떼어 써도 동작한다.
 
+## 선행 조건 — `lnpl` 콘솔 스크립트가 venv에 있어야 한다
+
+`run_doctor`는 `<repo>/.venv/bin`을 PATH 앞에 붙이고, `doctor.sh`는 `command -v lnpl`로
+CLI를 찾는다. venv에 `jsonschema`만 넣으면 `lnpl`이 없어서 doctor가 "CLI 없음" 분기로
+빠지고, 정상 경로 테스트가 실제 원인과 무관하게 실패한다(Task 05에서 실측된 함정).
+
+Step 1 전에 반드시:
+
+```bash
+.venv/bin/pip -q install . && ls -l .venv/bin/lnpl
+```
+
 ## References
 - `impl/lnpl/cli.py` — `--version` 출력 형식 `lnpl <version>` (Task 02)
 - `impl/lnpl/__init__.py:12` — `__version__`

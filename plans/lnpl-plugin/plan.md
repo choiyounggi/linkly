@@ -99,6 +99,11 @@ Baseline: HEAD `a90a8f6`, working tree clean(실측). `lnpl.__version__ == "0.2.
   ```
 
   적용 후 기준선(실측, `a90a8f6` + 계획 문서): **1037 tests, OK**.
+- **Task 01 이후로는 venv에 `lnpl` 콘솔 스크립트가 있어야 스위트가 통과한다.**
+  `.venv/bin/pip install .`을 한 번 돌린다. 훅·doctor 테스트가 `<repo>/.venv/bin`을
+  PATH에 얹고 `command -v lnpl`로 CLI를 찾기 때문이다. 없으면 훅이 "CLI 없음"
+  분기로 **우아하게** 빠져서, 실패가 조용하고 원인과 무관해 보인다(실측: 3건 실패).
+  `impl/lnpl/`을 고친 뒤에는 `pip install --force-reinstall --no-deps .`로 재설치한다.
 - **스위트 결과는 `grep -E "^(OK|FAILED|Ran )"`로 읽는다.** 테스트가 런타임
   트레이스를 stdout에 찍기 때문에 `tail`만 쓰면 요약 줄이 묻혀서 보이지 않는다.
 - **런타임 의존 추가 금지.** 기존 의존은 `jsonschema` 하나뿐이다. 플러그인 자산은

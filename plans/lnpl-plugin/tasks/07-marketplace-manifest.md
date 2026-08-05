@@ -280,6 +280,11 @@ Expected: `claude plugin validate`가 있으면 그 결과를, 없으면 `jq`가
 
 훅이 동작하려면 `lnpl`이 PATH에 있어야 한다 — `pip install .`.
 자세한 내용은 [plugins/lnpl/README.md](plugins/lnpl/README.md).
+
+> 개발자용: 테스트 스위트도 `.venv`에 `lnpl` 콘솔 스크립트가 있어야 전부 통과한다
+> (훅·doctor 테스트가 `command -v lnpl`로 CLI를 찾는다). venv를 만든 뒤
+> `.venv/bin/pip install .`을 한 번 돌려라. `impl/lnpl/`을 고친 뒤에는
+> `pip install --force-reinstall --no-deps .`로 재설치한다.
 ````
 
 - [ ] **Step 9: 전체 스위트 무회귀 + 골든 무변경 확인**
