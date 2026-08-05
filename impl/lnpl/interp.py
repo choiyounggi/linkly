@@ -14,6 +14,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
+from .diagnostics import Diagnostics
 from .refinements import BASE_CATEGORY
 from .repo_policy import READ_OPS, binding_name, row_key
 from .types import SEMANTIC_TYPES
@@ -331,6 +332,11 @@ class Interpreter:
         # (§Open Questions 3 — transactional outbox or otherwise); the contract it
         # fixes is at-least-once with a dedupable id, which is what this records.
         self.outbox = []
+        # Runtime diagnostics (issue #38). Deliberately not `trace.log`: mode A/B
+        # equivalence covers log levels (docs/ROADMAP.md Phase 2) and mode B
+        # cannot produce these, so routing them through the trace would make the
+        # two modes disagree about a signal the contract says must match.
+        self.diagnostics = Diagnostics()
 
     # ---- constraint lookup -------------------------------------------------
     def _service_for(self, workflow_id):
@@ -515,6 +521,14 @@ class Interpreter:
                 self.cache.invalidate(key)
         elif kind == "Authorization":
             child.attrs["requirement"] = effect.get("requirement")
+            # Recording the requirement is all Phase 1 does with it. The step
+            # then succeeds, which reads exactly like an authorization that
+            # passed — issue #38's sharpest edge, so it leaves a diagnostic.
+            self.diagnostics.add(
+                code="authorization-not-verified", severity="warning",
+                where=effect["id"], subject=effect.get("requirement") or "unspecified",
+                message="the authorization requirement is recorded on the trace "
+                        "and never checked; this step cannot deny anything")
         elif kind == "NetworkCall":
             child.attrs["target"] = effect.get("target")
         elif kind == "EventEmit":

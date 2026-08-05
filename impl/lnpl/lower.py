@@ -13,10 +13,15 @@ R1 — Effect derivation (A.4-3). A step line's first token is a Verb (the gramm
   guarantees it), so deriving effects is a *lookup in a closed lexicon*, not
   inference. Authors keep declaring intent; the mapping stays deterministic.
   A verb outside the lexicon derives no Effect — silence, never a guess.
+  The *derivation* stays silent; the compiler does not. Issue #36 was not R1 but
+  the step after it: "derives no Effect" was also spelled "says nothing", so a
+  step that does nothing looked exactly like a step that works. Deriving nothing
+  now emits an `unknown-verb` diagnostic, and the IR is unchanged.
 """
 
 import re
 
+from .diagnostics import ENFORCED, ENFORCEMENT, Diagnostics
 from .lexer import COMPARATORS, is_duration
 from .refinements import (BASE_CATEGORY, FACET_NAMES, PRESETS, facets_for_base,
                           preset)
@@ -83,8 +88,10 @@ NUMBER_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?$")    # Number
 WORD_RE = re.compile(r"^[a-z][a-zA-Z0-9]*$")        # Word
 
 POLICY_NAMES = ("retry", "rollback", "timeout", "parallel")
+SECURITY_MECHANISMS = ("jwt", "role", "encrypt")
 PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
+ARGUMENT_MECHANISMS = ("role", "encrypt")
 
 
 class LowerError(Exception):
@@ -128,6 +135,10 @@ class Module:
         self.name = name
         self._nodes = {}
         self._order = []
+        # Compile-time diagnostics for this module. Deliberately beside the node
+        # table, not in it: `to_document()` is the program's meaning and stays
+        # byte-identical, so the golden `.lir.json` files never move.
+        self.diagnostics = Diagnostics()
 
     def add(self, node):
         nid = node["id"]
@@ -192,18 +203,42 @@ def _parse_perf_line(tokens, lineno):
     return {"metric": metric, "value": tokens[1]}
 
 
+def _declaration_diagnostics(diagnostics, clause, names, where):
+    """Report every declaration the runtime does not actually enforce (#38).
+
+    The status comes from `diagnostics.ENFORCEMENT`, which is the canonical
+    matrix — so a claim that something is enforced has to be made there (and
+    survive `test_enforcement_matrix.py`), not decided here per call site.
+
+    A name absent from the matrix is skipped rather than guessed at: the parsers
+    above already reject anything outside the closed sets, so an absent key means
+    the matrix and the language drifted, which is the drift gate's failure to
+    report, not a new error to invent at compile time.
+    """
+    for name in names:
+        entry = ENFORCEMENT.get((clause, name))
+        if entry is None or entry[0] == ENFORCED:
+            continue
+        status, note = entry
+        code = ("declared-measured-only" if status == "measured"
+                else "declared-not-enforced")
+        diagnostics.add(code=code, severity="warning", where=where,
+                        subject="%s %s" % (clause, name),
+                        message="declared but %s: %s" % (status, note))
+
+
 def _parse_security_line(tokens, lineno):
     head = tokens[0]
-    if head == "jwt":
-        if len(tokens) != 1:
-            raise LowerError("line %d: `jwt` takes no argument" % lineno)
-        return "jwt"
-    if head in ("role", "encrypt"):
+    if head not in SECURITY_MECHANISMS:
+        raise LowerError("line %d: unknown security mechanism %r "
+                         "(allowed: jwt, role <r>, encrypt <field>)" % (lineno, head))
+    if head in ARGUMENT_MECHANISMS:
         if len(tokens) != 2:
             raise LowerError("line %d: `%s` needs one argument" % (lineno, head))
         return head + " " + tokens[1]
-    raise LowerError("line %d: unknown security mechanism %r "
-                     "(allowed: jwt, role <r>, encrypt <field>)" % (lineno, head))
+    if len(tokens) != 1:
+        raise LowerError("line %d: `%s` takes no argument" % (lineno, head))
+    return head
 
 
 def _number(tok):
@@ -225,6 +260,25 @@ def _enum_value(tok, lineno):
                      % (lineno, tok))
 
 
+def _check_enum_member(value, base, lineno):
+    """RFC-0011 A.6.3 — a member must be a value the base can actually hold.
+
+    `Integer` is narrower than its category: `enum` enumerates the admissible
+    values, so a member with a fractional part is dead. `min`/`max` are bounds
+    and stay category-wide — `min 1.5` on an Integer still admits every int >= 2.
+    """
+    if BASE_CATEGORY[base] == "text":
+        ok, form = isinstance(value, str), "a Word"
+    elif base == "Integer":
+        ok, form = isinstance(value, int), "a Number with no fractional part"
+    else:                       # Decimal -- the only other base admitting enum
+        ok, form = isinstance(value, (int, float)), "a Number"
+    if not ok:
+        raise LowerError("line %d: enum value %r cannot be a value of base %r "
+                         "(allowed: %s — RFC-0011 A.6.3)"
+                         % (lineno, value, base, form))
+
+
 def _parse_facet_line(tokens, lineno, allowed, base):
     """One FacetLine -> (name, value). RFC-0001 A.6.3 / RFC-0002 §Full grammar.
 
@@ -244,7 +298,10 @@ def _parse_facet_line(tokens, lineno, allowed, base):
     if name == "enum":
         if len(tokens) < 2:
             raise LowerError("line %d: `enum` needs at least one value" % lineno)
-        return name, [_enum_value(t, lineno) for t in tokens[1:]]
+        values = [_enum_value(t, lineno) for t in tokens[1:]]
+        for value in values:
+            _check_enum_member(value, base, lineno)
+        return name, values
     if len(tokens) != 2:
         raise LowerError("line %d: `%s` needs exactly one value" % (lineno, name))
     if name == "pattern":
@@ -295,8 +352,9 @@ def _lower_refine(decl, taken):
             % (decl.lineno, base))
     if decl.name in taken:
         raise LowerError(
-            "line %d: %r is already a semantic type, a built-in preset, or a "
-            "refinement declared in this module (RFC-0001 A.6.2)"
+            "line %d: %r is already a semantic type, a built-in preset, an "
+            "entity, or a refinement declared in this module "
+            "(RFC-0001 A.6.2, RFC-0011 A.7)"
             % (decl.lineno, decl.name))
     allowed = facets_for_base(base)
     facets = {}
@@ -340,7 +398,11 @@ def lower(decls, module_name):
 
     # ---- Refinements (RFC-0001 A.6). A declared block becomes a node whether or
     # not a field names it; the built-in presets are appended on use, below.
-    taken = set(BASE_CATEGORY) | set(PRESETS)
+    # RFC-0011 A.7 (e): an entity and a refinement land in one
+    # `components/schemas` name space, so a collision must fail here rather than
+    # at generation time. `by_kind` is built above, so an entity declared later
+    # in the file than the `refine` still takes its name.
+    taken = set(BASE_CATEGORY) | set(PRESETS) | {d.name for d in by_kind["entity"]}
     refine_nodes = []
     refined_names = set()
     used_presets = []
@@ -391,16 +453,24 @@ def lower(decls, module_name):
             rules = [_parse_policy_line(l.tokens, l.lineno) for l in d.clauses["policy"]]
             constraint_nodes.append(_node("Policy", pid, rules=rules))
             constraints.append(pid)
+            _declaration_diagnostics(mod.diagnostics, "policy",
+                                     [r["name"] for r in rules], pid)
         if "security" in d.clauses:
             secid = ".".join([KIND_PREFIX["Security"]] + segs)
             mechs = [_parse_security_line(l.tokens, l.lineno) for l in d.clauses["security"]]
             constraint_nodes.append(_node("Security", secid, mechanisms=mechs))
             constraints.append(secid)
+            # `role admin` is the same declaration as `role owner` as far as
+            # enforcement goes, so the head token is the subject.
+            _declaration_diagnostics(mod.diagnostics, "security",
+                                     [m.split(" ", 1)[0] for m in mechs], secid)
         if "performance" in d.clauses:
             perfid = ".".join([KIND_PREFIX["Performance"]] + segs)
             budgets = [_parse_perf_line(l.tokens, l.lineno) for l in d.clauses["performance"]]
             constraint_nodes.append(_node("Performance", perfid, budgets=budgets))
             constraints.append(perfid)
+            _declaration_diagnostics(mod.diagnostics, "performance",
+                                     [b["metric"] for b in budgets], perfid)
         # Capability attribution (formerly the provisional R3). A service takes the
         # capabilities its own `database` clause names; with no such clause, a
         # single-service module attributes all of them, and a multi-service module
@@ -482,7 +552,7 @@ def lower(decls, module_name):
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, registry)
+        ctx = _WfContext(wid, registry, mod.diagnostics)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None))
         for node in ctx.emitted:
@@ -502,9 +572,10 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, registry):
+    def __init__(self, wid, registry, diagnostics):
         self.wid = wid
         self.registry = registry
+        self.diagnostics = diagnostics
         self.emitted = []
         self._step_n = 0
         self._guard_n = 0
@@ -529,6 +600,16 @@ class _WfContext:
         verb = line.tokens[0]
         obj = line.tokens[1] if len(line.tokens) > 1 else None
         derived = _derive_effect(step_id, verb, obj, self.registry, line.lineno)
+        if derived is None:
+            # R1 derived nothing, which is correct. Saying nothing about it is
+            # what issue #36 reports, so the fact leaves as a diagnostic while
+            # the emitted node stays exactly as before.
+            self.diagnostics.add(
+                code="unknown-verb", severity="warning",
+                where="line %d" % line.lineno, subject=verb,
+                message="`%s` is outside VERB_LEXICON: this step derives no "
+                        "Effect and runs as a descriptive no-op"
+                        % " ".join(line.tokens))
         self.emitted.append(_node("WorkflowStep", step_id,
                                   name=" ".join(line.tokens),
                                   children=[derived["id"]] if derived else None))
