@@ -52,6 +52,12 @@ Global Constraints는 [P0 계획서](../lnpl-plugin/plan.md#global-constraints)�
 
 ## Task order
 
+> **실행 결과(2026-08-05):** 태스크 파일을 따로 뽑지 않고 코디네이터가 직접
+> 구현했다. 산출물이 Markdown 3개 + 테스트 1개이고 계획상 순차라 병렬 이득이
+> 없었으며, 워커에게 넘겨도 결과를 전부 재검증할 것이었기 때문이다. P0에서
+> 워크트리 base가 두 번 어긋난 비용도 감안했다. `plans/lnpl-plugin-p1/tasks/`는
+> 존재하지 않는다 — 아래 표는 의존 관계 기록으로만 남긴다.
+
 | Task | Depends on | Parallel-ok |
 |------|-----------|-------------|
 | 01-verify-skill | — | — |

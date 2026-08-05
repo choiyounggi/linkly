@@ -193,8 +193,17 @@ before the node reaches the document, carrying provenance:
 /plugin install lnpl@linkly
 ```
 
+레포는 마켓플레이스를 겸하며 대상이 다른 두 플러그인을 호스팅한다:
+
+| 플러그인 | 대상 | 내용 |
+|----------|------|------|
+| [`lnpl`](plugins/lnpl/README.md) | `.lnpl`을 쓰는 쪽 | 어휘 라우팅, 저장 직후 컴파일 진단, spec 도출, 완료 게이트, KB 조회 |
+| [`lnpl-dev`](plugins/lnpl-dev/README.md) | linkly 자체를 만드는 쪽 | 환경 전제 진단, RFC 프로세스 lint, 뮤테이션 하네스의 함정 |
+
+기여자는 `/plugin install lnpl-dev@linkly`도 함께 설치한다.
+
 훅이 동작하려면 `lnpl`이 PATH에 있어야 한다 — `pip install .`.
-자세한 내용은 [plugins/lnpl/README.md](plugins/lnpl/README.md).
+세션 진입점은 [AGENTS.md](AGENTS.md)이며, `CLAUDE.md`는 그것을 불러오는 한 줄이다.
 
 > 개발자용: 테스트 스위트도 `.venv`에 `lnpl` 콘솔 스크립트가 있어야 전부 통과한다
 > (훅·doctor 테스트가 `command -v lnpl`로 CLI를 찾는다). venv를 만든 뒤
