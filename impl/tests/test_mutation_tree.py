@@ -35,18 +35,33 @@ EXEMPT = {
 }
 
 
+# 레포 루트를 담는 관례적 이름. `test_packaging.py`는 `ROOT`를 쓴다.
+ROOT_NAMES = ("REPO", "ROOT")
+
+
 def repo_relative_roots(source, filename="<test>"):
-    """`os.path.join(REPO, "<name>", ...)`에서 `<name>`을 모은다."""
+    """레포 루트 기준 최상위 이름을 모은다.
+
+    두 표기를 모두 본다 — 하나만 보면 다른 하나가 조용히 빠진다:
+      os.path.join(REPO, "<name>", ...)     대부분의 테스트
+      ROOT / "<name>"                        pathlib (test_packaging.py)
+
+    실제로 pathlib 쪽을 놓쳐서 `pyproject.toml`이 복사 목록에서 빠졌고,
+    뮤테이션 베이스라인이 RED가 되어 스윕 전체가 무의미해졌다(2026-08-05).
+    """
     names = set()
     for node in ast.walk(ast.parse(source, filename=filename)):
-        if not (isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "join"):
-            continue
-        args = node.args
-        if not args or not (isinstance(args[0], ast.Name) and args[0].id == "REPO"):
-            continue
-        if len(args) > 1 and isinstance(args[1], ast.Constant) \
-                and isinstance(args[1].value, str):
-            names.add(args[1].value)
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "join":
+            args = node.args
+            if args and isinstance(args[0], ast.Name) and args[0].id in ROOT_NAMES:
+                if len(args) > 1 and isinstance(args[1], ast.Constant) \
+                        and isinstance(args[1].value, str):
+                    names.add(args[1].value)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            if isinstance(node.left, ast.Name) and node.left.id in ROOT_NAMES \
+                    and isinstance(node.right, ast.Constant) \
+                    and isinstance(node.right.value, str):
+                names.add(node.right.value)
     return names
 
 
@@ -75,6 +90,10 @@ class MutationTreeCoversTestReadsTest(unittest.TestCase):
         # 이 파일을 낳은 회귀를 이름으로 고정한다.
         self.assertIn("plugins", TREE_CONTENTS)
         self.assertIn(".claude-plugin", TREE_CONTENTS)
+
+    def test_pyproject_is_covered(self):
+        # 두 번째 회귀: pathlib 표기를 스캔이 놓쳐 베이스라인이 RED가 됐다.
+        self.assertIn("pyproject.toml", TREE_CONTENTS)
 
     def test_the_scan_actually_finds_references(self):
         # 대상 0건이라 통과하는 잠자는 테스트가 되지 않게 고정한다.
@@ -116,6 +135,21 @@ class ScanBehaviourTest(unittest.TestCase):
     def test_ignores_a_bare_repo_join(self):
         source = 'import os\np = os.path.join(REPO)\n'
         self.assertEqual(repo_relative_roots(source), set())
+
+    def test_finds_a_pathlib_reference(self):
+        # test_packaging.py의 표기. 이걸 놓쳐서 pyproject.toml이 빠졌다.
+        source = 'import pathlib\np = ROOT / "pyproject.toml"\n'
+        self.assertEqual(repo_relative_roots(source), {"pyproject.toml"})
+
+    def test_finds_a_pathlib_reference_rooted_at_repo(self):
+        source = 'p = REPO / "AGENTS.md"\n'
+        self.assertEqual(repo_relative_roots(source), {"AGENTS.md"})
+
+    def test_ignores_division_that_is_not_a_path(self):
+        self.assertEqual(repo_relative_roots("x = total / count\n"), set())
+
+    def test_ignores_pathlib_rooted_at_something_else(self):
+        self.assertEqual(repo_relative_roots('p = OTHER / "x.toml"\n'), set())
 
     def test_empty_source_finds_nothing(self):
         self.assertEqual(repo_relative_roots(""), set())

@@ -420,7 +420,8 @@ NOOP_CONTROL = ("CONTROL (must survive): reword a docstring",
 # the harness could not tell a caught mutation from a broken tree.
 TREE_CONTENTS = ("impl", "examples", "schemas", "scripts", "kb", "rfcs", "docs",
                  "plans", "mlir", "CHARTER.md", ".venv",
-                 "plugins", ".claude-plugin", "AGENTS.md", "CLAUDE.md")
+                 "plugins", ".claude-plugin", "AGENTS.md", "CLAUDE.md",
+                 "pyproject.toml")
 
 
 def make_tree(dest):
