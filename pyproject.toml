@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lnpl"
+version = "0.2.0"
+description = "LNPL — the surface language, Semantic IR, and runtime of the linkly LLM-native programming platform"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = ["jsonschema"]
+
+[project.scripts]
+lnpl = "lnpl.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "impl" }
+packages = ["lnpl"]
