@@ -1,0 +1,17 @@
+{
+  "description": "lnpl 진단 훅 — .lnpl을 Write/Edit한 직후 컴파일 진단을 모델에게 되돌린다.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/lnpl-diagnostics.sh",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
