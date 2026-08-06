@@ -19,22 +19,9 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: 14 RFCs — 13 `Accepted` and RFC-0000 `Superseded` by RFC-0007.
-> RFC-0007 was formally accepted 2026-08-03, having been the binding process
-> since RFC-0000 was superseded on 2026-07-31
-> ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). All three
-> roadmap phases complete.**
-> `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter (mode A) — and
-> compiles through MLIR to a **native binary** (mode B). Guard conditions (`when`/`until`)
-> evaluate at runtime in both modes, with RFC-0008 G8 enabling condition field extraction
-> from payloads via argv parameter passing. A differential check confirms the two modes
-> agree on all four observable classes RFC-0004 names (execution order, policy outcome,
-> observability signals, masking). OpenAPI is generated from the IR. The golden scenario
-> is *generated* by the compiler rather than hand-maintained (386 tests, all passing).
-> The custom `lnpl` MLIR dialect landed too — declaratively, via IRDL, so no C++
-> TableGen build is involved (RFC-0004 S4). All nine agent roles are implemented.
-> See the [roadmap](docs/ROADMAP.md). RFC bodies are written in Korean;
-> identifiers, keywords, and schema fields are English.
+This is a working implementation, not a proposal. `.lnpl` runs on an IR interpreter
+and compiles through MLIR to a native binary, and a differential check holds the two
+to the same observable behaviour. [Full status below](#status).
 
 ---
 
@@ -93,55 +80,6 @@ prefixes stay reusable.
 
 ---
 
-## The RFC suite
-
-| RFC | Contents |
-|-----|----------|
-| [0000 RFC Process](rfcs/0000-rfc-process.md) | *Superseded by 0007* — lifecycle, numbering, the fixed 7-section template |
-| [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | Adds the `Updates` relation: revise a named *section* without replacing the RFC |
-| [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 20 node kinds, 18 semantic types, flat structure, canonical JSON serialization |
-| [0002 Syntax](rfcs/0002-syntax.md) | Line-oriented, keyword-delimited EBNF (51 productions) + grammar→IR lowering map |
-| [0003 Runtime](rfcs/0003-runtime.md) | Actors, structured concurrency, policy enforcement, memory primitives, observability contract |
-| [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering (7 stages), pass invariants, three optimizer responsibility axes |
-| [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 categories, 3-tier progressive-disclosure routing, consumption interface |
-| [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 9 roles, 8 JSON-RPC methods, structured errors, idempotency, task lifecycle |
-| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | Guard conditions: presence check & comparison (2 forms), spec correction, mode B compilation. *Updates 0002 §Full grammar, 0003 §Guard* |
-| [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | Retires RFC-0002's open question ② now that the grammar is settled. *Updates 0002 §Open Questions* |
-| [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | How a role attaches a node it may not author, and what happens to a reference that moves. *Updates 0006 §Agent Roles & IR Access, §Methods/ir.propose* |
-| [0011 Refinement enum & name collisions](rfcs/0011-refinement-enum-and-name-collisions.md) | Which refinement names are legal, and what happens when two declarations claim one. *Updates 0001 §부록 A.6.3, §부록 A.7* |
-| [0012 Execution Scope](rfcs/0012-execution-scope.md) | What a guard condition may name, and how a step's result binds for the next one. *Updates 0002 §Full grammar, 0008 §Reference-level Specification/1. Full Grammar, 0003 §Guard* |
-| [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | An absolute bound on step attempts that does not read the declared `retry` budget — so losing that budget is a failure, not an infinite loop. *Updates 0003 §Policy Enforcement* |
-
-Twelve are `Accepted`; 0000 is superseded by 0007, which was itself formally
-accepted 2026-08-03 (issue #11). Cross-consistency checks pass and the owner approved: every cross-consistency check passes and the
-owner approved. From here a substantive change is never made by editing an RFC. There are
-two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
-replaces an RFC whole and closes it; **Updates** revises named *sections* while the RFC
-stays `Accepted`. The second relation exists because the first one alone made a one-line
-revision cost a full restatement — and a cost that high is what turns "don't edit an
-Accepted RFC" into a rule people break. The promotion basis is recorded in
-[docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md).
-
----
-
-## Why each decision was made
-
-Grounded in external evidence, not intuition. Full sourcing in
-[docs/RESEARCH-NOTES.md](docs/RESEARCH-NOTES.md).
-
-| Decision | Basis |
-|----------|-------|
-| Indentation is **not** significant (offside rule rejected) | Whitespace, indentation, and newlines are ~24.5% of code tokens, and offside-rule languages cannot strip them ([arXiv:2508.13666](https://arxiv.org/html/2508.13666)) |
-| Reduced nesting, explicit top-level declarations | MoonBit, an AI-native language — less nesting is KV-cache friendly |
-| IR canonical form = **RFC 8785 (JCS)** | Don't invent a canonicalization scheme |
-| IR schema = constrained-decoding-compatible subset | No `oneOf`, no `default`, nesting ≤ 5 — agents must be able to emit IR fragments as structured output |
-| **MLIR** instead of lowering straight to LLVM IR | Optimize while high-level semantics are still present, then lower progressively |
-| Protocol = JSON-RPC 2.0, aligned with **A2A / MCP** | Agent↔agent follows A2A, agent↔tool follows MCP — same base |
-| KB = **3-tier progressive disclosure** | Anthropic Agent Skills pattern (metadata → body → resources) |
-| MVP is an **interpreter before LLVM** | WebAssembly convention — the reference interpreter is an executable specification |
-
----
-
 ## Try it
 
 ```bash
@@ -189,29 +127,32 @@ before the node reaches the document, carrying provenance:
 
 ### Claude Code plugin
 
-`.lnpl`을 쓸 때 Claude가 닫힌 어휘로 라우팅되고, 저장 직후 컴파일 진단을 받게 하려면:
+The closed vocabulary is the reason this exists: a plausible-looking word parses fine
+and then does nothing at runtime, so Claude has to be routed to the real lexicon rather
+than left to guess. Installing the plugin does that, and adds a compile diagnostic that
+fires on save:
 
 ```
 /plugin marketplace add choiyounggi/linkly
 /plugin install lnpl@linkly
 ```
 
-레포는 마켓플레이스를 겸하며 대상이 다른 두 플러그인을 호스팅한다:
+The repo doubles as the marketplace and hosts two plugins with different audiences:
 
-| 플러그인 | 대상 | 내용 |
-|----------|------|------|
-| [`lnpl`](plugins/lnpl/README.md) | `.lnpl`을 쓰는 쪽 | 어휘 라우팅, 저장 직후 컴파일 진단, spec 도출, 완료 게이트, KB 조회 |
-| [`lnpl-dev`](plugins/lnpl-dev/README.md) | linkly 자체를 만드는 쪽 | 환경 전제 진단, RFC 프로세스 lint, 뮤테이션 하네스의 함정 |
+| Plugin | Audience | Contents |
+|--------|----------|----------|
+| [`lnpl`](plugins/lnpl/README.md) | people writing `.lnpl` | vocabulary routing, compile diagnostics on save, spec derivation, a completion gate, KB lookup |
+| [`lnpl-dev`](plugins/lnpl-dev/README.md) | people building linkly itself | environment-prerequisite diagnosis, RFC process lint, the mutation harness's traps |
 
-기여자는 `/plugin install lnpl-dev@linkly`도 함께 설치한다.
+Contributors install `/plugin install lnpl-dev@linkly` as well.
 
-훅이 동작하려면 `lnpl`이 PATH에 있어야 한다 — `pip install .`.
-세션 진입점은 [AGENTS.md](AGENTS.md)이며, `CLAUDE.md`는 그것을 불러오는 한 줄이다.
+The hooks need `lnpl` on `PATH` — `pip install .`. The session entry point is
+[AGENTS.md](AGENTS.md); `CLAUDE.md` is one line that loads it.
 
-> 개발자용: 테스트 스위트도 `.venv`에 `lnpl` 콘솔 스크립트가 있어야 전부 통과한다
-> (훅·doctor 테스트가 `command -v lnpl`로 CLI를 찾는다). venv를 만든 뒤
-> `.venv/bin/pip install .`을 한 번 돌려라. `impl/lnpl/`을 고친 뒤에는
-> `pip install --force-reinstall --no-deps .`로 재설치한다.
+> For developers: the test suite also needs the `lnpl` console script in `.venv`
+> (the hook and doctor tests locate the CLI with `command -v lnpl`). Run
+> `.venv/bin/pip install .` once after creating the venv, and
+> `pip install --force-reinstall --no-deps .` after editing `impl/lnpl/`.
 
 ### Mode B — a native binary
 
@@ -259,6 +200,88 @@ an empty repository (`--no-row`) and you see `attempts=4` (one try plus `retry 3
 capped exponential backoff, and the response SLO reported as exceeded but **not**
 enforced, exactly as RFC-0003 specifies.
 
+---
+
+## Status
+
+All three roadmap phases are complete.
+
+- **Mode A** — `.lnpl` parses, lowers to Semantic IR, and runs on the IR interpreter.
+- **Mode B** — the same source compiles through MLIR to a native binary. The custom
+  `lnpl` dialect is declared in IRDL and loaded into stock `mlir-opt`, so no C++
+  TableGen build is involved (RFC-0004 S4).
+- **Differential check** — the two modes are held to the four observable classes
+  RFC-0004 names: execution order, policy outcome, observability signals, masking.
+- Guard conditions (`when` / `until`) evaluate at runtime in both modes; RFC-0008 G8
+  extracts the condition field from the payload via argv parameter passing.
+- OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
+  not hand-maintained. All nine agent roles are implemented.
+
+**1209 tests, all passing**, plus a 77-mutation harness that proves the suite can
+actually fail. Both are reproduced by the commands under
+[Verification](#verification).
+
+**14 RFCs — 13 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
+accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
+2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
+[roadmap](docs/ROADMAP.md).
+
+RFC bodies are written in Korean; identifiers, keywords, and schema fields are English.
+The central one has an English summary:
+[RFC-0001 Semantic IR](docs/rfc-0001-semantic-ir.en.md) — the document the rest of the
+suite is defined against.
+
+---
+
+## The RFC suite
+
+| RFC | Contents |
+|-----|----------|
+| [0000 RFC Process](rfcs/0000-rfc-process.md) | *Superseded by 0007* — lifecycle, numbering, the fixed 7-section template |
+| [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | Adds the `Updates` relation: revise a named *section* without replacing the RFC |
+| [0001 Semantic IR](rfcs/0001-semantic-ir.md) — [English summary](docs/rfc-0001-semantic-ir.en.md) | 21 node kinds, 18 semantic types, flat structure, canonical JSON serialization |
+| [0002 Syntax](rfcs/0002-syntax.md) | Line-oriented, keyword-delimited EBNF (58 productions) + grammar→IR lowering map |
+| [0003 Runtime](rfcs/0003-runtime.md) | Actors, structured concurrency, policy enforcement, memory primitives, observability contract |
+| [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering (7 stages), pass invariants, three optimizer responsibility axes |
+| [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 categories, 3-tier progressive-disclosure routing, consumption interface |
+| [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 9 roles, 8 JSON-RPC methods, structured errors, idempotency, task lifecycle |
+| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | Guard conditions: presence check & comparison (2 forms), spec correction, mode B compilation. *Updates 0002 §Full grammar, 0003 §Guard* |
+| [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | Retires RFC-0002's open question ② now that the grammar is settled. *Updates 0002 §Open Questions* |
+| [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | How a role attaches a node it may not author, and what happens to a reference that moves. *Updates 0006 §Agent Roles & IR Access, §Methods/ir.propose* |
+| [0011 Refinement enum & name collisions](rfcs/0011-refinement-enum-and-name-collisions.md) | Which refinement names are legal, and what happens when two declarations claim one. *Updates 0001 §부록 A.6.3, §부록 A.7* |
+| [0012 Execution Scope](rfcs/0012-execution-scope.md) | What a guard condition may name, and how a step's result binds for the next one. *Updates 0002 §Full grammar, 0008 §Reference-level Specification/1. Full Grammar, 0003 §Guard* |
+| [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | An absolute bound on step attempts that does not read the declared `retry` budget — so losing that budget is a failure, not an infinite loop. *Updates 0003 §Policy Enforcement* |
+
+Thirteen are `Accepted`; 0000 is superseded by 0007, which was itself formally
+accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
+approved. From here a substantive change is never made by editing an RFC. There are
+two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
+replaces an RFC whole and closes it; **Updates** revises named *sections* while the RFC
+stays `Accepted`. The second relation exists because the first one alone made a one-line
+revision cost a full restatement — and a cost that high is what turns "don't edit an
+Accepted RFC" into a rule people break. The promotion basis is recorded in
+[docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md).
+
+---
+
+## Why each decision was made
+
+Grounded in external evidence, not intuition. Full sourcing in
+[docs/RESEARCH-NOTES.md](docs/RESEARCH-NOTES.md).
+
+| Decision | Basis |
+|----------|-------|
+| Indentation is **not** significant (offside rule rejected) | Whitespace, indentation, and newlines are ~24.5% of code tokens, and offside-rule languages cannot strip them ([arXiv:2508.13666](https://arxiv.org/html/2508.13666)) |
+| Reduced nesting, explicit top-level declarations | MoonBit, an AI-native language — less nesting is KV-cache friendly |
+| IR canonical form = **RFC 8785 (JCS)** | Don't invent a canonicalization scheme |
+| IR schema = constrained-decoding-compatible subset | No `oneOf`, no `default`, nesting ≤ 5 — agents must be able to emit IR fragments as structured output |
+| **MLIR** instead of lowering straight to LLVM IR | Optimize while high-level semantics are still present, then lower progressively |
+| Protocol = JSON-RPC 2.0, aligned with **A2A / MCP** | Agent↔agent follows A2A, agent↔tool follows MCP — same base |
+| KB = **3-tier progressive disclosure** | Anthropic Agent Skills pattern (metadata → body → resources) |
+| MVP is an **interpreter before LLVM** | WebAssembly convention — the reference interpreter is an executable specification |
+
+---
+
 ## Verification
 
 The specification is not prose alone. One golden scenario, "Login", runs through all
@@ -288,7 +311,18 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 .venv/bin/python impl/tests/mutation_check.py
 ```
 
-`mutation_check.py` removes one specification rule at a time — 53 of them — and
+```
+Ran 1209 tests in 35.777s
+
+OK
+```
+
+The mode B tests need the MLIR/LLVM tools on `PATH` (see [Mode B](#mode-b--a-native-binary));
+without them that number is the same but a few dozen cases error out on the missing
+toolchain. `bash scripts/dev_doctor.sh` exits 0 when the environment is complete, and
+otherwise prints exactly what is missing.
+
+`mutation_check.py` removes one specification rule at a time — 77 of them — and
 requires the suite to go red for each. It begins with a **no-op control**: a mutation
 that provably cannot change behaviour, which must *survive*. That control is not
 ceremony. An earlier version of this harness copied only `impl/` into the mutant tree
@@ -406,6 +440,7 @@ schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR
 scripts/validate_ir.py      Schema validation + self-test
+docs/rfc-0001-semantic-ir.en.md   English summary of RFC-0001 (the RFCs themselves are Korean)
 docs/GLOSSARY.md            Canonical terminology
 docs/RESEARCH-NOTES.md      External basis for design decisions
 docs/CONSISTENCY-CHECK.md   Cross-consistency verdicts (C1–C9)
