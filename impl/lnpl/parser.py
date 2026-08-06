@@ -91,6 +91,14 @@ def _append_workflow_item(decl, line):
             raise ParseError("line %d: a guard cannot appear inside a `parallel` block "
                              "(close it with `merge` first)" % line.lineno)
         decl.extra.pop("_open_block", None)      # an open pipeline ends here
+        pending = decl.extra.get("_pending_guard")
+        if pending is not None:
+            # Without this, the assignment below would overwrite `pending` and the
+            # first guard would leave the IR with no diagnostic (issue #45, t2 F-2).
+            raise ParseError("line %d: `%s` follows the guard on line %d, but a guard "
+                             "owns exactly one step or block; chaining guards (AND) "
+                             "is not supported"
+                             % (line.lineno, head, pending["lineno"]))
         decl.extra["_pending_guard"] = {"mode": head,
                                         "arg": " ".join(line.tokens[1:]),
                                         "lineno": line.lineno}

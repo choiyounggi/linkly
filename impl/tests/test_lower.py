@@ -146,7 +146,12 @@ class TestVerbLexicon(unittest.TestCase):
         self.assertNotIn("children", step)   # silence, never a guess
 
     def test_emit_references_the_event_named_as_its_object(self):
-        doc = ir(GOLDEN + "    emit userCreated\n")
+        # The event has to be declared for the reference to resolve — an `emit`
+        # of an undeclared event is a compile error (issue #45, see
+        # TestStructure.test_emit_of_an_undeclared_event_is_rejected).
+        src = GOLDEN.replace("service LoginService",
+                             "event UserCreated on User create\nservice LoginService")
+        doc = ir(src + "    emit userCreated\n")
         node = by_id(doc)["wf.login.step.4.emit"]
         self.assertEqual(node["kind"], "EventEmit")
         self.assertEqual(node["event"], "event.user.created")
@@ -331,6 +336,52 @@ class TestStructure(unittest.TestCase):
         with self.assertRaises(LowerError) as ctx:
             ir(GOLDEN + "event Ghost on Missing create\n")
         self.assertIn("dangling", str(ctx.exception))
+
+    def test_emit_of_an_undeclared_event_is_rejected(self):
+        """Issue #45 / t4 F-2: the same dangling-reference rule, for `emit`.
+
+        `emit notification` synthesizes `event.notification`, but the module
+        declares `event.notification.sent`. This used to compile and validate
+        clean and only fail in the interpreter — and when a guard skipped the
+        step, it never failed at all. The candidate list is part of the
+        contract: the compiler knows the declared ids, so it names them.
+        """
+        src = (GOLDEN + "event NotificationSent on User create\n"
+                        "workflow Notify\n    emit notification\n")
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        msg = str(ctx.exception)
+        self.assertIn("event.notification", msg)        # the synthesized id
+        self.assertIn("event.notification.sent", msg)   # the declared candidate
+        self.assertIn("Notify", msg)                    # the owning workflow
+
+    def test_emit_in_a_module_with_no_events_says_none_are_declared(self):
+        src = GOLDEN + "workflow Notify\n    emit userCreated\n"
+        with self.assertRaises(LowerError) as ctx:
+            ir(src)
+        msg = str(ctx.exception)
+        self.assertIn("event.user.created", msg)
+        self.assertIn("none declared", msg)
+
+    def test_emit_matching_a_declared_event_still_lowers(self):
+        """Non-destructive: the valid program is unchanged."""
+        src = (GOLDEN + "event NotificationSent on User create\n"
+                        "workflow Notify\n    emit notificationSent\n")
+        doc = ir(src)
+        node = by_id(doc)["wf.notify.step.1.emit"]
+        self.assertEqual(node["kind"], "EventEmit")
+        self.assertEqual(node["event"], "event.notification.sent")
+
+    def test_boundary_declared_event_with_no_emit_lowers(self):
+        doc = ir(GOLDEN + "event NotificationSent on User create\n")
+        self.assertEqual(by_id(doc)["event.notification.sent"]["kind"], "Event")
+        self.assertEqual([n for n in doc["nodes"] if n["kind"] == "EventEmit"], [])
+
+    def test_boundary_module_with_no_workflow_lowers(self):
+        doc = ir("entity User\n    field\n        id UUID\n"
+                 "event NotificationSent on User create\n")
+        self.assertEqual([n["kind"] for n in doc["nodes"] if n["kind"] == "Workflow"], [])
+        self.assertEqual(by_id(doc)["event.notification.sent"]["kind"], "Event")
 
     def test_flag_performance_metric_serializes_without_a_value(self):
         src = GOLDEN.replace("    policy\n        retry 3",

@@ -16,7 +16,8 @@ from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
 from .repo_policy import default_rows
-from .backend import BackendError, build as build_native, run_binary
+from .backend import (BackendError, build as build_native, condition_field_names,
+                      run_binary)
 
 
 def _parse_fields(specs):
@@ -74,6 +75,23 @@ def _emit_diagnostics(diagnostics):
         print(line, file=sys.stderr)
 
 
+STRICT_HELP = "exit 2 if any diagnostic is reported (otherwise the exit code is unchanged)"
+
+
+def _strict_rc(args, rc, diagnostics):
+    """Under `--strict`, a clean exit that reported diagnostics becomes rc 2.
+
+    Only rc 0 is promoted. A non-zero rc already names a more specific failure
+    (1 = the run/spec failed, 3 = runtime error, 4 = backend error) and
+    overwriting it would trade a precise signal for a vaguer one. Reusing 2 puts
+    the gate in the existing "rejected" class, so CI branches on one code
+    (issue #45, t3 F-8). The diagnostic text on stderr is not touched.
+    """
+    if getattr(args, "strict", False) and rc == 0 and diagnostics:
+        return 2
+    return rc
+
+
 def cmd_compile(args):
     doc, _, _, diagnostics = _compile(args.source)
     text = _dump(doc)
@@ -84,7 +102,7 @@ def cmd_compile(args):
     else:
         sys.stdout.write(text)
     _emit_diagnostics(diagnostics)
-    return 0
+    return _strict_rc(args, 0, diagnostics)
 
 
 def cmd_run(args):
@@ -115,7 +133,7 @@ def cmd_run(args):
     else:
         _print_human(result, interp)
     _emit_diagnostics(diagnostics)
-    return 0 if result["status"] == "completed" else 1
+    return _strict_rc(args, 0 if result["status"] == "completed" else 1, diagnostics)
 
 
 def _print_human(result, interp):
@@ -156,16 +174,16 @@ def cmd_spec(args):
             fh.write(_dump(manifest))
         print("wrote %s (%d case(s))" % (args.output, len(manifest["cases"])))
         if not args.run:
-            return 0
+            return _strict_rc(args, 0, diagnostics)
     elif not args.run:
         sys.stdout.write(_dump(manifest))
-        return 0
+        return _strict_rc(args, 0, diagnostics)
 
     passed, failed, lines = run_manifest(manifest, doc)
     for line in lines:
         print(line)
     print("spec: %d passed, %d failed" % (passed, failed))
-    return 0 if failed == 0 else 1
+    return _strict_rc(args, 0 if failed == 0 else 1, diagnostics)
 
 
 def cmd_openapi(args):
@@ -187,6 +205,17 @@ def _repo_rows(doc, payload, workflow_id, empty=False):
     return default_rows(doc, workflow_id, payload)
 
 
+def _unknown_condition_fields(doc, workflow_id, fields):
+    """The `--field` names this workflow has no comparison guard for.
+
+    `condition_field_names` is the single source of truth the emitter, the C
+    runtime and `run_binary` all read, so the allowlist is that list rather than
+    a second derivation that could drift from it.
+    """
+    valid = set(condition_field_names(doc, workflow_id))
+    return sorted(set(fields) - valid)
+
+
 def cmd_build(args):
     doc = compile_source(args.source)
     workflows = [n for n in doc["nodes"] if n["kind"] == "Workflow"]
@@ -194,14 +223,28 @@ def cmd_build(args):
         print("no workflow to build", file=sys.stderr)
         return 1
     target = args.workflow or workflows[0]["id"]
+    # Validate --field here, at the boundary, and before the native build: a
+    # name no guard compares on cannot change the run whatever its value, so it
+    # is always a typo. Silently dropping it left the guard reading the default
+    # 0 and the run reporting success (issue #45, t4 F-3).
+    try:
+        fields = _parse_fields(args.field)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if fields:
+        unknown = _unknown_condition_fields(doc, target, fields)
+        if unknown:
+            valid = condition_field_names(doc, target)
+            print("error: --field name(s) %s do not match any comparison-guard "
+                  "field of workflow %s (valid: %s)"
+                  % (", ".join(unknown), target,
+                     ", ".join(valid) if valid else "(none)"),
+                  file=sys.stderr)
+            return 2
     path = build_native(doc, target, args.workdir)
     print("native binary: %s" % path)
     if args.run:
-        try:
-            fields = _parse_fields(args.field)
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
         rc, lines = run_binary(path, skip=args.skip, condition_fields=fields)
         print("\n".join(lines))
         print("exit=%d" % rc)
@@ -298,6 +341,7 @@ def main(argv=None):
     c = sub.add_parser("compile", help="parse and lower to Semantic IR")
     c.add_argument("source")
     c.add_argument("-o", "--output")
+    c.add_argument("--strict", action="store_true", help=STRICT_HELP)
     c.set_defaults(func=cmd_compile)
 
     r = sub.add_parser("run", help="compile then execute (interpreter mode A)")
@@ -307,12 +351,14 @@ def main(argv=None):
     r.add_argument("--json", action="store_true", help="emit result and trace as JSON")
     r.add_argument("--no-row", action="store_true",
                    help="start with an empty repository (exercises retry)")
+    r.add_argument("--strict", action="store_true", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("spec", help="extract `spec` blocks as a test manifest")
     sp.add_argument("source")
     sp.add_argument("-o", "--output", help="write the manifest to this path")
     sp.add_argument("--run", action="store_true", help="execute the manifest")
+    sp.add_argument("--strict", action="store_true", help=STRICT_HELP)
     sp.set_defaults(func=cmd_spec)
 
     oa = sub.add_parser("openapi", help="generate an OpenAPI 3.1 document from the IR")
@@ -327,9 +373,10 @@ def main(argv=None):
     bd.add_argument("--run", action="store_true")
     bd.add_argument("--field", action="append", metavar="NAME=VALUE", default=[],
                     help="condition field value for a `when`/`until` comparison "
-                         "guard, e.g. --field counter=12 (repeatable). Fields the "
-                         "workflow does not compare on are ignored; omitted ones "
-                         "default to 0.")
+                         "guard, e.g. --field counter=12 (repeatable). NAME must "
+                         "name a comparison-guard field of the workflow — one that "
+                         "does not is rejected, with the valid names listed. "
+                         "Omitted fields default to 0.")
     bd.add_argument("--skip", action="store_true",
                     help="set the Presence `when` guard flag so steps guarded by "
                          "an exists/missing check are skipped. Comparison guards "

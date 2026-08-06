@@ -546,8 +546,10 @@ def lower(decls, module_name):
     for ent in registry.values():
         mod.add(_node("Entity", ent["id"], name=ent["name"], fields=ent["fields"]))
 
+    declared_event_ids = set()
     for d in by_kind["event"]:
         eid = derive_id(d.name, "Event")
+        declared_event_ids.add(eid)
         source = None
         if "on" in d.extra:
             ent_name, trigger = d.extra["on"]
@@ -568,6 +570,7 @@ def lower(decls, module_name):
         for node in ctx.emitted:
             mod.add(node)
         _check_scoped_conditions(ctx.emitted, registry, d.name)
+        _check_event_refs(ctx.emitted, declared_event_ids, d.name)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -657,6 +660,33 @@ class _WfContext:
             fields["condition"] = guard["arg"]
         self.emitted.append(_node("Guard", node_id, children=[inner_id], **fields))
         return node_id
+
+
+def _check_event_refs(emitted, declared_event_ids, workflow_name):
+    """Refuse an `emit`/`publish` whose event is not declared in this module.
+
+    Same dangling-reference rule the event *source* already obeys (RFC-0001
+    structure rule 6), applied to the reference direction. The interpreter also
+    refuses an unknown event id at run time, and that check stays: it defends
+    hand-assembled IR. But a reference that cannot resolve is decidable from the
+    document, so it is decided here — otherwise a guard that skips the step
+    hides the defect behind rc=0 (issue #45, t4 F-2).
+
+    The declared ids are listed in the message: the compiler knows them, and a
+    caller who mistyped an event name needs the candidates to fix it.
+    """
+    for node in emitted:
+        if node["kind"] != "EventEmit":
+            continue
+        ref = node.get("event")
+        if ref in declared_event_ids:
+            continue
+        raise LowerError(
+            "workflow %s: `emit`/`publish` references %r, which is not a declared "
+            "event (declared: %s)"
+            % (workflow_name, ref,
+               ", ".join(sorted(declared_event_ids)) if declared_event_ids
+               else "none declared"))
 
 
 def _check_scoped_conditions(emitted, registry, workflow_name):

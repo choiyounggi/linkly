@@ -232,6 +232,132 @@ class TestRunMergesBothProducers(unittest.TestCase):
         self.assertIn("admin", json.dumps(payload["trace"]))
 
 
+class TestStrictExitGate(unittest.TestCase):
+    """`--strict` turns "reported but exited 0" into a machine-checkable gate.
+
+    Issue #45 t3 F-8: a warning that only reaches stderr cannot gate CI, because
+    the only thing CI reliably reads is the exit code — parsing stderr is not a
+    contract. `--strict` promotes a *clean* exit (rc 0) carrying diagnostics to
+    rc 2, reusing the existing "rejected" code. It never masks a non-zero rc,
+    and it never changes the stderr text, so the default mode is untouched.
+
+    Exit contract (consumed by #44 and #50):
+      0 = success (under --strict, also means zero diagnostics)
+      1 = run/spec failure    2 = compile error, usage error, strict gate
+      3 = runtime error       4 = backend error
+    """
+
+    def setUp(self):
+        os.makedirs(TMP, exist_ok=True)
+        self.clean = os.path.join(TMP, "clean.lnpl")
+        with open(self.clean, "w", encoding="utf-8") as fh:
+            fh.write(CLEAN_SOURCE)
+        # One unknown-verb diagnostic, and a read that fails on an empty repo.
+        self.failing = os.path.join(TMP, "runfail.lnpl")
+        with open(self.failing, "w", encoding="utf-8") as fh:
+            fh.write("entity User\n    field\n        id UUID\n"
+                     "workflow Login\n    ponder existence\n    read user\n")
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+
+    # ---- the gate fires -----------------------------------------------------
+    def test_compile_strict_exits_2_when_a_diagnostic_was_reported(self):
+        rc, out, err = run_cli_split(["compile", LOGIN, "--strict"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(err.count("unknown-verb"), 3)
+        self.assertEqual(err.strip().splitlines()[-1], "6 warning(s), 0 error(s)")
+        # The artifact on stdout is still the artifact.
+        self.assertEqual(json.loads(out)["module"], "login")
+
+    def test_run_strict_exits_2_when_a_diagnostic_was_reported(self):
+        rc, _, err = run_cli_split(["run", LOGIN, "--strict"])
+        self.assertEqual(rc, 2)
+        self.assertIn("unknown-verb", err)
+
+    def test_spec_strict_exits_2_when_a_diagnostic_was_reported(self):
+        rc, out, err = run_cli_split(["spec", LOGIN, "--run", "--strict"])
+        self.assertEqual(rc, 2)
+        self.assertIn("unknown-verb", err)
+        self.assertIn("spec:", out)      # the manifest still ran
+        self.assertIn("0 failed", out)   # ...and rc 2 came from the gate, not a failure
+
+    def test_spec_strict_gates_the_manifest_dump_without_run(self):
+        """`spec` without --run writes the manifest to stdout and returns 0."""
+        rc, out, err = run_cli_split(["spec", LOGIN, "--strict"])
+        self.assertEqual(rc, 2)
+        self.assertIn("unknown-verb", err)
+        self.assertTrue(json.loads(out)["cases"], "the manifest still reached stdout")
+
+    def test_spec_strict_gates_the_manifest_file_without_run(self):
+        """`spec -o <path>` without --run writes a file and returns 0."""
+        out_path = os.path.join(TMP, "manifest.json")
+        rc, out, err = run_cli_split(["spec", LOGIN, "-o", out_path, "--strict"])
+        self.assertEqual(rc, 2)
+        self.assertIn("unknown-verb", err)
+        self.assertIn("wrote", out)
+        with open(out_path, encoding="utf-8") as fh:
+            self.assertTrue(json.load(fh)["cases"], "the manifest was still written")
+
+    def test_spec_strict_does_not_overwrite_a_failing_manifest(self):
+        """rc 1 means a spec case failed — the gate must not hide that as 2."""
+        source = os.path.join(TMP, "specfail.lnpl")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write("entity User\n    field\n        id UUID\n"
+                     "workflow Login\n    ponder existence\n    validate input\n"
+                     "    spec\n        given\n            valid user\n"
+                     "        when\n            login\n"
+                     "        expect\n            completed\n            steps 99\n")
+        plain_rc, plain_out, _ = run_cli_split(["spec", source, "--run"])
+        strict_rc, strict_out, err = run_cli_split(["spec", source, "--run", "--strict"])
+        self.assertEqual(plain_rc, 1)
+        self.assertEqual(strict_rc, 1)
+        self.assertIn("1 failed", strict_out)
+        self.assertEqual(plain_out, strict_out, "--strict changes only the exit code")
+        self.assertIn("unknown-verb", err)
+
+    # ---- the default mode does not move ------------------------------------
+    def test_without_strict_the_exit_code_and_stderr_are_unchanged(self):
+        plain_rc, _, plain_err = run_cli_split(["compile", LOGIN])
+        strict_rc, _, strict_err = run_cli_split(["compile", LOGIN, "--strict"])
+        self.assertEqual(plain_rc, 0)
+        self.assertEqual(strict_rc, 2)
+        self.assertEqual(plain_err, strict_err,
+                         "--strict changes the exit code, never the report")
+
+    def test_run_without_strict_still_exits_0(self):
+        rc, _, _ = run_cli_split(["run", LOGIN])
+        self.assertEqual(rc, 0)
+
+    # ---- boundary: nothing to report ---------------------------------------
+    def test_strict_on_a_clean_module_exits_0(self):
+        rc, _, err = run_cli_split(["compile", self.clean, "--strict"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+
+    def test_strict_run_on_a_clean_module_exits_0(self):
+        rc, _, err = run_cli_split(["run", self.clean, "--strict"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+
+    # ---- priority: a real failure is never masked --------------------------
+    def test_strict_does_not_overwrite_a_failing_run(self):
+        """rc 1 means the run failed; promoting it to 2 would lose that."""
+        plain_rc, _, _ = run_cli_split(["run", self.failing, "--no-row"])
+        strict_rc, _, err = run_cli_split(["run", self.failing, "--no-row", "--strict"])
+        self.assertEqual(plain_rc, 1)
+        self.assertEqual(strict_rc, 1)
+        self.assertIn("unknown-verb", err)
+
+    def test_strict_does_not_overwrite_a_run_with_no_workflow(self):
+        source = os.path.join(TMP, "no-workflow.lnpl")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(DECLARED_BUT_NO_WORKFLOW)
+        rc, _, err = run_cli_split(["run", source, "--strict"])
+        self.assertEqual(rc, 1)
+        self.assertIn("no workflow to run", err)
+
+
 class TestUnaffectedBehaviour(unittest.TestCase):
     def setUp(self):
         os.makedirs(TMP, exist_ok=True)

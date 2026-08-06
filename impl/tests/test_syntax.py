@@ -105,6 +105,55 @@ class TestParser(unittest.TestCase):
             parse("workflow W\n    when x exists\n")
         self.assertIn("guards nothing", str(ctx.exception))
 
+    def test_chained_guards_are_rejected(self):
+        """Issue #45 / t2 F-2: a guard owns exactly one step or block.
+
+        Before this contract, the second `when` overwrote the first's pending
+        guard, so `payment.amount > 0` vanished from the IR with no diagnostic
+        and a 0-amount payment was approved. Chaining is now a parse error.
+        """
+        with self.assertRaises(ParseError) as ctx:
+            parse("workflow W\n"
+                  "    when payment.amount > 0\n"
+                  "    when payment.amount <= 10000\n"
+                  "    approve payment\n")
+        msg = str(ctx.exception)
+        self.assertIn("line 3", msg)      # the chaining guard
+        self.assertIn("line 2", msg)      # the guard it would have dropped
+        self.assertIn("chaining", msg)
+
+    def test_chained_guards_of_mixed_modes_are_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse("workflow W\n"
+                  "    when order.total > 0\n"
+                  "    until order.total <= 10\n"
+                  "    ship order\n")
+        msg = str(ctx.exception)
+        self.assertIn("until", msg)
+        self.assertIn("line 2", msg)
+        self.assertIn("chaining", msg)
+
+    def test_two_guards_each_owning_a_step_still_parse(self):
+        """Non-destructive: guard -> step -> guard -> step is unchanged."""
+        decls = parse("workflow W\n"
+                      "    when payment.amount > 0\n"
+                      "    charge payment\n"
+                      "    when payment.amount <= 10000\n"
+                      "    approve payment\n")
+        items = decls[0].items
+        self.assertEqual([i["item"] for i in items], ["guard", "guard"])
+        self.assertEqual([i["guard"]["arg"] for i in items],
+                         ["payment.amount > 0", "payment.amount <= 10000"])
+        self.assertEqual([i["guarded"]["line"].tokens for i in items],
+                         [["charge", "payment"], ["approve", "payment"]])
+
+    def test_boundary_single_guard_and_step_still_parses(self):
+        decls = parse("workflow W\n    when x exists\n    load user\n")
+        items = decls[0].items
+        self.assertEqual([i["item"] for i in items], ["guard"])
+        self.assertEqual(items[0]["guard"]["lineno"], 2)
+        self.assertEqual(items[0]["guarded"]["line"].tokens, ["load", "user"])
+
     def test_blocks_do_not_nest(self):
         with self.assertRaises(ParseError) as ctx:
             parse("workflow W\n    parallel\n        read user\n"
