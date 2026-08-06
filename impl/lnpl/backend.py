@@ -358,6 +358,12 @@ def _has_cache_budget(document, workflow_id):
 # extract it to a neutral module instead of adding a second mirror.
 _STEP_COST_MS = 5        # interp `Clock.step_cost_ms`, advanced once per step
 _READ_MISS_COST_MS = 1   # interp `_run_effect` advances 1ms before raising
+# interp `MAX_STEP_ATTEMPTS` — the bound that does not read the declared budget
+# (RFC-0003 §Policy Enforcement, as updated by RFC-0013). Mirrored here for the
+# same reason as the constants above: mode B must not import mode A. Omitting it
+# would make the two modes disagree on any `retry >= 100`, which is a divergence
+# `lnpl diff` reports and RFC-0004 §실행 모드와 semantic equivalence forbids.
+_MAX_STEP_ATTEMPTS = 100
 
 # RFC-0003 §retry 멱등 판정 기준, as interp `IDEMPOTENT_OPS` encodes it.
 _IDEMPOTENT_OPS = {
@@ -432,6 +438,9 @@ def _failure_attempts(nodes, op, fail_at, steps_before, retry, timeout_ms):
     attempts = 1
     while True:
         clock += per_attempt
+        # Checked before the declared budget, mirroring `_retryable`'s order.
+        if attempts >= _MAX_STEP_ATTEMPTS:
+            return attempts
         if attempts > retry:
             return attempts
         if timeout_ms is not None and clock + _backoff_ms(attempts) >= timeout_ms:

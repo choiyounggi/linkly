@@ -19,7 +19,8 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: 13 RFCs — 12 `Accepted` and RFC-0000 `Superseded` by RFC-0007.
+> **Status: 14 RFCs — 12 `Accepted`, RFC-0013 `Draft`, and RFC-0000 `Superseded`
+> by RFC-0007.
 > RFC-0007 was formally accepted 2026-08-03, having been the binding process
 > since RFC-0000 was superseded on 2026-07-31
 > ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). All three
@@ -398,7 +399,7 @@ nodes), its lowering path is **MLIR → native**, the knowledge base is a
 
 ```
 CHARTER.md                  Stage-0 vision document (preserved verbatim — the RFCs are canonical)
-rfcs/0000~0008              The RFCs (0000 Superseded, 0001–0007 Accepted, 0008 Draft)
+rfcs/0000~0013              The RFCs (0000 Superseded, 0013 Draft, the other 12 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR

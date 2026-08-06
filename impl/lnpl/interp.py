@@ -25,6 +25,12 @@ IDEMPOTENT_OPS = {
     ("CacheAccess", "get"), ("CacheAccess", "set"), ("CacheAccess", "invalidate"),
 }
 
+# The absolute bound on how many times one step may run, initial attempt included
+# (RFC-0003 §Policy Enforcement). 100 is 20x the largest `retry` declared anywhere
+# in this repo (5) and far above the 2-3 attempts a real retry budget uses, so no
+# valid configuration reaches it — but it is finite, which is the point.
+MAX_STEP_ATTEMPTS = 100
+
 MASKED_TYPES = ("Password",)
 MASK = "***"
 
@@ -575,6 +581,16 @@ class Interpreter:
                                 self.refinements)
 
     def _retryable(self, step, con, attempts, deadline=None):
+        # RFC-0003: an absolute ceiling, written without reference to `con["retry"]`
+        # on purpose. A retry loop whose only bound is the declared budget stops
+        # being a failure and becomes an infinite loop the moment that budget stops
+        # applying (kb/antipatterns/antipatterns-unbounded-retry.md), and the
+        # deadline below cannot stand in for it — it is `None` whenever the owning
+        # service declares no `timeout`. No valid configuration reaches this.
+        # `>=`, not `>`: `attempts` is the run just finished, so refusing at
+        # `MAX_STEP_ATTEMPTS` is what makes it the total, initial attempt included.
+        if attempts >= MAX_STEP_ATTEMPTS:
+            return False
         if attempts > con["retry"]:
             return False
         # RFC-0003: every retry must fit inside the workflow deadline's remaining

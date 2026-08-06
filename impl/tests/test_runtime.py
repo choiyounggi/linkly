@@ -2,7 +2,8 @@
 
 import unittest
 
-from lnpl.interp import Clock, Interpreter, RunError, mask_payload
+from lnpl.interp import (MAX_STEP_ATTEMPTS, Clock, Interpreter, RunError,
+                         mask_payload)
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import row_key
@@ -135,6 +136,54 @@ class TestPolicyEnforcement(unittest.TestCase):
         self.assertEqual(result["status"], "completed",
                          "the SLO was enforced; RFC-0003 says measure and report")
         self.assertIsNone(result["failed_step"])
+
+    # `MAX_STEP_ATTEMPTS` below is a total function of `attempts` — `_retryable`
+    # cannot raise for any value the retry loop can hand it — so this behaviour
+    # has a normal case and boundary cases but no error case to cover.
+    def _run_with_budget(self, retry):
+        """The golden workflow with `retry N` declared and NO deadline.
+
+        The timeout has to go: `_backoff_ms` caps at 1000ms, so under `timeout 3s`
+        the deadline gate stops the run after a handful of attempts and the
+        attempt ceiling — the bound under test — would never be the one that
+        fired. Rows are left unseeded so `authenticate` keeps failing.
+        """
+        src = (SOURCE.replace("        retry 3\n", "        retry %d\n" % retry)
+                     .replace("        timeout 3s\n", ""))
+        doc = lower(parse(src), "login").to_document()
+        result = Interpreter(doc, repo_rows={}).run_workflow("wf.login", PAYLOAD)
+        return [s for s in result["steps"] if s["step"] == "authenticate"][0], result
+
+    def test_a_normal_retry_budget_is_unaffected_by_the_attempt_ceiling(self):
+        # Normal case: the ceiling is a backstop, not a policy. `retry 3` still
+        # means exactly 4 attempts, as it did before the ceiling existed.
+        failed, result = self._run_with_budget(3)
+        self.assertEqual(failed["attempts"], 4)
+        self.assertEqual(result["status"], "failed")
+
+    def test_attempts_at_the_ceiling_are_not_clamped(self):
+        # Boundary, at the limit: `retry MAX-1` asks for exactly MAX attempts and
+        # must get all of them. The ceiling bounds the loop; it does not shorten it.
+        failed, result = self._run_with_budget(MAX_STEP_ATTEMPTS - 1)
+        self.assertEqual(failed["attempts"], MAX_STEP_ATTEMPTS)
+        self.assertEqual(result["status"], "failed")
+
+    def test_attempts_one_past_the_ceiling_are_clamped_to_it(self):
+        # Boundary, one past: `retry MAX` asks for MAX+1 attempts and gets MAX.
+        # This is why RFC-0003 calls `retry >= MAX_STEP_ATTEMPTS` a configuration
+        # error — the declaration is silently not honoured.
+        failed, result = self._run_with_budget(MAX_STEP_ATTEMPTS)
+        self.assertEqual(failed["attempts"], MAX_STEP_ATTEMPTS)
+        self.assertEqual(result["status"], "failed")
+
+    def test_the_ceiling_holds_when_the_declared_cap_does_not(self):
+        # Independence, stated as behaviour: no declared budget, however absurd,
+        # lifts the ceiling. This is the property the "drop the retry attempt cap"
+        # mutation attacks — with the declared cap gone the ceiling is the only
+        # bound left, so it has to hold without reading `con["retry"]` at all.
+        failed, result = self._run_with_budget(10000)
+        self.assertEqual(failed["attempts"], MAX_STEP_ATTEMPTS)
+        self.assertEqual(result["status"], "failed")
 
 
 class TestValidationAndMasking(unittest.TestCase):

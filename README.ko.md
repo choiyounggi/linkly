@@ -18,7 +18,8 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 개발자는 구현을 쓰지 않는다. 목표와 비즈니스 규칙(*무엇을*)만 선언하고, 컴파일러와 AI
 에이전트 파이프라인이 나머지(*어떻게*)를 설계·구현·검증·최적화·배포한다.
 
-> **상태: RFC 13편 — 12편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.
+> **상태: RFC 14편 — 12편 `Accepted`, RFC-0013은 `Draft`, RFC-0000은 RFC-0007로
+> `Superseded`.
 > RFC-0007은 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된
 > 2026-07-31부터였다
 > ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)). 로드맵 3 Phase
@@ -349,7 +350,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0012              RFC (0000은 Superseded, 나머지 12편은 Accepted)
+rfcs/0000~0013              RFC (0000은 Superseded, 0013은 Draft, 나머지 12편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
