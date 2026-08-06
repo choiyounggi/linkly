@@ -382,8 +382,9 @@ class Interpreter:
         per-call-site masking a contract violation — the call site that forgets
         is the leak. Resolving the base here rather than at each
         `mask_payload(...)` covers both sinks (the workflow-start log and the
-        outbox emission) with one change. `type` is left untouched: `_validate`
-        needs the refinement's own name to apply its facets.
+        outbox emission) with one change. `type` is left untouched — this view
+        is for masking only; validation resolves its own entity from
+        `Validation.target` (issue #48).
         """
         for n in self.doc["nodes"]:
             if n["kind"] == "Entity":
@@ -575,22 +576,7 @@ class Interpreter:
         child.end_ms = self.clock.now
 
     def _validate(self, effect, payload):
-        entity = self._entity_node()
-        rule = effect.get("rule")
-        if rule == "semantic-types":
-            if entity is None:
-                raise RunError("validation has no entity in scope")
-            for field in entity.get("fields", []):
-                if field["name"] not in payload:
-                    raise RunError("missing required field %r" % field["name"])
-                check_semantic_type(field["type"], payload[field["name"]],
-                                    field["name"], self.refinements)
-        else:
-            field_name = effect["target"].rsplit(".", 1)[-1]
-            if field_name not in payload:
-                raise RunError("missing required field %r" % field_name)
-            check_semantic_type(rule, payload[field_name], field_name,
-                                self.refinements)
+        validate_effect(self.nodes, effect, payload, self.refinements)
 
     def _retryable(self, step, con, attempts, deadline=None):
         if attempts > con["retry"]:
@@ -608,6 +594,40 @@ class Interpreter:
             if eff["kind"] in ("NetworkCall", "EventEmit"):
                 return False
         return True
+
+
+def validate_effect(nodes, effect, payload, refinements):
+    """Raise `RunError` iff a `Validation` effect rejects `payload` (RFC-0001).
+
+    Module-level, not a method: this single judgement is what "validated" means
+    in BOTH execution modes — the interpreter calls it per attempt, and mode B's
+    static derivation (`backend._validation_fails`) calls it at build time, so
+    the two cannot drift apart (issue #48).
+
+    For `rule == "semantic-types"` the entity is the one `Validation.target`
+    names, never a positional default: `validate order` in a multi-entity
+    document must check Order's facets, not whichever Entity the document
+    happens to declare first (issue #48, qa t1 F-6/S4). `lower` always writes an
+    Entity node id here, so a miss means the IR bypassed the compiler — fail
+    closed, like 부록 A.7 ⓐ upstream.
+    """
+    rule = effect.get("rule")
+    if rule == "semantic-types":
+        target = effect.get("target")
+        entity = nodes.get(target)
+        if entity is None or entity.get("kind") != "Entity":
+            raise RunError("validation references undeclared entity %r"
+                           % target)
+        for field in entity.get("fields", []):
+            if field["name"] not in payload:
+                raise RunError("missing required field %r" % field["name"])
+            check_semantic_type(field["type"], payload[field["name"]],
+                                field["name"], refinements)
+    else:
+        field_name = effect["target"].rsplit(".", 1)[-1]
+        if field_name not in payload:
+            raise RunError("missing required field %r" % field_name)
+        check_semantic_type(rule, payload[field_name], field_name, refinements)
 
 
 def refinement_index(document):

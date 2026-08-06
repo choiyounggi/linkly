@@ -391,6 +391,32 @@ def _coerce(text):
     return text
 
 
+def _validated_entities(document, workflow_id):
+    """The Entity nodes the workflow's semantic-type `Validation` effects name.
+
+    The spec fixture must hold a value for every field those validations check
+    (issue #48); entities the workflow never validates stay out of the payload,
+    so their absence remains observable to Presence guards.
+    """
+    nodes = {n["id"]: n for n in document.get("nodes", [])}
+    wf = nodes.get(workflow_id)
+    out, seen = [], set()
+    stack = list(wf.get("children", [])) if wf else []
+    while stack:
+        node = nodes.get(stack.pop(0))
+        if node is None:
+            continue
+        stack.extend(node.get("children", []))
+        if node.get("kind") == "Validation" \
+                and node.get("rule") == "semantic-types":
+            entity = nodes.get(node.get("target"))
+            if entity is not None and entity.get("kind") == "Entity" \
+                    and entity["id"] not in seen:
+                seen.add(entity["id"])
+                out.append(entity)
+    return out
+
+
 def run_manifest(manifest, document):
     """Execute every case. Returns (passed, failed, report_lines)."""
     entity = next((n for n in document["nodes"] if n["kind"] == "Entity"), None)
@@ -399,6 +425,19 @@ def run_manifest(manifest, document):
         payload, stored = _payload_from_given(case["given"], entity,
                                               refinement_index(document),
                                               document)
+        # `validate <entity>` checks the entity the step names (issue #48), so
+        # a payload holding only the first entity's fields fails validation of
+        # any later entity. Underlay a sample for exactly the validated
+        # entities — no more: merging EVERY entity would flip Presence guards
+        # that read another entity's absent field (t4's `priorNotification
+        # missing`). Given-derived values win on shared keys, and
+        # `_payload_from_given`'s own contract (fields resolve against the
+        # first entity) is unchanged.
+        validated = _validated_entities(document, case["workflow"])
+        if validated:
+            payload = {**sample_payload(validated,
+                                        refinement_index(document)),
+                       **payload}
         empty_repo = any(g == "empty repository" for g in case["given"])
         rows = {} if empty_repo else default_rows(document, case["workflow"], payload)
         for entity_id, overrides in stored.items():

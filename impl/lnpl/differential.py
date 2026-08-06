@@ -77,7 +77,8 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
     `FakeRepository`'s storage layout, and reading it here would couple mode B to
     how mode A happens to store rows rather than to what the seed rule says.
     """
-    bin_path = backend.build(document, workflow_id, workdir, seeded=seeded)
+    bin_path = backend.build(document, workflow_id, workdir, seeded=seeded,
+                             payload=payload)
 
     # RFC-0012 §G12.6: values are resolved through the SAME scope rule mode A
     # evaluates, so a qualified reference (`product.stock`) reaches the compiled
