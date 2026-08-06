@@ -174,6 +174,22 @@ def parse(source):
             if cur.kind in ("event", "capability", "refine"):
                 raise ParseError(
                     "line %d: %s takes no clauses" % (line.lineno, cur.kind))
+            # Each `spec` keyword opens a NEW block (issue #46): its
+            # given/when/expect sections live on the block, not in the shared
+            # clause lists — sharing them is what silently merged blocks.
+            if cur.kind == "workflow" and head == "spec":
+                cur.extra.setdefault("specs", []).append(
+                    {"given": [], "when": [], "expect": [],
+                     "lineno": line.lineno, "_opened": set()})
+            elif (cur.kind == "workflow" and head in ("given", "when", "expect")
+                    and cur.extra.get("specs")):
+                block = cur.extra["specs"][-1]
+                if head in block["_opened"]:
+                    raise ParseError(
+                        "line %d: a second `%s` inside one spec block — "
+                        "open a new `spec` block per scenario"
+                        % (line.lineno, head))
+                block["_opened"].add(head)
             cur_clause = head
             cur.clauses.setdefault(head, [])
             continue
@@ -193,6 +209,10 @@ def parse(source):
             raise ParseError(
                 "line %d: content line %r outside any clause" % (line.lineno, line.tokens))
 
+        if (cur.kind == "workflow" and cur_clause in ("given", "when", "expect")
+                and cur.extra.get("specs")):
+            cur.extra["specs"][-1][cur_clause].append(line)
+            continue
         cur.clauses[cur_clause].append(line)
 
     for d in decls:
@@ -203,4 +223,6 @@ def parse(source):
         if d.extra.pop("_pending_guard", None) is not None:
             raise ParseError("declaration %s ends with a guard that guards nothing"
                              % d.name)
+        for block in d.extra.get("specs", []):
+            block.pop("_opened", None)
     return decls
