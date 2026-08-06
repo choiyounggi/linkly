@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft <!-- Draft | Review | Accepted | Superseded -->
+- Status: **Accepted** (RFC-0013, 2026-08-06)
 - Updates: RFC-0003 §Policy Enforcement
 
 ## Motivation

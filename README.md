@@ -19,8 +19,7 @@ The developer does not write implementations. They declare goals and business ru
 (*what*); the compiler and a pipeline of AI agents design, implement, verify,
 optimize, and ship the rest (*how*).
 
-> **Status: 14 RFCs — 12 `Accepted`, RFC-0013 `Draft`, and RFC-0000 `Superseded`
-> by RFC-0007.
+> **Status: 14 RFCs — 13 `Accepted` and RFC-0000 `Superseded` by RFC-0007.
 > RFC-0007 was formally accepted 2026-08-03, having been the binding process
 > since RFC-0000 was superseded on 2026-07-31
 > ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). All three
@@ -109,6 +108,9 @@ prefixes stay reusable.
 | [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | Guard conditions: presence check & comparison (2 forms), spec correction, mode B compilation. *Updates 0002 §Full grammar, 0003 §Guard* |
 | [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | Retires RFC-0002's open question ② now that the grammar is settled. *Updates 0002 §Open Questions* |
 | [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | How a role attaches a node it may not author, and what happens to a reference that moves. *Updates 0006 §Agent Roles & IR Access, §Methods/ir.propose* |
+| [0011 Refinement enum & name collisions](rfcs/0011-refinement-enum-and-name-collisions.md) | Which refinement names are legal, and what happens when two declarations claim one. *Updates 0001 §부록 A.6.3, §부록 A.7* |
+| [0012 Execution Scope](rfcs/0012-execution-scope.md) | What a guard condition may name, and how a step's result binds for the next one. *Updates 0002 §Full grammar, 0008 §Reference-level Specification/1. Full Grammar, 0003 §Guard* |
+| [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | An absolute bound on step attempts that does not read the declared `retry` budget — so losing that budget is a failure, not an infinite loop. *Updates 0003 §Policy Enforcement* |
 
 Twelve are `Accepted`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Cross-consistency checks pass and the owner approved: every cross-consistency check passes and the
@@ -399,7 +401,7 @@ nodes), its lowering path is **MLIR → native**, the knowledge base is a
 
 ```
 CHARTER.md                  Stage-0 vision document (preserved verbatim — the RFCs are canonical)
-rfcs/0000~0013              The RFCs (0000 Superseded, 0013 Draft, the other 12 Accepted)
+rfcs/0000~0013              The RFCs (0000 Superseded, the other 13 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR
