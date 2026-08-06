@@ -12,7 +12,29 @@ KEYWORDS_CLAUSE = ("field", "goal", "policy", "security", "performance",
 KEYWORDS_CONTROL = ("when", "repeat", "parallel", "until", "pipeline", "merge")
 RESERVED = ("if", "for", "while", "switch")
 
-DURATION_UNITS = ("ms", "s", "m")
+# RFC-0016 widened this from `ms`/`s`/`m`. `h` and `d` are exact integer counts
+# of milliseconds, so they add a table row and no semantics — unlike `w`/`mo`/`y`,
+# whose lengths are not constant and which therefore stay out of the language.
+#
+# ONE table. The multiplier used to be spelled out at five call sites (`lexer`
+# twice, `condition`, `interp`, `backend`); a unit added to only four of them
+# parses here and then fails in whichever mode still held the short list, which
+# is a mode divergence rather than an error the author can read.
+DURATION_UNIT_MS = {"ms": 1, "s": 1000, "m": 60000,
+                    "h": 3600000, "d": 86400000}
+
+# i64 — the domain mode B compiles to. Defined here, in the module that imports
+# nothing, so the duration table above can range-check without importing
+# `condition` (which imports THIS module). `condition` re-exports both names, so
+# every existing `from .condition import INT64_MAX` keeps working.
+INT64_MIN = -(2 ** 63)
+INT64_MAX = 2 ** 63 - 1
+
+DURATION_UNITS = ("ms", "s", "m", "h", "d")
+
+# Longest suffix first: `ms` must be tested before `s`, or `3ms` reads as `3m`
+# followed by a stray `s`.
+DURATION_SCAN = tuple(sorted(DURATION_UNIT_MS.items(), key=lambda kv: -len(kv[0])))
 
 # Two-character comparators come first: a consumer that scans this table in order
 # must see `<=` before `<`, or every `<=` reads as `<` followed by a stray `=`.
@@ -34,6 +56,26 @@ ASSIGN_KEYWORDS = ("set", "to")
 
 # The reserved namespace naming the run's input payload: `input.quantity`.
 PAYLOAD_NAMESPACE = "input"
+
+# RFC-0016 schedule triggers: `event DailyRollup on schedule daily at 00:00 UTC`.
+#
+# Each set is closed and deliberately small. `daily` is the only recurrence
+# because it is the only one issue #49 asks for, and a cron expression is a
+# language of its own rather than a word in this one. `UTC` is the only zone
+# because an IANA name would have to be resolved against the build machine's tz
+# database — which would make the set of accepted programs depend on the machine
+# doing the accepting. Both are RFC-0016 §Open Questions.
+SCHEDULE_KEYWORD = "schedule"
+SCHEDULE_AT = "at"
+SCHEDULE_RECURRENCES = ("daily",)
+SCHEDULE_ZONES = ("UTC",)
+
+# The closed set of event-source kinds that carry an enforcement status, i.e.
+# the ones `diagnostics.ENFORCEMENT` speaks about. Entity sources (`on Order
+# create`) are equally unenforced today, but giving them a row would start
+# warning on every `event` declaration in every existing document — a behaviour
+# change issue #49 does not ask for. RFC-0016 §Open Questions records it.
+EVENT_TRIGGERS = ("schedule",)
 
 
 class LexError(Exception):
@@ -87,17 +129,43 @@ def tokenize(source):
 
 
 def is_duration(tok):
-    for unit in ("ms", "s", "m"):
+    for unit, _mult in DURATION_SCAN:
         if tok.endswith(unit) and tok[: -len(unit)].isdigit() and tok[: -len(unit)]:
             return True
     return False
 
 
-def parse_duration_ms(tok):
-    """`3s` -> 3000. Raises LexError on a non-duration token."""
-    for unit, mult in (("ms", 1), ("s", 1000), ("m", 60000)):
+def duration_ms_or_none(tok):
+    """`3s` -> 3000; None when `tok` is not a duration.
+
+    The one place the unit table is read. Callers that need an exception raise
+    their own module's error, so a duration is spelled the same in the lexer,
+    the condition parser, the interpreter and the backend.
+
+    Raises OverflowError when the value does not fit the i64 domain both modes
+    compile to (RFC-0015 §Value domain): Python integers are unbounded, so
+    without this check `99999999999999999999d` would evaluate in mode A and
+    truncate in mode B.
+    """
+    for unit, mult in DURATION_SCAN:
         if tok.endswith(unit):
             head = tok[: -len(unit)]
             if head.isdigit() and head:
-                return int(head) * mult
-    raise LexError("not a duration: %r" % tok)
+                value = int(head) * mult
+                if value > INT64_MAX:
+                    raise OverflowError(
+                        "duration %r is %d ms, past the 64-bit domain both "
+                        "modes compile to" % (tok, value))
+                return value
+    return None
+
+
+def parse_duration_ms(tok):
+    """`3s` -> 3000. Raises LexError on a non-duration token."""
+    try:
+        value = duration_ms_or_none(tok)
+    except OverflowError as e:
+        raise LexError(str(e))
+    if value is None:
+        raise LexError("not a duration: %r" % tok)
+    return value

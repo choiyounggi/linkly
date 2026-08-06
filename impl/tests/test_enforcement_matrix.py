@@ -26,6 +26,7 @@ import re
 import unittest
 
 from lnpl.diagnostics import CODES, ENFORCEMENT, ENFORCEMENT_STATUSES
+from lnpl.lexer import EVENT_TRIGGERS
 from lnpl.lower import (PERF_METRICS, POLICY_NAMES, SECURITY_MECHANISMS,
                         VERB_LEXICON)
 
@@ -123,11 +124,18 @@ def parse_table(markdown, heading, columns):
 
 # ---- the four checks, as pure functions over text so a mutant can be fed in ----
 
-def matrix_completeness_errors(enforcement_keys, policy, security, perf):
-    """(1) Does the matrix cover exactly the language's closed sets?"""
+def matrix_completeness_errors(enforcement_keys, policy, security, perf,
+                               triggers=EVENT_TRIGGERS):
+    """(1) Does the matrix cover exactly the language's closed sets?
+
+    RFC-0016 added a fourth set: the event-source kinds that carry an
+    enforcement status. It is a parameter with a default rather than a hard
+    reference so the negative controls below can mutate it like the others.
+    """
     expected = ({("policy", n) for n in policy}
                 | {("security", n) for n in security}
-                | {("performance", n) for n in perf})
+                | {("performance", n) for n in perf}
+                | {("event", n) for n in triggers})
     missing = sorted(expected - set(enforcement_keys))
     extra = sorted(set(enforcement_keys) - expected)
     errors = []
@@ -213,7 +221,8 @@ class TestMatrixCompleteness(unittest.TestCase):
         self.assertEqual(len(POLICY_NAMES), 4)
         self.assertEqual(len(SECURITY_MECHANISMS), 3)
         self.assertEqual(len(PERF_METRICS), 5)
-        self.assertEqual(len(ENFORCEMENT), 12)
+        self.assertEqual(len(EVENT_TRIGGERS), 1)
+        self.assertEqual(len(ENFORCEMENT), 13)   # 12 + RFC-0016's schedule
 
     def test_enforcement_covers_exactly_the_closed_sets(self):
         self.assertEqual(

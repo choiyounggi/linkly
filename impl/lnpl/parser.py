@@ -5,7 +5,8 @@ A top-level keyword closes the previous block; a clause keyword opens a
 sub-section that closes at the next clause or top-level keyword.
 """
 
-from .lexer import KEYWORDS_CLAUSE, KEYWORDS_TOP, tokenize
+from .lexer import (KEYWORDS_CLAUSE, KEYWORDS_TOP, SCHEDULE_AT,
+                    SCHEDULE_KEYWORD, tokenize)
 from .condition import parse_condition, ConditionError
 
 SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database")
@@ -137,8 +138,28 @@ def parse(source):
 
             if head == "event" and len(line.tokens) > 2:
                 # EventSource ::= 'on' PascalName ('create'|'update'|'delete')
+                #               | 'on' 'schedule' Recurrence 'at' TimeOfDay Zone
                 rest = line.tokens[2:]
-                if rest[0] != "on" or len(rest) != 3:
+                if rest[0] != "on":
+                    raise ParseError(
+                        "line %d: event source must be `on <Entity> "
+                        "create|update|delete` or `on schedule <every> at "
+                        "<HH:MM> <zone>`" % line.lineno)
+                if len(rest) > 1 and rest[1] == SCHEDULE_KEYWORD:
+                    # Shape only. Which recurrence, which clock time and which
+                    # zone are admissible is a closed-set judgement, and this
+                    # module has no diagnostics channel to name the allowed set
+                    # in — `lower` owns that, as it does for policy and
+                    # performance names.
+                    if len(rest) != 6 or rest[3] != SCHEDULE_AT:
+                        raise ParseError(
+                            "line %d: a schedule source must be `on schedule "
+                            "<every> at <HH:MM> <zone>` (for example: `on "
+                            "schedule daily at 00:00 UTC`)" % line.lineno)
+                    cur.extra["schedule"] = {"every": rest[2], "at": rest[4],
+                                             "zone": rest[5]}
+                    continue
+                if len(rest) != 3:
                     raise ParseError(
                         "line %d: event source must be `on <Entity> "
                         "create|update|delete`" % line.lineno)

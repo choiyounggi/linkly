@@ -21,6 +21,7 @@ self-check below proves a deliberate divergence is detected.
 import json
 
 from . import backend
+from .condition import looks_like_instant
 from .interp import Interpreter, resolve_reference
 from .repo_policy import (default_rows, repository_calls, seed_bindings,
                           seeded_entities)
@@ -112,7 +113,22 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
     values = {}
     for name in backend.condition_field_names(document, workflow_id):
         raw = resolve_reference(name, payload or {}, bindings)
-        values[name] = raw if isinstance(raw, int) else 0
+        # Values that name a QUANTITY go through `backend.encode_condition_value`,
+        # the same coercion the compiled path uses. This used to read `raw if
+        # isinstance(raw, int) else 0`, which silently turned any non-integer —
+        # a DateTime among them — into 0, so both sides of a time comparison
+        # became the epoch and every window guard evaluated true in mode B while
+        # mode A read the real instants (RFC-0016).
+        #
+        # Anything else stays 0, and that is not a fallback for a failed
+        # encoding: a Presence guard's field reaches mode B through the run-level
+        # `skip` boolean, never through this channel, so its i64 slot is a
+        # placeholder no comparison reads. A malformed date-time still raises,
+        # because `looks_like_instant` sends it to the encoder.
+        if isinstance(raw, (int, bool)) or looks_like_instant(raw):
+            values[name] = backend.encode_condition_value(raw)
+        else:
+            values[name] = 0
 
     skip = _derive_skip_from_payload(document, workflow_id, payload or {}, seeded)
     rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=values)

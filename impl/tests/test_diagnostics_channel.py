@@ -187,7 +187,7 @@ class TestEnforcementMatrix(unittest.TestCase):
     def test_matrix_has_the_expected_row_count(self):
         # Asserted before any set comparison elsewhere, so a matrix that parsed
         # to zero rows cannot make a coverage check pass vacuously.
-        self.assertEqual(len(ENFORCEMENT), 12)
+        self.assertEqual(len(ENFORCEMENT), 13)   # 12 + RFC-0016's event schedule
 
     def test_every_status_is_in_the_canonical_set(self):
         self.assertEqual(ENFORCEMENT_STATUSES,
@@ -203,7 +203,9 @@ class TestEnforcementMatrix(unittest.TestCase):
         for key in ENFORCEMENT:
             self.assertIsInstance(key, tuple)
             self.assertEqual(len(key), 2)
-            self.assertIn(key[0], ("policy", "security", "performance"))
+            # `event` joined the three service clauses in RFC-0016: a schedule
+            # trigger is a declaration with an enforcement status like any other.
+            self.assertIn(key[0], ("policy", "security", "performance", "event"))
 
     def test_the_four_declarations_issue_38_names_are_unenforced_or_measured(self):
         # The issue's own examples; if one of these ever reads "enforced" the
