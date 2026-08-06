@@ -285,9 +285,16 @@ class TestDivergenceIsDetected(unittest.TestCase):
         The payload carries `token`, so `when token missing` is **false** and the
         guarded step is skipped. The skip value is derived from evaluating the
         condition against the payload (RFC-0008).
+
+        The payload holds only fields `GUARDED`'s entity declares: masking is
+        type-driven, so an undeclared `password` key would ride the seeded row
+        into the bindings channel verbatim — and issue #43's widened masking
+        surface rightly reports that as a leak, failing the baseline for a
+        reason unrelated to the guard under test.
         """
         doc = lower(parse(GUARDED), "t").to_document()
-        payload = dict(PAYLOAD, token="present")
+        payload = {"id": PAYLOAD["id"], "email": PAYLOAD["email"],
+                   "token": "present"}
         rows = default_rows(doc, "wf.w", payload)
 
         ok, _report = self._verify(doc, "wf.w", payload, rows)

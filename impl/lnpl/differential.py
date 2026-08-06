@@ -18,6 +18,8 @@ cannot pass by accident: `verify` fails if either mode is missing, and the
 self-check below proves a deliberate divergence is detected.
 """
 
+import json
+
 from . import backend
 from .interp import Interpreter, resolve_reference
 from .repo_policy import (default_rows, repository_calls, seed_bindings,
@@ -29,17 +31,30 @@ class DifferentialError(Exception):
 
 
 def observe_mode_a(document, workflow_id, payload, repo_rows):
-    """Run the interpreter and reduce its trace to the observable four."""
+    """Run the interpreter and reduce its trace to the observable four.
+
+    Issue #43: the masking class scans `text`, so `text` must carry every
+    channel mode A actually outputs. `result["bindings"]` is the channel t2's
+    QA probe caught leaking (F-9 — the scan was green while `--json` returned
+    the raw secret), so the (already masked) bindings are serialised into the
+    scanned surface. Classes 1-3 are structural and unaffected.
+    """
     interp = Interpreter(document, repo_rows=repo_rows)
     result = interp.run_workflow(workflow_id, payload)
     steps = []
     for span in (interp.trace.root.children if interp.trace.root else []):
         steps.append({"step": span.name,
                       "effects": [c.kind for c in span.children]})
+    text = _text_of(steps, result["status"])
+    for name in sorted(result["bindings"]):
+        text += "\nbinding %s %s" % (
+            name, json.dumps(result["bindings"][name], sort_keys=True,
+                             ensure_ascii=False, default=repr))
     return {"order": [s["step"] for s in steps],
             "effects": {s["step"]: s["effects"] for s in steps},
             "status": result["status"],
-            "text": _text_of(steps, result["status"])}
+            "bindings": result["bindings"],
+            "text": text}
 
 
 def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
@@ -93,9 +108,12 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
             status = parts[1]
     if status is None:
         raise DifferentialError("mode B produced no status line (exit %d)" % rc)
+    # Issue #43: the masking surface is the binary's WHOLE stdout, not the
+    # normalised reduction of the lines the parser above recognised — an
+    # unrecognised line would otherwise drop out of the scan, which is the
+    # same silent-surface gap F-9 found on the mode A side.
     return {"order": order, "effects": effects, "status": status,
-            "text": _text_of([{"step": s, "effects": effects.get(s, [])}
-                              for s in order], status)}
+            "text": "\n".join(lines)}
 
 
 def _text_of(steps, status):
@@ -283,7 +301,16 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     a = observe_mode_a(document, workflow_id, payload, repo_rows)
     b = observe_mode_b(document, workflow_id, workdir, payload=payload,
                        seeded=resolved)
+    return compare_observations(a, b)
 
+
+def compare_observations(a, b):
+    """RFC-0004's four-class comparison on two observations. (ok, report).
+
+    Split out of `verify` (issue #43) so a doctored observation can prove the
+    masking class GOES RED when a channel leaks — a detection check that needs
+    no toolchain. `verify`'s signature and behaviour are unchanged.
+    """
     report, ok = [], True
 
     if a["order"] == b["order"]:

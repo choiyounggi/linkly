@@ -387,11 +387,29 @@ class Interpreter:
         """
         for n in self.doc["nodes"]:
             if n["kind"] == "Entity":
-                fields = [dict(f, base=self.refinements.get(f.get("type"), {})
-                               .get("base", f.get("type")))
-                          for f in n.get("fields", [])]
-                return dict(n, fields=fields)
+                return self._entity_view(n)
         return None
+
+    def _entity_view(self, node):
+        """`node` as an observability view — each field carries its resolved
+        18-type `base`, so masking honours refinements (see `_entity_node`)."""
+        fields = [dict(f, base=self.refinements.get(f.get("type"), {})
+                       .get("base", f.get("type")))
+                  for f in node.get("fields", [])]
+        return dict(node, fields=fields)
+
+    def _masked_bindings(self, bindings):
+        """A masked COPY of the execution scope for the result channel (issue
+        #43). The scope itself stays raw — guards evaluate real values
+        (RFC-0012) — but `result` leaves the process, and RFC-0003
+        §Observability puts every outbound channel behind the one
+        `mask_payload` chokepoint. Each binding is masked by ITS entity's
+        fields, since a bound row only ever holds that entity's columns.
+        """
+        views = {binding_name(n): self._entity_view(n)
+                 for n in self.doc["nodes"] if n["kind"] == "Entity"}
+        return {name: mask_payload(row, views.get(name))
+                for name, row in bindings.items()}
 
     # ---- execution ---------------------------------------------------------
     def run_workflow(self, workflow_id, payload=None):
@@ -467,7 +485,7 @@ class Interpreter:
 
         root.end_ms = self.clock.now
         total = root.duration_ms
-        result["bindings"] = bindings
+        result["bindings"] = self._masked_bindings(bindings)
         result["duration_ms"] = total
         result["correlation_id"] = self.trace.correlation_id
         if con["response_slo_ms"] is not None:
