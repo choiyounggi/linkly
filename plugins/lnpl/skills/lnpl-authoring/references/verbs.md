@@ -8,6 +8,7 @@
 
 | 동사 | 파생되는 Effect | 속성 |
 |------|-----------------|------|
+| `set` | `Assignment` | — |
 | `validate` | `Validation` | — |
 | `authenticate` | `RepositoryCall` | operation=read |
 | `load` | `RepositoryCall` | operation=read |

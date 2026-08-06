@@ -15,8 +15,9 @@ sys.path.insert(0, os.path.join(REPO, "impl"))
 
 from lnpl import __version__                                    # noqa: E402
 from lnpl.diagnostics import CODES, ENFORCEMENT                  # noqa: E402
-from lnpl.lexer import (COMPARATORS, DURATION_UNITS, KEYWORDS_CLAUSE,  # noqa: E402
-                        KEYWORDS_CONTROL, KEYWORDS_TOP, RESERVED)
+from lnpl.lexer import (ARITH_OPS, ASSIGN_KEYWORDS, COMPARATORS,  # noqa: E402
+                        DURATION_UNITS, KEYWORDS_CLAUSE, KEYWORDS_CONTROL,
+                        KEYWORDS_TOP, LOGICAL_OPS, PAYLOAD_NAMESPACE, RESERVED)
 from lnpl.lower import (ARGUMENT_MECHANISMS, PERF_METRICS, POLICY_NAMES,  # noqa: E402
                         SECURITY_MECHANISMS, VALUELESS_PERF, VERB_LEXICON)
 from lnpl.refinements import BASE_CATEGORY, CATEGORY_FACETS, PRESETS  # noqa: E402
@@ -50,6 +51,17 @@ def render_grammar():
     lines.append("## 리터럴\n")
     lines.append("기간 단위: " + " ".join("`%s`" % u for u in DURATION_UNITS))
     lines.append("\n비교 연산자: " + " ".join("`%s`" % c for c in COMPARATORS) + "\n")
+    lines.append("## 값 표현식 (RFC-0015)\n")
+    lines.append("산술 연산자: " + " ".join("`%s`" % o for o in ARITH_OPS))
+    lines.append("\n논리 결합: " + " ".join("`%s`" % o for o in LOGICAL_OPS)
+                 + " — `or`·`not`·괄호는 없다.")
+    lines.append("\n할당: " + " ".join("`%s`" % k for k in ASSIGN_KEYWORDS)
+                 + " (`set <바인딩>.<필드> to <값>`)")
+    lines.append("\n입력 네임스페이스: `%s` (`input.quantity` — 실행 payload의 필드)\n"
+                 % PAYLOAD_NAMESPACE)
+    lines.append("가드 조건은 `<값> <비교연산자> <값>`이고 항은 `and`로만 잇는다. "
+                 "값은 참조·정수·기간이며 이항 산술 **1개**까지 붙일 수 있다"
+                 "(`product.stock - input.quantity`). 중첩·괄호는 문법에 없다.\n")
     lines.append("들여쓰기는 의미가 없다(4칸은 스타일 규약일 뿐). 블록은 키워드로 "
                  "구분된다 — 그래서 괄호 짝이나 들여쓰기 오류가 문법적으로 "
                  "표현되지 않는다.\n")

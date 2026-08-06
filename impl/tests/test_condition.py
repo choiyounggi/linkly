@@ -2,8 +2,8 @@
 
 import unittest
 from impl.lnpl.condition import (
-    parse_condition, condition_to_string,
-    Presence, Comparison, ConditionError
+    parse_condition, condition_to_string, references,
+    And, Arith, Lit, Presence, Comparison, Ref, ConditionError
 )
 
 
@@ -27,22 +27,22 @@ class TestConditionParsing(unittest.TestCase):
     def test_comparison_integer_less_than(self):
         c = parse_condition("retryCount < 3")
         self.assertIsInstance(c, Comparison)
-        self.assertEqual(c.field, "retryCount")
+        self.assertEqual(c.left, Ref("retryCount"))
         self.assertEqual(c.op, "<")
-        self.assertEqual(c.value, 3)
-        self.assertFalse(c.is_duration)
+        self.assertEqual(c.right, Lit(3))
+        self.assertFalse(c.right.is_duration)
 
     def test_comparison_integer_greater_equal(self):
         c = parse_condition("statusCode >= 500")
         self.assertIsInstance(c, Comparison)
         self.assertEqual(c.op, ">=")
-        self.assertEqual(c.value, 500)
+        self.assertEqual(c.right.value, 500)
 
     def test_comparison_integer_equal(self):
         c = parse_condition("retryBudget == 0")
         self.assertIsInstance(c, Comparison)
         self.assertEqual(c.op, "==")
-        self.assertEqual(c.value, 0)
+        self.assertEqual(c.right.value, 0)
 
     def test_comparison_integer_not_equal(self):
         c = parse_condition("retryBudget != 0")
@@ -53,20 +53,20 @@ class TestConditionParsing(unittest.TestCase):
     def test_comparison_duration_ms(self):
         c = parse_condition("timeoutMs > 5000ms")
         self.assertIsInstance(c, Comparison)
-        self.assertEqual(c.value, 5000)
-        self.assertTrue(c.is_duration)
+        self.assertEqual(c.right.value, 5000)
+        self.assertTrue(c.right.is_duration)
 
     def test_comparison_duration_seconds(self):
         c = parse_condition("elapsedTime < 30s")
         self.assertIsInstance(c, Comparison)
-        self.assertEqual(c.value, 30000)  # converted to ms
-        self.assertTrue(c.is_duration)
+        self.assertEqual(c.right.value, 30000)  # converted to ms
+        self.assertTrue(c.right.is_duration)
 
     def test_comparison_duration_minutes(self):
         c = parse_condition("totalRuntime <= 5m")
         self.assertIsInstance(c, Comparison)
-        self.assertEqual(c.value, 300000)  # 5 * 60 * 1000
-        self.assertTrue(c.is_duration)
+        self.assertEqual(c.right.value, 300000)  # 5 * 60 * 1000
+        self.assertTrue(c.right.is_duration)
 
     # Round-trip: parse -> to_string -> parse
     def test_roundtrip_presence(self):
@@ -80,16 +80,14 @@ class TestConditionParsing(unittest.TestCase):
         c = parse_condition(orig)
         back = condition_to_string(c)
         c2 = parse_condition(back)
-        self.assertEqual(c2.field, c.field)
-        self.assertEqual(c2.op, c.op)
-        self.assertEqual(c2.value, c.value)
+        self.assertEqual(c2, c)
 
     def test_roundtrip_comparison_duration(self):
         orig = "timeout > 10s"
         c = parse_condition(orig)
         back = condition_to_string(c)
         c2 = parse_condition(back)
-        self.assertEqual(c2.value, 10000)
+        self.assertEqual(c2.right.value, 10000)
 
     # None / empty
     def test_none_condition(self):
@@ -104,9 +102,18 @@ class TestConditionParsing(unittest.TestCase):
         with self.assertRaises(ConditionError):
             parse_condition("word word word")  # Old: `Word Word? Word? Word?`
 
-    def test_rejects_and_or_not(self):
+    def test_rejects_or(self):
+        # RFC-0015 added `and` and stopped there. This case used to be spelled
+        # `parse_condition("a and b")`, which still raises — but now because the
+        # term `a` is too short, not because combination is unsupported. A test
+        # that no longer checks what its name claims is worse than no test, so
+        # the rejection moved to the combinator that is genuinely absent.
         with self.assertRaises(ConditionError):
-            parse_condition("a and b")
+            parse_condition("stock > 0 or stock < 10")
+
+    def test_rejects_not(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("not stock > 0")
 
     def test_rejects_membership(self):
         with self.assertRaises(ConditionError):
@@ -145,10 +152,10 @@ class TestScopedReference(unittest.TestCase):
     def test_qualified_comparison_keeps_the_whole_reference_as_the_field(self):
         c = parse_condition("product.stock > 0")
         self.assertIsInstance(c, Comparison)
-        self.assertEqual(c.field, "product.stock")
+        self.assertEqual(c.left, Ref("product.stock"))
         self.assertEqual(c.op, ">")
-        self.assertEqual(c.value, 0)
-        self.assertFalse(c.is_duration)
+        self.assertEqual(c.right, Lit(0))
+        self.assertFalse(c.right.is_duration)
 
     def test_qualified_presence(self):
         c = parse_condition("product.name exists")
@@ -160,7 +167,7 @@ class TestScopedReference(unittest.TestCase):
         # `OrderItem` -> binding `orderItem` (RFC-0012 G12.2 derives the binding
         # name from the declared name, so it can carry inner capitals).
         c = parse_condition("orderItem.unitPrice >= 100")
-        self.assertEqual(c.field, "orderItem.unitPrice")
+        self.assertEqual(c.left, Ref("orderItem.unitPrice"))
 
     def test_roundtrip_qualified_comparison(self):
         self.assertEqual(condition_to_string(parse_condition("product.stock >= 10")),
@@ -174,8 +181,8 @@ class TestScopedReference(unittest.TestCase):
         # The duration path is orthogonal to the reference form; a qualified
         # reference must not lose it.
         c = parse_condition("session.ttl < 5s")
-        self.assertTrue(c.is_duration)
-        self.assertEqual(c.value, 5000)
+        self.assertTrue(c.right.is_duration)
+        self.assertEqual(c.right.value, 5000)
         self.assertEqual(condition_to_string(c), "session.ttl < 5s")
 
     # ---- error cases -------------------------------------------------------
@@ -213,8 +220,110 @@ class TestScopedReference(unittest.TestCase):
         # existing form. If this breaks, every guard written before RFC-0012
         # changed meaning.
         c = parse_condition("stock > 0")
-        self.assertEqual(c.field, "stock")
+        self.assertEqual(c.left, Ref("stock"))
         self.assertEqual(condition_to_string(c), "stock > 0")
+
+
+class TestValueExpressions(unittest.TestCase):
+    """RFC-0015: the right side is a Value, terms combine with `and`.
+
+    The normal / error / boundary set is per behaviour: field-on-the-right,
+    arithmetic, `and`, and the `input` namespace each get their own.
+    """
+
+    # ---- normal ------------------------------------------------------------
+    def test_right_side_may_be_a_reference(self):
+        c = parse_condition("product.stock >= input.quantity")
+        self.assertEqual(c.left, Ref("product.stock"))
+        self.assertEqual(c.right, Ref("input.quantity"))
+        self.assertEqual(condition_to_string(c),
+                         "product.stock >= input.quantity")
+
+    def test_arithmetic_on_either_side(self):
+        c = parse_condition("product.stock - input.quantity >= 0")
+        self.assertEqual(c.left, Arith(Ref("product.stock"), "-",
+                                       Ref("input.quantity")))
+        self.assertEqual(c.right, Lit(0))
+        self.assertEqual(condition_to_string(c),
+                         "product.stock - input.quantity >= 0")
+
+    def test_and_combines_two_comparisons(self):
+        c = parse_condition("input.amount > 0 and input.amount <= 10000")
+        self.assertIsInstance(c, And)
+        self.assertEqual(len(c.terms), 2)
+        self.assertEqual(c.terms[0].op, ">")
+        self.assertEqual(c.terms[1].op, "<=")
+        self.assertEqual(condition_to_string(c),
+                         "input.amount > 0 and input.amount <= 10000")
+
+    def test_and_combines_three_comparisons(self):
+        c = parse_condition("a > 0 and a < 10 and b == 2")
+        self.assertEqual(len(c.terms), 3)
+        self.assertEqual(condition_to_string(c), "a > 0 and a < 10 and b == 2")
+
+    def test_input_namespace_is_a_reference(self):
+        c = parse_condition("input.amount == 0")
+        self.assertEqual(c.left.namespace, "input")
+        self.assertEqual(c.left.field, "amount")
+
+    def test_references_lists_every_name_in_source_order(self):
+        c = parse_condition("product.stock - input.quantity >= reorderLevel")
+        self.assertEqual(references(c),
+                         ("product.stock", "input.quantity", "reorderLevel"))
+        c2 = parse_condition("a > 0 and b < 1")
+        self.assertEqual(references(c2), ("a", "b"))
+        self.assertEqual(references(parse_condition("token missing")), ("token",))
+
+    # ---- error -------------------------------------------------------------
+    def test_rejects_multiplication_and_division(self):
+        for text in ("stock * 2 > 0", "stock / 2 > 0"):
+            with self.assertRaises(ConditionError):
+                parse_condition(text)
+
+    def test_rejects_nested_arithmetic(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("a - b - c > 0")
+
+    def test_rejects_parentheses(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("( a > 0 ) and b < 1")
+
+    def test_rejects_negative_literal(self):
+        # The literal grammar is unsigned: mode B names its constants
+        # `%c<value>_i64`, and `%c-3_i64` is not an SSA name. Negative *results*
+        # are fine; negative *literals* are not written.
+        with self.assertRaises(ConditionError):
+            parse_condition("stock > -3")
+
+    def test_rejects_presence_inside_and(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("token exists and retryCount < 3")
+
+    def test_rejects_two_comparators_in_one_term(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("0 < amount <= 10000")
+
+    def test_rejects_dangling_and(self):
+        for text in ("a > 0 and", "and a > 0", "a > 0 and and b < 1"):
+            with self.assertRaises(ConditionError):
+                parse_condition(text)
+
+    # ---- boundary ----------------------------------------------------------
+    def test_single_term_stays_the_pre_rfc0015_shape(self):
+        # One term is a Comparison, not an And of one: every consumer written
+        # before RFC-0015 keeps seeing exactly what it saw.
+        c = parse_condition("stock > 0")
+        self.assertIsInstance(c, Comparison)
+
+    def test_zero_and_equal_values_compare(self):
+        self.assertEqual(condition_to_string(parse_condition("stock == 0")),
+                         "stock == 0")
+        self.assertEqual(condition_to_string(parse_condition("a == a")), "a == a")
+
+    def test_arithmetic_roundtrips_through_the_normalized_string(self):
+        text = "product.stock - input.quantity >= 0"
+        self.assertEqual(parse_condition(condition_to_string(parse_condition(text))),
+                         parse_condition(text))
 
 
 class TestModeARefusesUnevaluableConditions(unittest.TestCase):

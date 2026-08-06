@@ -96,8 +96,8 @@ def _append_workflow_item(decl, line):
             # Without this, the assignment below would overwrite `pending` and the
             # first guard would leave the IR with no diagnostic (issue #45, t2 F-2).
             raise ParseError("line %d: `%s` follows the guard on line %d, but a guard "
-                             "owns exactly one step or block; chaining guards (AND) "
-                             "is not supported"
+                             "owns exactly one step or block; write the two "
+                             "conditions as one guard joined by `and` (RFC-0015)"
                              % (line.lineno, head, pending["lineno"]))
         decl.extra["_pending_guard"] = {"mode": head,
                                         "arg": " ".join(line.tokens[1:]),

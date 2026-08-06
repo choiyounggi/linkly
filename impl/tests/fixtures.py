@@ -84,6 +84,83 @@ workflow W
 """
 
 
+# RFC-0015's value expressions, in the shape issue #47's t1 could not write:
+# a quantity-aware stock check, then the deduction. The two guards precede the
+# assignment in source order because RFC-0015 refuses a guard that reads a value
+# an earlier step assigned (mode B fixes condition fields at entry).
+#
+# `test_value_semantics.py` runs it through mode A and `test_backend.py` through
+# the differential, so it lives here rather than in either of them.
+VALUE_INVENTORY = """capability postgres
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow PlaceOrder
+    read product
+    when product.stock >= input.quantity
+    create order
+    when product.stock >= input.quantity
+    set product.stock to product.stock - input.quantity
+"""
+
+# The range check t2 could only write as one bound, plus the equality that
+# distinguishes a full refund from a partial one.
+VALUE_PAYMENT = """capability postgres
+
+entity Payment
+    field
+        id UUID
+        amount Integer
+
+entity Refund
+    field
+        id UUID
+        amount Integer
+
+service PaymentService
+    policy
+        timeout 5s
+
+workflow Approve
+    when input.amount > 0 and input.amount <= 10000
+    create payment
+"""
+
+VALUE_REFUND = """capability postgres
+
+entity Payment
+    field
+        id UUID
+        amount Integer
+
+entity Refund
+    field
+        id UUID
+        amount Integer
+
+service RefundService
+    policy
+        timeout 5s
+
+workflow Refund
+    read payment
+    when payment.amount == input.amount
+    create refund
+"""
+
+
 def guarded_source(guard):
     """`GUARDED` with its guard line replaced — e.g. `guarded_source("repeat 3")`.
 
