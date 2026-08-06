@@ -1,0 +1,70 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "guarded API",
+    "version": "0.1.0",
+    "description": "Generated from Semantic IR (lir_version 0.1). Do not edit by hand."
+  },
+  "paths": {
+    "/token-service/retrieve-with-cache": {
+      "post": {
+        "operationId": "token_service_retrieve_with_cache",
+        "summary": "RetrieveWithCache workflow",
+        "description": "Steps: validate token -> find token -> cache token -> call token",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Token"
+              }
+            }
+          }
+        },
+        "x-retry": 3,
+        "x-conditional-steps": [
+          "cache token",
+          "call token"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Token": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cachedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "retryBudget": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "cachedAt",
+          "retryBudget"
+        ]
+      }
+    }
+  }
+}

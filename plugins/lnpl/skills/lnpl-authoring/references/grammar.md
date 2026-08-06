@@ -42,6 +42,36 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 가드 조건은 `<값> <비교연산자> <값>`이고 항은 `and`로만 잇는다. 값은 참조·정수·기간이며 이항 산술 **1개**까지 붙일 수 있다(`product.stock - input.quantity`). 중첩·괄호는 문법에 없다.
 
+## 가드의 스코프
+
+가드는 **바로 다음 항목 하나**를 소유한다. 그 항목은 스텝 한 줄이거나 `parallel`/`pipeline` 블록 하나다. 뒤따르는 블록 전체를 감싸지 **않는다** — 가드 다음 스텝 하나만 조건 아래 들어간다.
+
+```
+when product.stock > 0
+create order          # 가드 안
+update product        # 가드 밖 — 조건과 무관하게 늘 실행된다
+```
+
+두 스텝을 함께 감싸려면 둘 중 하나를 쓴다:
+
+```
+when product.stock > 0    # ① 가드 줄을 스텝마다 반복한다
+create order
+when product.stock > 0
+update product
+```
+```
+when product.stock > 0    # ② 블록으로 묶으면 블록 전체가 가드 안이다
+parallel
+create order
+update product
+merge
+```
+
+가드를 두 줄 잇달아 쓰면 **파싱 에러**다 — 조건 두 개는 `and`로 이어 한 가드로 쓴다. 선언이 가드로 끝나도(감쌀 항목이 없어도) 에러다.
+
+가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — 존재 검사(`exists`/`missing`)도 마찬가지다. `Text`·`Money` 필드에 가드를 걸면 lowering이 거부한다(RFC-0016).
+
 ## 이벤트 소스 (RFC-0016)
 
 `event <이름>`은 소스를 붙일 수 있다. 두 형태뿐이다:

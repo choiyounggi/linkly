@@ -1,0 +1,69 @@
+# guarded.lnpl — RFC-0008 §5.2가 약속한 가드 시나리오 (이슈 #50, t4 F-8)
+#
+# 조건식 두 형태를 한 워크플로에서 실증한다:
+#   `when token.cachedAt exists`     — 존재 검사(Presence)
+#   `when token.retryBudget > 0`     — 비교식(Comparison, RFC-0015가 `==`를 정본화)
+#
+# `until`은 이 예제에 싣지 않는다. 피가드 스텝이 여러 라운드 반복되면 아래 "스텝
+# 이름" 제약에 걸려, 두 모드가 똑같이 N라운드를 돌아도 `lnpl diff`가 DIVERGENT를
+# 낸다(이슈 #50에서 실측, 추적 이슈 예정). 원인은 `until`의 실행 의미가 아니라
+# 차등 관측기의 비대칭이고, 그 수리는 이 태스크의 범위가 아니다.
+#
+# 가드는 **바로 다음 항목 하나**를 소유한다(references/grammar.md §가드의 스코프).
+# 그래서 `cache token`만 존재 검사 아래에, `call token`만 비교식 아래에 있고,
+# 앞의 `validate token`·`find token`은 조건과 무관하게 늘 실행된다.
+#
+# 스텝 이름은 워크플로 안에서 유일해야 한다. 차등 검사의 관측 맵은 스텝 이름으로
+# 키를 잡는데 모드 A는 마지막 하나만 남기고(dict comprehension) 모드 B는 전부
+# 누적한다(setdefault().append()) — 같은 이름이 반복되면 두 모드가 같은 일을 해도
+# DIVERGENT가 난다(이슈 #50에서 실측).
+#
+# 두 가드 모두 **양쪽 분기가 관측 가능**하다 — 한 번도 실행된 적 없는 피가드
+# 스텝을 남기지 않는다:
+#   Presence   참 → `lnpl run examples/guarded.lnpl` (기본 시드에 cachedAt이 있다)
+#              거짓 → `lnpl build ... --run --skip --field token.retryBudget=1`
+#   Comparison 참 → `lnpl run examples/guarded.lnpl` (기본 시드의 retryBudget=1)
+#              거짓 → `lnpl build ... --run --field token.retryBudget=0`
+#
+# 모드 B에서 생략한 `--field`는 0이 기본이다. 그래서 `--skip`만 주면 존재 검사와
+# 비교식이 **둘 다** 거짓이 된다 — 한쪽만 끄려면 다른 쪽 필드를 명시하라.
+#
+# 기계(mechanism)인 선언과 서술(documentation)인 선언을 구분한다:
+#   기계 — Token.id(행 키), Token.cachedAt/retryBudget(가드 필드 — 가드 조건은
+#          Integer·DateTime 참조만 받는다), performance/cache 5m(CacheAccess set은
+#          TTL 없이 RunError), policy/retry 3(빈 저장소에서 재시도를 관측 가능하게)
+#   서술 — capability redis, service 이름
+#
+# 가드 아래에 저장소 호출(create/find/update)을 두지 않는다: 모드 B는 가드가 실제로
+# 참인 저장소 호출의 실패를 재현하지 못한다(backend.py의 KNOWN LIMITATION, 그리고
+# impl/tests/test_backend.py가 모든 예제를 전수 검사한다).
+
+capability postgres
+capability redis
+
+entity Token
+    field
+        id UUID
+        cachedAt DateTime
+        retryBudget Integer
+
+service TokenService
+    policy
+        retry 3
+    performance
+        cache 5m
+
+workflow RetrieveWithCache
+    validate token
+    find token
+    when token.cachedAt exists
+    cache token
+    when token.retryBudget > 0
+    call token
+    spec
+        given
+            valid token
+        when
+            retrieveWithCache
+        expect
+            completed

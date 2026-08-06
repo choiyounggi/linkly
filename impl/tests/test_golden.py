@@ -39,9 +39,10 @@ from lnpl.parser import parse
 from lnpl.repo_policy import default_rows, row_key, seeded_entities
 from lnpl.spec import extract
 from tests.fixtures import (CHECKOUT_LIR, CHECKOUT_LNPL, CHECKOUT_OPENAPI,
-                            CHECKOUT_SPEC, LOGIN_OPENAPI, LOGIN_SPEC,
-                            SHORTEN_LIR, SHORTEN_LNPL, SHORTEN_OPENAPI,
-                            SHORTEN_SPEC)
+                            CHECKOUT_SPEC, GUARDED_LIR, GUARDED_LNPL,
+                            GUARDED_OPENAPI, GUARDED_SPEC, LOGIN_OPENAPI,
+                            LOGIN_SPEC, SHORTEN_LIR, SHORTEN_LNPL,
+                            SHORTEN_OPENAPI, SHORTEN_SPEC)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(REPO, "examples", "login.lnpl")
@@ -238,6 +239,61 @@ class TestCheckoutGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCas
     SRC = CHECKOUT_LNPL
     SPEC = CHECKOUT_SPEC
     OPENAPI = CHECKOUT_OPENAPI
+
+
+class TestGuardedGoldenPair(GoldenPairContract, unittest.TestCase):
+    """RFC-0008 §5.2's guard scenario, restored (issue #50, t4 F-8).
+
+    The service leads the canonical order here, like login and checkout: the
+    example declares no refinement, so nothing precedes `svc.token`.
+    """
+
+    SRC = GUARDED_LNPL
+    GOLDEN_IR = GUARDED_LIR
+    FIRST_NODE_ID = "svc.token"
+    LAST_NODE_IDS = ["perf.token", "cap.postgres", "cap.redis"]
+    REGEN_CMD = ("python3 -m lnpl compile examples/guarded.lnpl "
+                 "-o examples/guarded.lir.json")
+
+    def test_both_guard_forms_are_present(self):
+        """The point of the example: Presence AND Comparison, per §5.2's ②.
+
+        Asserted on the committed IR rather than the source text, so a rewrite
+        that keeps the words but loses a Guard node fails here.
+        """
+        guards = [n for n in self.compile_source()["nodes"]
+                  if n["kind"] == "Guard"]
+        self.assertEqual(len(guards), 2)
+        self.assertEqual([g["mode"] for g in guards], ["when", "when"])
+        conditions = " ".join(g["condition"] for g in guards)
+        self.assertIn("exists", conditions)       # Presence
+        self.assertIn(">", conditions)            # Comparison
+
+    def test_each_guard_owns_exactly_one_step(self):
+        """The scope rule references/grammar.md now teaches (t1 F-4)."""
+        for node in self.compile_source()["nodes"]:
+            if node["kind"] == "Guard":
+                self.assertEqual(len(node["children"]), 1, node["id"])
+
+    def test_no_guarded_step_is_a_repository_call(self):
+        """Mode B cannot reproduce a taken guard's repository failure, so the
+        shipped example must stay clear of that limitation (backend.py)."""
+        doc = self.compile_source()
+        by_id = {n["id"]: n for n in doc["nodes"]}
+        for node in doc["nodes"]:
+            if node["kind"] != "Guard":
+                continue
+            for step_id in node["children"]:
+                kinds = [by_id[e]["kind"] for e in by_id[step_id].get("children", [])
+                         if e in by_id]
+                self.assertNotIn("RepositoryCall", kinds,
+                                 "%s guards a repository call" % node["id"])
+
+
+class TestGuardedGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = GUARDED_LNPL
+    SPEC = GUARDED_SPEC
+    OPENAPI = GUARDED_OPENAPI
 
 
 class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):

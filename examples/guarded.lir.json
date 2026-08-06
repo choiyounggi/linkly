@@ -1,0 +1,155 @@
+{
+  "lir_version": "0.1",
+  "module": "guarded",
+  "nodes": [
+    {
+      "kind": "Service",
+      "id": "svc.token",
+      "name": "TokenService",
+      "requires": [
+        "cap.postgres",
+        "cap.redis"
+      ],
+      "constraints": [
+        "policy.token",
+        "perf.token"
+      ],
+      "children": [
+        "wf.retrieve.with.cache"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.token",
+      "name": "Token",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "cachedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "retryBudget",
+          "type": "Integer"
+        }
+      ]
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.retrieve.with.cache",
+      "name": "RetrieveWithCache",
+      "children": [
+        "wf.retrieve.with.cache.step.1",
+        "wf.retrieve.with.cache.step.2",
+        "wf.retrieve.with.cache.guard.1",
+        "wf.retrieve.with.cache.guard.2"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.retrieve.with.cache.step.1",
+      "name": "validate token",
+      "children": [
+        "wf.retrieve.with.cache.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.retrieve.with.cache.step.1.check",
+      "target": "entity.token",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.retrieve.with.cache.step.2",
+      "name": "find token",
+      "children": [
+        "wf.retrieve.with.cache.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.retrieve.with.cache.step.2.repo",
+      "entity": "entity.token",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.retrieve.with.cache.step.3",
+      "name": "cache token",
+      "children": [
+        "wf.retrieve.with.cache.step.3.cache"
+      ]
+    },
+    {
+      "kind": "CacheAccess",
+      "id": "wf.retrieve.with.cache.step.3.cache",
+      "key": "token:{id}",
+      "operation": "set"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.retrieve.with.cache.guard.1",
+      "children": [
+        "wf.retrieve.with.cache.step.3"
+      ],
+      "mode": "when",
+      "condition": "token.cachedAt exists"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.retrieve.with.cache.step.4",
+      "name": "call token",
+      "children": [
+        "wf.retrieve.with.cache.step.4.net"
+      ]
+    },
+    {
+      "kind": "NetworkCall",
+      "id": "wf.retrieve.with.cache.step.4.net",
+      "target": "token"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.retrieve.with.cache.guard.2",
+      "children": [
+        "wf.retrieve.with.cache.step.4"
+      ],
+      "mode": "when",
+      "condition": "token.retryBudget > 0"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.token",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "kind": "Performance",
+      "id": "perf.token",
+      "budgets": [
+        {
+          "metric": "cache",
+          "value": "5m"
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.redis",
+      "name": "redis"
+    }
+  ]
+}
