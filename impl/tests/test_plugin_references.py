@@ -6,6 +6,7 @@
 같은 이유, 같은 장치다.
 """
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -13,7 +14,8 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GEN = os.path.join(REPO, "scripts", "gen_plugin_references.py")
 REFS = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-authoring", "references")
-EXPECTED = ("grammar.md", "verbs.md", "declarations.md", "types.md", "spec.md")
+EXPECTED = ("grammar.md", "verbs.md", "declarations.md", "types.md", "spec.md",
+            "naming.md")
 
 
 def run_gen(*args):
@@ -104,6 +106,95 @@ def read_frontmatter(path):
             key, _, value = line.partition(":")
             out[key.strip()] = value.strip()
     return out
+
+
+class ComparatorCanonTest(unittest.TestCase):
+    """`==`/`!=` must say the same thing in the lexer, the RFC and the reference.
+
+    Issue #50 t4 F-7: RFC-0008 §1 promised `==`/`!=` while the generated
+    grammar.md listed only `<= >= < >`, and an author could not tell which one
+    the implementation actually was — so they designed around it without ever
+    testing the real behaviour. RFC-0015 closed the gap by updating RFC-0008 §1
+    and adding both to `COMPARATORS`. This pins all three surfaces together so
+    the next comparator cannot land in two of them.
+    """
+
+    RFC = os.path.join(REPO, "rfcs", "0015-value-semantics.md")
+
+    def _rfc_comparators(self):
+        with open(self.RFC, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip().startswith("Comparator"):
+                    return set(re.findall(r"'([^']+)'", line))
+        self.fail("RFC-0015에서 `Comparator ::=` 생산규칙을 못 찾았다 — "
+                  "절이 사라졌거나 이름이 바뀌었다")
+
+    def _reference_comparators(self):
+        with open(os.path.join(REFS, "grammar.md"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("비교 연산자:"):
+                    return set(re.findall(r"`([^`]+)`", line))
+        self.fail("grammar.md에서 '비교 연산자:' 줄을 못 찾았다")
+
+    def test_the_extractors_find_a_full_set(self):
+        """Negative control: an empty match must not pass as agreement."""
+        from lnpl.lexer import COMPARATORS
+        self.assertEqual(len(COMPARATORS), 6)
+        self.assertEqual(len(self._rfc_comparators()), 6)
+        self.assertEqual(len(self._reference_comparators()), 6)
+
+    def test_equality_comparators_are_present_everywhere(self):
+        from lnpl.lexer import COMPARATORS
+        for op in ("==", "!="):
+            self.assertIn(op, COMPARATORS)
+            self.assertIn(op, self._rfc_comparators())
+            self.assertIn(op, self._reference_comparators())
+
+    def test_all_three_surfaces_agree(self):
+        from lnpl.lexer import COMPARATORS
+        self.assertEqual(set(COMPARATORS), self._rfc_comparators())
+        self.assertEqual(set(COMPARATORS), self._reference_comparators())
+
+
+class UndocumentedRuleTest(unittest.TestCase):
+    """이슈 #50: `--check`만으로는 부족한 부분.
+
+    `--check`는 파일이 생성기와 같은지만 본다. 생성기에서 절을 통째로 지워도
+    재생성하면 다시 초록이다 — QA가 4/4 케이스에서 관측한 미문서 규칙 셋이
+    바로 그렇게 사라질 수 있다. 그래서 규칙의 **존재**를 따로 단언한다.
+    """
+
+    def _read(self, name):
+        with open(os.path.join(REFS, name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_guard_scope_rule_is_documented(self):
+        """t1 F-4: 가드가 뒤따르는 블록 전체를 감싼다는 오해."""
+        text = self._read("grammar.md")
+        self.assertIn("가드의 스코프", text)
+        self.assertIn("바로 다음 항목 하나", text)
+        # 회피책이 없으면 규칙만 알고 빠져나오지 못한다.
+        self.assertIn("parallel", text)
+
+    def test_guard_condition_type_restriction_is_documented(self):
+        """가드 참조는 Integer/DateTime만 받는다 — Presence도 마찬가지."""
+        text = self._read("grammar.md")
+        self.assertIn("Integer 또는 DateTime", text)
+
+    def test_step_object_spelling_rule_is_documented(self):
+        """t3 F-4/F-6: 다단어 엔티티 참조 불가 + 복수형 불인식."""
+        from lnpl.lower import split_pascal
+        text = self._read("naming.md")
+        self.assertIn("".join(split_pascal("DailyReport")), text)   # dailyreport
+        self.assertIn("DailyReport", text)                          # 거부되는 표기
+        self.assertIn("복수형", text)
+
+    def test_node_id_derivation_is_documented(self):
+        """t3 F-7: `--workflow`가 요구하는 id가 어디에서 오는지."""
+        from lnpl.lower import derive_id
+        text = self._read("naming.md")
+        self.assertIn(derive_id("GetReport", "Workflow"), text)      # wf.get.report
+        self.assertIn("--workflow", text)
 
 
 class AuthoringSkillTest(unittest.TestCase):

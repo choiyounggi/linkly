@@ -66,6 +66,14 @@ SHORTEN_LIR = os.path.join(_REPO, "examples", "shorten.lir.json")
 SHORTEN_SPEC = os.path.join(_REPO, "examples", "shorten.spec.json")
 SHORTEN_OPENAPI = os.path.join(_REPO, "examples", "shorten.openapi.json")
 
+# The guard example RFC-0008 §5.2 promised and the repo never had (issue #50,
+# t4 F-8). Presence and Comparison `when` guards in one workflow, with the four
+# committed artifacts every other example carries.
+GUARDED_LNPL = os.path.join(_REPO, "examples", "guarded.lnpl")
+GUARDED_LIR = os.path.join(_REPO, "examples", "guarded.lir.json")
+GUARDED_SPEC = os.path.join(_REPO, "examples", "guarded.spec.json")
+GUARDED_OPENAPI = os.path.join(_REPO, "examples", "guarded.openapi.json")
+
 GUARDED = """
 capability postgres
 capability redis
