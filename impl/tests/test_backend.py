@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 from lnpl import backend, differential
-from lnpl.interp import sample_payload
+from lnpl.interp import refinement_index, sample_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import (READ_OPS, default_rows, repository_calls,
@@ -742,6 +742,91 @@ class TestModeBDerivesRepositoryOutcomes(unittest.TestCase):
                           for op in ops}, a["effects"])
 
 
+# Issue #48: a refinement facet (`PositiveInteger`, min 1) on the SECOND entity,
+# behind a `validate order` step. Mode B derives the validation outcome at build
+# time from the payload it is specialised against, exactly as it derives
+# repository outcomes from the seed (issue #35).
+VALIDATED_ORDER = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity PositiveInteger
+service OrderService
+    policy
+        retry 1
+workflow PlaceOrder
+    validate order
+    create order
+"""
+
+
+class TestModeBDerivesValidationOutcomes(unittest.TestCase):
+    """Mode B reaches the validation outcome statically (issue #48).
+
+    No toolchain, same as the repository-outcome class: the derivation lives in
+    the op stream `_lnpl_ops` builds.
+    """
+
+    def _doc(self):
+        return checkout_doc(VALIDATED_ORDER)
+
+    def _payload(self, **overrides):
+        doc = self._doc()
+        payload = sample_payload([n for n in doc["nodes"]
+                                  if n["kind"] == "Entity"],
+                                 refinement_index(doc))
+        payload.update(overrides)
+        for name, value in list(overrides.items()):
+            if value is ...:
+                del payload[name]
+        return doc, payload
+
+    def test_a_facet_violating_payload_fails_at_the_validate_step(self):
+        doc, payload = self._payload(quantity=0)
+        attrs, ops = backend._lnpl_ops(doc, "wf.place.order", payload=payload)
+        self.assertEqual(op_names(ops), ["validate order"])
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        # retry 1 -> two attempts, one copy of the failing effect per attempt.
+        self.assertEqual([e["kind"] for e in ops[0]["effects"]],
+                         ["Validation", "Validation"])
+
+    def test_a_valid_payload_completes(self):
+        doc, payload = self._payload(quantity=1)
+        attrs, ops = backend._lnpl_ops(doc, "wf.place.order", payload=payload)
+        self.assertEqual(op_names(ops), ["validate order", "create order"])
+        self.assertNotIn("lnpl.terminal_status", attrs)
+
+    def test_a_missing_required_field_fails(self):
+        doc, payload = self._payload(quantity=...)
+        attrs, ops = backend._lnpl_ops(doc, "wf.place.order", payload=payload)
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        self.assertEqual(op_names(ops), ["validate order"])
+
+    def test_no_payload_derives_the_sample_and_completes(self):
+        # D6: `payload=None` means the same derived sample mode A's default run
+        # uses (cli.cmd_run) — valid by construction, so nothing fails.
+        attrs, ops = backend._lnpl_ops(self._doc(), "wf.place.order")
+        self.assertEqual(op_names(ops), ["validate order", "create order"])
+        self.assertNotIn("lnpl.terminal_status", attrs)
+
+    def test_the_derived_outcome_matches_mode_a_on_a_facet_violation(self):
+        """Anti-drift: the derivation must agree with the mode it models —
+        status, step order, and per-attempt effect replication."""
+        doc, payload = self._payload(quantity=0)
+        a = differential.observe_mode_a(doc, "wf.place.order", payload, {})
+        attrs, ops = backend._lnpl_ops(doc, "wf.place.order", payload=payload)
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        self.assertEqual(op_names(ops), a["order"])
+        self.assertEqual({op["name"]: [e["kind"] for e in op["effects"]]
+                          for op in ops}, a["effects"])
+
+
 RETRY_TMPL = """
 capability postgres
 entity Product
@@ -992,6 +1077,29 @@ class TestModeBSeedChannel(unittest.TestCase):
         self.assertEqual(a["status"], "failed")
         self.assertEqual(b["status"], "failed")
         self.assertEqual(a["order"][-1], "create product")
+        self.assertEqual(b["order"], a["order"])
+        self.assertEqual(b["effects"], a["effects"])
+
+    def test_a_facet_violating_payload_is_equivalent_and_fails_both_modes(self):
+        """Issue #48, the payload channel: `observe_mode_b` hands the payload to
+        `build`, so `lnpl diff --payload` with a facet-violating payload sees
+        BOTH modes refuse — EQUIVALENT by agreeing to fail, never a divergence
+        where only mode A validates."""
+        d = checkout_doc(VALIDATED_ORDER)
+        payload = sample_payload([n for n in d["nodes"]
+                                  if n["kind"] == "Entity"],
+                                 refinement_index(d))
+        payload["quantity"] = 0
+        rows = default_rows(d, "wf.place.order", payload)
+        ok, report = differential.verify(d, "wf.place.order", payload, rows,
+                                         self.workdir)
+        self.assertTrue(ok, "\n".join(report))
+        a = differential.observe_mode_a(d, "wf.place.order", payload, rows)
+        b = differential.observe_mode_b(d, "wf.place.order", self.workdir,
+                                        payload=payload)
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(b["status"], "failed")
+        self.assertEqual(a["order"], ["validate order"])
         self.assertEqual(b["order"], a["order"])
         self.assertEqual(b["effects"], a["effects"])
 

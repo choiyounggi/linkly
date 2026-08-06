@@ -645,5 +645,142 @@ class TestCliAndSpecUseTheRefinedFixture(unittest.TestCase):
         self.assertEqual(set(payload), {"id"})
 
 
+# The measured F-6 shape (qa t1 S4, issue #48): two entities, `validate order`
+# naming the SECOND. `_validate` used to read the document's first Entity
+# (Product), so Order's facets were never applied and a qty=0 order completed.
+# The payload is flat-merged across entities, exactly as `sample_payload` builds
+# it, so the pre-fix pass was silent: Product's own fields were all present.
+TWO_ENTITY_ORDER = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity PositiveInteger
+service OrderService
+    policy
+        retry 1
+workflow PlaceOrder
+    validate order
+    create order
+"""
+
+# The boundary matrix: `min` AND `max` on one numeric refinement, `enum` on a
+# text one — all on the second entity, so every case exercises target
+# resolution, not just the min facet the S4 shape covers.
+TWO_ENTITY_MATRIX = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Qty
+        status OrderStatus
+refine Qty of Integer
+    min 1
+    max 10
+refine OrderStatus of Text
+    enum created confirmed
+service OrderService
+    policy
+        retry 1
+workflow PlaceOrder
+    validate order
+    create order
+"""
+
+
+class TestValidationTargetsDeclaredEntity(unittest.TestCase):
+    """`validate <entity>` checks the entity its `Validation.target` names —
+    never the document's first Entity (issue #48, qa t1 F-6/S4)."""
+
+    def _run(self, src, payload):
+        return Interpreter(ir(src), repo_rows={}).run_workflow("wf.place.order",
+                                                               payload)
+
+    def test_a_quantity_below_min_fails_the_validate_step(self):
+        # qa t1 S4: qty=0 against PositiveInteger (min 1) completed before.
+        result = self._run(TWO_ENTITY_ORDER,
+                           {"id": UUID_SAMPLE, "stock": 5, "quantity": 0})
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "validate order")
+        for token in ("quantity", "PositiveInteger", "min"):
+            self.assertIn(token, result["failure_reason"])
+        # The failure-signal contract Wave 3 consumes: policy retry applies to
+        # the validate step exactly as it does to a semantic-type failure.
+        self.assertEqual(result["steps"][-1]["attempts"], 2)
+
+    def test_a_quantity_at_the_exact_min_completes(self):
+        result = self._run(TWO_ENTITY_ORDER,
+                           {"id": UUID_SAMPLE, "stock": 5, "quantity": 1})
+        self.assertEqual(result["status"], "completed")
+
+    def test_a_quantity_just_above_min_completes(self):
+        result = self._run(TWO_ENTITY_ORDER,
+                           {"id": UUID_SAMPLE, "stock": 5, "quantity": 2})
+        self.assertEqual(result["status"], "completed")
+
+    def _matrix(self, quantity, status="created"):
+        payload = {"id": UUID_SAMPLE, "stock": 5, "status": status}
+        if quantity is not ...:
+            payload["quantity"] = quantity
+        return self._run(TWO_ENTITY_MATRIX, payload)
+
+    def test_a_quantity_at_the_exact_max_completes(self):
+        self.assertEqual(self._matrix(10)["status"], "completed")
+
+    def test_a_quantity_one_past_the_max_fails(self):
+        result = self._matrix(11)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("max", result["failure_reason"])
+
+    def test_a_status_outside_the_enum_fails(self):
+        result = self._matrix(1, status="rejected")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("enum", result["failure_reason"])
+        self.assertIn("created", result["failure_reason"])
+
+    def test_a_status_inside_the_enum_completes(self):
+        self.assertEqual(self._matrix(1, status="confirmed")["status"],
+                         "completed")
+
+    def test_a_missing_target_field_fails(self):
+        result = self._matrix(...)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("missing required field", result["failure_reason"])
+        self.assertIn("quantity", result["failure_reason"])
+
+    def test_a_null_target_field_fails(self):
+        result = self._matrix(None)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("null", result["failure_reason"])
+
+    def test_validating_the_first_entity_still_works(self):
+        # The checkout shape: the target IS the first entity. Only Product's
+        # fields are required — Order's are outside the validation's scope.
+        src = TWO_ENTITY_ORDER.replace("    validate order\n",
+                                       "    validate product\n")
+        result = self._run(src, {"id": UUID_SAMPLE, "stock": 5})
+        self.assertEqual(result["status"], "completed")
+
+    def test_a_dangling_validation_target_fails_closed(self):
+        # Hand-mutated IR (an agent-written `.lir.json` never went through
+        # `lower`): the run must fail, not fall back to some other entity.
+        doc = ir(TWO_ENTITY_ORDER)
+        for node in doc["nodes"]:
+            if node["kind"] == "Validation":
+                node["target"] = "entity.ghost"
+        result = Interpreter(doc, repo_rows={}).run_workflow(
+            "wf.place.order", {"id": UUID_SAMPLE, "stock": 5, "quantity": 1})
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("entity.ghost", result["failure_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

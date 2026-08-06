@@ -41,6 +41,8 @@ import subprocess
 import tempfile
 
 from lnpl.condition import parse_condition, Presence, Comparison
+from lnpl.interp import (RunError, refinement_index, sample_payload,
+                         validate_effect)
 # The seed/key policy both modes read (issue #35). Imported, never restated: a
 # second copy of the seeding rule is the defect Wave 1 removed when three seeding
 # sites became one. `repo_policy` imports nothing from `interp`/`backend`/`cli`,
@@ -491,7 +493,20 @@ def _structural_markers(document, workflow_id):
     return markers
 
 
-def _lnpl_ops(document, workflow_id, seeded=None):
+def _validation_fails(nodes, effect, payload, refinements):
+    """Whether mode A's validate step would reject `payload` (issue #48).
+
+    The judgement is interp's own `validate_effect` — one validator, both
+    modes — so this derivation cannot drift from what the interpreter enforces.
+    """
+    try:
+        validate_effect(nodes, effect, payload, refinements)
+    except RunError:
+        return True
+    return False
+
+
+def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
     """S4: the `lnpl` op stream, plus the module-level attributes.
 
     `seeded` is the run's seed condition — the set of entity ids that start with a
@@ -500,6 +515,14 @@ def _lnpl_ops(document, workflow_id, seeded=None):
     the ONE input mode B derives its repository outcome from, and mode A is given
     the same condition materialised as rows, so neither mode reads the other's
     answer (the arrangement `_derive_skip_from_payload` uses for the skip flag).
+
+    `payload` is the run's input values — the second input the derivation reads,
+    for `Validation` effects only (issue #48): a refinement facet's truth is a
+    payload fact, and mode B specialises at compile time, so the validation
+    outcome is decided here exactly as the repository outcome is decided from
+    the seed. `None` means the same derived sample mode A's default run uses
+    (`cli.cmd_run` / `cmd_diff`), which is valid by construction — so a caller
+    that supplies no payload derives no failure.
 
     This is the one place the Semantic IR is read for code generation. Both
     renderings consume the result — `emit_lnpl_mlir` serialises it as `lnpl`
@@ -611,6 +634,10 @@ def _lnpl_ops(document, workflow_id, seeded=None):
     has_cache_budget = _has_cache_budget(document, workflow_id)
     seeded_now = set(seeded_entities(document, workflow_id) if seeded is None
                      else seeded)
+    refinements = refinement_index(document)
+    if payload is None:
+        payload = sample_payload([n for n in document.get("nodes", [])
+                                  if n["kind"] == "Entity"], refinements)
     created = set()
     for cut, op in enumerate(ops):
         if op["guard_mode"] is not None:
@@ -629,6 +656,10 @@ def _lnpl_ops(document, workflow_id, seeded=None):
                     fail_at = index
                 else:
                     created.add(node["entity"])
+            elif kind == "Validation" and _validation_fails(nodes, node,
+                                                            payload,
+                                                            refinements):
+                fail_at = index
             if fail_at is not None:
                 break
         if fail_at is not None:
@@ -682,10 +713,11 @@ def _mlir_attr_dict(pairs):
                      for key, value in pairs if value is not None)
 
 
-def emit_lnpl_mlir(document, workflow_id, seeded=None):
+def emit_lnpl_mlir(document, workflow_id, seeded=None, payload=None):
     """S4: Semantic IR -> `lnpl` dialect MLIR.
 
-    `seeded` is the run's seed condition; see `_lnpl_ops`.
+    `seeded` is the run's seed condition and `payload` the run's input values
+    (validation derivation, issue #48); see `_lnpl_ops`.
 
     Every op carries the originating node id on both paths RFC-0004 requires: the
     discardable attribute `lnpl.node_id` that passes read, and a `loc(...)` that
@@ -694,7 +726,7 @@ def emit_lnpl_mlir(document, workflow_id, seeded=None):
     verifier over the emitted module, so a module that loses a node id fails the
     compile rather than producing a binary that cannot be traced back.
     """
-    module_attrs, ops = _lnpl_ops(document, workflow_id, seeded)
+    module_attrs, ops = _lnpl_ops(document, workflow_id, seeded, payload)
 
     lines = [
         "// Generated from Semantic IR (lir_version %s, module %s) — do not edit."
@@ -910,17 +942,18 @@ def _render_std(module_attrs, ops):
     return "\n".join(lines) + "\n"
 
 
-def emit_mlir(document, workflow_id, seeded=None):
+def emit_mlir(document, workflow_id, seeded=None, payload=None):
     """Semantic IR -> standard-dialect MLIR, by way of the `lnpl` dialect (S4-S5).
 
-    `seeded` is the run's seed condition; see `_lnpl_ops`.
+    `seeded` is the run's seed condition and `payload` the run's input values
+    (validation derivation, issue #48); see `_lnpl_ops`.
 
     The op stream this renders is the one `emit_lnpl_mlir` serialises, so the
     standard-dialect module and the `lnpl` module cannot describe different
     workflows. The signature and the output are unchanged from before the dialect
     existed; `impl/tests/golden/` holds the pre-change bytes that prove it.
     """
-    return _render_std(*_lnpl_ops(document, workflow_id, seeded))
+    return _render_std(*_lnpl_ops(document, workflow_id, seeded, payload))
 
 
 RUNTIME_C_HEADER = r"""/* Mode B runtime shim — generated, do not edit.
@@ -976,7 +1009,8 @@ def runtime_c(field_names):
         + "  return rc;\n}\n")
 
 
-def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None):
+def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
+          payload=None):
     """Run S4-S7. Returns the path to the native binary.
 
     `seeded` is the run's seed condition (see `_lnpl_ops`): it specialises the
@@ -984,7 +1018,8 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None):
     alternative, and it is the wrong one — deciding the repository outcome at run
     time means the generated module branches on repository state, which is a
     store inside the native runtime. Mode B is rebuilt per `observe_mode_b` call
-    anyway, so specialising costs nothing.
+    anyway, so specialising costs nothing. `payload` specialises the validation
+    outcome the same way (issue #48; see `_lnpl_ops`).
 
     Stages on disk, in order: `module.lnpl.mlir` (S4, verified against the `lnpl`
     dialect), `module.mlir` (S5 standard dialects), `module.llvm.mlir` (S6),
@@ -1005,13 +1040,13 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None):
     # materialise as a failed conversion, so nothing downstream runs and no
     # binary appears. `path=` verifies this file rather than a staged copy, which
     # keeps the artifact and the verified object the same thing.
-    lnpl_text = emit_lnpl_mlir(document, workflow_id, seeded)
+    lnpl_text = emit_lnpl_mlir(document, workflow_id, seeded, payload)
     with open(lnpl_path, "w", encoding="utf-8") as fh:
         fh.write(lnpl_text)
     verify_lnpl_module(lnpl_text, path=lnpl_path)
 
     with open(mlir_path, "w", encoding="utf-8") as fh:
-        fh.write(emit_mlir(document, workflow_id, seeded))
+        fh.write(emit_mlir(document, workflow_id, seeded, payload))
     with open(c_path, "w", encoding="utf-8") as fh:
         fh.write(runtime_c(fields))
     # Persist the parameter order next to the binary so run_binary binds values by
