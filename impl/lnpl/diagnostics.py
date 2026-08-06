@@ -37,6 +37,7 @@ CODES = (
     "declared-not-enforced",        # #38  declared, and the runtime does nothing with it
     "declared-measured-only",       # #38  observed and reported, never blocks
     "authorization-not-verified",   # #38  Authorization Effect records, never checks
+    "guard-skipped-steps",          # #44  a guard was false, so declared steps did not run
 )
 
 # How the runtime treats a declaration.

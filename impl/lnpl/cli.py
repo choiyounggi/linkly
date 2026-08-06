@@ -138,8 +138,15 @@ def cmd_run(args):
 
 def _print_human(result, interp):
     root = interp.trace.root
-    print("workflow %s -> %s  (%sms, correlation_id=%s)"
-          % (root.name if root else "?", result["status"],
+    # Issue #44: the count rides on the FIRST line, because that is the only
+    # line a caller skimming output is guaranteed to read — and without it a
+    # rejected run and a fulfilled one printed byte-identical headers (t1 F-5,
+    # t2 F-6). A run with no guard prints exactly what it printed before.
+    skipped = result.get("skipped") or []
+    note = ("  (%d step(s) skipped by guard)"
+            % sum(len(r["steps"]) for r in skipped)) if skipped else ""
+    print("workflow %s -> %s%s  (%sms, correlation_id=%s)"
+          % (root.name if root else "?", result["status"], note,
              result["duration_ms"], result["correlation_id"]))
     if root:
         for span in root.children:
@@ -153,6 +160,12 @@ def _print_human(result, interp):
               % (result["slo_ms"], "met" if result["slo_met"] else "EXCEEDED"))
     if result["failed_step"]:
         print("  failed at: %s" % result["failed_step"])
+    for record in skipped:
+        # The guard's own text, so the reader learns WHY the step did not run
+        # rather than only that something did not.
+        print("  skipped by `%s %s`: %s"
+              % (record["mode"], record["condition"] or "",
+                 ", ".join(record["steps"]) or "(no step)"))
     for entry in interp.trace.logs:
         if entry["level"] in ("WARN", "ERROR"):
             print("  %-5s %s" % (entry["level"], entry["message"]))

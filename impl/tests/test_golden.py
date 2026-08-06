@@ -328,7 +328,13 @@ class TestCheckoutExecution(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual([s["step"] for s in result["steps"]],
                          ["validate product", "find product", "cache product"])
-        self.assertEqual(result["skipped"], ["wf.checkout.guard.1"])
+        # Issue #44: the manifest names the condition and the step that did not
+        # run, so a caller can tell a rejected order from a fulfilled one
+        # without knowing the compiler's node-id scheme.
+        self.assertEqual(result["skipped"],
+                         [{"guard": "wf.checkout.guard.1", "mode": "when",
+                           "condition": "product.stock > 0",
+                           "steps": ["create order"], "rounds": None}])
         # the create never reached the repository
         self.assertEqual(interp.repo.calls, [("entity.product", "read")])
 

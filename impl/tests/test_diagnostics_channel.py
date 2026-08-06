@@ -46,7 +46,7 @@ class TestDiagnosticRecord(unittest.TestCase):
     def test_every_declared_code_is_constructible(self):
         # The closed set is the contract; a code in CODES that the record
         # rejects would be a contract nobody can honour.
-        self.assertEqual(len(CODES), 4)
+        self.assertEqual(len(CODES), 5)
         for code in CODES:
             self.assertEqual(_diag(code=code).code, code)
 
