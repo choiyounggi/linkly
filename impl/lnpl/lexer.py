@@ -13,7 +13,27 @@ KEYWORDS_CONTROL = ("when", "repeat", "parallel", "until", "pipeline", "merge")
 RESERVED = ("if", "for", "while", "switch")
 
 DURATION_UNITS = ("ms", "s", "m")
-COMPARATORS = ("<=", ">=", "<", ">")
+
+# Two-character comparators come first: a consumer that scans this table in order
+# must see `<=` before `<`, or every `<=` reads as `<` followed by a stray `=`.
+# RFC-0008 §1 fixed the six; RFC-0015 is what put `==`/`!=` in the generated
+# reference, where their absence had left authors unable to tell which of the RFC
+# and the reference was the implementation (t4 F-7).
+COMPARATORS = ("<=", ">=", "==", "!=", "<", ">")
+
+# RFC-0015 value expressions. `*` and `/` are deliberately absent: nothing in
+# issue #47 needs them, and division would have to answer for rounding and for
+# division by zero in two runtimes at once.
+ARITH_OPS = ("+", "-")
+
+# The one logical combinator. `or`/`not` are not in the language.
+LOGICAL_OPS = ("and",)
+
+# The assignment step, `set <reference> to <value>`.
+ASSIGN_KEYWORDS = ("set", "to")
+
+# The reserved namespace naming the run's input payload: `input.quantity`.
+PAYLOAD_NAMESPACE = "input"
 
 
 class LexError(Exception):

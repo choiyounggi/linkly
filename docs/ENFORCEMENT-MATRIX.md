@@ -16,6 +16,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 
 | verb | effect kind | 비고 |
 |------|-------------|------|
+| set | Assignment | 목적어가 엔티티명이 아니라 값 표현식이다(`set product.stock to product.stock - input.quantity`). 바인딩된 행의 필드를 갱신하고 그 사실을 effect로 남긴다 — RFC-0015 |
 | validate | Validation | 대상이 필드면 그 필드의 규칙, `input`이면 엔티티 전체를 시맨틱 타입 규칙으로 검사 |
 | authenticate | RepositoryCall | operation `read` |
 | load | RepositoryCall | operation `read` |

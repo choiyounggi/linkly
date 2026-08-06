@@ -120,7 +120,8 @@ class TestParser(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("line 3", msg)      # the chaining guard
         self.assertIn("line 2", msg)      # the guard it would have dropped
-        self.assertIn("chaining", msg)
+        # RFC-0015 gave the author a real fix, so the message names it.
+        self.assertIn("joined by `and`", msg)
 
     def test_chained_guards_of_mixed_modes_are_rejected(self):
         with self.assertRaises(ParseError) as ctx:
@@ -131,7 +132,7 @@ class TestParser(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("until", msg)
         self.assertIn("line 2", msg)
-        self.assertIn("chaining", msg)
+        self.assertIn("joined by `and`", msg)
 
     def test_two_guards_each_owning_a_step_still_parse(self):
         """Non-destructive: guard -> step -> guard -> step is unchanged."""

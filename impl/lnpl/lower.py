@@ -52,6 +52,7 @@ KIND_WORD = {
 GUARD_SLUG = {"when": "when", "until": "until", "repeat": "repeat"}
 
 EFFECT_SLUG = {
+    "Assignment": "assign",
     "Validation": "check",
     "RepositoryCall": "repo",
     "CacheAccess": "cache",
@@ -62,8 +63,14 @@ EFFECT_SLUG = {
     "BusinessRule": "rule",
 }
 
+# The one verb whose object is a value expression rather than an entity name
+# (RFC-0015). It stays in `VERB_LEXICON` below so the closed table still answers
+# "which verbs exist"; `_WfContext._step` routes it to its own derivation.
+ASSIGN_VERB = "set"
+
 # R1: the closed step-verb lexicon. verb -> (Effect kind, fixed fields)
 VERB_LEXICON = {
+    "set": ("Assignment", {}),
     "validate": ("Validation", {}),
     "authenticate": ("RepositoryCall", {"operation": "read"}),
     "load": ("RepositoryCall", {"operation": "read"}),
@@ -435,10 +442,24 @@ def lower(decls, module_name):
                                                  used_presets, line.lineno)})
         if not fields:
             raise LowerError("entity %s declares no fields" % decl.name)
+        from .condition import PAYLOAD_NAMESPACE
+        from .repo_policy import binding_name as _binding_name
+        if _binding_name({"name": decl.name}) == PAYLOAD_NAMESPACE:
+            raise LowerError(
+                "line %d: entity %r would bind as %r, which RFC-0015 reserves "
+                "for the run's input payload (`input.<field>`) — rename the "
+                "entity" % (decl.lineno, decl.name, PAYLOAD_NAMESPACE))
         eid = derive_id(decl.name, "Entity")
         if eid in registry:
             raise LowerError("two entities derive the same id %r" % eid)
         registry[eid] = {"decl": decl, "id": eid, "name": decl.name, "fields": fields}
+
+    # Declared type name -> one of the 18 bases. RFC-0015's operand check asks
+    # "is this an Integer", and `refine SafeStock of Integer` must answer yes,
+    # so the question is put to the base rather than to the written name.
+    base_of = {name: name for name in BASE_CATEGORY}
+    base_of.update({n["name"]: n["base"] for n in refine_nodes})
+    base_of.update({name: entry["base"] for name, entry in PRESETS.items()})
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
     cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
@@ -569,7 +590,8 @@ def lower(decls, module_name):
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None))
         for node in ctx.emitted:
             mod.add(node)
-        _check_scoped_conditions(ctx.emitted, registry, d.name)
+        _check_scoped_conditions(ctx.emitted, registry, d.name, base_of,
+                                 top_ids)
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
 
     for n in constraint_nodes:
@@ -612,7 +634,11 @@ class _WfContext:
         step_id = self._next_step_id()
         verb = line.tokens[0]
         obj = line.tokens[1] if len(line.tokens) > 1 else None
-        derived = _derive_effect(step_id, verb, obj, self.registry, line.lineno)
+        if verb == ASSIGN_VERB:
+            derived = _derive_assignment(step_id, line, self.registry)
+        else:
+            derived = _derive_effect(step_id, verb, obj, self.registry,
+                                     line.lineno)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -689,53 +715,194 @@ def _check_event_refs(emitted, declared_event_ids, workflow_name):
                else "none declared"))
 
 
-def _check_scoped_conditions(emitted, registry, workflow_name):
-    """Refuse a qualified guard reference that can never resolve (RFC-0012 §G12.5).
+def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
+                             top_ids=None):
+    """Refuse a guard reference that can never resolve, or can never be compared.
 
-    A bare reference names an input payload field and is not checked here — the
-    payload is not part of the document, and `when token missing` asks about the
-    request rather than about a row.
+    Four judgements, all decidable from the document alone (RFC-0012 §G12.5,
+    RFC-0015 §Static rejections):
 
-    A qualified one names a bound row, and a binding exists only where this
-    workflow READS that entity. All three conditions are decidable from the
-    document, so they are decided here rather than left to produce a guard that
-    is quietly false forever.
+      * a qualified reference names a bound row, and a binding exists only where
+        this workflow READS that entity;
+      * `input.<field>` names the run's payload, whose shape is the union of every
+        declared entity's fields — a name outside that union is a typo, not a
+        field;
+      * an operand whose declared type is not Integer cannot be compared at all,
+        so the refusal belongs here rather than in a runtime `TypeError` (t2 F-4
+        reported exactly that traceback escaping to the operator);
+      * a comparison of two literals decides nothing, so it is an authoring
+        mistake rather than a guard.
+
+    A bare reference stays unchecked: the payload is not part of the document,
+    and `when token missing` asks about the request rather than about a row. That
+    is also why `input.` is the spelling worth preferring — it is checked.
     """
-    from .condition import ConditionError, parse_condition
+    from .condition import (ConditionError, Lit, PAYLOAD_NAMESPACE,
+                            parse_condition, references)
     from .repo_policy import READ_OPS, binding_name
 
     by_binding = {binding_name(ent): ent for ent in registry.values()}
     read_entities = {node["entity"] for node in emitted
                      if node["kind"] == "RepositoryCall"
                      and node.get("operation") in READ_OPS}
+    declared_fields = {f["name"]: f for ent in registry.values()
+                       for f in ent["fields"]}
+    from .condition import parse_value
+    scope = _Scope(workflow_name, by_binding, read_entities, declared_fields,
+                   base_of or {})
+    by_id = {node["id"]: node for node in emitted}
 
-    for node in emitted:
-        if node["kind"] != "Guard":
-            continue
-        text = node.get("condition")
-        if not text:
-            continue                      # `repeat` carries a count, not a condition
-        try:
-            cond = parse_condition(text)
-        except ConditionError:
-            continue                      # the parser already refused it
-        if cond is None or "." not in cond.field:
-            continue                      # bare reference — a payload field
-        binding, _, field = cond.field.partition(".")
-        entity = by_binding.get(binding)
+    # Source order, not emission order: `_WfContext._guard` emits its guarded step
+    # BEFORE the Guard that owns it, so a flat pass over `emitted` would see an
+    # assignment as preceding the guard that in fact runs first. The
+    # assigned-then-read judgement below is about the order an author wrote, so
+    # the walk has to be the tree's.
+    assigned = set()
+
+    def visit(ids):
+        for nid in ids:
+            node = by_id.get(nid)
+            if node is None:
+                continue
+            kind = node["kind"]
+            if kind == "Guard":
+                _check_guard(node, scope, assigned, workflow_name,
+                             parse_condition, references, ConditionError, Lit)
+                visit(node.get("children") or [])
+            elif kind == "WorkflowStep":
+                for child_id in node.get("children") or []:
+                    child = by_id.get(child_id)
+                    if child is None or child["kind"] != "Assignment":
+                        continue
+                    # The target and the expression's operands are references
+                    # like any other, so the same judgements apply — including
+                    # "is it an Integer".
+                    text = "set %s to %s" % (child["target"], child["expression"])
+                    scope.check_reference(child["target"], text)
+                    for name in references(parse_value(child["expression"])):
+                        scope.check_reference(name, text)
+                    assigned.add(child["target"])
+            else:
+                visit(node.get("children") or [])
+
+    visit(top_ids or [])
+
+
+def _check_guard(node, scope, assigned, workflow_name, parse_condition,
+                 references, ConditionError, Lit):
+    """One Guard's condition: every reference resolvable, comparable, and stable."""
+    text = node.get("condition")
+    if not text:
+        return                            # `repeat` carries a count, not a condition
+    try:
+        cond = parse_condition(text)
+    except ConditionError:
+        return                            # the parser already refused it
+    if cond is None:
+        return
+
+    for name in references(cond):
+        scope.check_reference(name, text)
+        # RFC-0015: mode B receives every condition field as an i64 parameter
+        # fixed at entry, so a guard reading a value an earlier step assigned
+        # would compare the pre-assignment number there and the current one
+        # here. Refusing is what keeps the two modes one language.
+        if name in assigned:
+            raise LowerError(
+                "workflow %s: guard condition %r reads %r, which an earlier "
+                "step assigns — a guard must not depend on a value this "
+                "workflow changed (RFC-0015: mode B fixes condition fields "
+                "at entry). Move the guard above the assignment."
+                % (workflow_name, text, name))
+
+    for term in _comparisons(cond):
+        if isinstance(term.left, Lit) and isinstance(term.right, Lit):
+            raise LowerError(
+                "workflow %s: guard condition %r compares two literals, so it "
+                "decides nothing — name a field on at least one side"
+                % (workflow_name, text))
+
+
+def _comparisons(cond):
+    """The Comparison terms of a condition, whether or not it is an `and`."""
+    from .condition import And, Comparison
+    if isinstance(cond, Comparison):
+        return (cond,)
+    if isinstance(cond, And):
+        return cond.terms
+    return ()
+
+
+class _Scope:
+    """What the document says about the names a workflow's values may use.
+
+    One object rather than seven parameters threaded through three functions:
+    the guard check, the assignment check and the type check all ask the same
+    three questions of the same document.
+    """
+
+    def __init__(self, workflow_name, by_binding, read_entities, declared_fields,
+                 base_of):
+        self.workflow_name = workflow_name
+        self.by_binding = by_binding
+        self.read_entities = read_entities
+        self.declared_fields = declared_fields
+        self.base_of = base_of
+
+    def check_reference(self, name, text):
+        """One `Reference`, judged against the document."""
+        from .condition import PAYLOAD_NAMESPACE
+        if "." not in name:
+            return                        # bare reference — a payload field
+        binding, _, field = name.partition(".")
+
+        if binding == PAYLOAD_NAMESPACE:
+            if field not in self.declared_fields:
+                raise LowerError(
+                    "workflow %s: %r names input field %r, which no entity "
+                    "declares (declared fields: %s)"
+                    % (self.workflow_name, text, field,
+                       ", ".join(sorted(self.declared_fields)) or "none"))
+            self._check_integer(self.declared_fields[field], name, text)
+            return
+
+        entity = self.by_binding.get(binding)
         if entity is None:
             raise LowerError(
                 "workflow %s: guard condition %r names %r, which is not a "
-                "declared entity" % (workflow_name, text, binding))
-        if field not in {f["name"] for f in entity["fields"]}:
+                "declared entity" % (self.workflow_name, text, binding))
+        fields = {f["name"]: f for f in entity["fields"]}
+        if field not in fields:
             raise LowerError(
                 "workflow %s: guard condition %r names field %r, which entity %s "
-                "does not declare" % (workflow_name, text, field, entity["name"]))
-        if entity["id"] not in read_entities:
+                "does not declare"
+                % (self.workflow_name, text, field, entity["name"]))
+        if entity["id"] not in self.read_entities:
             raise LowerError(
                 "workflow %s: guard condition %r reads %s, but this workflow "
                 "never reads it — no binding can ever exist, so the guard would "
-                "be false forever" % (workflow_name, text, entity["id"]))
+                "be false forever (to check the run's input instead, write "
+                "`input.%s`)"
+                % (self.workflow_name, text, entity["id"], field))
+        self._check_integer(fields[field], name, text)
+
+    def _check_integer(self, field_node, name, text):
+        """RFC-0015: only Integer (or a refinement of it) enters a comparison.
+
+        t2 F-4 is the reason this is a compile error and not a runtime one: a
+        `Money` guard compiled with no warning and then failed with a raw
+        `TypeError: '<=' not supported between instances of 'dict' and 'int'`
+        from inside the interpreter.
+        """
+        declared = field_node.get("type")
+        base = self.base_of.get(declared, declared)
+        if base == "Integer":
+            return
+        raise LowerError(
+            "workflow %s: %r uses %s, whose declared type %s is not Integer — "
+            "RFC-0015 computes and compares whole numbers only (Money, DateTime "
+            "and the composite types have no evaluator in either mode)"
+            % (self.workflow_name, text, name, declared))
 
 
 def _derive_effect(step_id, verb, obj, registry, lineno):
@@ -783,6 +950,56 @@ def _derive_effect(step_id, verb, obj, registry, lineno):
         return _node(kind, eid, event=_event_ref(obj, lineno))
 
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
+
+
+def _derive_assignment(step_id, line, registry):
+    """`set <binding>.<field> to <value>` -> an Assignment Effect node (RFC-0015).
+
+    `set` is in `VERB_LEXICON` like every other verb — one closed table is what
+    keeps "which verbs exist" answerable in one place, and it is what puts `set`
+    into the generated `verbs.md`. What it cannot share is `_derive_effect`'s
+    object handling: every other verb's object names an entity, and this one's
+    names a field of a bound row.
+    """
+    from .condition import ConditionError, PAYLOAD_NAMESPACE, parse_assignment
+    from .condition import value_to_string
+    from .repo_policy import binding_name
+
+    text = " ".join(line.tokens)
+    try:
+        target, value = parse_assignment(text)
+    except ConditionError as exc:
+        raise LowerError("line %d: %s" % (line.lineno, exc))
+
+    binding, _, field = target.partition(".")
+    if not field:
+        raise LowerError(
+            "line %d: assignment target %r must name a bound row's field "
+            "(`<binding>.<field>`) — a bare name is an input field, and the "
+            "input is not state this workflow owns" % (line.lineno, target))
+    if binding == PAYLOAD_NAMESPACE:
+        raise LowerError(
+            "line %d: %r assigns to the run's input, which is not state — "
+            "assign to a row this workflow read (`<binding>.%s`)"
+            % (line.lineno, text, field))
+
+    entity = None
+    for ent in registry.values():
+        if binding_name(ent) == binding:
+            entity = ent
+            break
+    if entity is None:
+        raise LowerError(
+            "line %d: assignment target %r names %r, which is not a declared "
+            "entity" % (line.lineno, target, binding))
+    if field not in {f["name"] for f in entity["fields"]}:
+        raise LowerError(
+            "line %d: assignment target %r names field %r, which entity %s does "
+            "not declare" % (line.lineno, target, field, entity["name"]))
+
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Assignment"])
+    return _node("Assignment", eid, target=target,
+                 expression=value_to_string(value), entity=entity["id"])
 
 
 def _resolve_entity(registry, obj, verb, lineno):

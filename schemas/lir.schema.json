@@ -52,6 +52,9 @@
             "$ref": "#/$defs/nodeGuard"
           },
           {
+            "$ref": "#/$defs/nodeAssignment"
+          },
+          {
             "$ref": "#/$defs/nodeNetworkCall"
           },
           {
@@ -559,6 +562,39 @@
         "kind",
         "id",
         "mode"
+      ],
+      "additionalProperties": false
+    },
+    "nodeAssignment": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Assignment"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "target": {
+          "type": "string"
+        },
+        "expression": {
+          "type": "string"
+        },
+        "entity": {
+          "$ref": "#/$defs/nodeId"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "target",
+        "expression",
+        "entity"
       ],
       "additionalProperties": false
     },
