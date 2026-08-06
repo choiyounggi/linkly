@@ -5,6 +5,7 @@
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 - Updated-by: RFC-0008 (§Guard)
 - Updated-by: RFC-0012 (§Guard)
+- Updated-by: RFC-0013 (§Policy Enforcement)
 
 ## Motivation
 
@@ -126,6 +127,8 @@ RFC-0001의 `Guard` 노드(2026-07-31 신설)는 피가드 항목 하나를 감�
 쪽도 관측 가능한 실패보다 나쁘다.
 
 ### Policy Enforcement
+
+> 갱신됨: RFC-0013
 
 Constraint 노드(RFC-0001: Policy·Security·Performance)의 런타임 의미.
 Security의 `mechanisms`는 컴파일러가 구현을 선택하는 입력이며(CHARTER §핵심

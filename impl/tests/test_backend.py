@@ -12,6 +12,7 @@ import tempfile
 import unittest
 
 from lnpl import backend, differential
+from lnpl.interp import MAX_STEP_ATTEMPTS as _MAX
 from lnpl.interp import refinement_index, sample_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
@@ -910,6 +911,23 @@ class TestModeBDerivesRetryAttempts(unittest.TestCase):
         # A sweep that silently stopped sweeping would pass. Pin the cell count so
         # the exclusion list cannot quietly widen.
         self.assertEqual(compared, 5 * 5 * 3 - len(DEADLINE_STARVED) * 5)
+
+    def test_derived_attempts_match_mode_a_at_the_attempt_ceiling(self):
+        """The matrix above tops out at `retry 5`, so it never reaches the ceiling.
+
+        `MAX_STEP_ATTEMPTS` is the one bound that does not read `retry`, which is
+        exactly why the mirror can lose it without any existing cell noticing.
+        No `timeout` here on purpose: with a deadline the deadline gate fires
+        first and the ceiling is never the bound under comparison.
+        """
+        for retry in (_MAX - 2, _MAX - 1, _MAX, _MAX * 2):
+            with self.subTest(retry=retry):
+                d = retry_doc(retry=retry, timeout=None, lead=0)
+                derived, observed = self._derived(d), self._observed(d, "find product")
+                self.assertEqual(derived, observed)
+                self.assertEqual(observed, min(retry + 1, _MAX),
+                                 "the ceiling is a backstop, not a clamp on "
+                                 "budgets below it")
 
     def test_a_workflow_deadline_stops_mode_a_before_the_repository_call(self):
         """Characterises a gap this task does NOT close, and validates the

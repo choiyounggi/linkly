@@ -418,6 +418,14 @@ NOOP_CONTROL = ("CONTROL (must survive): reword a docstring",
 # `backend.REPO_ROOT` resolves to this repository. Omitting them made every
 # mutant tree fail at the baseline — 41 errors reading a missing .irdl.mlir — so
 # the harness could not tell a caught mutation from a broken tree.
+#
+# `pyproject.toml` arrived with the `lnpl` console script: `test_packaging`
+# reads it from the repo root to check the entry point, the package dir and the
+# dependency set. Omitting it cost 6 baseline failures (measured), which is the
+# same class of breakage — and note the shape of it: a missing tree path fails
+# the baseline gate, which exits rc=1 in ~35s having measured nothing at all.
+# That is outwardly indistinguishable from "a mutant survived" except by how
+# fast it finished, so anything a test reads belongs in this tuple.
 TREE_CONTENTS = ("impl", "examples", "schemas", "scripts", "kb", "rfcs", "docs",
                  "plans", "mlir", "CHARTER.md", ".venv",
                  "plugins", ".claude-plugin", "AGENTS.md", "CLAUDE.md",

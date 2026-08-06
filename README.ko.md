@@ -18,19 +18,9 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 개발자는 구현을 쓰지 않는다. 목표와 비즈니스 규칙(*무엇을*)만 선언하고, 컴파일러와 AI
 에이전트 파이프라인이 나머지(*어떻게*)를 설계·구현·검증·최적화·배포한다.
 
-> **상태: RFC 13편 — 12편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.
-> RFC-0007은 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된
-> 2026-07-31부터였다
-> ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)). 로드맵 3 Phase
-> 전부 완료.**
-> `.lnpl`이 파싱되고 Semantic IR로 lowering돼 IR 인터프리터에서 실행되며(모드 A),
-> MLIR을 거쳐 **네이티브 바이너리**로 컴파일된다(모드 B). 차동 검증이 RFC-0004가
-> 지명한 관측 가능 4종에 대해 두 모드의 일치를 확인한다. OpenAPI도 IR에서 생성된다.
-> 골든 시나리오는 손으로 유지하는 파일이 아니라 컴파일러가 **생성**한다(386 테스트 전부
-> 통과). 커스텀 `lnpl` MLIR dialect도 들어갔다 — IRDL로 선언적으로 정의하므로 C++
-> TableGen 빌드가 필요없다(RFC-0004 S4). 에이전트 9역할도 전부 구현됐다.
-> [로드맵](docs/ROADMAP.md) 참조.
-> RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영어다.
+제안서가 아니라 동작하는 구현이다. `.lnpl`이 IR 인터프리터에서 실행되고 MLIR을 거쳐
+네이티브 바이너리로 컴파일되며, 차동 검증이 두 모드를 같은 관측 가능 동작에 묶는다.
+[상세 상태는 아래](#상태).
 
 ---
 
@@ -83,52 +73,6 @@ AST를 버린다. 의미가 1급이다: `BusinessRule` · `Validation` · `Netwo
 IR은 중첩 트리가 아니라 **평탄한 노드 테이블 + id 참조**다. 이 구조가 constrained
 decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와 조각 교환을 싸게 만들고,
 직렬화 순서를 안정적으로 유지해 KV-cache 프리픽스를 재사용할 수 있게 한다.
-
----
-
-## RFC 스위트
-
-| RFC | 내용 |
-|-----|------|
-| [0000 RFC Process](rfcs/0000-rfc-process.md) | *0007로 대체됨* — 수명주기, 번호 체계, 고정 7섹션 템플릿 |
-| [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | `Updates` 관계 신설 — RFC를 대체하지 않고 지목한 **절**만 갱신 |
-| [0001 Semantic IR](rfcs/0001-semantic-ir.md) | 노드 20종, Semantic Type 18종, 평탄 구조, canonical JSON 직렬화 |
-| [0002 Syntax](rfcs/0002-syntax.md) | 라인 지향·키워드 구획 EBNF(51 생산규칙) + 문법→IR lowering 매핑 |
-| [0003 Runtime](rfcs/0003-runtime.md) | actor, structured concurrency, 정책 집행, 메모리 프리미티브, 관측성 계약 |
-| [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering 7단계, 패스 불변조건, Optimizer 3종 책임 축 |
-| [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 카테고리, 3단 progressive disclosure 라우팅, 소비 인터페이스 |
-| [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 역할 9종, JSON-RPC 메서드 8종, 구조화 오류, 멱등, 태스크 수명주기 |
-| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | 가드 조건식: 존재 검사·비교식 2형태, 명세 정정, 모드 B 컴파일. *0002 §Full grammar·0003 §Guard 갱신* |
-| [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | 문법이 확정됐으므로 RFC-0002 미결 ②를 해소. *0002 §Open Questions 갱신* |
-| [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | 역할이 저작 권한 없는 노드에 자기 노드를 부착하는 법, 그리고 참조가 이동할 때의 의미론. *0006 §Agent Roles & IR Access·§Methods/ir.propose 갱신* |
-
-12편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
-Accepted가 됐다(이슈 #11).
-교차 정합성 전항 통과와 소유자 승인은 — 교차 정합성 전항 통과와 소유자 승인이 모두
-충족됐다. 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
-범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
-**Updates**는 지목한 **절**만 갱신하고 대상은 `Accepted`를 유지한다. 두 번째 관계를 둔
-이유는, 전면 대체만 있으면 한 줄 개정에 전체 재서술이 필요해지고 — 그만큼 비싼 규율은
-결국 사람이 어기는 규율이 되기 때문이다. 승격 근거는
-[docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md)에 기록돼 있다.
-
----
-
-## 각 결정의 근거
-
-직관이 아니라 외부 근거 위에 세웠다. 전량은
-[docs/RESEARCH-NOTES.md](docs/RESEARCH-NOTES.md).
-
-| 결정 | 근거 |
-|------|------|
-| 들여쓰기를 **비유의미**로(오프사이드 룰 기각) | 공백·들여쓰기·개행이 코드 토큰의 ~24.5%인데 오프사이드 언어는 이를 제거할 수 없다 ([arXiv:2508.13666](https://arxiv.org/html/2508.13666)) |
-| 중첩 축소, 최상위 선언 명시 | AI-native 언어 MoonBit — 중첩이 적을수록 KV-cache에 친화적 |
-| IR canonical form = **RFC 8785 (JCS)** | canonical 규칙을 직접 발명하지 않는다 |
-| IR 스키마 = constrained-decoding 호환 부분집합 | `oneOf` 금지, `default` 금지, 중첩 ≤5 — 에이전트가 IR 조각을 structured output으로 생성할 수 있어야 한다 |
-| LLVM IR 직행 대신 **MLIR** 경유 | 고수준 시맨틱이 살아있는 동안 최적화하고 단계적으로 하강 |
-| 프로토콜 = JSON-RPC 2.0, **A2A / MCP 정렬** | 에이전트↔에이전트는 A2A, 에이전트↔도구는 MCP와 같은 베이스 |
-| KB = **3단 progressive disclosure** | Anthropic Agent Skills 패턴(메타데이터 → 본문 → 리소스) |
-| MVP는 LLVM보다 **인터프리터 먼저** | WebAssembly 관례 — 참조 인터프리터는 실행 가능한 명세다 |
 
 ---
 
@@ -218,6 +162,85 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 `attempts=4`(초기 1회 + `retry 3`), 상한 있는 지수 백오프, 그리고 초과했지만
 **집행되지 않는** response SLO 보고를 볼 수 있다. RFC-0003이 규정한 그대로다.
 
+---
+
+## 상태
+
+로드맵 3 Phase 전부 완료.
+
+- **모드 A** — `.lnpl`이 파싱되고 Semantic IR로 lowering돼 IR 인터프리터에서 실행된다.
+- **모드 B** — 같은 소스가 MLIR을 거쳐 네이티브 바이너리로 컴파일된다. 커스텀 `lnpl`
+  dialect는 IRDL로 선언하고 스톡 `mlir-opt`에 얹으므로 C++ TableGen 빌드가 없다
+  (RFC-0004 S4).
+- **차동 검증** — RFC-0004가 지명한 관측 가능 4종(실행 순서·정책 결과·관측 신호·마스킹)
+  에 대해 두 모드를 묶는다.
+- 가드 조건식(`when` / `until`)이 두 모드 모두에서 런타임에 평가된다. RFC-0008 G8이
+  argv 파라미터 전달로 페이로드에서 조건 필드를 뽑는다.
+- OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
+  컴파일된다. 에이전트 9역할도 전부 구현됐다.
+
+**테스트 1209개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
+
+**RFC 14편 — 13편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
+2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
+([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
+[로드맵](docs/ROADMAP.md) 참조.
+
+RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영어다. 중심 문서인
+[RFC-0001 Semantic IR](docs/rfc-0001-semantic-ir.en.md)에는 영어 요약이 있다 —
+나머지 스위트가 그것을 기준으로 정의된다.
+
+---
+
+## RFC 스위트
+
+| RFC | 내용 |
+|-----|------|
+| [0000 RFC Process](rfcs/0000-rfc-process.md) | *0007로 대체됨* — 수명주기, 번호 체계, 고정 7섹션 템플릿 |
+| [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | `Updates` 관계 신설 — RFC를 대체하지 않고 지목한 **절**만 갱신 |
+| [0001 Semantic IR](rfcs/0001-semantic-ir.md) — [영어 요약](docs/rfc-0001-semantic-ir.en.md) | 노드 21종, Semantic Type 18종, 평탄 구조, canonical JSON 직렬화 |
+| [0002 Syntax](rfcs/0002-syntax.md) | 라인 지향·키워드 구획 EBNF(58 생산규칙) + 문법→IR lowering 매핑 |
+| [0003 Runtime](rfcs/0003-runtime.md) | actor, structured concurrency, 정책 집행, 메모리 프리미티브, 관측성 계약 |
+| [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering 7단계, 패스 불변조건, Optimizer 3종 책임 축 |
+| [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 카테고리, 3단 progressive disclosure 라우팅, 소비 인터페이스 |
+| [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 역할 9종, JSON-RPC 메서드 8종, 구조화 오류, 멱등, 태스크 수명주기 |
+| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | 가드 조건식: 존재 검사·비교식 2형태, 명세 정정, 모드 B 컴파일. *0002 §Full grammar·0003 §Guard 갱신* |
+| [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | 문법이 확정됐으므로 RFC-0002 미결 ②를 해소. *0002 §Open Questions 갱신* |
+| [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | 역할이 저작 권한 없는 노드에 자기 노드를 부착하는 법, 그리고 참조가 이동할 때의 의미론. *0006 §Agent Roles & IR Access·§Methods/ir.propose 갱신* |
+| [0011 Refinement enum 정합과 이름 충돌](rfcs/0011-refinement-enum-and-name-collisions.md) | 어떤 refinement 이름이 적법한가, 그리고 선언 둘이 한 이름을 주장할 때 무엇이 이기는가. *0001 §부록 A.6.3·§부록 A.7 갱신* |
+| [0012 실행 스코프와 스텝 결과 바인딩](rfcs/0012-execution-scope.md) | 가드 조건식이 무엇을 가리킬 수 있는가, 그리고 한 step의 결과가 다음 step에 어떻게 묶이는가. *0002 §Full grammar·0008 §Reference-level Specification/1. Full Grammar·0003 §Guard 갱신* |
+| [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | 선언된 `retry` 예산을 읽지 않는 절대 시도 상한 — 그 예산을 잃어도 무한 루프가 아니라 실패로 끝나게 한다. *0003 §Policy Enforcement 갱신* |
+
+13편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
+이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
+범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
+**Updates**는 지목한 **절**만 갱신하고 대상은 `Accepted`를 유지한다. 두 번째 관계를 둔
+이유는, 전면 대체만 있으면 한 줄 개정에 전체 재서술이 필요해지고 — 그만큼 비싼 규율은
+결국 사람이 어기는 규율이 되기 때문이다. 승격 근거는
+[docs/CONSISTENCY-CHECK.md](docs/CONSISTENCY-CHECK.md)에 기록돼 있다.
+
+---
+
+## 각 결정의 근거
+
+직관이 아니라 외부 근거 위에 세웠다. 전량은
+[docs/RESEARCH-NOTES.md](docs/RESEARCH-NOTES.md).
+
+| 결정 | 근거 |
+|------|------|
+| 들여쓰기를 **비유의미**로(오프사이드 룰 기각) | 공백·들여쓰기·개행이 코드 토큰의 ~24.5%인데 오프사이드 언어는 이를 제거할 수 없다 ([arXiv:2508.13666](https://arxiv.org/html/2508.13666)) |
+| 중첩 축소, 최상위 선언 명시 | AI-native 언어 MoonBit — 중첩이 적을수록 KV-cache에 친화적 |
+| IR canonical form = **RFC 8785 (JCS)** | canonical 규칙을 직접 발명하지 않는다 |
+| IR 스키마 = constrained-decoding 호환 부분집합 | `oneOf` 금지, `default` 금지, 중첩 ≤5 — 에이전트가 IR 조각을 structured output으로 생성할 수 있어야 한다 |
+| LLVM IR 직행 대신 **MLIR** 경유 | 고수준 시맨틱이 살아있는 동안 최적화하고 단계적으로 하강 |
+| 프로토콜 = JSON-RPC 2.0, **A2A / MCP 정렬** | 에이전트↔에이전트는 A2A, 에이전트↔도구는 MCP와 같은 베이스 |
+| KB = **3단 progressive disclosure** | Anthropic Agent Skills 패턴(메타데이터 → 본문 → 리소스) |
+| MVP는 LLVM보다 **인터프리터 먼저** | WebAssembly 관례 — 참조 인터프리터는 실행 가능한 명세다 |
+
+---
+
 ## 검증
 
 명세가 산문만은 아니다. 골든 시나리오 "Login" 하나가 7개 문서를 관통하고(문법 → IR →
@@ -245,7 +268,17 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 .venv/bin/python impl/tests/mutation_check.py
 ```
 
-`mutation_check.py`는 명세 규칙을 하나씩 제거한다 — 53종 — 그리고 각각에 대해 스위트가
+```
+Ran 1209 tests in 35.777s
+
+OK
+```
+
+모드 B 테스트에는 MLIR/LLVM 도구가 `PATH`에 있어야 한다([모드 B](#모드-b--네이티브-바이너리)
+참조). 없으면 개수는 같지만 수십 건이 툴체인 부재로 에러가 난다. `bash scripts/dev_doctor.sh`는
+환경이 갖춰졌으면 exit 0이고, 아니면 무엇이 빠졌는지 그대로 찍어준다.
+
+`mutation_check.py`는 명세 규칙을 하나씩 제거한다 — 77종 — 그리고 각각에 대해 스위트가
 빨간불이 되기를 요구한다. 맨 앞에는 **no-op 대조군**이 있다: 동작을 바꿀 수 없음이
 자명한 변형이고, 이것은 반드시 *생존*해야 한다. 이 대조군은 형식이 아니다. 이전 버전의
 하네스는 `impl/`만 뮤테이션 트리에 복사했는데 테스트는 `__file__`에서 레포를 찾으므로,
@@ -349,11 +382,12 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0012              RFC (0000은 Superseded, 나머지 12편은 Accepted)
+rfcs/0000~0013              RFC (0000은 Superseded, 나머지 13편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
 scripts/validate_ir.py      스키마 검증 + 자기검사
+docs/rfc-0001-semantic-ir.en.md   RFC-0001 영어 요약 (RFC 본문은 한국어)
 docs/GLOSSARY.md            용어 정본
 docs/RESEARCH-NOTES.md      설계 결정의 외부 근거
 docs/CONSISTENCY-CHECK.md   교차 정합성 판정(C1~C9)

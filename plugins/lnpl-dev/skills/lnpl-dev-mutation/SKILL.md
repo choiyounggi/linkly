@@ -56,27 +56,22 @@ python impl/tests/mutation_check.py > out.txt 2>&1; rc=$?; echo "rc=$rc"; tail -
 `os.path.join(REPO, "<name>", ...)`로 읽는 이름은 `TREE_CONTENTS`에 있어야 한다.
 새 최상위 디렉터리를 읽는 테스트를 추가했다면 그 가드가 먼저 알려줄 것이다.
 
-## 알려진 선행 결함 — 77개 중 1개는 잡히지 않는다
+## 기대 결과 — 77개 전부 CAUGHT
 
-뮤테이션 `RFC-0003: drop the retry attempt cap`은 RED가 아니라 **HANG**으로 끝난다.
-`main`에서도 그러므로 최근 변경 탓이 아니다. 나머지 76개는 전부 CAUGHT다
-(2026-08-05 전수 실행 확인).
+`MUTATION CHECK: PASS`가 정상이다. 어떤 실패든 새 회귀로 취급하라.
 
-**정확한 원인(실측).** `interp.py`의 `_retryable`에는 경계가 둘 있다:
+**HANG이 보이면 그것은 RED가 아니다.** 하네스는 `run_suite(timeout=300)`으로
+GREEN/RED/HANG을 가른다. 뮤테이션이 무한 루프를 만들면 "잡혔다"가 아니라 "판정
+불가"다 — 스위트가 반환하지 않으므로 어떤 테스트도 그것을 관찰하지 못한다.
+`RFC-0003: drop the retry attempt cap`이 정확히 그랬고(2026-08-05 실측),
+**테스트를 더 써서 닫을 수 없는** 종류의 구멍이었다. 관찰하려는 테스트 자신이
+돌아오지 않기 때문이다.
 
-1. `attempts > con["retry"]` — 시도 횟수 캡 (뮤테이션이 제거하는 것)
-2. 데드라인 경계 — `deadline is not None`일 때만 적용된다
+닫은 방법은 런타임에 경계를 하나 더 두는 것이었다 — `MAX_STEP_ATTEMPTS`(RFC-0013,
+RFC-0003 §Policy Enforcement 갱신). 상한이 하나뿐인 재시도 루프는 그 하나를 잃는
+순간 실패가 아니라 무한 루프가 된다. 데드라인은 대신하지 못했다: `timeout`을
+선언하지 않은 워크플로에는 데드라인이 아예 없었다.
 
-그래서 캡이 사라지면 **`timeout`을 선언하지 않은 워크플로의 재시도는 무경계**가 된다.
-스위트에서 처음 걸리는 지점은
-`test_backend.TestModeBDerivesRepositoryOutcomes.test_the_derived_outcome_matches_mode_a_on_a_read_miss`
-— read miss로 스텝이 실패하고, 캡도 데드라인도 없어 영원히 돈다.
-
-**테스트를 더해서 풀리지 않는다.** 캡이 없으면 그 상태를 관찰하려는 테스트 자신이
-반환되지 않기 때문이다. 닫으려면 런타임에 **캡과 독립적인 두 번째 경계**가 있어야
-하고, 그것은 RFC-0003의 의미 변경이므로 §2.2 Updates 대상이다. `_retryable`의 주석이
-이미 그 필요를 적어 두었다 — "a runtime that lost its attempt cap would spin forever
-instead of failing".
-
-그때까지 `MUTATION CHECK: FAIL — 1 of 77`은 **기대되는 결과**다. 이 한 줄이 아닌
-다른 실패가 보이면 그건 새 회귀다.
+**이 패턴을 일반화해서 읽어라.** 뮤테이션이 HANG으로 끝나면 테스트 부족이 아니라
+**런타임에 경계가 하나뿐이라는 신호**다. 그때 필요한 것은 테스트가 아니라 계약
+개정이다.
