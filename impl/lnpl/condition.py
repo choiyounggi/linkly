@@ -15,7 +15,7 @@ Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, then RFC-0015)
   Reference  ::= CamelName | Namespace '.' CamelName
   Namespace  ::= 'input' | CamelName
   Integer    ::= [0-9]+                          -- unsigned
-  Duration   ::= Integer ('ms' | 's' | 'm')
+  Duration   ::= Integer ('ms' | 's' | 'm' | 'h' | 'd')   -- 'h'/'d': RFC-0016
 
 Three properties of that grammar are decisions, not omissions (RFC-0015):
 
@@ -42,21 +42,47 @@ RFC-0012 §G12.5, RFC-0015 §Static rejections) — this module never sees the
 document.
 """
 
+import calendar
+import re
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 # The token tables live in `lexer` because that is what the generated reference
 # (`plugins/lnpl/skills/lnpl-authoring/references/grammar.md`) is rendered from.
 # Spelling them a second time here is how the reference and the parser drift.
-from .lexer import ARITH_OPS, COMPARATORS, LOGICAL_OPS, PAYLOAD_NAMESPACE
+from .lexer import (ARITH_OPS, COMPARATORS, DURATION_UNIT_MS, INT64_MAX,
+                    INT64_MIN, LOGICAL_OPS, PAYLOAD_NAMESPACE,
+                    duration_ms_or_none)
 
 LOGICAL_AND = LOGICAL_OPS[0]
 PRESENCE_KINDS = ('exists', 'missing')
 
 # i64 — the domain mode B compiles to. Mode A checks against the same bounds so a
 # value that would wrap in the compiled path fails in both (RFC-0015 §Value domain).
-INT64_MIN = -(2 ** 63)
-INT64_MAX = 2 ** 63 - 1
+# Defined in `lexer` (which imports nothing) and re-exported here, because the
+# duration table needs to range-check and lives there; every caller that already
+# says `from .condition import INT64_MAX` is unaffected.
+__all__ = ["INT64_MIN", "INT64_MAX"]
+
+# RFC-0016 §Reference-level Specification. A `DateTime` entering a comparison is
+# encoded to UTC epoch-milliseconds, so an explicit zone designator is REQUIRED:
+# a zoneless timestamp binds to whatever zone the reading machine is in, which
+# would make the same document decide differently per machine. Alphabetic zone
+# abbreviations (`KST`, `EST`) are deliberately not matched — they are ambiguous.
+INSTANT_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2}):(\d{2})(\.\d+)?"
+    r"(?:(Z|z)|([+-])(\d{2}):?(\d{2}))$")
+
+# The same shape WITHOUT the zone requirement. Used only to tell "this is a
+# date-time the author forgot to zone" apart from "this is not a date-time at
+# all", so the diagnostic can name the real problem instead of falling through
+# to `Cannot compare non-numeric`.
+_INSTANT_SHAPE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}")
+
+# Largest unit first — `value_to_string` returns on the first exact division, so
+# 86400000 must be tried before 3600000 or a day would render as `24h`.
+_DURATION_RENDER = tuple(sorted(DURATION_UNIT_MS.items(),
+                                key=lambda kv: -kv[1]))
 
 
 class ConditionError(Exception):
@@ -199,6 +225,75 @@ def parse_assignment(text: Optional[str]) -> Tuple[str, Value]:
     return target, _parse_value(value_tokens, text)
 
 
+def is_instant_text(raw) -> bool:
+    """True when `raw` is a zoned RFC 3339 timestamp `encode_instant` accepts."""
+    return isinstance(raw, str) and INSTANT_RE.match(raw) is not None
+
+
+def looks_like_instant(raw) -> bool:
+    """True when `raw` has a date-time shape, zoned or not.
+
+    `is_instant_text` answers "can I encode this"; this one answers "did the
+    author mean a date-time", which is what lets an unzoned value produce a
+    diagnostic about the missing zone instead of about non-numeric text.
+    """
+    return isinstance(raw, str) and _INSTANT_SHAPE_RE.match(raw) is not None
+
+
+def encode_instant(raw, where) -> int:
+    """A zoned RFC 3339 timestamp -> UTC epoch-milliseconds (i64). SSOT.
+
+    RFC-0016 §Reference-level Specification. Both modes call THIS function --
+    mode A from `interp.eval_value`, mode B from `backend.encode_condition_value`
+    -- so the two cannot disagree about what instant a string names. Encoding in
+    milliseconds rather than days keeps 09:00 and 23:59 distinct, which is what
+    makes a "within 30 days" boundary mean the same thing regardless of the time
+    of day the run happens at.
+
+    Parsing is done from the regex's own fields rather than through
+    `datetime.fromisoformat`, which infers a zone for a zoneless string and
+    would reintroduce the per-machine reading this function exists to refuse.
+    """
+    if not isinstance(raw, str):
+        raise ConditionError("%s is not a date-time: %r" % (where, raw))
+    m = INSTANT_RE.match(raw)
+    if m is None:
+        if looks_like_instant(raw):
+            raise ConditionError(
+                "%s is a date-time without a zone designator: %r — write an "
+                "explicit `Z` or a numeric offset such as `+09:00` (RFC-0016: "
+                "a zoneless timestamp names a different instant on every "
+                "machine, so it has no single value to compare)" % (where, raw))
+        raise ConditionError("%s is not a date-time: %r" % (where, raw))
+
+    year, month, day, hour, minute, second = (int(m.group(i)) for i in range(1, 7))
+    frac, zulu, sign, off_h, off_m = (m.group(7), m.group(8), m.group(9),
+                                      m.group(10), m.group(11))
+
+    # Sub-second precision truncates to milliseconds (toward zero), the unit the
+    # i64 domain carries. `.5` is 500 ms, `.0005` is 0 ms.
+    millis = int((frac or ".0")[1:].ljust(3, "0")[:3])
+
+    try:
+        # `timegm` reads the tuple as UTC; unlike `mktime` it never consults the
+        # machine's TZ. Field ranges are validated below, not by this call.
+        days_epoch = calendar.timegm((year, month, day, 0, 0, 0, 0, 1, 0))
+    except (ValueError, OverflowError):
+        raise ConditionError("%s is not a valid date: %r" % (where, raw))
+    if not (1 <= month <= 12 and 1 <= day <= 31
+            and hour <= 23 and minute <= 59 and second <= 60):
+        raise ConditionError("%s is not a valid date-time: %r" % (where, raw))
+
+    total = ((days_epoch + hour * 3600 + minute * 60 + second) * 1000) + millis
+    if zulu is None:
+        offset_ms = (int(off_h) * 3600 + int(off_m) * 60) * 1000
+        total = total - offset_ms if sign == "+" else total + offset_ms
+    if total < INT64_MIN or total > INT64_MAX:
+        raise ConditionError(
+            "%s is outside the 64-bit millisecond domain: %r" % (where, raw))
+    return total
+
+
 def parse_value(text: Optional[str]) -> Value:
     """A `Value` on its own — the assignment's right-hand side, re-read from the IR.
 
@@ -265,11 +360,14 @@ def value_to_string(value: Value) -> str:
         return value.name
     if isinstance(value, Lit):
         if value.is_duration:
-            # Best unit for readability, matching the pre-RFC-0015 rendering.
-            if value.value % 60000 == 0:
-                return "%dm" % (value.value // 60000)
-            if value.value % 1000 == 0:
-                return "%ds" % (value.value // 1000)
+            # Coarsest exact unit, so `30d` round-trips as `30d` rather than as
+            # `43200m`. Descending order matters: every day is also a whole
+            # number of hours and minutes, so the first exact match must be the
+            # largest unit. `0` has no coarsest unit and renders as `0ms`.
+            for unit, mult in _DURATION_RENDER:
+                if value.value and value.value % mult == 0:
+                    return "%d%s" % (value.value // mult, unit)
+            return "%dms" % value.value
         return str(value.value)
     if isinstance(value, Arith):
         return "%s %s %s" % (value_to_string(value.left), value.op,
@@ -349,12 +447,18 @@ def _parse_value(tokens, text):
 
 def _parse_operand(token, text):
     if token.isdigit():
-        return Lit(int(token))
-    for unit, multiplier in (('ms', 1), ('s', 1000), ('m', 60000)):
-        if token.endswith(unit):
-            head = token[:-len(unit)]
-            if head.isdigit():
-                return Lit(int(head) * multiplier, is_duration=True)
+        value = int(token)
+        if value > INT64_MAX:
+            raise ConditionError(
+                "integer literal %r is past the 64-bit domain both modes "
+                "compile to: %r" % (token, text))
+        return Lit(value)
+    try:
+        duration = duration_ms_or_none(token)
+    except OverflowError as e:
+        raise ConditionError("%s: %r" % (e, text))
+    if duration is not None:
+        return Lit(duration, is_duration=True)
     if _is_reference_name(token):
         return Ref(token)
     raise ConditionError(f"invalid operand {token!r}: {text!r}")

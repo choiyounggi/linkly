@@ -175,10 +175,17 @@ workflow W
     def test_a_non_integer_field_is_refused_at_compile_time(self):
         # t2 F-4: this used to compile clean and then raise a raw Python
         # TypeError out of the interpreter at run time.
+        #
+        # RFC-0016 narrowed the refusal rather than relaxing it: `DateTime` left
+        # this branch (it has an evaluator now — epoch milliseconds), so the
+        # message names the two types that DO compute instead of listing the
+        # ones that do not. `Money` is still refused here, which is what this
+        # test guards.
         self.compile_fails(self.workflow("    read product\n"
                                          "    when product.price > 0\n"
                                          "    create product"),
-                           "is not Integer", "Money")
+                           "neither Integer nor DateTime", "Money",
+                           "no evaluator")
 
     def test_an_input_field_no_entity_declares_is_refused(self):
         self.compile_fails(self.workflow("    when input.quantitee > 0\n"

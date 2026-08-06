@@ -77,6 +77,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | performance | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | performance | prefetch | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | performance | batch | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
+| event | schedule | unenforced | declared-not-enforced | 스케줄러가 없다. 선언은 IR과 OpenAPI 스케줄 메타데이터까지만 도달한다 — 실행기는 이슈 #26(서빙 계층)이 소유한다 (RFC-0016) |
 
 `enforced` 행의 진단 코드 셀이 `—`인 것은 값이 빠진 것이 아니라 **진단을 내지
 않는다는 뜻**이다. 집행되는 선언까지 경고하면 보고 전체가 정보를 잃는다.

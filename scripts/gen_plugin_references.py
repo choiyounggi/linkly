@@ -17,7 +17,9 @@ from lnpl import __version__                                    # noqa: E402
 from lnpl.diagnostics import CODES, ENFORCEMENT                  # noqa: E402
 from lnpl.lexer import (ARITH_OPS, ASSIGN_KEYWORDS, COMPARATORS,  # noqa: E402
                         DURATION_UNITS, KEYWORDS_CLAUSE, KEYWORDS_CONTROL,
-                        KEYWORDS_TOP, LOGICAL_OPS, PAYLOAD_NAMESPACE, RESERVED)
+                        KEYWORDS_TOP, LOGICAL_OPS, PAYLOAD_NAMESPACE, RESERVED,
+                        SCHEDULE_AT, SCHEDULE_KEYWORD, SCHEDULE_RECURRENCES,
+                        SCHEDULE_ZONES)
 from lnpl.lower import (ARGUMENT_MECHANISMS, PERF_METRICS, POLICY_NAMES,  # noqa: E402
                         SECURITY_MECHANISMS, VALUELESS_PERF, VERB_LEXICON)
 from lnpl.refinements import BASE_CATEGORY, CATEGORY_FACETS, PRESETS  # noqa: E402
@@ -62,6 +64,17 @@ def render_grammar():
     lines.append("가드 조건은 `<값> <비교연산자> <값>`이고 항은 `and`로만 잇는다. "
                  "값은 참조·정수·기간이며 이항 산술 **1개**까지 붙일 수 있다"
                  "(`product.stock - input.quantity`). 중첩·괄호는 문법에 없다.\n")
+    lines.append("## 이벤트 소스 (RFC-0016)\n")
+    lines.append("`event <이름>`은 소스를 붙일 수 있다. 두 형태뿐이다:\n")
+    lines.append("- `on <Entity> create|update|delete`")
+    lines.append("- `on %s <주기> %s <HH:MM> <존>` — 주기: %s / 존: %s"
+                 % (SCHEDULE_KEYWORD, SCHEDULE_AT,
+                    " ".join("`%s`" % r for r in SCHEDULE_RECURRENCES),
+                    " ".join("`%s`" % z for z in SCHEDULE_ZONES)))
+    lines.append("\n예: `event DailyRollup on schedule daily at 00:00 UTC`\n")
+    lines.append("스케줄 트리거는 **집행되지 않는다** — IR과 OpenAPI의 "
+                 "`x-lnpl-schedules`까지만 도달하고 실행기는 없다. 선언하면 "
+                 "`declared-not-enforced` 진단이 나온다(집행 매트릭스 참조).\n")
     lines.append("들여쓰기는 의미가 없다(4칸은 스타일 규약일 뿐). 블록은 키워드로 "
                  "구분된다 — 그래서 괄호 짝이나 들여쓰기 오류가 문법적으로 "
                  "표현되지 않는다.\n")

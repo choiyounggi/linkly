@@ -31,6 +31,7 @@
 | `performance parallel` | **unenforced** | parsed, but the execution plan never reads it |
 | `performance prefetch` | **unenforced** | parsed, but the execution plan never reads it |
 | `performance batch` | **unenforced** | parsed, but the execution plan never reads it |
+| `event schedule` | **unenforced** | no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor |
 
 ## 진단 코드
 

@@ -22,7 +22,8 @@ R1 — Effect derivation (A.4-3). A step line's first token is a Verb (the gramm
 import re
 
 from .diagnostics import ENFORCED, ENFORCEMENT, Diagnostics
-from .lexer import COMPARATORS, is_duration
+from .lexer import (COMPARATORS, SCHEDULE_RECURRENCES, SCHEDULE_ZONES,
+                    is_duration)
 from .refinements import (BASE_CATEGORY, FACET_NAMES, PRESETS, facets_for_base,
                           preset)
 
@@ -218,6 +219,41 @@ def _parse_perf_line(tokens, lineno):
     if len(tokens) != 2:
         raise LowerError("line %d: `%s` needs one value" % (lineno, metric))
     return {"metric": metric, "value": tokens[1]}
+
+
+_TIME_OF_DAY_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+def _schedule_source(spec, lineno):
+    """`{every, at, zone}` -> the IR's schedule source, or a refusal.
+
+    Every refusal names the accepted set, because the sets are small and closed
+    and an author who guessed wrong has no other way to discover them.
+    """
+    every, at, zone = spec["every"], spec["at"], spec["zone"]
+    if every not in SCHEDULE_RECURRENCES:
+        raise LowerError(
+            "line %d: unknown schedule recurrence %r (allowed: %s). RFC-0016 "
+            "§Open Questions records why the set is this small"
+            % (lineno, every, ", ".join(SCHEDULE_RECURRENCES)))
+    if not _TIME_OF_DAY_RE.match(at):
+        raise LowerError(
+            "line %d: invalid time of day %r — write HH:MM with two digits "
+            "each, from 00:00 to 23:59" % (lineno, at))
+    if zone not in SCHEDULE_ZONES:
+        if "/" in zone:
+            raise LowerError(
+                "line %d: unsupported schedule zone %r (allowed: %s). An IANA "
+                "zone name has to be resolved against a tz database, and a "
+                "minimal build image carries none — the set of accepted "
+                "programs would then depend on the machine compiling them. "
+                "RFC-0016 §Open Questions tracks vendoring one"
+                % (lineno, zone, ", ".join(SCHEDULE_ZONES)))
+        raise LowerError(
+            "line %d: unsupported schedule zone %r (allowed: %s). A zone "
+            "abbreviation is ambiguous and a bare offset ignores DST, so "
+            "RFC-0016 accepts neither" % (lineno, zone, ", ".join(SCHEDULE_ZONES)))
+    return {"every": every, "at": at, "zone": zone}
 
 
 def _declaration_diagnostics(diagnostics, clause, names, where):
@@ -580,6 +616,13 @@ def lower(decls, module_name):
                                  "(dangling reference — RFC-0001 structure rule 6)"
                                  % (d.lineno, ent_name))
             source = {"ref": ref, "on": trigger}
+        elif "schedule" in d.extra:
+            source = _schedule_source(d.extra["schedule"], d.lineno)
+            # RFC-0016: the declaration reaches the IR and the OpenAPI schedule
+            # metadata and stops there. Saying so is what separates it from
+            # `performance batch`, which parses into silence (t3 F-2).
+            _declaration_diagnostics(mod.diagnostics, "event", ["schedule"],
+                                     where=eid)
         mod.add(_node("Event", eid, name=d.name, source=source))
 
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
@@ -781,6 +824,10 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                     scope.check_reference(child["target"], text)
                     for name in references(parse_value(child["expression"])):
                         scope.check_reference(name, text)
+                    # The expression is a `Value` like any other, so `instant +
+                    # instant` is as meaningless here as it is in a guard.
+                    _value_dimension(parse_value(child["expression"]), scope,
+                                     text)
                     assigned.add(child["target"])
             else:
                 visit(node.get("children") or [])
@@ -822,6 +869,87 @@ def _check_guard(node, scope, assigned, workflow_name, parse_condition,
                 "decides nothing — name a field on at least one side"
                 % (workflow_name, text))
 
+    _check_dimensions(cond, scope, text)
+
+
+def _value_dimension(value, scope, text):
+    """One `Value`'s dimension: `"instant"`, `"scalar"`, or None if undecidable.
+
+    RFC-0016 §Reference-level Specification. Two dimensions, not three: a
+    Duration literal IS an i64 count of milliseconds, so it shares `scalar` with
+    Integer. Splitting it out would only add refusals (`stock <= 30d`) that this
+    issue does not ask for and that no program in the tree writes.
+
+    None propagates: if either operand's type is not in the document, the whole
+    value is undecidable and the comparison is left to the runtime, which is the
+    behaviour bare references already had.
+    """
+    from .condition import Arith, Lit, Ref
+
+    if isinstance(value, Lit):
+        return "scalar"
+    if isinstance(value, Ref):
+        return scope.check_reference(value.name, text)
+    if isinstance(value, Arith):
+        left = _value_dimension(value.left, scope, text)
+        right = _value_dimension(value.right, scope, text)
+        if left is None or right is None:
+            return None
+        if left == "instant" and right == "instant":
+            if value.op == "-":
+                return "scalar"           # elapsed milliseconds
+            raise LowerError(
+                "workflow %s: %r adds two instants (%s %s %s), which names no "
+                "point in time — subtract them to get the elapsed duration, or "
+                "add a duration to one of them (RFC-0016)"
+                % (scope.workflow_name, text, _describe(value.left), value.op,
+                   _describe(value.right)))
+        if left == "instant" or right == "instant":
+            return "instant"              # instant +/- duration stays an instant
+        return "scalar"
+    return None
+
+
+def _describe(value):
+    """How to name one operand in a diagnostic.
+
+    A reference is named; a literal is described. `value_to_string` normalises a
+    duration to its coarsest unit, so echoing a literal back would print `30d`
+    at an author who wrote `43200m` and leave them looking for a token that is
+    not in their source.
+    """
+    from .condition import Arith, Lit, Ref, value_to_string
+    if isinstance(value, Ref):
+        return value.name
+    if isinstance(value, Lit):
+        return "a duration literal" if value.is_duration else "a number literal"
+    if isinstance(value, Arith):
+        return value_to_string(value)
+    return value_to_string(value)
+
+
+def _check_dimensions(cond, scope, text):
+    """Refuse a comparison whose two sides are not the same kind of quantity.
+
+    This is what turns t2 F-5 ③ (`payment.createdAt <= 43200m`) from "DateTime
+    has no evaluator" into the judgement an author can act on: an instant and a
+    duration are both i64 underneath, so nothing stops the machine comparing
+    them — only the type system does, and it has to say why.
+    """
+    for term in _comparisons(cond):
+        left = _value_dimension(term.left, scope, text)
+        right = _value_dimension(term.right, scope, text)
+        if left is None or right is None:
+            continue                      # undecidable from the document alone
+        if left != right:
+            raise LowerError(
+                "workflow %s: %r compares %s (%s) with %s (%s) — RFC-0016 "
+                "compares like with like. An instant and a number are not the "
+                "same quantity; subtract two instants to get a duration, then "
+                "compare that to a duration such as `30d`"
+                % (scope.workflow_name, text, _describe(term.left), left,
+                   _describe(term.right), right))
+
 
 def _comparisons(cond):
     """The Comparison terms of a condition, whether or not it is an `and`."""
@@ -850,10 +978,16 @@ class _Scope:
         self.base_of = base_of
 
     def check_reference(self, name, text):
-        """One `Reference`, judged against the document."""
+        """One `Reference`, judged against the document.
+
+        Returns the operand's DIMENSION (`"instant"` or `"scalar"`), or None
+        when the document does not declare a type for it — a bare reference
+        names a payload field the document never describes, so its dimension is
+        decided at runtime, exactly as its value is.
+        """
         from .condition import PAYLOAD_NAMESPACE
         if "." not in name:
-            return                        # bare reference — a payload field
+            return None                   # bare reference — a payload field
         binding, _, field = name.partition(".")
 
         if binding == PAYLOAD_NAMESPACE:
@@ -863,8 +997,7 @@ class _Scope:
                     "declares (declared fields: %s)"
                     % (self.workflow_name, text, field,
                        ", ".join(sorted(self.declared_fields)) or "none"))
-            self._check_integer(self.declared_fields[field], name, text)
-            return
+            return self._dimension_of(self.declared_fields[field], name, text)
 
         entity = self.by_binding.get(binding)
         if entity is None:
@@ -884,24 +1017,32 @@ class _Scope:
                 "be false forever (to check the run's input instead, write "
                 "`input.%s`)"
                 % (self.workflow_name, text, entity["id"], field))
-        self._check_integer(fields[field], name, text)
+        return self._dimension_of(fields[field], name, text)
 
-    def _check_integer(self, field_node, name, text):
-        """RFC-0015: only Integer (or a refinement of it) enters a comparison.
+    def _dimension_of(self, field_node, name, text):
+        """The operand's dimension, or a refusal (RFC-0015 §D6, RFC-0016).
 
         t2 F-4 is the reason this is a compile error and not a runtime one: a
         `Money` guard compiled with no warning and then failed with a raw
         `TypeError: '<=' not supported between instances of 'dict' and 'int'`
         from inside the interpreter.
+
+        RFC-0016 moved `DateTime` out of the refusal and gave it a dimension
+        instead: it has an evaluator now (UTC epoch-milliseconds), so what it
+        cannot do is be compared to a plain number, which is a different
+        judgement made by `_check_dimensions`.
         """
         declared = field_node.get("type")
         base = self.base_of.get(declared, declared)
         if base == "Integer":
-            return
+            return "scalar"
+        if base == "DateTime":
+            return "instant"
         raise LowerError(
-            "workflow %s: %r uses %s, whose declared type %s is not Integer — "
-            "RFC-0015 computes and compares whole numbers only (Money, DateTime "
-            "and the composite types have no evaluator in either mode)"
+            "workflow %s: %r uses %s, whose declared type %s is neither "
+            "Integer nor DateTime — RFC-0016 computes over whole numbers and "
+            "instants only (Money and the composite types have no evaluator in "
+            "either mode)"
             % (self.workflow_name, text, name, declared))
 
 

@@ -383,7 +383,9 @@ def eval_value(value, condition, payload, bindings):
     modes instead of disagreeing. The failure is issue #48's class (`RunError` ->
     `failed`, rc=1), not a new one.
     """
-    from .condition import Arith, INT64_MAX, INT64_MIN, Lit, Ref
+    from .condition import (Arith, ConditionError, INT64_MAX, INT64_MIN, Lit,
+                            Ref, encode_instant, is_instant_text,
+                            looks_like_instant)
 
     if isinstance(value, Lit):
         return value.value
@@ -397,6 +399,19 @@ def eval_value(value, condition, payload, bindings):
         if isinstance(raw, int):
             return _checked(raw, value.name, condition)
         if isinstance(raw, str):
+            # RFC-0016: a DateTime is compared as UTC epoch-milliseconds. The
+            # same encoder runs in mode B (`backend.encode_condition_value`), so
+            # both modes read one instant from one string.
+            if is_instant_text(raw) or looks_like_instant(raw):
+                try:
+                    return _checked(encode_instant(raw, value.name), value.name,
+                                    condition)
+                except ConditionError as e:
+                    # A zoneless or malformed timestamp is a value fault, which
+                    # is issue #48's class (`RunError` -> failed, rc=1) — not a
+                    # new result class, and not the `Cannot compare non-numeric`
+                    # message, which would name the wrong problem.
+                    raise RunError(f"{e} (in condition {condition!r})")
             try:
                 return _checked(int(raw), value.name, condition)
             except ValueError:
@@ -1017,12 +1032,15 @@ def sample_payload(entities, refinements=None):
 
 
 def _duration_ms(text):
-    for unit, mult in (("ms", 1), ("s", 1000), ("m", 60000)):
-        if str(text).endswith(unit):
-            head = str(text)[: -len(unit)]
-            if head.isdigit():
-                return int(head) * mult
-    raise RunError("not a duration: %r" % text)
+    """`3s` -> 3000, from the one unit table in `lexer` (RFC-0016)."""
+    from .lexer import duration_ms_or_none
+    try:
+        value = duration_ms_or_none(str(text))
+    except OverflowError as e:
+        raise RunError(str(e))
+    if value is None:
+        raise RunError("not a duration: %r" % text)
+    return value
 
 
 def _backoff_ms(attempt):

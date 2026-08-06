@@ -40,8 +40,10 @@ import shutil
 import subprocess
 import tempfile
 
-from lnpl.condition import (And, Arith, Comparison, Lit, Presence, Ref,
-                            parse_condition, references, value_to_string)
+from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
+                            Presence, Ref, encode_instant, is_instant_text,
+                            looks_like_instant, parse_condition, references,
+                            value_to_string)
 from lnpl.interp import (RunError, refinement_index, sample_payload,
                          validate_effect)
 # The seed/key policy both modes read (issue #35). Imported, never restated: a
@@ -366,9 +368,18 @@ def encode_condition_value(value):
         return 1 if value else 0
     if isinstance(value, int):
         return value
+    if isinstance(value, str) and (is_instant_text(value)
+                                   or looks_like_instant(value)):
+        # RFC-0016: a DateTime rides the existing i64 parameter channel as UTC
+        # epoch-milliseconds. `encode_instant` is the same function mode A calls
+        # from `interp.eval_value`, so a value cannot mean two instants.
+        try:
+            return encode_instant(value, "condition field")
+        except ConditionError as e:
+            raise BackendError(str(e))
     raise BackendError(
-        "condition field value must be an integer, got %r (%s)"
-        % (value, type(value).__name__))
+        "condition field value must be an integer or a zoned date-time, got "
+        "%r (%s)" % (value, type(value).__name__))
 
 
 def _constraints_of_kind(document, workflow_id, kind):
@@ -442,13 +453,19 @@ def _backoff_ms(attempt):
 
 
 def _duration_ms(text):
-    """`3s` -> 3000. Mirrors interp `_duration_ms`, raising a BackendError instead."""
-    for unit, mult in (("ms", 1), ("s", 1000), ("m", 60000)):
-        if str(text).endswith(unit):
-            head = str(text)[: -len(unit)]
-            if head.isdigit():
-                return int(head) * mult
-    raise BackendError("not a duration: %r" % text)
+    """`3s` -> 3000. Mirrors interp `_duration_ms`, raising a BackendError instead.
+
+    Both read the one unit table in `lexer`, so a unit the language accepts is a
+    unit both modes accept (RFC-0016).
+    """
+    from lnpl.lexer import duration_ms_or_none
+    try:
+        value = duration_ms_or_none(str(text))
+    except OverflowError as e:
+        raise BackendError(str(e))
+    if value is None:
+        raise BackendError("not a duration: %r" % text)
+    return value
 
 
 def _retry_policy(document, workflow_id):
