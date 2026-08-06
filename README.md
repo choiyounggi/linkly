@@ -217,11 +217,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**1209 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**1346 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**14 RFCs — 13 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
+**15 RFCs — 14 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -251,8 +251,9 @@ suite is defined against.
 | [0011 Refinement enum & name collisions](rfcs/0011-refinement-enum-and-name-collisions.md) | Which refinement names are legal, and what happens when two declarations claim one. *Updates 0001 §부록 A.6.3, §부록 A.7* |
 | [0012 Execution Scope](rfcs/0012-execution-scope.md) | What a guard condition may name, and how a step's result binds for the next one. *Updates 0002 §Full grammar, 0008 §Reference-level Specification/1. Full Grammar, 0003 §Guard* |
 | [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | An absolute bound on step attempts that does not read the declared `retry` budget — so losing that budget is a failure, not an infinite loop. *Updates 0003 §Policy Enforcement* |
+| [0014 Guard Skip Observability](rfcs/0014-guard-skip-observability.md) | A skipped step no longer passes for a completed one — the skip becomes a recorded, contracted signal instead of an INFO line. *Updates 0008 §Guard Runtime Semantics* |
 
-Thirteen are `Accepted`; 0000 is superseded by 0007, which was itself formally
+Fourteen are `Accepted`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -312,7 +313,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 1209 tests in 35.777s
+Ran 1346 tests in 35.456s
 
 OK
 ```
@@ -441,7 +442,7 @@ nodes), its lowering path is **MLIR → native**, the knowledge base is a
 
 ```
 CHARTER.md                  Stage-0 vision document (preserved verbatim — the RFCs are canonical)
-rfcs/0000~0013              The RFCs (0000 Superseded, the other 13 Accepted)
+rfcs/0000~0014              The RFCs (0000 Superseded, the other 14 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR

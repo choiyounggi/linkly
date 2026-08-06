@@ -179,10 +179,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 1209개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 1346개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 14편 — 13편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
+**RFC 15편 — 14편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -211,8 +211,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0011 Refinement enum 정합과 이름 충돌](rfcs/0011-refinement-enum-and-name-collisions.md) | 어떤 refinement 이름이 적법한가, 그리고 선언 둘이 한 이름을 주장할 때 무엇이 이기는가. *0001 §부록 A.6.3·§부록 A.7 갱신* |
 | [0012 실행 스코프와 스텝 결과 바인딩](rfcs/0012-execution-scope.md) | 가드 조건식이 무엇을 가리킬 수 있는가, 그리고 한 step의 결과가 다음 step에 어떻게 묶이는가. *0002 §Full grammar·0008 §Reference-level Specification/1. Full Grammar·0003 §Guard 갱신* |
 | [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | 선언된 `retry` 예산을 읽지 않는 절대 시도 상한 — 그 예산을 잃어도 무한 루프가 아니라 실패로 끝나게 한다. *0003 §Policy Enforcement 갱신* |
+| [0014 가드 스킵의 관측 가능성](rfcs/0014-guard-skip-observability.md) | 스킵된 스텝이 더 이상 완주한 스텝으로 위장되지 않는다 — 스킵이 INFO 한 줄이 아니라 기록되는 계약 신호가 된다. *0008 §Guard Runtime Semantics 갱신* |
 
-13편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+14편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -269,7 +270,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 1209 tests in 35.777s
+Ran 1346 tests in 35.456s
 
 OK
 ```
@@ -387,7 +388,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0013              RFC (0000은 Superseded, 나머지 13편은 Accepted)
+rfcs/0000~0014              RFC (0000은 Superseded, 나머지 14편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
