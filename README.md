@@ -413,9 +413,15 @@ R1–R6 in the [roadmap](docs/ROADMAP.md).
 
 | Phase | Contents | Done when |
 |-------|----------|-----------|
-| **1** | Rust parser (`.lnpl` → `.lir.json`) + **IR interpreter** running the golden scenario | Golden run matches the RFC-0003 timeline; test suite established |
+| **1** | Parser (`.lnpl` → `.lir.json`) + **IR interpreter** running the golden scenario | Golden run matches the RFC-0003 timeline; test suite established |
 | **2** | LLVM backend (mode B) + one generated artifact (OpenAPI) | Both execution modes are equivalent in observable behavior |
 | **3** | KB seeded across 12 categories + a two-agent protocol round trip | The RFC-0006 example cycle reproduces |
+
+The reference implementation is **Python**. The roadmap originally picked Rust for it,
+on the grounds of LLVM bindings and single-binary distribution — but those are Phase 2
+concerns, and a Phase 1 reference interpreter is better served by clarity, in the
+WebAssembly sense of an executable specification. The revision is recorded in
+[docs/ROADMAP.md](docs/ROADMAP.md) §0 (decision D10).
 
 ---
 
