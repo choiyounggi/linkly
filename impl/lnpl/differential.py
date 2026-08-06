@@ -53,8 +53,31 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
     return {"order": [s["step"] for s in steps],
             "effects": {s["step"]: s["effects"] for s in steps},
             "status": result["status"],
+            "skips": _normalise_skips(result["skipped"]),
             "bindings": result["bindings"],
             "text": text}
+
+
+def _normalise_skips(records):
+    """Project `result["skipped"]` onto the fields both modes can observe.
+
+    Two changes, each forced by what mode B can produce (issue #44):
+
+    * `guard` (an IR node id) is dropped. The native binary prints
+      `step <index> <name>` and nothing else, so a comparison keyed on node ids
+      could never pass — it would report the absence of a channel as a
+      disagreement about behaviour.
+    * one entry per STEP, not per guard. Mode A knows which guard owns which
+      steps; mode B can only see that a planned step never printed. Flattening
+      mode A to the finer grain lets the two be compared directly instead of
+      making mode B guess how mode A grouped its records.
+
+    `rounds` rides along because RFC-0008 §5 names the `until` round count as
+    its own comparison item.
+    """
+    return [{"mode": r["mode"], "condition": r["condition"],
+             "step": name, "rounds": r["rounds"]}
+            for r in records for name in r["steps"]]
 
 
 def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
@@ -94,10 +117,16 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
     skip = _derive_skip_from_payload(document, workflow_id, payload or {}, seeded)
     rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=values)
     order, effects, status = [], {}, None
+    ran_indices = set()
     for line in lines:
         parts = line.split(" ", 2)
         if parts[0] == "step" and len(parts) == 3:
             order.append(parts[2])
+            # The index, not the name, is what identifies WHICH planned op ran:
+            # a workflow may declare the same step twice (`load user` inside a
+            # guard and again outside it), and matching on the name would let a
+            # step that ran mask an identically named one that was skipped.
+            ran_indices.add(parts[1])
             effects.setdefault(parts[2], [])
         elif parts[0] == "effect" and len(parts) == 3:
             # `effect <step name> <Kind>` — the step name may contain spaces, so
@@ -109,12 +138,35 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
             status = parts[1]
     if status is None:
         raise DifferentialError("mode B produced no status line (exit %d)" % rc)
+    # Issue #44: a guard mode B did not take prints nothing at all — `scf.if`
+    # skips the `lnpl_step` call — so the skip is observable only as an absence
+    # from the plan the module was built from. Reading it back this way rather
+    # than emitting a marker op keeps the compiled module byte-identical, which
+    # `impl/tests/golden/*.std.mlir` requires (those fixtures are pre-change
+    # snapshots and are never regenerated).
+    skips = []
+    for entry in backend.step_plan(document, workflow_id, seeded=seeded,
+                                   payload=payload):
+        if entry["guard_mode"] is None or str(entry["index"]) in ran_indices:
+            continue
+        if entry["guard_mode"] == "until" and (entry["unroll_round"] or 1) != 1:
+            # `until` is unrolled to the round cap, and nothing in the IR mutates
+            # a condition field mid-run, so the loop runs either zero rounds or
+            # all of them. Round 1's absence already says "zero rounds"; counting
+            # rounds 2..N again would report one skip per unrolled round against
+            # mode A's single record.
+            continue
+        skips.append({"mode": entry["guard_mode"],
+                      "condition": entry["guard_condition"],
+                      "step": entry["name"],
+                      "rounds": 0 if entry["guard_mode"] == "until" else None})
+
     # Issue #43: the masking surface is the binary's WHOLE stdout, not the
     # normalised reduction of the lines the parser above recognised — an
     # unrecognised line would otherwise drop out of the scan, which is the
     # same silent-surface gap F-9 found on the mode A side.
     return {"order": order, "effects": effects, "status": status,
-            "text": "\n".join(lines)}
+            "skips": skips, "text": "\n".join(lines)}
 
 
 def _text_of(steps, status):
@@ -314,13 +366,21 @@ def compare_observations(a, b):
     """
     report, ok = [], True
 
-    if a["order"] == b["order"]:
-        report.append("PASS 1/4 execution order — %d step(s): %s"
-                      % (len(a["order"]), " -> ".join(a["order"]) or "(none)"))
+    # RFC-0008 §5 puts the skip set and the `until` round count INSIDE the
+    # execution-order class rather than adding a fifth: "기존 4분류는 유지하고,
+    # 새 항목을 실행 순서 내에 포함시킨다". A step that was skipped and a step
+    # that never existed both show up as a shorter `order`, so without the skip
+    # set the class cannot tell a guard disagreement from a lowering one.
+    a_skips, b_skips = a.get("skips") or [], b.get("skips") or []
+    if a["order"] == b["order"] and a_skips == b_skips:
+        report.append("PASS 1/4 execution order — %d step(s): %s | %d skip(s)"
+                      % (len(a["order"]), " -> ".join(a["order"]) or "(none)",
+                         len(a_skips)))
     else:
         ok = False
-        report.append("FAIL 1/4 execution order\n  mode A: %s\n  mode B: %s"
-                      % (a["order"], b["order"]))
+        report.append("FAIL 1/4 execution order\n  mode A: %s skips=%s"
+                      "\n  mode B: %s skips=%s"
+                      % (a["order"], a_skips, b["order"], b_skips))
 
     if a["status"] == b["status"]:
         report.append("PASS 2/4 policy outcome — status=%s" % a["status"])

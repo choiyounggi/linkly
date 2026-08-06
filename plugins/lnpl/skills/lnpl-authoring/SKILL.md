@@ -42,9 +42,10 @@ LNPL은 **의도(what)를 선언**하는 언어다. 구현(how)은 컴파일러�
 lnpl compile <파일>
 ```
 
-진단은 **stderr로 나가고 종료 코드는 0**이다. 즉 보지 않으면 사라진다.
-`unknown-verb`, `declared-not-enforced`, `declared-measured-only`,
-`authorization-not-verified` 중 하나라도 나오면, 그게 의도한 것인지 사용자에게
-확인하고 넘어간다. 조용히 무시하지 않는다.
+진단은 **stderr로 나가고 종료 코드는 0**이다(`--strict`를 주면 rc 2). 즉 보지
+않으면 사라진다. `unknown-verb`, `declared-not-enforced`,
+`declared-measured-only`, `authorization-not-verified`, `guard-skipped-steps`
+중 하나라도 나오면, 그게 의도한 것인지 사용자에게 확인하고 넘어간다. 조용히
+무시하지 않는다.
 
 `lnpl`이 없다는 오류가 나면 `lnpl-doctor` 스킬을 쓴다.

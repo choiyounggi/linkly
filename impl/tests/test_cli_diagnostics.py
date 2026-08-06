@@ -418,3 +418,133 @@ class TestUnaffectedBehaviour(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# A policy gate: the guard decides whether the order is created. Free of any
+# other diagnostic, so `--strict`'s rc is attributable to the skip alone.
+GUARDED_ORDER = """
+entity Order
+    field
+        id UUID
+        stock Integer
+workflow PlaceOrder
+    validate order
+    when stock > 0
+    create order
+"""
+
+
+class TestGuardSkipIsReported(unittest.TestCase):
+    """Issue #44 (t1 F-5, t2 F-6): a guard that rejected the work must not look
+    like a run that did all of it.
+
+    The three outcomes get three signals: clean (rc 0, nothing said), rejected
+    (rc 0, but the first output line and a diagnostic both say so; rc 2 under
+    `--strict`), failed (rc 1). An exit-code-only caller could previously not
+    tell the first two apart at all.
+    """
+
+    def setUp(self):
+        os.makedirs(TMP, exist_ok=True)
+        self.src = os.path.join(TMP, "order.lnpl")
+        with open(self.src, "w", encoding="utf-8") as fh:
+            fh.write(GUARDED_ORDER)
+        self.rejected = self._payload("rejected.json", stock=0)
+        self.accepted = self._payload("accepted.json", stock=1)
+
+    def _payload(self, name, **fields):
+        path = os.path.join(TMP, name)
+        body = dict(fields, id="3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(body, fh)
+        return path
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+
+    # ---- rejection: the signal exists --------------------------------------
+    def test_the_first_output_line_says_a_step_was_skipped(self):
+        rc, out, _err = run_cli_split(["run", self.src, "--payload", self.rejected])
+        self.assertEqual(rc, 0, "a skip is not a failure (plan D1)")
+        first = out.splitlines()[0]
+        self.assertIn("-> completed", first)
+        self.assertIn("(1 step(s) skipped by guard)", first)
+
+    def test_the_detail_line_names_the_condition_and_the_step(self):
+        _rc, out, _err = run_cli_split(["run", self.src, "--payload", self.rejected])
+        self.assertIn("skipped by `when stock > 0`: create order", out)
+
+    def test_a_diagnostic_reports_the_skip_on_stderr(self):
+        _rc, _out, err = run_cli_split(["run", self.src, "--payload", self.rejected])
+        self.assertIn("guard-skipped-steps", err)
+        self.assertIn("create order", err)
+        self.assertIn("stock > 0", err)
+
+    def test_json_output_carries_the_manifest(self):
+        _rc, out, _err = run_cli_split(
+            ["run", self.src, "--payload", self.rejected, "--json"])
+        result = json.loads(out)["result"]
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["skipped"],
+                         [{"guard": "wf.place.order.guard.1", "mode": "when",
+                           "condition": "stock > 0",
+                           "steps": ["create order"], "rounds": None}])
+
+    # ---- the contrast: success is distinguishable --------------------------
+    def test_the_accepted_run_says_nothing_about_skips(self):
+        rc, out, err = run_cli_split(["run", self.src, "--payload", self.accepted])
+        self.assertEqual(rc, 0)
+        first = out.splitlines()[0]
+        self.assertNotIn("skipped", first)
+        self.assertNotIn("guard-skipped-steps", err)
+        self.assertIn("create order", out, "the guarded step actually ran")
+
+    def test_the_two_runs_differ_in_their_first_line(self):
+        # The completion criterion in its most literal form: success and
+        # rejection must be distinguishable from the top-level signal alone.
+        import re
+
+        def header(out):
+            # Strip the volatile tail (duration, correlation id); what remains
+            # is the part a caller could branch on.
+            return re.sub(r"\(\d+ms, correlation_id=[^)]*\)", "",
+                          out.splitlines()[0]).strip()
+
+        _rc, rejected_out, _ = run_cli_split(
+            ["run", self.src, "--payload", self.rejected])
+        _rc, accepted_out, _ = run_cli_split(
+            ["run", self.src, "--payload", self.accepted])
+        self.assertEqual(header(accepted_out), "workflow PlaceOrder -> completed")
+        self.assertEqual(header(rejected_out),
+                         "workflow PlaceOrder -> completed  "
+                         "(1 step(s) skipped by guard)")
+        self.assertNotEqual(header(rejected_out), header(accepted_out),
+                            "t1 F-5 / t2 F-6: before this change both runs "
+                            "printed the identical header, so a caller could "
+                            "not tell a rejected order from a fulfilled one.")
+
+    # ---- the hard gate -----------------------------------------------------
+    def test_strict_promotes_a_rejected_run_to_rc_2(self):
+        rc, _out, _err = run_cli_split(
+            ["run", self.src, "--payload", self.rejected, "--strict"])
+        self.assertEqual(rc, 2, "issue #45's existing gate: a run that reported "
+                                "a diagnostic is not a clean exit under --strict")
+
+    def test_strict_leaves_an_accepted_run_at_rc_0(self):
+        # The control: the gate must fire on the skip, not on the workflow.
+        rc, _out, _err = run_cli_split(
+            ["run", self.src, "--payload", self.accepted, "--strict"])
+        self.assertEqual(rc, 0)
+
+    # ---- boundary: a workflow with no guard is untouched -------------------
+    def test_a_guardless_run_prints_the_unchanged_first_line(self):
+        path = os.path.join(TMP, "plain.lnpl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(CLEAN_SOURCE)
+        rc, out, err = run_cli_split(["run", path])
+        self.assertEqual(rc, 0)
+        first = out.splitlines()[0]
+        self.assertNotIn("skipped", first)
+        self.assertEqual(first.count("("), 1,
+                         "the guardless first line must keep its original shape")
+        self.assertEqual(err, "")

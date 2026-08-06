@@ -289,6 +289,142 @@ class TestGuardExecution(unittest.TestCase):
         self.assertIn("invalid condition", str(ctx.exception))
 
 
+class TestGuardSkipManifest(unittest.TestCase):
+    """Issue #44: a skip must be observable, and `until` 0-round must look like
+    a `when` skip rather than like nothing at all.
+
+    `result["skipped"]` carries one record per guard that did not run its
+    subtree. The record names the STEPS, not just the guard's node id: mode B's
+    output has no IR node ids (only `step <idx> <name>`), so the step names are
+    the only key the two modes can both produce.
+    """
+
+    # A seeded row for `load user`, so the run reaches the guard instead of
+    # failing on the read before it.
+    USER = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            "email": "user@example.com"}
+
+    def _run(self, src, payload, module="t", workflow="wf.w", rows=None):
+        doc = lower(parse(src), module).to_document()
+        if rows is None:
+            rows = {"entity.user": {row_key("entity.user", payload): dict(payload)}}
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, interp.run_workflow(workflow, payload)
+
+    # ---- normal case: the guard holds, nothing is recorded -----------------
+    def test_a_guard_that_holds_records_no_skip(self):
+        from tests.fixtures import guarded_source
+        _interp, result = self._run(guarded_source("when token missing"),
+                                    dict(self.USER, token=None))
+        self.assertEqual(result["skipped"], [])
+        self.assertIn("cache user", [s["step"] for s in result["steps"]])
+
+    # ---- rejection case: `when` false -------------------------------------
+    def test_a_false_when_records_one_record_naming_the_steps(self):
+        from tests.fixtures import guarded_source
+        _interp, result = self._run(guarded_source("when token missing"),
+                                    dict(self.USER, token="present"))
+        self.assertEqual(result["status"], "completed",
+                         "a skip is not a failure — the status vocabulary is "
+                         "unchanged (plan D1)")
+        self.assertEqual(result["skipped"],
+                         [{"guard": "wf.w.guard.1", "mode": "when",
+                           "condition": "token missing",
+                           "steps": ["cache user"], "rounds": None}])
+
+    def test_a_false_when_still_logs_the_trace_line(self):
+        # RFC-0003 §Guard keeps the trace obligation; the manifest is additive.
+        from tests.fixtures import guarded_source
+        interp, _result = self._run(guarded_source("when token missing"),
+                                    dict(self.USER, token="present"))
+        messages = [e["message"] for e in interp.trace.logs]
+        self.assertIn("guard skipped the guarded item", messages)
+
+    # ---- symmetry: `until` with zero rounds (t4 F-9) ----------------------
+    def test_an_until_that_never_loops_records_the_same_shape(self):
+        from tests.fixtures import UNTIL_COUNTER
+        _interp, result = self._run(UNTIL_COUNTER, {"counter": 100}, rows={})
+        self.assertEqual(result["skipped"],
+                         [{"guard": "wf.w.guard.1", "mode": "until",
+                           "condition": "counter >= 10",
+                           "steps": ["step Loop"], "rounds": 0}],
+                         "t4 F-9: a 0-round `until` left no mark at all, so "
+                         "`when`-skip and `until`-0 were indistinguishable.")
+
+    def test_an_until_that_loops_records_nothing(self):
+        from tests.fixtures import UNTIL_COUNTER
+        _interp, result = self._run(UNTIL_COUNTER, {"counter": 0}, rows={})
+        self.assertEqual(result["skipped"], [],
+                         "rounds ran, so nothing was skipped")
+        self.assertGreater(
+            len([s for s in result["steps"] if s["step"] == "step Loop"]), 0)
+
+    def test_an_until_that_never_loops_also_logs_the_trace_line(self):
+        from tests.fixtures import UNTIL_COUNTER
+        interp, _result = self._run(UNTIL_COUNTER, {"counter": 100}, rows={})
+        skipped = [e for e in interp.trace.logs
+                   if e["message"] == "guard skipped the guarded item"]
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["rounds"], 0)
+
+    # ---- boundary: a workflow with no guard at all is untouched -----------
+    def test_a_workflow_without_guards_records_nothing(self):
+        result = build().run_workflow("wf.login", PAYLOAD)
+        self.assertEqual(result["skipped"], [])
+
+    # ---- boundary: the guard wraps a block, not a single step -------------
+    BLOCK_GUARDED = """
+capability postgres
+entity User
+    field
+        id UUID
+        email Email
+        token Text
+service S
+workflow W
+    load user
+    when token missing
+    parallel
+        cache user
+        emit userCreated
+    merge
+"""
+
+    def test_a_guard_over_a_block_names_every_step_it_skipped(self):
+        # `_flatten_items` never descends into a skipped subtree, so the step
+        # names have to be collected separately. A record naming only the guard
+        # would leave a caller unable to say WHAT did not run.
+        src = self.BLOCK_GUARDED.replace("    emit userCreated\n",
+                                         "    load user\n")
+        _interp, result = self._run(src, dict(self.USER, token="present"))
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["steps"],
+                         ["cache user", "load user"])
+
+    # ---- boundary: two guards, two records --------------------------------
+    TWO_GUARDS = """
+capability postgres
+entity User
+    field
+        id UUID
+        email Email
+        token Text
+service S
+workflow W
+    when token missing
+    load user
+    when token exists
+    cache user
+"""
+
+    def test_each_false_guard_gets_its_own_record(self):
+        _interp, result = self._run(self.TWO_GUARDS,
+                                    dict(self.USER, token="present"))
+        self.assertEqual([r["guard"] for r in result["skipped"]],
+                         ["wf.w.guard.1"])
+        self.assertEqual(result["skipped"][0]["steps"], ["load user"])
+
+
 class TestEventEmit(unittest.TestCase):
     """RFC-0003: async publish, at-least-once with a dedupable id, masked payload."""
 
@@ -440,16 +576,31 @@ class TestStepResultBinding(unittest.TestCase):
         interp = Interpreter(doc, repo_rows=rows)
         return interp, interp.run_workflow(CHECKOUT_WORKFLOW, payload)
 
+    def assertSkipped(self, result, condition, why, skipped=None):
+        """The guard skipped, and the record says WHICH guard, on WHAT
+        condition, over WHICH steps (issue #44 record shape).
+
+        Asserting the whole record rather than the guard id keeps these
+        assertions discriminating: a manifest that dropped the condition or the
+        step names would still contain the id.
+        """
+        records = result["skipped"] if skipped is None else skipped
+        self.assertEqual(records, [{"guard": GUARD_ID, "mode": "when",
+                                    "condition": condition,
+                                    "steps": ["create order"],
+                                    "rounds": None}], why)
+
     def test_the_guard_reads_the_fetched_row_not_the_input_payload(self):
         # The input says 5 (guard would be TRUE on the payload); the stored row
         # says 0 (guard is FALSE on the row). If `create order` runs, the guard
         # read the payload — which is issue #37.
         _interp, result = self._run(payload={"stock": 5}, row={"stock": 0})
         self.assertEqual(result["status"], "completed")
-        self.assertIn(GUARD_ID, result["skipped"],
-                      "issue #37: the stored row has stock=0, so `when "
-                      "product.stock > 0` is false and the guarded item is "
-                      "skipped. The payload's stock=5 must not decide this.")
+        self.assertSkipped(
+            result, "product.stock > 0",
+            "issue #37: the stored row has stock=0, so `when "
+            "product.stock > 0` is false and the guarded item is "
+            "skipped. The payload's stock=5 must not decide this.")
         self.assertEqual([s["step"] for s in result["steps"]],
                          ["validate product", "find product", "cache product"],
                          "issue #37: `create order` is guarded and the guard is "
@@ -488,23 +639,26 @@ class TestStepResultBinding(unittest.TestCase):
         _interp, result = self._run(payload={"stock": 5}, row={"stock": 5},
                                     guard_first=True)
         self.assertEqual(result["status"], "completed")
-        self.assertIn(GUARD_ID, result["skipped"],
-                      "RFC-0012 G12.4: no RepositoryCall has completed, so "
-                      "`product.stock` resolves to nothing and the comparison "
-                      "is false — not an error, and not vacuously true.")
+        self.assertSkipped(
+            result, "product.stock > 0",
+            "RFC-0012 G12.4: no RepositoryCall has completed, so "
+            "`product.stock` resolves to nothing and the comparison "
+            "is false — not an error, and not vacuously true.")
 
     def test_an_unbound_reference_does_not_exist(self):
         _interp, result = self._run(condition="product.stock exists",
                                     guard_first=True)
-        self.assertIn(GUARD_ID, result["skipped"],
-                      "RFC-0012 G12.4: `exists` on an unbound reference is false.")
+        self.assertSkipped(
+            result, "product.stock exists",
+            "RFC-0012 G12.4: `exists` on an unbound reference is false.")
 
     def test_a_field_absent_from_the_row_is_false(self):
         # Boundary: the binding exists, but the row has no such field.
         _interp, result = self._run(condition="product.nosuch > 0")
-        self.assertIn(GUARD_ID, result["skipped"],
-                      "RFC-0012 G12.4: a field the row does not carry compares "
-                      "false rather than raising.")
+        self.assertSkipped(
+            result, "product.nosuch > 0",
+            "RFC-0012 G12.4: a field the row does not carry compares "
+            "false rather than raising.")
 
     def test_a_field_absent_from_the_row_is_missing(self):
         _interp, result = self._run(condition="product.nosuch missing")
@@ -543,10 +697,11 @@ class TestStepResultBinding(unittest.TestCase):
                          "each run must get its own binding map; sharing one "
                          "object across runs is the mutable-state trap that "
                          "carries one run's rows into the next.")
-        self.assertIn(GUARD_ID, second["skipped"],
-                      "the second run's guard is evaluated before its own read, "
-                      "so nothing is bound yet and it must skip. If it opened, "
-                      "it read the FIRST run's binding.")
+        self.assertSkipped(
+            second, "product.stock > 0",
+            "the second run's guard is evaluated before its own read, "
+            "so nothing is bound yet and it must skip. If it opened, "
+            "it read the FIRST run's binding.")
         self.assertNotIn("create order", [s["step"] for s in second["steps"]])
 
 

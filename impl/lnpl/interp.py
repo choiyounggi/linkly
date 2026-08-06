@@ -174,7 +174,7 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
             inner_ids = node.get("children", [])
             if mode == "when":
                 if not _condition_holds(node.get("condition"), payload, bindings):
-                    result["skipped"].append(node_id)
+                    result["skipped"].append(_skip_record(nodes, node))
                     interp.trace.log("INFO", "guard skipped the guarded item",
                                      guard=node_id, condition=node.get("condition"))
                     continue
@@ -206,6 +206,16 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                     for inner in _flatten_items(nodes, inner_ids, interp, result,
                                                 root, con, payload, bindings):
                         yield inner
+                if rounds == 0:
+                    # Issue #44 (t4 F-9): `when` recorded its skip and a
+                    # zero-round `until` recorded nothing, so "declared and did
+                    # not run" had two shapes — one observable, one silent. The
+                    # two paths are the same fact, so they get the same record.
+                    # A loop that ran at least one round skipped nothing.
+                    result["skipped"].append(_skip_record(nodes, node, rounds=0))
+                    interp.trace.log("INFO", "guard skipped the guarded item",
+                                     guard=node_id, condition=node.get("condition"),
+                                     rounds=0)
             else:
                 raise RunError("unknown guard mode %r" % mode)
         else:
@@ -213,6 +223,42 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
 
 
 _UNTIL_ROUND_CAP = 16
+
+
+def _guarded_step_names(nodes, ids):
+    """The WorkflowStep names a guard's subtree holds, in declared order.
+
+    `_flatten_items` never descends into a subtree it skips, so what did NOT run
+    has to be collected separately. Names rather than node ids: mode B's output
+    carries only `step <index> <name>`, so a manifest keyed on ids is something
+    the compiled mode cannot produce, and the two modes could never be compared
+    on it (issue #44).
+    """
+    out = []
+    for node_id in ids:
+        node = nodes.get(node_id)
+        if node is None:
+            continue
+        if node["kind"] == "WorkflowStep":
+            out.append(node["name"])
+        elif node["kind"] in ("Concurrency", "Pipeline", "Guard"):
+            out.extend(_guarded_step_names(nodes, node.get("children", [])))
+    return out
+
+
+def _skip_record(nodes, node, rounds=None):
+    """One `result["skipped"]` entry — the record shape issue #44 defines.
+
+    `rounds` is None for `when` (it evaluates once) and 0 for an `until` that
+    never entered its body. `guard` is mode A's own node id: useful for a
+    debugger, and deliberately excluded from the mode A/B comparison, which is
+    keyed on the fields both modes can observe.
+    """
+    return {"guard": node["id"],
+            "mode": node["mode"],
+            "condition": node.get("condition"),
+            "steps": _guarded_step_names(nodes, node.get("children", [])),
+            "rounds": rounds}
 
 
 def resolve_reference(name, payload, bindings):
@@ -483,6 +529,24 @@ class Interpreter:
                 self.trace.log("ERROR", "deadline exceeded",
                                step=step["name"], deadline_ms=con["timeout_ms"])
                 break
+
+        # Issue #44 (t1 F-5, t2 F-6): the run completed, but not all of what the
+        # program declared actually happened. `status` stays `completed` — a
+        # guard doing its job is not a failure, and a cache-hit skip is a normal
+        # optimisation — so the fact travels on the channel built for "declared,
+        # and here is what the runtime really did with it" instead. That also
+        # puts it behind `--strict`, which is the only way a caller reading just
+        # the exit code could ever have seen it (issue #45's gate).
+        for record in result["skipped"]:
+            self.diagnostics.add(
+                code="guard-skipped-steps", severity="warning",
+                where=record["guard"],
+                subject=record["condition"] or "(unconditional)",
+                message="the `%s` guard did not run %s; the workflow still "
+                        "reports completed, so a caller reading only the status "
+                        "cannot tell this run from one that ran every step"
+                        % (record["mode"],
+                           ", ".join(record["steps"]) or "(no step)"))
 
         root.end_ms = self.clock.now
         total = root.duration_ms

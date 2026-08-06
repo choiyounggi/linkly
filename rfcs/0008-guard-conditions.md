@@ -5,7 +5,7 @@
 - Status: **Accepted** (RFC-0008, 2026-07-31)
 - Implementation: **Complete** (Parser ✓, Mode A ✓, Mode B ✓, Differential ✓)
 - Updates: RFC-0002 §Full grammar, RFC-0003 §Guard
-- Updated-by: RFC-0012 (§Reference-level Specification/1. Full Grammar)
+- Updated-by: RFC-0012 (§Reference-level Specification/1. Full Grammar), RFC-0014 (§Reference-level Specification/2. Guard Runtime Semantics)
 
 ## Motivation
 
@@ -80,6 +80,8 @@ Condition         ::= Presence | Comparison
 - 멤버십 연산
 
 ### 2. Guard Runtime Semantics (RFC-0003 §Guard 갱신)
+
+> 갱신됨: RFC-0014 — 이 절의 효력 있는 텍스트는 RFC-0014 §Reference-level Specification/2에 있다.
 
 **상수 정의:**
 ```

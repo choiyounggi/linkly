@@ -88,8 +88,10 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | declared-not-enforced | warning | §B에서 status가 `unenforced`인 선언이 있을 때 | 컴파일 타임 — lowering |
 | declared-measured-only | warning | §B에서 status가 `measured`인 선언이 있을 때 | 컴파일 타임 — lowering |
 | authorization-not-verified | warning | Authorization Effect가 실제로 실행됐을 때 | 런타임 — 인터프리터 |
+| guard-skipped-steps | warning | 가드가 false여서 선언된 스텝이 실행되지 않았을 때 | 런타임 — 인터프리터 |
 
-전부 `warning`이고, **어느 것도 종료 코드를 바꾸지 않는다.** `lnpl compile`과
+전부 `warning`이고, **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** —
+`--strict`를 준 실행에서만 rc 0이 rc 2로 승격된다(이슈 #45의 게이트). `lnpl compile`과
 `lnpl run`이 stderr로 출력하며, 형식은 `impl/lnpl/diagnostics.py`의
 `format_lines()` 한 곳에서만 만들어진다.
 

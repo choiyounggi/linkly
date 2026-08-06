@@ -38,3 +38,4 @@
 - `declared-not-enforced`
 - `declared-measured-only`
 - `authorization-not-verified`
+- `guard-skipped-steps`

@@ -1543,3 +1543,59 @@ class TestScopedConditionFieldIdentifier(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStepPlan(unittest.TestCase):
+    """Issue #44: the compiled step plan, exposed so `observe_mode_b` can tell
+    "this step was skipped" from "this step does not exist".
+
+    Mode B's stdout prints only the steps that ran, so a skip is observable only
+    as an absence — and an absence needs the plan to be read against. The plan
+    comes from the same `_lnpl_ops` derivation `emit_mlir` renders, so it cannot
+    describe a different workflow than the one that was compiled.
+    """
+
+    def test_a_when_guard_is_carried_with_its_condition(self):
+        doc = lower(parse(guarded_source("when token missing")), "t").to_document()
+        plan = backend.step_plan(doc, "wf.w")
+        guarded = [op for op in plan if op["guard_mode"] is not None]
+        self.assertEqual(len(guarded), 1)
+        self.assertEqual(guarded[0]["guard_mode"], "when")
+        self.assertEqual(guarded[0]["guard_condition"], "token missing")
+        self.assertEqual(guarded[0]["name"], "cache user")
+
+    def test_an_until_guard_is_unrolled_to_the_round_cap(self):
+        doc = lower(parse(UNTIL_COUNTER), "t").to_document()
+        plan = backend.step_plan(doc, "wf.w")
+        rounds = [op["unroll_round"] for op in plan
+                  if op["guard_mode"] == "until"]
+        self.assertEqual(rounds, list(range(1, backend._UNTIL_ROUND_CAP + 1)))
+
+    def test_an_unguarded_workflow_carries_no_guard_mode(self):
+        plan = backend.step_plan(golden(), "wf.login")
+        self.assertTrue(plan, "precondition: the golden workflow has steps")
+        self.assertEqual([op["guard_mode"] for op in plan], [None] * len(plan))
+
+    def test_the_plan_is_the_same_derivation_emit_mlir_renders(self):
+        # Not a second derivation: every step the plan names must appear in the
+        # emitted module, or the skip reconstruction would read a plan the
+        # binary was never built from.
+        doc = lower(parse(guarded_source("when token missing")), "t").to_document()
+        text = backend.emit_mlir(doc, "wf.w")
+        for op in backend.step_plan(doc, "wf.w"):
+            self.assertIn("step %d: %s" % (op["index"], op["name"]), text)
+
+    def test_a_workflow_with_no_steps_plans_nothing(self):
+        # Boundary: an empty body is a legal document, and the reconstruction
+        # must not assume at least one op.
+        doc = lower(parse(guarded_source("when token missing")), "t").to_document()
+        for node in doc["nodes"]:
+            if node["id"] == "wf.w":
+                node["children"] = []
+        self.assertEqual(backend.step_plan(doc, "wf.w"), [])
+
+    def test_an_unknown_workflow_is_refused(self):
+        # Error case: the same refusal `_lnpl_ops` already makes, not a silent
+        # empty plan that would read as "nothing was skipped".
+        with self.assertRaises(backend.BackendError):
+            backend.step_plan(golden(), "wf.nosuch")

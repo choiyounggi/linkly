@@ -680,6 +680,27 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
     return module_attrs, ops
 
 
+def step_plan(document, workflow_id, seeded=None, payload=None):
+    """The ordered step plan mode B compiled — `observe_mode_b`'s skip input.
+
+    A guard that does not hold produces no output at all in mode B: `scf.if`
+    simply does not call `lnpl_step`, and the binary's stdout has no line for it.
+    So a skip is observable only as an ABSENCE, and an absence is meaningless
+    without the list it is absent from. That list is this.
+
+    It comes from `_lnpl_ops` — the same derivation `emit_lnpl_mlir` and
+    `_render_std` consume — rather than from a second walk of the document, so
+    the plan cannot describe a workflow other than the one that was built. That
+    is also why nothing here touches the emitted MLIR: the observation is
+    reconstructed from what the binary printed, not from a new branch compiled
+    into it, which keeps `impl/tests/golden/*.std.mlir` byte-identical (issue #44).
+
+    `seeded` and `payload` are the run's specialisation inputs; see `_lnpl_ops`.
+    """
+    _module_attrs, ops = _lnpl_ops(document, workflow_id, seeded, payload)
+    return ops
+
+
 def _mlir_escape(text):
     r"""Escape a Python string for an MLIR string literal.
 
