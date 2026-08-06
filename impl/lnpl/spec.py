@@ -29,26 +29,46 @@ class SpecError(Exception):
 
 
 def extract(decls, module_name):
-    """[Decl] -> manifest dict. Workflows without a `spec` clause are skipped."""
+    """[Decl] -> manifest dict. Workflows without a `spec` clause are skipped.
+
+    Each `spec` block is one case (issue #46): the parser keeps a block's
+    given/when/expect on the block itself (`Decl.extra["specs"]`), so a second
+    block no longer merges into the first. A single block keeps the exact
+    pre-#46 case name — the committed golden manifests are byte-compared.
+    """
     cases = []
     for d in decls:
         if d.kind != "workflow" or "spec" not in d.clauses:
             continue
-        # The parser stores given/when/expect as sibling clauses (they are clause
-        # keywords), so read them by name; `spec` itself is the marker.
         if d.clauses["spec"]:
             raise SpecError("workflow %s: the `spec` keyword takes no content lines — "
                             "put them under given/when/expect" % d.name)
-        given = [" ".join(l.tokens) for l in d.clauses.get("given", [])]
-        when = [" ".join(l.tokens) for l in d.clauses.get("when", [])]
-        expect = [" ".join(l.tokens) for l in d.clauses.get("expect", [])]
-        if not when:
-            raise SpecError("workflow %s: a spec needs a `when` section" % d.name)
-        if not expect:
-            raise SpecError("workflow %s: a spec needs an `expect` section" % d.name)
-        cases.append({"name": "%s spec" % d.name,
-                      "workflow": _workflow_id(d.name),
-                      "given": given, "when": when, "expect": expect})
+        blocks = d.extra.get("specs") or []
+        # Sections written before the first `spec` keyword landed in the
+        # legacy shared clause lists; with blocks present they would be
+        # silently dropped — refuse instead of losing declared lines.
+        stray = [k for k in ("given", "when", "expect") if d.clauses.get(k)]
+        if stray:
+            raise SpecError(
+                "workflow %s: %s lines appear before the first `spec` block — "
+                "move them under it" % (d.name, "/".join(stray)))
+        for i, block in enumerate(blocks, 1):
+            label = ("a spec" if len(blocks) == 1
+                     else "spec block %d" % i)
+            given = [" ".join(l.tokens) for l in block["given"]]
+            when = [" ".join(l.tokens) for l in block["when"]]
+            expect = [" ".join(l.tokens) for l in block["expect"]]
+            if not when:
+                raise SpecError("workflow %s: %s needs a `when` section"
+                                % (d.name, label))
+            if not expect:
+                raise SpecError("workflow %s: %s needs an `expect` section"
+                                % (d.name, label))
+            name = ("%s spec" % d.name if len(blocks) == 1
+                    else "%s spec %d" % (d.name, i))
+            cases.append({"name": name,
+                          "workflow": _workflow_id(d.name),
+                          "given": given, "when": when, "expect": expect})
     return {"spec_version": SPEC_VERSION, "module": module_name, "cases": cases}
 
 
@@ -284,6 +304,8 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
     #37 is about at all.
     """
     fields = {f["name"] for f in entity_node["fields"]} if entity_node else set()
+    field_types = ({f["name"]: f["type"] for f in entity_node["fields"]}
+                   if entity_node else {})
     payload = sample_payload([entity_node] if entity_node else [], refinements)
     entities = [n for n in (document or {}).get("nodes", [])
                 if n["kind"] == "Entity"]
@@ -298,11 +320,19 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
                     "unsupported given: %r (use `stored <entity> <field> <value>`)"
                     % phrase)
             _name, ent_name, field, value = tokens
+            # The declared name (`Product`) or the binding name (`product`) —
+            # `rows <Entity> <N>` accepts the declared name, and issue #46
+            # measured that accepting only the lowercase form here reported a
+            # DECLARED entity as undeclared (t1 F-8, t2 F-12).
             target = next((e for e in entities
-                           if binding_name(e) == ent_name), None)
+                           if e.get("name") == ent_name
+                           or binding_name(e) == ent_name), None)
             if target is None:
-                raise SpecError("given %r names %r, which is not a declared entity"
-                                % (phrase, ent_name))
+                raise SpecError(
+                    "given %r names %r, which is not a declared entity "
+                    "(declared: %s)"
+                    % (phrase, ent_name,
+                       ", ".join(e.get("name", "?") for e in entities) or "none"))
             if field not in {f["name"] for f in target.get("fields", [])}:
                 raise SpecError("given %r names field %r, which entity %s does "
                                 "not declare" % (phrase, field, target["name"]))
@@ -310,11 +340,15 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
         elif tokens[0] == "no" and len(tokens) == 2 and tokens[1] in fields:
             payload.pop(tokens[1], None)
         elif len(tokens) == 2 and tokens[0] in fields:
-            # Left as the raw string, exactly as before issue #39: coercing here
-            # would change what every existing `given <field> <value>` produces
-            # (`name 42` would stop being a valid Text), and the comparison path
-            # already coerces a numeric string when it needs a number.
-            payload[tokens[0]] = tokens[1]
+            # Integer-shaped fields coerce; everything else keeps the raw
+            # string so `name 42` stays a valid Text (the pre-#39 contract).
+            # The coercion exists because `check_semantic_type` for Integer is
+            # an isinstance check: a raw "150" fails the validate step that the
+            # JSON payload `150` passes, so the spec could not run the same
+            # payload as `lnpl run` (issue #46 — t4 F-5, t2 F-11).
+            payload[tokens[0]] = _typed_value(tokens[1],
+                                              field_types.get(tokens[0]),
+                                              refinements)
         else:
             raise SpecError(
                 "unsupported given: %r (use `valid <...>`, `empty repository`, "
@@ -325,6 +359,22 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
             "`empty repository` and `stored ...` contradict each other: there is "
             "no row to store into an empty store. Drop one.")
     return payload, stored
+
+
+def _typed_value(text, type_name, refinements):
+    """A `given <field> <value>` token in the declared field's shape.
+
+    Only Integer-shaped fields (the declared type, or a refinement whose base
+    is Integer) coerce a digit-string to int — Integer is the one semantic
+    type whose check is an isinstance, so it is the one a raw string can never
+    satisfy. A non-numeric string is left raw and fails validation loudly
+    rather than being reinterpreted.
+    """
+    refinement = None if refinements is None else refinements.get(type_name)
+    base = refinement["base"] if refinement else type_name
+    if base == "Integer" and text.lstrip("-").isdigit():
+        return int(text)
+    return text
 
 
 def _coerce(text):
@@ -366,11 +416,13 @@ def run_manifest(manifest, document):
             failed += 1
             lines.append("FAIL %s — run error: %s" % (case["name"], exc))
             continue
+        case_failed = False
         for phrase in case["expect"]:
             key = phrase.split()[0]
             check = EXPECTATIONS.get(key)
             if check is None:
                 failed += 1
+                case_failed = True
                 lines.append("FAIL %s — unsupported expectation %r (known: %s)"
                              % (case["name"], phrase, ", ".join(sorted(EXPECTATIONS))))
                 continue
@@ -380,5 +432,14 @@ def run_manifest(manifest, document):
                 lines.append("PASS %s — %s (%s)" % (case["name"], phrase, detail))
             else:
                 failed += 1
+                case_failed = True
                 lines.append("FAIL %s — %s (%s)" % (case["name"], phrase, detail))
+        # Issue #46 (t4 F-12): a run that completed with status=failed knows
+        # its failed_step/failure_reason, but the report never said them —
+        # diagnosing a FAIL required a separate `lnpl run` probe. One line per
+        # failing case; a completed run has no failed step to report.
+        if case_failed and result["status"] == "failed":
+            lines.append("     reason: step=%r — %s"
+                         % (result.get("failed_step"),
+                            result.get("failure_reason")))
     return passed, failed, lines
