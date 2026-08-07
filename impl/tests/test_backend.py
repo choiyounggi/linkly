@@ -18,8 +18,9 @@ from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import (READ_OPS, default_rows, repository_calls,
                               seeded_entities)
+from lnpl.repo_policy import row_key
 from tests.fixtures import (CHECKOUT_LNPL, GUARDED, UNTIL_COUNTER,
-                            guarded_source)
+                            VALUE_INVENTORY, VALUE_PAYMENT, guarded_source)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN_IR = os.path.join(REPO, "examples", "login.lir.json")
@@ -1617,3 +1618,155 @@ class TestStepPlan(unittest.TestCase):
         # empty plan that would read as "nothing was skipped".
         with self.assertRaises(backend.BackendError):
             backend.step_plan(golden(), "wf.nosuch")
+
+
+class TestValueExpressionsCompile(unittest.TestCase):
+    """RFC-0015 in mode B: both operands, arithmetic, and `and`, as MLIR.
+
+    Text-level assertions on the emitted module, so they run without the
+    toolchain; the differential class below is what proves the two modes agree
+    about what that module does.
+    """
+
+    def test_both_sides_of_a_comparison_become_parameters(self):
+        doc = lower(parse(VALUE_INVENTORY), "inv").to_document()
+        self.assertEqual(backend.condition_field_names(doc, "wf.place.order"),
+                         ["input.quantity", "product.stock"])
+
+    def test_the_comparison_reads_two_registers_not_a_constant(self):
+        doc = lower(parse(VALUE_INVENTORY), "inv").to_document()
+        text = backend.emit_mlir(doc, "wf.place.order")
+        self.assertIn("arith.cmpi sge, %product__stock, %input__quantity : i64",
+                      text)
+
+    def test_an_and_condition_folds_its_terms(self):
+        doc = lower(parse(VALUE_PAYMENT), "pay").to_document()
+        text = backend.emit_mlir(doc, "wf.approve")
+        self.assertIn("arith.cmpi sgt,", text)
+        self.assertIn("arith.cmpi sle,", text)
+        self.assertIn("arith.andi", text)
+
+    def test_arithmetic_is_emitted_before_the_comparison(self):
+        source = VALUE_INVENTORY.replace(
+            "when product.stock >= input.quantity",
+            "when product.stock - input.quantity >= 0")
+        doc = lower(parse(source), "inv").to_document()
+        text = backend.emit_mlir(doc, "wf.place.order")
+        self.assertIn("arith.subi %product__stock, %input__quantity : i64", text)
+        subi = text.index("arith.subi")
+        cmpi = text.index("arith.cmpi sge", subi)
+        self.assertLess(subi, cmpi, "the difference must exist before it is compared")
+
+    def test_an_assignment_reaches_the_module_as_an_effect(self):
+        # Mode B models no repository, so the VALUE of the assignment is not
+        # observable there (RFC-0015 §Differential Equivalence lists it as a
+        # permitted difference). Its occurrence is.
+        doc = lower(parse(VALUE_INVENTORY), "inv").to_document()
+        text = backend.emit_mlir(doc, "wf.place.order")
+        self.assertIn("Assignment", text)
+
+    def test_a_condition_with_no_compiled_evaluator_still_falls_back(self):
+        # Boundary: a Presence guard has no i64 parameter, so the run-level skip
+        # flag stays the channel it was before RFC-0015.
+        doc = lower(parse(guarded_source("when token missing")), "t").to_document()
+        text = backend.emit_mlir(doc, "wf.w")
+        self.assertIn("%skip", text)
+
+
+@NEEDS_TOOLS
+class TestValueExpressionModeEquivalence(unittest.TestCase):
+    """The two modes on RFC-0015 programs, with the controls that make it evidence.
+
+    Three things are asserted separately, because they are three claims:
+      * the default input agrees (`test_*_agrees`),
+      * the injected values actually reach the compiled guard (the control pair),
+      * the comparison can still fail (the seeded divergence).
+    """
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-value-",
+                                        dir=os.path.join(REPO, ".claude", "tmp"))
+        self.original = backend._emit_condition
+
+    def tearDown(self):
+        backend._emit_condition = self.original
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _verify(self, doc, workflow, payload, rows=None):
+        rows = default_rows(doc, workflow, payload) if rows is None else rows
+        return differential.verify(doc, workflow, payload, rows, self.workdir)
+
+    def _inventory(self, stock, quantity):
+        doc = lower(parse(VALUE_INVENTORY), "inv").to_document()
+        payload = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                   "stock": stock, "quantity": quantity}
+        rows = {"entity.product": {row_key("entity.product", payload):
+                                   {"id": payload["id"], "stock": stock}}}
+        return doc, payload, rows
+
+    def test_a_field_on_the_right_agrees_in_both_directions(self):
+        for stock, quantity in ((5, 2), (1, 2)):
+            doc, payload, rows = self._inventory(stock, quantity)
+            ok, report = self._verify(doc, "wf.place.order", payload, rows)
+            self.assertTrue(ok, "stock=%d quantity=%d:\n%s"
+                            % (stock, quantity, "\n".join(report)))
+
+    def test_an_and_range_agrees_inside_and_outside_its_bounds(self):
+        doc = lower(parse(VALUE_PAYMENT), "pay").to_document()
+        for amount in (0, 1, 10000, 10001):
+            payload = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                       "amount": amount}
+            ok, report = self._verify(doc, "wf.approve", payload)
+            self.assertTrue(ok, "amount=%d:\n%s" % (amount, "\n".join(report)))
+
+    def test_the_control_pair_flips_the_guarded_step(self):
+        """The injected values must decide something before any of this counts.
+
+        Uniform observations across a value matrix mean "lever not connected",
+        not "behaviour stable" — so this pins the flip itself: the same program,
+        two payloads, different executed-step lists.
+        """
+        doc, high, high_rows = self._inventory(5, 2)
+        _doc, low, low_rows = self._inventory(1, 2)
+
+        ran = differential.observe_mode_b(
+            doc, "wf.place.order", self.workdir, payload=high,
+            seeded=frozenset(["entity.product"]))
+        skipped = differential.observe_mode_b(
+            doc, "wf.place.order", self.workdir, payload=low,
+            seeded=frozenset(["entity.product"]))
+        self.assertIn("create order", ran["text"])
+        self.assertNotIn("create order", skipped["text"],
+                         "the compiled guard ignored the injected values — a "
+                         "matrix run over them would measure nothing")
+
+    def test_the_comparison_can_still_fail(self):
+        """Seeded divergence: invert the emitted predicate, require a red.
+
+        A differential check that has only ever printed EQUIVALENT is unmeasured,
+        and RFC-0015 widened exactly the code this exercises.
+        """
+        doc, payload, rows = self._inventory(5, 2)
+        ok, report = self._verify(doc, "wf.place.order", payload, rows)
+        self.assertTrue(ok, "baseline must be equivalent before the fault")
+
+        original = self.original
+
+        def inverted(cond, idx, lines, negate):
+            return original(cond, idx, lines, not negate)
+
+        backend._emit_condition = inverted
+        ok, report = self._verify(doc, "wf.place.order", payload, rows)
+        self.assertFalse(ok, "an inverted guard must not compare as equivalent")
+        self.assertTrue(any("FAIL 1/4" in line for line in report), report)
+
+    def test_the_forcing_input_where_the_repository_decides(self):
+        """Mode B models no rows, so the default input cannot exercise that.
+
+        Reported as its own verdict rather than folded into the agreement above:
+        an empty seed is where the asymmetric dimension decides the outcome.
+        """
+        doc, payload, _rows = self._inventory(5, 2)
+        ok, report = differential.verify(doc, "wf.place.order", payload, {},
+                                         self.workdir, seeded=frozenset())
+        self.assertTrue(ok, "empty-seed run:\n%s" % "\n".join(report))

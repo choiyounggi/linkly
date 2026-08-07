@@ -6,11 +6,13 @@
     python3 scripts/validate_ir.py --self-test        # 골든 예제 + 부정 케이스 자기검증
     python3 scripts/validate_ir.py --self-test-meta   # 그 부정 케이스들 자체의 역방향 통제
 
---self-test는 examples/login.lir.json과 REFINEMENT_FIXTURE가 스키마를
-통과하고(positive 2), 고의로 깨뜨린 변형들 — 필수 필드 삭제 / 미정의 kind 주입 /
-미정의 추가 필드 주입, 그리고 refinement 표기(RFC-0001 부록 A.6)의 7종 — 이
-전부 거부돼야 exit 0이다. 부정 케이스가 하나라도 통과하면 검증기가 결함을 잡지
-못한다는 뜻이므로 exit 1 — 실패할 수 없는 검증은 검증이 아니다.
+--self-test는 examples/login.lir.json과 REFINEMENT_FIXTURE, ASSIGNMENT_FIXTURE,
+SCHEDULE_EVENT_FIXTURE가 스키마를 통과하고(positive 4), 고의로 깨뜨린 변형들 —
+필수 필드 삭제 / 미정의 kind 주입 / 미정의 추가 필드 주입, refinement 표기
+(RFC-0001 부록 A.6)의 7종, Assignment 표기(RFC-0015)의 5종, 그리고 schedule 이벤트
+소스(RFC-0016)의 6종 — 이 전부 거부돼야 exit 0이다. 부정 케이스가
+하나라도 통과하면 검증기가 결함을 잡지 못한다는 뜻이므로 exit 1 — 실패할 수 없는
+검증은 검증이 아니다.
 
 --self-test-meta는 그 한 단계 위를 본다. "거부됐다"는 사실은 **무엇이** 거부했는지
 말해주지 않는다: `Refinement` kind를 스키마에 넣기 전에는 7종 부정 케이스가 전부
@@ -84,6 +86,125 @@ REFINEMENT_FIXTURE = {
         },
     ],
 }
+
+
+ASSIGNMENT_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "assignment",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.product",
+            "name": "Product",
+            "fields": [
+                {"name": "id", "type": "UUID"},
+                {"name": "stock", "type": "Integer"},
+            ],
+        },
+        {
+            "kind": "Workflow",
+            "id": "wf.place.order",
+            "name": "PlaceOrder",
+            "children": ["wf.place.order.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.place.order.step.1",
+            "name": "set product.stock to product.stock - input.quantity",
+            "children": ["wf.place.order.step.1.assign"],
+        },
+        {
+            "kind": "Assignment",
+            "id": "wf.place.order.step.1.assign",
+            "target": "product.stock",
+            "expression": "product.stock - input.quantity",
+            "entity": "entity.product",
+        },
+    ],
+}
+
+
+def assignment_negatives():
+    """RFC-0015의 Assignment 분기 — 이 분기가 **더한 키워드마다** 부정 하나.
+
+    골든(`examples/login.lir.json`)에는 Assignment 노드가 없다. 그래서 그 골든을
+    변형해 만든 기존 부정 케이스들은 새 분기를 한 번도 지나지 않는다 — 초록이
+    나와도 그것은 변경 이전에 대한 판정이다. 새 kind를 담은 픽스처와, 분기가
+    도입한 키워드(required / type / enum / additionalProperties / 교차참조)마다
+    하나씩의 부정이 있어야 그 초록이 이 변경에 대한 판정이 된다.
+    """
+    n1 = copy.deepcopy(ASSIGNMENT_FIXTURE)
+    del n1["nodes"][3]["target"]                        # required 누락
+
+    n2 = copy.deepcopy(ASSIGNMENT_FIXTURE)
+    n2["nodes"][3]["expression"] = 3                    # type 불일치
+
+    n3 = copy.deepcopy(ASSIGNMENT_FIXTURE)
+    n3["nodes"][3]["kind"] = "Assign"                   # enum(kind) 밖
+
+    n4 = copy.deepcopy(ASSIGNMENT_FIXTURE)
+    n4["nodes"][3]["operation"] = "update"              # 미선언 속성
+
+    n5 = copy.deepcopy(ASSIGNMENT_FIXTURE)
+    n5["nodes"][3]["entity"] = "Entity.Product"         # nodeId 형식 위반(교차참조)
+
+    return [
+        ("required field removed: Assignment.target", n1),
+        ("expression is not a string: 3", n2),
+        ("kind outside the catalogue: 'Assign'", n3),
+        ("undeclared property on Assignment: operation", n4),
+        ("entity is not a node id: 'Entity.Product'", n5),
+    ]
+
+
+SCHEDULE_EVENT_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "rollup",
+    "nodes": [
+        {
+            "kind": "Event",
+            "id": "event.daily.rollup",
+            "name": "DailyRollup",
+            "source": {"every": "daily", "at": "00:00", "zone": "UTC"},
+        },
+    ],
+}
+
+
+def schedule_negatives():
+    """RFC-0016의 schedule 소스 분기 — 이 분기가 **더한 키워드마다** 부정 하나.
+
+    `nodeEvent.source`는 이제 두 분기의 `oneOf`다. 골든의 이벤트는 전부 엔티티
+    소스라서 스케줄 분기를 한 번도 지나지 않는다 — 그 초록은 변경 이전에 대한
+    판정이다. 마지막 케이스가 `oneOf` 자체를 겨눈다: 두 분기의 키를 한 객체에
+    섞으면 어느 쪽으로도 유효하지 않아야 한다(둘 다 additionalProperties:false).
+    """
+    n1 = copy.deepcopy(SCHEDULE_EVENT_FIXTURE)
+    del n1["nodes"][0]["source"]["every"]               # required 누락
+
+    n2 = copy.deepcopy(SCHEDULE_EVENT_FIXTURE)
+    n2["nodes"][0]["source"]["at"] = 0                  # type 불일치
+
+    n3 = copy.deepcopy(SCHEDULE_EVENT_FIXTURE)
+    n3["nodes"][0]["source"]["every"] = "hourly"        # enum(every) 밖
+
+    n4 = copy.deepcopy(SCHEDULE_EVENT_FIXTURE)
+    n4["nodes"][0]["source"]["cron"] = "0 0 * * *"      # 미선언 속성
+
+    n5 = copy.deepcopy(SCHEDULE_EVENT_FIXTURE)
+    n5["nodes"][0]["source"]["ref"] = "entity.report"   # 두 분기 혼합 -> oneOf 0매칭
+
+    n6 = copy.deepcopy(SCHEDULE_EVENT_FIXTURE)
+    n6["nodes"][0]["source"]["at"] = "24:00"            # pattern(시각 범위) 밖
+
+    return [
+        ("required field removed: Event.source.every", n1),
+        ("at is not a string: 0", n2),
+        ("every outside the closed set: 'hourly'", n3),
+        ("undeclared property on the schedule source: cron", n4),
+        ("entity and schedule keys mixed: oneOf matches neither", n5),
+        ("at outside 00:00..23:59: '24:00'", n6),
+    ]
 
 
 def load_json(path):
@@ -187,6 +308,9 @@ def self_test():
     positives = [
         ("examples/login.lir.json", golden),
         ("REFINEMENT_FIXTURE (RFC-0001 부록 A.6)", REFINEMENT_FIXTURE),
+        ("ASSIGNMENT_FIXTURE (RFC-0015 Assignment)", ASSIGNMENT_FIXTURE),
+        ("SCHEDULE_EVENT_FIXTURE (RFC-0016 schedule source)",
+         SCHEDULE_EVENT_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -212,7 +336,7 @@ def self_test():
         ("required field removed: wf.login.name", mutated_missing),
         ("undefined kind injected: Foo", mutated_kind),
         ("undefined extra field injected: svc.login.extra", mutated_extra),
-    ] + refinement_negatives()
+    ] + refinement_negatives() + assignment_negatives() + schedule_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

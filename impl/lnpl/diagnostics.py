@@ -77,6 +77,14 @@ ENFORCEMENT = {
         (UNENFORCED, "parsed, but the execution plan never reads it"),
     ("performance", "batch"):
         (UNENFORCED, "parsed, but the execution plan never reads it"),
+    # RFC-0016. A schedule trigger is a real declaration with a real artifact —
+    # it reaches the IR and the OpenAPI schedule metadata — and nothing fires
+    # it. Saying that out loud is the whole difference between this and
+    # `performance batch`, which t3 F-2 found parsing into silence.
+    ("event", "schedule"):
+        (UNENFORCED, "no scheduler runs it; the declaration reaches the IR and "
+                     "the OpenAPI schedule metadata only — issue #26 (the "
+                     "serving layer) owns the executor"),
 }
 
 

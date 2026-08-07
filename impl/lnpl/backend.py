@@ -40,7 +40,10 @@ import shutil
 import subprocess
 import tempfile
 
-from lnpl.condition import parse_condition, Presence, Comparison
+from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
+                            Presence, Ref, encode_instant, is_instant_text,
+                            looks_like_instant, parse_condition, references,
+                            value_to_string)
 from lnpl.interp import (RunError, refinement_index, sample_payload,
                          validate_effect)
 # The seed/key policy both modes read (issue #35). Imported, never restated: a
@@ -156,61 +159,123 @@ def _field_ident(name):
     return name.replace(".", "__")
 
 
-def _extract_condition_field(cond_str):
-    """RFC-0008 G8: Extract field name from condition string.
+def _parsed(cond_str):
+    """The parsed condition, or None when it is absent or malformed.
 
-    Returns (field_name, op, value) for Comparison or (field_name, 'exists'|'missing') for Presence.
-    Used to populate lnpl_run parameter list and generate arith.cmpi code.
+    `_extract_condition_field` used to live here and returned a `(field, op,
+    value)` tuple, which RFC-0015 made unrepresentable: a comparison now has a
+    Value on both sides and a condition can carry several of them. Keeping the
+    tuple would have let this file read the left operand and silently ignore the
+    right one, so it is gone rather than widened.
     """
+    if not cond_str:
+        return None
     try:
-        cond = parse_condition(cond_str)
+        return parse_condition(cond_str)
     except Exception:
         return None
 
-    if isinstance(cond, Presence):
-        return (cond.field, cond.kind)  # (field, 'exists'|'missing')
-    elif isinstance(cond, Comparison):
-        return (cond.field, cond.op, cond.value)  # (field, op, value_ms)
-    return None
+
+def _comparisons(cond):
+    """The Comparison terms of a parsed condition, in source order."""
+    if isinstance(cond, Comparison):
+        return (cond,)
+    if isinstance(cond, And):
+        return cond.terms
+    return ()
 
 
-def _compile_condition(cond_str, field_var_name):
-    """RFC-0008 G8: Compile condition to MLIR i1 predicate using field parameter.
+# arith.cmpi predicates for the six comparators, and for their negations. `until c`
+# repeats *while c is false*, so each unrolled round is guarded by the negation.
+_CMP_PRED = {'<': 'slt', '<=': 'sle', '>': 'sgt', '>=': 'sge',
+             '==': 'eq', '!=': 'ne'}
+_NEGATED_CMP = {"<": "sge", "<=": "sgt", ">": "sle", ">=": "slt",
+                "==": "ne", "!=": "eq"}
 
-    Args:
-        cond_str: condition string (e.g., "counter >= 10")
-        field_var_name: MLIR variable name for the field (e.g., "%counter")
 
-    Returns:
-        MLIR code that evaluates the condition (e.g., "%cond = arith.cmpi sge, %counter, %c10 : i64")
+def _literals(cond):
+    """Every integer literal a parsed condition holds, at any operand position."""
+    out = set()
+
+    def walk(value):
+        if isinstance(value, Lit):
+            out.add(value.value)
+        elif isinstance(value, Arith):
+            walk(value.left)
+            walk(value.right)
+
+    for term in _comparisons(cond):
+        walk(term.left)
+        walk(term.right)
+    return out
+
+
+def _emit_operand(value, idx, slot, lines):
+    """One `Value` -> the SSA name holding it, appending any arithmetic first.
+
+    A `Ref` is already a parameter (`condition_field_names` put it in the
+    signature) and a `Lit` is already a declared constant, so only `Arith` adds
+    an operation — which is the whole of RFC-0015's arithmetic in mode B.
     """
-    extracted = _extract_condition_field(cond_str)
-    if not extracted:
+    if isinstance(value, Ref):
+        return "%%%s" % _field_ident(value.name)
+    if isinstance(value, Lit):
+        return "%%c%d_i64" % value.value
+    if isinstance(value, Arith):
+        left = _emit_operand(value.left, idx, slot + "l", lines)
+        right = _emit_operand(value.right, idx, slot + "r", lines)
+        op = "arith.addi" if value.op == "+" else "arith.subi"
+        name = "%%v%d_%s" % (idx, slot)
+        lines.append("    %s = %s %s, %s : i64" % (name, op, left, right))
+        return name
+    raise BackendError("cannot emit value %r" % (value,))
+
+
+def _emit_condition(cond, idx, lines, negate):
+    """A parsed condition -> the SSA name of its i1 result, or None.
+
+    None means "this condition has no compiled evaluator" — a Presence, or text
+    the parser refused — and the caller falls back to the run-level skip flag,
+    exactly as it did before RFC-0015.
+
+    `negate` is for `until`, which repeats *while* its condition is false. A
+    single comparison negates by flipping its predicate; a conjunction negates
+    by xor with true, because De Morgan expanded by hand in an emitter is a
+    second place for the loop's meaning to be wrong.
+    """
+    terms = _comparisons(cond)
+    if not terms:
         return None
 
-    if len(extracted) == 2:  # Presence
-        field, kind = extracted
-        # Presence: check if field is not null/zero
-        # For now, field existence is assumed true (parameter presence means it exists)
-        return "%c1"
-    elif len(extracted) == 3:  # Comparison
-        field, op, value = extracted
-        # Comparison: field op value (value is already in milliseconds if Duration)
-        # Convert op to arith.cmpi predicate
-        op_map = {
-            '<': 'slt',
-            '<=': 'sle',
-            '>': 'sgt',
-            '>=': 'sge',
-            '==': 'eq',
-            '!=': 'ne',
-        }
-        pred = op_map.get(op)
-        if not pred:
-            return "%c1"
-        # Generate: %cond = arith.cmpi <pred>, %field, %const : i64
-        return f"arith.cmpi {pred}, {_field_ident(field_var_name)}, %c{value} : i64"
-    return "%c1"
+    single = len(terms) == 1
+    names = []
+    for n, term in enumerate(terms):
+        left = _emit_operand(term.left, idx, "%dl" % n, lines)
+        right = _emit_operand(term.right, idx, "%dr" % n, lines)
+        pred = (_NEGATED_CMP if (negate and single) else _CMP_PRED)[term.op]
+        # A one-term condition keeps the SSA names it had before RFC-0015
+        # (`%cond<idx>` / `%ucond<idx>`). The frozen golden modules in
+        # `impl/tests/golden/` are compared as text, so a rename would move
+        # bytes for programs whose meaning did not change.
+        if single:
+            name = "%%ucond%d" % idx if negate else "%%cond%d" % idx
+        else:
+            name = "%%cond%d_%d" % (idx, n)
+        lines.append("    %s = arith.cmpi %s, %s, %s : i64"
+                     % (name, pred, left, right))
+        names.append(name)
+
+    folded = names[0]
+    for n, name in enumerate(names[1:], start=1):
+        nxt = "%%and%d_%d" % (idx, n)
+        lines.append("    %s = arith.andi %s, %s : i1" % (nxt, folded, name))
+        folded = nxt
+
+    if negate and not single:
+        nxt = "%%ucond%d" % idx
+        lines.append("    %s = arith.xori %s, %%true_i1 : i1" % (nxt, folded))
+        folded = nxt
+    return folded
 
 
 # ---- S4: Semantic IR -> MLIR (standard dialects) ---------------------------
@@ -260,12 +325,6 @@ def _steps_in_order(nodes, ids, out):
     return out
 
 
-# `until c` repeats while c is false, so each unrolled round is guarded by the
-# negation of the condition's comparison.
-_NEGATED_CMP = {"<": "sge", "<=": "sgt", ">": "sle", ">=": "slt",
-                "==": "ne", "!=": "eq"}
-
-
 def _workflow_steps(document, workflow_id):
     nodes = {n["id"]: n for n in document["nodes"]}
     wf = nodes.get(workflow_id)
@@ -288,9 +347,13 @@ def condition_field_names(document, workflow_id):
     for _step, cond in steps:
         if cond and isinstance(cond, tuple) and len(cond) == 2:
             _mode, cond_str = cond
-            extracted = _extract_condition_field(cond_str)
-            if extracted:
-                fields.add(extracted[0])
+            parsed = _parsed(cond_str)
+            if parsed is not None:
+                # RFC-0015: EVERY reference, not the left operand of the first
+                # term. `product.stock >= input.quantity` needs both sides as
+                # parameters, or the compiled guard compares against a register
+                # nobody wrote.
+                fields.update(references(parsed))
     return sorted(fields)
 
 
@@ -305,9 +368,18 @@ def encode_condition_value(value):
         return 1 if value else 0
     if isinstance(value, int):
         return value
+    if isinstance(value, str) and (is_instant_text(value)
+                                   or looks_like_instant(value)):
+        # RFC-0016: a DateTime rides the existing i64 parameter channel as UTC
+        # epoch-milliseconds. `encode_instant` is the same function mode A calls
+        # from `interp.eval_value`, so a value cannot mean two instants.
+        try:
+            return encode_instant(value, "condition field")
+        except ConditionError as e:
+            raise BackendError(str(e))
     raise BackendError(
-        "condition field value must be an integer, got %r (%s)"
-        % (value, type(value).__name__))
+        "condition field value must be an integer or a zoned date-time, got "
+        "%r (%s)" % (value, type(value).__name__))
 
 
 def _constraints_of_kind(document, workflow_id, kind):
@@ -381,13 +453,19 @@ def _backoff_ms(attempt):
 
 
 def _duration_ms(text):
-    """`3s` -> 3000. Mirrors interp `_duration_ms`, raising a BackendError instead."""
-    for unit, mult in (("ms", 1), ("s", 1000), ("m", 60000)):
-        if str(text).endswith(unit):
-            head = str(text)[: -len(unit)]
-            if head.isdigit():
-                return int(head) * mult
-    raise BackendError("not a duration: %r" % text)
+    """`3s` -> 3000. Mirrors interp `_duration_ms`, raising a BackendError instead.
+
+    Both read the one unit table in `lexer`, so a unit the language accepts is a
+    unit both modes accept (RFC-0016).
+    """
+    from lnpl.lexer import duration_ms_or_none
+    try:
+        value = duration_ms_or_none(str(text))
+    except OverflowError as e:
+        raise BackendError(str(e))
+    if value is None:
+        raise BackendError("not a duration: %r" % text)
+    return value
 
 
 def _retry_policy(document, workflow_id):
@@ -855,18 +933,24 @@ def _render_std(module_attrs, ops):
     lines.append("    %c0 = arith.constant 0 : i32")
     lines.append("    %c1 = arith.constant 1 : i32")
 
-    # Declare i64 constants for condition comparisons
-    # Collect all i64 values used in condition comparisons
+    # Declare i64 constants for condition comparisons. RFC-0015 put literals on
+    # either side of a comparator and inside arithmetic, so the sweep is over
+    # every `Lit` the condition holds rather than over one right-hand value.
     cond_i64_values = set()
     for entry in ops:
-        if entry["guard_condition"]:
-            extracted = _extract_condition_field(entry["guard_condition"])
-            if extracted and len(extracted) == 3:  # Comparison
-                cond_i64_values.add(extracted[2])
+        parsed = _parsed(entry["guard_condition"])
+        if parsed is not None:
+            cond_i64_values.update(_literals(parsed))
 
     # Declare all i64 constants upfront
     for value in sorted(cond_i64_values):
         lines.append(f"    %c{value}_i64 = arith.constant {value} : i64")
+    if any(_parsed(e["guard_condition"]) is not None
+           and isinstance(_parsed(e["guard_condition"]), And)
+           and e["guard_mode"] == "until" for e in ops):
+        # `until (A and B)` negates the whole conjunction, and De Morgan is not
+        # something to expand by hand in an emitter — xor with true does it.
+        lines.append("    %true_i1 = arith.constant true")
 
     # `entry`, not `op` — the guard branches below unpack `field, op, value` from
     # a parsed condition, and a loop named `op` would be shadowed mid-body.
@@ -887,17 +971,11 @@ def _render_std(module_attrs, ops):
 
         if guard_mode == "when":
             # RFC-0008 G8-G9: when becomes scf.if with condition evaluation
-            extracted = _extract_condition_field(guard_str) if guard_str else None
+            parsed = _parsed(guard_str)
+            emitted = _emit_condition(parsed, idx, lines, negate=False)
 
-            if extracted and len(extracted) == 3:  # Comparison
-                field, op, value = extracted
-                op_map = {'<': 'slt', '<=': 'sle', '>': 'sgt', '>=': 'sge', '==': 'eq', '!=': 'ne'}
-                pred = op_map.get(op, 'eq')
-                # Generate comparison: %cond_idx = arith.cmpi pred, %field, %const : i64
-                # Use pre-declared constant %c<value>_i64
-                lines.append(f"    %cond{idx} = arith.cmpi {pred}, "
-                             f"%{_field_ident(field)}, %c{value}_i64 : i64")
-                lines.append(f"    scf.if %cond{idx} {{")
+            if emitted is not None:
+                lines.append(f"    scf.if {emitted} {{")
             else:
                 # Presence or unparseable: use caller-supplied skip flag
                 # skip=1 means "skip condition evaluation and execute", so we negate it
@@ -924,19 +1002,11 @@ def _render_std(module_attrs, ops):
             # negation of c. Nothing in the IR mutates a condition field mid-run, so
             # c is constant across the workflow and this yields the same two outcomes
             # mode A can produce: zero rounds, or the cap.
-            extracted = _extract_condition_field(guard_str) if guard_str else None
-            round_guard = None
-            if extracted and len(extracted) == 3:
-                field, op, value = extracted
-                negated = _NEGATED_CMP.get(op)
-                if negated:
-                    round_guard = ("    %%ucond%d = arith.cmpi %s, %%%s, %%c%s_i64 "
-                                   ": i64" % (idx, negated, _field_ident(field),
-                                              value))
+            parsed = _parsed(guard_str)
+            emitted = _emit_condition(parsed, idx, lines, negate=True)
 
-            if round_guard:
-                lines.append(round_guard)
-                lines.append("    scf.if %%ucond%d {" % idx)
+            if emitted is not None:
+                lines.append("    scf.if %s {" % emitted)
                 body, close = "      ", ["    }"]
             else:
                 # Presence or unparseable: no evaluator, so keep the previous

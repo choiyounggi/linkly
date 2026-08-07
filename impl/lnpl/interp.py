@@ -14,6 +14,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
+from .condition import PAYLOAD_NAMESPACE
 from .diagnostics import Diagnostics
 from .refinements import BASE_CATEGORY
 from .repo_policy import READ_OPS, binding_name, row_key
@@ -58,7 +59,13 @@ class FakeRepository:
         # {entity_id: {row_key: row}} — copied per instance because `create` now
         # writes into the table, and aliasing the caller's seed dict would carry
         # one run's writes into the next (issue #35).
-        self.rows = {entity_id: dict(table)
+        #
+        # The copy goes one level deeper than issue #35 needed: RFC-0015's `set`
+        # writes INTO a row, and a read binds the stored dict itself, so with a
+        # shallow copy the caller's seed row would be the object the assignment
+        # mutates. Two runs over one seed would then see each other's deduction.
+        self.rows = {entity_id: {key: dict(row) if isinstance(row, dict) else row
+                                 for key, row in table.items()}
                      for entity_id, table in (rows or {}).items()}
         self.calls = []
 
@@ -286,6 +293,13 @@ def resolve_reference(name, payload, bindings):
     if "." not in name:
         return payload.get(name)
     binding, _, field = name.partition(".")
+    if binding == PAYLOAD_NAMESPACE:
+        # RFC-0015 §G15.2: `input.<field>` is the explicit spelling of the bare
+        # form. It exists because the natural way to name an input field is the
+        # entity it belongs to (`payment.amount`), and that spelling means "a row
+        # this workflow read" — a workflow that only validates its input reads
+        # nothing, so the guard could not be written at all (t2 F-1).
+        return payload.get(field)
     row = bindings.get(binding)
     if not isinstance(row, dict):
         return None
@@ -308,7 +322,8 @@ def _condition_holds(condition, payload, bindings):
         return True
 
     # Import here to avoid circular dependency
-    from .condition import parse_condition, Presence, Comparison, ConditionError
+    from .condition import (And, Comparison, ConditionError, Presence,
+                            parse_condition)
 
     try:
         cond = parse_condition(condition)
@@ -323,34 +338,111 @@ def _condition_holds(condition, payload, bindings):
         return present if cond.kind == "exists" else not present
 
     if isinstance(cond, Comparison):
-        value = resolve_reference(cond.field, payload, bindings)
-        if value is None:
-            # Missing field: comparison against None
-            # Treat None as "field does not exist"
-            return False  # null < X, null == X, etc. are all false
-        # Numeric comparison (payload value should be int)
-        try:
-            val_int = int(value) if isinstance(value, str) else value
-        except (ValueError, TypeError):
-            raise RunError(f"Cannot compare non-numeric {cond.field}={value!r} "
-                           f"in condition {condition!r}")
-        # Evaluate comparison
-        if cond.op == '<':
-            return val_int < cond.value
-        elif cond.op == '<=':
-            return val_int <= cond.value
-        elif cond.op == '>':
-            return val_int > cond.value
-        elif cond.op == '>=':
-            return val_int >= cond.value
-        elif cond.op == '==':
-            return val_int == cond.value
-        elif cond.op == '!=':
-            return val_int != cond.value
-        else:
-            raise RunError(f"Unknown comparator {cond.op!r}")
+        return _comparison_holds(cond, condition, payload, bindings)
+
+    if isinstance(cond, And):
+        # Every term is evaluated, not short-circuited: the terms are pure, so
+        # the result is the same, and a value fault in a later term must surface
+        # in both modes rather than depending on where the run stopped reading.
+        results = [_comparison_holds(term, condition, payload, bindings)
+                   for term in cond.terms]
+        return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
+
+
+def _comparison_holds(cmp_node, condition, payload, bindings):
+    """One `Comparison` against this scope. Unresolved reference -> False."""
+    left = eval_value(cmp_node.left, condition, payload, bindings)
+    right = eval_value(cmp_node.right, condition, payload, bindings)
+    if left is None or right is None:
+        # A reference that names nothing behaves as it did before RFC-0015:
+        # `null < X`, `null == X` and the rest are all false, on either side.
+        return False
+    op = cmp_node.op
+    if op == '<':
+        return left < right
+    if op == '<=':
+        return left <= right
+    if op == '>':
+        return left > right
+    if op == '>=':
+        return left >= right
+    if op == '==':
+        return left == right
+    if op == '!=':
+        return left != right
+    raise RunError(f"Unknown comparator {op!r}")
+
+
+def eval_value(value, condition, payload, bindings):
+    """A parsed `Value` -> int, or None when a reference resolves to nothing.
+
+    RFC-0015 fixes the domain at signed 64-bit — the width mode B compiles to —
+    so a program whose arithmetic would wrap in the compiled path fails in both
+    modes instead of disagreeing. The failure is issue #48's class (`RunError` ->
+    `failed`, rc=1), not a new one.
+    """
+    from .condition import (Arith, ConditionError, INT64_MAX, INT64_MIN, Lit,
+                            Ref, encode_instant, is_instant_text,
+                            looks_like_instant)
+
+    if isinstance(value, Lit):
+        return value.value
+    if isinstance(value, Ref):
+        raw = resolve_reference(value.name, payload, bindings)
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            # bool is an int in Python, and 0/1 is what mode B's i64 carries.
+            return 1 if raw else 0
+        if isinstance(raw, int):
+            return _checked(raw, value.name, condition)
+        if isinstance(raw, str):
+            # RFC-0016: a DateTime is compared as UTC epoch-milliseconds. The
+            # same encoder runs in mode B (`backend.encode_condition_value`), so
+            # both modes read one instant from one string.
+            if is_instant_text(raw) or looks_like_instant(raw):
+                try:
+                    return _checked(encode_instant(raw, value.name), value.name,
+                                    condition)
+                except ConditionError as e:
+                    # A zoneless or malformed timestamp is a value fault, which
+                    # is issue #48's class (`RunError` -> failed, rc=1) — not a
+                    # new result class, and not the `Cannot compare non-numeric`
+                    # message, which would name the wrong problem.
+                    raise RunError(f"{e} (in condition {condition!r})")
+            try:
+                return _checked(int(raw), value.name, condition)
+            except ValueError:
+                pass
+        raise RunError(f"Cannot compare non-numeric {value.name}={raw!r} "
+                       f"in condition {condition!r}")
+    if isinstance(value, Arith):
+        left = eval_value(value.left, condition, payload, bindings)
+        right = eval_value(value.right, condition, payload, bindings)
+        if left is None or right is None:
+            return None
+        result = left + right if value.op == '+' else left - right
+        if result < INT64_MIN or result > INT64_MAX:
+            raise RunError(
+                "value out of the 64-bit range: %s = %d (in %r)"
+                % (_value_text(value), result, condition))
+        return result
+    raise RunError(f"Unknown value type: {type(value)}")
+
+
+def _checked(number, name, condition):
+    from .condition import INT64_MAX, INT64_MIN
+    if number < INT64_MIN or number > INT64_MAX:
+        raise RunError("value out of the 64-bit range: %s = %d (in %r)"
+                       % (name, number, condition))
+    return number
+
+
+def _value_text(value):
+    from .condition import value_to_string
+    return value_to_string(value)
 
 
 def mask_payload(payload, entity_node):
@@ -581,7 +673,32 @@ class Interpreter:
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
 
-        if kind == "Validation":
+        if kind == "Assignment":
+            # RFC-0015. The bound row IS the stored row (a `read` binds the dict
+            # the table holds), so writing through the binding is what makes the
+            # deduction observable to `rows`/`result` assertions rather than only
+            # to the trace. The effect is recorded either way: a silent update is
+            # the failure mode issue #38 named, one level down.
+            target = effect["target"]
+            binding, _, field = target.partition(".")
+            row = bindings.get(binding)
+            if not isinstance(row, dict):
+                raise RunError(
+                    "assignment target %r names no bound row — %s was never read"
+                    % (target, binding))
+            from .condition import parse_value
+            value = eval_value(parse_value(effect["expression"]),
+                               effect["expression"], payload, bindings)
+            if value is None:
+                raise RunError(
+                    "assignment %r cannot be evaluated: a reference in %r "
+                    "resolves to nothing" % (target, effect["expression"]))
+            row[field] = value
+            child.attrs["target"] = target
+            child.attrs["value"] = value
+            self.trace.log("INFO", "assignment applied",
+                           target=target, value=value)
+        elif kind == "Validation":
             self._validate(effect, payload)
         elif kind == "RepositoryCall":
             row = self.repo.execute(effect["entity"], effect["operation"],
@@ -915,12 +1032,15 @@ def sample_payload(entities, refinements=None):
 
 
 def _duration_ms(text):
-    for unit, mult in (("ms", 1), ("s", 1000), ("m", 60000)):
-        if str(text).endswith(unit):
-            head = str(text)[: -len(unit)]
-            if head.isdigit():
-                return int(head) * mult
-    raise RunError("not a duration: %r" % text)
+    """`3s` -> 3000, from the one unit table in `lexer` (RFC-0016)."""
+    from .lexer import duration_ms_or_none
+    try:
+        value = duration_ms_or_none(str(text))
+    except OverflowError as e:
+        raise RunError(str(e))
+    if value is None:
+        raise RunError("not a duration: %r" % text)
+    return value
 
 
 def _backoff_ms(attempt):

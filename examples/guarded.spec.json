@@ -1,0 +1,19 @@
+{
+  "spec_version": "0.1",
+  "module": "guarded",
+  "cases": [
+    {
+      "name": "RetrieveWithCache spec",
+      "workflow": "wf.retrieve.with.cache",
+      "given": [
+        "valid token"
+      ],
+      "when": [
+        "retrieveWithCache"
+      ],
+      "expect": [
+        "completed"
+      ]
+    }
+  ]
+}

@@ -217,5 +217,105 @@ class TestVersionFlag(unittest.TestCase):
         self.assertNotEqual(caught.exception.code, 0)
 
 
+TWO_WORKFLOWS = """capability postgres
+
+entity Widget
+    field
+        id UUID
+        stock Integer
+
+workflow Alpha
+    validate widget
+
+workflow Beta
+    validate widget
+"""
+
+
+class TestWorkflowSelection(unittest.TestCase):
+    """`--workflow` takes a node id, and a wrong one lists the valid ones.
+
+    Issue #50 t3 F-7: `--workflow GetReport` answered `no such workflow:
+    'GetReport'` with no hint that the flag wants `wf.get.report`, so the only
+    way forward was to grep the emitted IR. The id derivation is now documented
+    (references/naming.md), and the error carries the candidates — the same
+    shape `--field` already uses for a mistyped name (issue #45).
+    """
+
+    def setUp(self):
+        self.workdir = os.path.join(REPO, ".claude", "tmp", "cli-workflow")
+        os.makedirs(self.workdir, exist_ok=True)
+        self.src = os.path.join(self.workdir, "two.lnpl")
+        with open(self.src, "w", encoding="utf-8") as fh:
+            fh.write(TWO_WORKFLOWS)
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    # ---- normal: the flag selects what it names ---------------------------
+    def test_a_valid_id_runs_that_workflow(self):
+        rc, text = run_cli_err(["run", self.src, "--workflow", "wf.alpha"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Alpha", text)
+
+    def test_the_second_id_runs_the_second_workflow(self):
+        """Guards against an implementation that always picks `workflows[0]`."""
+        rc, text = run_cli_err(["run", self.src, "--workflow", "wf.beta"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Beta", text)
+        self.assertNotIn("Alpha ->", text)
+
+    def test_omitting_the_flag_still_picks_the_first(self):
+        rc, text = run_cli_err(["run", self.src])
+        self.assertEqual(rc, 0)
+        self.assertIn("Alpha", text)
+
+    # ---- error: a name that matches nothing --------------------------------
+    def test_an_unknown_id_is_rejected_with_every_candidate(self):
+        rc, text = run_cli_err(["run", self.src, "--workflow", "Beta"])
+        self.assertEqual(rc, 2)
+        self.assertIn("Beta", text)          # what the caller wrote
+        self.assertIn("wf.alpha", text)      # every id it could have meant
+        self.assertIn("wf.beta", text)
+        self.assertNotIn("completed", text)  # rejected before the run
+
+    def test_the_declaration_name_is_rejected_not_silently_accepted(self):
+        """t3 F-7 verbatim: the declaration name is not the node id."""
+        rc, text = run_cli_err(["run", self.src, "--workflow", "Alpha"])
+        self.assertEqual(rc, 2)
+        self.assertIn("wf.alpha", text)
+
+    def test_build_rejects_before_building(self):
+        rc, text = run_cli_err(["build", self.src, "--workdir", self.workdir,
+                                "--workflow", "nope"])
+        self.assertEqual(rc, 2)
+        self.assertIn("wf.alpha", text)
+        self.assertNotIn("native binary", text)
+
+    def test_diff_rejects_before_comparing(self):
+        rc, text = run_cli_err(["diff", self.src, "--workdir", self.workdir,
+                                "--workflow", "nope"])
+        self.assertEqual(rc, 2)
+        self.assertIn("wf.alpha", text)
+        self.assertNotIn("EQUIVALENT", text)
+
+    # ---- boundary ----------------------------------------------------------
+    def test_an_empty_flag_value_falls_back_to_the_first(self):
+        """`--workflow ""` is falsy, so it means "unspecified", not "no match"."""
+        rc, text = run_cli_err(["run", self.src, "--workflow", ""])
+        self.assertEqual(rc, 0)
+        self.assertIn("Alpha", text)
+
+    def test_a_module_with_no_workflow_keeps_its_own_message(self):
+        """The pre-existing empty-module path is not swallowed by the new check."""
+        empty = os.path.join(self.workdir, "empty.lnpl")
+        with open(empty, "w", encoding="utf-8") as fh:
+            fh.write("capability postgres\n\nentity Widget\n    field\n"
+                     "        id UUID\n")
+        rc, text = run_cli_err(["run", empty])
+        self.assertEqual(rc, 1)
+        self.assertIn("no workflow to run", text)
+
+
 if __name__ == "__main__":
     unittest.main()

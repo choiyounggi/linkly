@@ -52,6 +52,9 @@
             "$ref": "#/$defs/nodeGuard"
           },
           {
+            "$ref": "#/$defs/nodeAssignment"
+          },
+          {
             "$ref": "#/$defs/nodeNetworkCall"
           },
           {
@@ -314,30 +317,65 @@
           "$ref": "#/$defs/fieldList"
         },
         "source": {
-          "type": "object",
-          "properties": {
-            "ref": {
-              "$ref": "#/$defs/nodeId"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/eventSourceEntity"
             },
-            "on": {
-              "enum": [
-                "create",
-                "update",
-                "delete"
-              ]
+            {
+              "$ref": "#/$defs/eventSourceSchedule"
             }
-          },
-          "required": [
-            "ref",
-            "on"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "required": [
         "kind",
         "id",
         "name"
+      ],
+      "additionalProperties": false
+    },
+    "eventSourceEntity": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "on": {
+          "enum": [
+            "create",
+            "update",
+            "delete"
+          ]
+        }
+      },
+      "required": [
+        "ref",
+        "on"
+      ],
+      "additionalProperties": false
+    },
+    "eventSourceSchedule": {
+      "type": "object",
+      "properties": {
+        "every": {
+          "enum": [
+            "daily"
+          ]
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        },
+        "zone": {
+          "enum": [
+            "UTC"
+          ]
+        }
+      },
+      "required": [
+        "every",
+        "at",
+        "zone"
       ],
       "additionalProperties": false
     },
@@ -559,6 +597,39 @@
         "kind",
         "id",
         "mode"
+      ],
+      "additionalProperties": false
+    },
+    "nodeAssignment": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Assignment"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "target": {
+          "type": "string"
+        },
+        "expression": {
+          "type": "string"
+        },
+        "entity": {
+          "$ref": "#/$defs/nodeId"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "target",
+        "expression",
+        "entity"
       ],
       "additionalProperties": false
     },

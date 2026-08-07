@@ -18,6 +18,7 @@ Mapping (each row cites the IR that produces it):
     Guard when          -> `x-conditional-steps` (the steps that may be skipped)
 """
 
+from .diagnostics import ENFORCEMENT
 from .interp import _duration_ms
 from .refinements import BASE_CATEGORY, facets_for_base
 from .types import SEMANTIC_TYPES
@@ -214,7 +215,36 @@ def generate(document, version="0.1.0"):
     if uses_bearer:
         spec["components"]["securitySchemes"] = {
             "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}}
+
+    # RFC-0016: schedule triggers ride a document-level extension rather than a
+    # path. A schedule is not an HTTP operation, and inventing one would put an
+    # endpoint in the contract that nothing serves. The key is omitted entirely
+    # when no schedule is declared, so every document that predates RFC-0016
+    # generates byte-identical output.
+    #
+    # `enforcement` is read from the matrix rather than written here, so the
+    # document cannot claim a status the code does not hold.
+    schedules = _schedules(document)
+    if schedules:
+        spec["x-lnpl-schedules"] = schedules
     return spec
+
+
+def _schedules(document):
+    """The declared schedule triggers, in node order, as OpenAPI metadata."""
+    out = []
+    for node in document["nodes"]:
+        if node.get("kind") != "Event":
+            continue
+        source = node.get("source") or {}
+        if "every" not in source:
+            continue                       # an entity source, not a schedule
+        out.append({"event": node["id"],
+                    "every": source["every"],
+                    "at": source["at"],
+                    "zone": source["zone"],
+                    "enforcement": ENFORCEMENT[("event", "schedule")][0]})
+    return out
 
 
 def _entity_schema(entity, refined):

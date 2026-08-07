@@ -105,6 +105,33 @@ def cmd_compile(args):
     return _strict_rc(args, 0, diagnostics)
 
 
+class WorkflowSelectionError(Exception):
+    """`--workflow` named an id this module does not declare."""
+
+
+def _select_workflow(requested, source, workflows):
+    """The workflow id to act on, or a rejection that lists the candidates.
+
+    Issue #50 t3 F-7: the flag takes the derived node id (`wf.get.report`), not
+    the declaration name (`GetReport`), and the derivation was undocumented. A
+    wrong id used to reach the interpreter and come back as `no such workflow`
+    with nothing to try next, so the only way forward was grepping the emitted
+    IR. Validated here, at the boundary, the way a mistyped `--field` already is
+    (issue #45): one message, every candidate, before any run or native build.
+
+    An empty/omitted value means "unspecified" and selects the first workflow —
+    the behaviour every caller without the flag already depends on.
+    """
+    if not requested:
+        return workflows[0]["id"]
+    ids = [n["id"] for n in workflows]
+    if requested not in ids:
+        raise WorkflowSelectionError(
+            "error: --workflow %r is not a workflow of %s (valid: %s)"
+            % (requested, source, ", ".join(ids)))
+    return requested
+
+
 def cmd_run(args):
     doc, _, _, diagnostics = _compile(args.source)
     if args.payload:
@@ -120,7 +147,7 @@ def cmd_run(args):
         # declaration is unenforced either way, so the report still goes out.
         _emit_diagnostics(diagnostics)
         return 1
-    target = args.workflow or workflows[0]["id"]
+    target = _select_workflow(args.workflow, args.source, workflows)
 
     rows = _repo_rows(doc, payload, target, empty=args.no_row)
     interp = Interpreter(doc, repo_rows=rows)
@@ -235,7 +262,7 @@ def cmd_build(args):
     if not workflows:
         print("no workflow to build", file=sys.stderr)
         return 1
-    target = args.workflow or workflows[0]["id"]
+    target = _select_workflow(args.workflow, args.source, workflows)
     # Validate --field here, at the boundary, and before the native build: a
     # name no guard compares on cannot change the run whatever its value, so it
     # is always a typo. Silently dropping it left the guard reading the default
@@ -270,7 +297,7 @@ def cmd_diff(args):
     if not workflows:
         print("no workflow to compare", file=sys.stderr)
         return 1
-    target = args.workflow or workflows[0]["id"]
+    target = _select_workflow(args.workflow, args.source, workflows)
     if args.payload:
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -420,6 +447,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         return args.func(args)
+    except WorkflowSelectionError as exc:
+        # Operator error, like a mistyped --field: rc 2, message already carries
+        # the candidates, and no "compile error:" prefix — nothing failed to
+        # compile (issue #50).
+        print(str(exc), file=sys.stderr)
+        return 2
     except (LexError, ParseError, LowerError, SpecError, OpenApiError,
             KbError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)

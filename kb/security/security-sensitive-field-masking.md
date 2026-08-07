@@ -1,0 +1,62 @@
+---
+id: security-sensitive-field-masking
+category: Security
+triggers:
+  - 카드번호·비밀번호 같은 민감 필드를 다룰 때
+  - 민감 값이 로그·트레이스·응답에 나갈까 걱정될 때
+  - 마스킹 마스크 masking mask redact
+  - 카드번호 cardNumber PAN password secret 민감정보
+  - sensitive field masking
+version: 0.1.0
+status: verified
+sources:
+  - rfcs/0003-runtime.md#observability (마스킹은 관측 채널의 계약이다)
+  - impl/lnpl/interp.py (MASKED_TYPES / mask_payload — 집행 지점)
+  - impl/tests/test_masking_channels.py (issue #43 — 채널별 회귀)
+---
+# 민감 필드 마스킹
+
+마스킹은 **타입이 결정한다.** 값이 민감해 보여서가 아니라, 그 값을 담은 필드의
+의미 타입이 `Password`라서 가려진다.
+
+```
+entity Payment
+    field
+        id UUID
+        cardNumber Password      # 가려진다
+        memo Text                # 가려지지 않는다 — 무엇을 넣든
+```
+
+그래서 이렇게 한다:
+
+- **민감 값은 `Password` 타입 필드에 담는다.** `Text`에 카드번호를 넣으면 어느
+  채널에서도 가려지지 않는다. 필드 이름을 `cardNumber`로 지어도 소용없다 —
+  이름은 마스킹 결정에 쓰이지 않는다.
+- **마스킹 여부를 한 채널에서 확인하고 끝내지 않는다.** 이슈 #43 이전에는 trace가
+  `***`를 보여주는 동안 `result["bindings"]`가 원문을 그대로 돌려줬다. 지금은 네
+  채널이 같은 chokepoint(`mask_payload`)를 지난다:
+  - 실행 trace
+  - `run --json`의 `result["bindings"]`
+  - 모드 B(네이티브) 실행 출력
+  - `lnpl diff`의 마스킹 검사 클래스
+- **OpenAPI 계약과 런타임을 함께 읽는다.** `Password` 필드는 생성된 스펙에
+  `format: password`, `writeOnly: true`로 나간다. 계약이 "응답에 싣지 않는다"고
+  말하는데 런타임이 원문을 돌려주면 그 계약은 거짓이다 — 이슈 #43이 고친 것이
+  정확히 그 모순이다.
+
+## 확인하는 법
+
+```
+lnpl run <src> --json        # bindings에 원문이 있는지
+lnpl diff <src>              # 마스킹 클래스가 두 모드의 출력을 훑는다
+```
+
+`lnpl diff`의 `PASS masking — no secret marker in either mode's output`은 **두
+모드의 출력에 표지가 없다**는 뜻이지, 모든 채널을 봤다는 뜻이 아니다. 새 출력
+채널을 만들면 그 채널도 `mask_payload`를 지나게 하고, 회귀를
+`impl/tests/test_masking_channels.py` 옆에 붙인다.
+
+## 한계
+
+마스킹되는 타입은 `Password` **하나**다. 목록을 늘리는 것은 타입 표를 늘리는
+일이지 여기서 결정할 일이 아니다 — 새 타입이 필요하면 RFC로 간다.
