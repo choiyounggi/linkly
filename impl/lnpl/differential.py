@@ -146,16 +146,10 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
     skip = _derive_skip_from_payload(document, workflow_id, payload or {}, seeded)
     rc, lines = backend.run_binary(bin_path, skip=skip, condition_fields=values)
     order, effects, status = [], {}, None
-    ran_indices = set()
     for line in lines:
         parts = line.split(" ", 2)
         if parts[0] == "step" and len(parts) == 3:
             order.append(parts[2])
-            # The index, not the name, is what identifies WHICH planned op ran:
-            # a workflow may declare the same step twice (`load user` inside a
-            # guard and again outside it), and matching on the name would let a
-            # step that ran mask an identically named one that was skipped.
-            ran_indices.add(parts[1])
             effects.setdefault(parts[2], [])
         elif parts[0] == "effect" and len(parts) == 3:
             # `effect <step name> <Kind>` — the step name may contain spaces, so
@@ -167,28 +161,15 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
             status = parts[1]
     if status is None:
         raise DifferentialError("mode B produced no status line (exit %d)" % rc)
-    # Issue #44: a guard mode B did not take prints nothing at all — `scf.if`
-    # skips the `lnpl_step` call — so the skip is observable only as an absence
-    # from the plan the module was built from. Reading it back this way rather
-    # than emitting a marker op keeps the compiled module byte-identical, which
-    # `impl/tests/golden/*.std.mlir` requires (those fixtures are pre-change
-    # snapshots and are never regenerated).
-    skips = []
-    for entry in backend.step_plan(document, workflow_id, seeded=seeded,
-                                   payload=payload):
-        if entry["guard_mode"] is None or str(entry["index"]) in ran_indices:
-            continue
-        if entry["guard_mode"] == "until" and (entry["unroll_round"] or 1) != 1:
-            # `until` is unrolled to the round cap, and nothing in the IR mutates
-            # a condition field mid-run, so the loop runs either zero rounds or
-            # all of them. Round 1's absence already says "zero rounds"; counting
-            # rounds 2..N again would report one skip per unrolled round against
-            # mode A's single record.
-            continue
-        skips.append({"mode": entry["guard_mode"],
-                      "condition": entry["guard_condition"],
-                      "step": entry["name"],
-                      "rounds": 0 if entry["guard_mode"] == "until" else None})
+    # Issue #44: a guard mode B did not take prints nothing at all, so the skip is
+    # observable only as an absence from the plan the module was built from.
+    # `backend.restore_skips` owns that reading — issue #55 gave `cli.cmd_build` a
+    # second reader, and two copies of it could disagree about what mode B
+    # observed. `seeded`/`payload` are the values `backend.build` was called with
+    # above, so the plan describes the module that actually ran.
+    skips = backend.restore_skips(document, workflow_id,
+                                 backend.ran_step_indices(lines),
+                                 seeded=seeded, payload=payload)
 
     # Issue #43: the masking surface is the binary's WHOLE stdout, not the
     # normalised reduction of the lines the parser above recognised — an

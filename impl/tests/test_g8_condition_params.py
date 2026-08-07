@@ -234,16 +234,26 @@ class TestCliPassesConditionFields(_Built):
             cwd=os.path.join(REPO, "impl"))
         return proc
 
+    # Execution is judged on the binary's own `step <index> <name>` line, not on
+    # the name appearing anywhere in stdout: since issue #55, `build --run` also
+    # NAMES the step in the skip record it prints for a guard it refused, so a
+    # bare substring check would match the closed case as readily as the open one.
+    RAN_GUARDED = re.compile(r"^step \d+ step Guarded$", re.MULTILINE)
+
     def test_cli_field_value_opens_the_guard(self):
         proc = self._cli(TWO, ["--field", "flag=1"])
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("step Guarded", proc.stdout,
-                      "CLI did not pass the condition value:\n" + proc.stdout)
+        self.assertRegex(proc.stdout, self.RAN_GUARDED,
+                         "CLI did not pass the condition value:\n" + proc.stdout)
 
     def test_cli_without_field_leaves_the_guard_closed(self):
         proc = self._cli(TWO, [])
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertNotIn("step Guarded", proc.stdout)
+        self.assertNotRegex(proc.stdout, self.RAN_GUARDED)
+        # The closed guard is now positively observable rather than only absent
+        # (issue #55) — which is what makes the assertion above falsifiable
+        # without depending on the step's name being nowhere in the output.
+        self.assertIn("skipped by `when flag > 0`: step Guarded", proc.stdout)
 
     def test_cli_rejects_malformed_field(self):
         proc = self._cli(TWO, ["--field", "flag"])

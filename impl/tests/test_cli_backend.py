@@ -11,18 +11,29 @@ the operator asked for.
 import io
 import json
 import os
+import shutil
 import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
+from lnpl import backend
 from lnpl.cli import main
 from lnpl.drivers import HmacTokenProvider, audience_for_path
 
-from tests.fixtures import VALUE_INVENTORY
+from tests.fixtures import GUARDED_LNPL, SHORTEN_LNPL, VALUE_INVENTORY
 
 SECRET = "0123456789abcdef0123456789abcdef"
 SECRET_ENV = "LNPL_TEST_JWT_SECRET"
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Build workdirs stay inside the worktree: this repo does not write to `/tmp` or
+# `$TMPDIR` (`test_tmp_hygiene.py` enforces both the `dir=` and the cleanup).
+CLAUDE_TMP = os.path.join(REPO, ".claude", "tmp")
+
+NEEDS_TOOLS = unittest.skipUnless(
+    backend.toolchain_available(),
+    "MLIR/LLVM toolchain not installed — see scripts/dev_doctor.sh")
 
 
 class CliTestCase(unittest.TestCase):
@@ -307,6 +318,262 @@ class SurfaceDocumentationTest(unittest.TestCase):
                      "--subject", "--path", "--ttl"):
             self.assertIn(flag, options, "%s is not declared in cli.py" % flag)
             self.assertIn(flag, text, "%s is not documented" % flag)
+
+
+class TestBuildSurfacesGuardSkips(CliTestCase):
+    """Issue #55 (r1 N-2, r1 F-5): `build --run` must say what a guard refused.
+
+    Measured before this change: the same false guard made `lnpl run` emit a
+    `guard-skipped-steps` warning, a first-line count and a skip record, while
+    `build --run` printed three step lines, `status completed`, `exit=0` — and
+    nothing else. A caller could not tell that run from one that ran every step.
+
+    The records come from `backend.restore_skips`, the reading RFC-0014 §2.6
+    already made normative, so nothing about the compiled module changes.
+    """
+
+    def build(self, source, *extra):
+        workdir = tempfile.mkdtemp(prefix="lnpl-i55-build-", dir=CLAUDE_TMP)
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        return self.run_cli(["build", source, "--workdir", workdir] + list(extra))
+
+    @NEEDS_TOOLS
+    def test_a_false_comparison_guard_is_reported_with_its_condition(self):
+        rc, out, err = self.build(GUARDED_LNPL, "--run",
+                                  "--field", "token.retryBudget=0")
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("(1 step(s) skipped by guard", out)
+        self.assertIn("skipped by `when token.retryBudget > 0`: call token", out)
+        self.assertIn("guard-skipped-steps", err)
+        # The negative control rides along: the step really is absent from the
+        # binary's own output, so the record is restored rather than echoed.
+        self.assertNotIn("step 4 call token", out)
+
+    @NEEDS_TOOLS
+    def test_the_guard_true_run_says_nothing_about_skips(self):
+        # The forcing input's control. Issue #44's completion criterion is that
+        # these two runs no longer print the same thing.
+        rc, out, err = self.build(GUARDED_LNPL, "--run",
+                                  "--field", "token.retryBudget=1")
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("step 4 call token", out)
+        self.assertNotIn("skipped by", out)
+        self.assertNotIn("guard-skipped-steps", err)
+
+    @NEEDS_TOOLS
+    def test_two_false_guards_are_counted_and_both_named(self):
+        # `--skip` falsifies the Presence guard; `retryBudget=0` the comparison
+        # one. Both peers of the count must appear, not just the first.
+        rc, out, err = self.build(GUARDED_LNPL, "--run", "--skip",
+                                  "--field", "token.retryBudget=0")
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("(2 step(s) skipped by guard", out)
+        self.assertIn("skipped by `when token.cachedAt exists`: cache token", out)
+        self.assertIn("skipped by `when token.retryBudget > 0`: call token", out)
+
+    @NEEDS_TOOLS
+    def test_a_workflow_with_no_guard_stays_silent(self):
+        # Boundary: `shorten.lnpl` declares no guard at all, so a run of it must
+        # print exactly what it printed before this change.
+        rc, out, err = self.build(SHORTEN_LNPL, "--run")
+
+        self.assertEqual(0, rc, err)
+        self.assertNotIn("skipped by", out)
+        self.assertNotIn("skipped by guard", out)
+        self.assertNotIn("guard-skipped-steps", err)
+
+    @NEEDS_TOOLS
+    def test_without_run_there_is_no_skip_report(self):
+        # Boundary: nothing executed, so there is no absence to read.
+        #
+        # `@NEEDS_TOOLS` is load-bearing even though the binary is never run:
+        # `build` still performs S4-S7, so `mlir-opt`/`mlir-translate`/`clang`
+        # must exist. Without the gate this passes vacuously where they do not —
+        # `cmd_build` returns rc 4 and prints nothing, which satisfies both
+        # absence checks below while verifying nothing at all.
+        rc, out, err = self.build(GUARDED_LNPL, "--field", "token.retryBudget=0")
+
+        self.assertEqual(0, rc, err)
+        # The positive half: the build really did happen, so the absences below
+        # are the absence of a skip report rather than the absence of output.
+        self.assertIn("native binary: ", out)
+        # And the mechanism this boundary actually pins: the `--run` branch was
+        # never entered, so nothing ran and there is no absence to restore.
+        # `exit=` is printed only inside that branch.
+        self.assertNotIn("exit=", out)
+        self.assertNotIn("skipped by", out)
+        self.assertNotIn("guard-skipped-steps", err)
+
+
+class TestBuildDeclaresValidationDerivation(CliTestCase):
+    """Issue #55 (r1 N-3): `--field` cannot reach the validation path, and the
+    build must say so where the misreading happens.
+
+    Measured before this change: `build --run` on `shorten.lnpl` — whose
+    `validate input` enforces three refinement facets — reported `completed`, and
+    `--field slug=1` was rejected with `valid: (none)`. Both statements are true
+    and neither says WHY: mode B specialises at build time, so its Validation
+    outcome comes from a derived sample payload that is valid by construction,
+    and no `--field` value can make a refinement fail. A reader measuring
+    refinement enforcement through mode B concluded it was not enforced.
+    """
+
+    def build(self, source, *extra):
+        workdir = tempfile.mkdtemp(prefix="lnpl-i55-vsd-", dir=CLAUDE_TMP)
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        return self.run_cli(["build", source, "--workdir", workdir] + list(extra))
+
+    def no_validation_source(self):
+        """A workflow with no `Validation` effect.
+
+        Written here rather than taken from `examples/`: measured, all four
+        shipped examples have one (`validate token` / `validate input` /
+        `validate product` / `validate input`), so there is no example that can
+        serve as this boundary.
+        """
+        path = os.path.join(self.dir, "novalidate.lnpl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("capability postgres\n"
+                     "capability redis\n"
+                     "\n"
+                     "entity Thing\n"
+                     "    field\n"
+                     "        id UUID\n"
+                     "\n"
+                     "service ThingService\n"
+                     "    performance\n"
+                     "        cache 5m\n"
+                     "\n"
+                     "workflow Fetch\n"
+                     "    find thing\n"
+                     "    cache thing\n")
+        return path
+
+    @NEEDS_TOOLS
+    def test_a_workflow_with_validation_declares_where_the_outcome_came_from(self):
+        rc, out, err = self.build(SHORTEN_LNPL, "--run")
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("validation-sample-derived", err)
+        self.assertIn("info", err)
+        # The subject names the Validation step, so the reader can tell WHICH
+        # step's outcome was derived rather than only that one was.
+        self.assertIn("validate input", err)
+
+    def test_a_rejected_field_still_explains_the_channel(self):
+        # r1 N-3's exact reproduction. rc 2 comes from the `--field` rejection,
+        # which happens BEFORE any build — so this needs no toolchain, and the
+        # explanation must still be printed rather than lost behind the error.
+        rc, out, err = self.build(SHORTEN_LNPL, "--run", "--field", "slug=1")
+
+        self.assertEqual(2, rc)
+        self.assertIn("do not match any comparison-guard field", err)
+        self.assertIn("validation-sample-derived", err)
+
+    def test_the_declaration_does_not_need_run(self):
+        # It is a property of the BUILD, not of the execution: mode B decides the
+        # Validation outcome at compile time. No toolchain needed — the
+        # diagnostic is emitted before `build_native` is reached.
+        rc, out, err = self.build(SHORTEN_LNPL, "--field", "slug=1")
+
+        self.assertEqual(2, rc)
+        self.assertIn("validation-sample-derived", err)
+
+    @NEEDS_TOOLS
+    def test_a_workflow_without_validation_says_nothing(self):
+        # Boundary, and the negative control for the three cases above: the
+        # diagnostic must track the presence of a Validation effect, not fire on
+        # every build.
+        rc, out, err = self.build(self.no_validation_source(), "--run")
+
+        self.assertEqual(0, rc, err)
+        self.assertNotIn("validation-sample-derived", err)
+        # ...and the build really happened, so the absence is meaningful.
+        self.assertIn("native binary: ", out)
+        self.assertIn("status completed", out)
+
+    def test_the_field_help_states_the_reach(self):
+        # The `--field` help is where a reader looks before running anything, so
+        # the same fact must be there and not only in the diagnostic.
+        #
+        # `--help` makes argparse write to stdout and raise SystemExit(0), so the
+        # exit is asserted through the exception rather than a return value.
+        out = io.StringIO()
+        with redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                main(["build", "--help"])
+
+        self.assertEqual(0, cm.exception.code)
+        help_text = out.getvalue()
+        self.assertIn("Comparison guards only", help_text)
+        self.assertIn("run --payload", help_text)
+
+
+class TestValidationEffectSteps(unittest.TestCase):
+    """`backend.validation_effect_steps` — the emitter's trigger, on its own.
+
+    Pure: the CLI tests above need a toolchain, this does not, so the rule that
+    decides whether the diagnostic fires stays covered without one.
+    """
+
+    def _doc(self, source, module="t"):
+        from lnpl.lower import lower
+        from lnpl.parser import parse
+        return lower(parse(source), module).to_document()
+
+    def test_a_validate_step_is_reported_by_name(self):
+        with open(SHORTEN_LNPL, encoding="utf-8") as fh:
+            doc = self._doc(fh.read(), "shorten")
+
+        self.assertEqual(backend.validation_effect_steps(doc, "wf.shorten"),
+                         ["validate input"])
+
+    def test_a_workflow_with_no_validation_reports_none(self):
+        doc = self._doc("capability postgres\n"
+                        "capability redis\n"
+                        "entity Thing\n"
+                        "    field\n"
+                        "        id UUID\n"
+                        "service S\n"
+                        "    performance\n"
+                        "        cache 5m\n"
+                        "workflow Fetch\n"
+                        "    find thing\n"
+                        "    cache thing\n")
+
+        self.assertEqual(backend.validation_effect_steps(doc, "wf.fetch"), [])
+
+    def test_a_repeated_validation_step_is_named_once(self):
+        # Boundary: `repeat` unrolls the body, so the same step appears in the
+        # plan more than once. The diagnostic names steps, not occurrences.
+        doc = self._doc("capability postgres\n"
+                        "entity Thing\n"
+                        "    field\n"
+                        "        id UUID\n"
+                        "service S\n"
+                        "workflow Fetch\n"
+                        "    repeat 3\n"
+                        "    validate thing\n")
+
+        self.assertEqual(backend.validation_effect_steps(doc, "wf.fetch"),
+                         ["validate thing"])
+
+    def test_an_unknown_workflow_is_an_error_not_an_empty_list(self):
+        # An empty list would read as "no Validation here", silencing the
+        # diagnostic for a typo'd workflow id.
+        doc = self._doc("capability postgres\n"
+                        "entity Thing\n"
+                        "    field\n"
+                        "        id UUID\n"
+                        "service S\n"
+                        "workflow Fetch\n"
+                        "    find thing\n")
+
+        with self.assertRaises(backend.BackendError):
+            backend.validation_effect_steps(doc, "wf.nosuch")
 
 
 if __name__ == "__main__":

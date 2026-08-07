@@ -155,8 +155,39 @@ fake 백엔드에서의 `EQUIVALENT`는 계속 성립한다. 다만 그 판정�
 - **sqlite 경로는 차동 검증 대상이 아니다.** 모드 B가 저장소를 모델링하지 않으므로
   그 차원에 대해 어떤 판정도 낼 수 없다 — 이것은 "일치"가 아니라 **미검증**이다.
 
+## 7. mode B의 관측 표면 (이슈 #55)
+
+정본은 `rfcs/0022-mode-b-observation-surface.md`다. 여기서는 §6을 읽은 사람이
+곧바로 필요한 두 가지만 적는다.
+
+**스킵은 바이너리가 말하지 않는다 — 관측기가 복원한다.** 가드가 거짓이면 `scf.if`가
+`lnpl_step`을 호출하지 않으므로 stdout에 그 스텝의 줄이 아예 없다. 부재는 그것이
+빠진 목록 없이는 뜻이 없고, 그 목록이 컴파일된 스텝 계획이다.
+`backend.restore_skips()` 하나가 그 대조를 하고, 차동 검사와 `lnpl build --run`이
+그것을 읽는다. 그래서 `build --run`은 이렇게 말한다:
+
+```
+status completed
+  (1 step(s) skipped by guard, restored from the compiled plan)
+  skipped by `when token.retryBudget > 0`: call token
+```
+
+진단은 stderr로 `guard-skipped-steps`(warning)가 나가며, mode A와 달리 **스텝당 한
+건**이고 `where`는 워크플로 id다 — mode B의 관측 표면에는 가드 노드 id가 없다.
+
+**`--field`는 비교 가드 전용이다.** refinement 검증은 mode B에서 빌드 시점에
+결정되고 그 입력은 파생 sample payload이므로, 어떤 `--field` 값도 refinement를
+실패시키지 못한다. `build`는 Validation effect가 있는 워크플로마다 그 사실을
+`validation-sample-derived`(info)로 말한다. refinement 집행을 실측하려면
+`lnpl run --payload`(mode A)를 쓴다.
+
+여기서 **닫히지 않은 것**(RFC-0022 표 3): `lnpl` 없이 바이너리만 실행하면 스킵은
+여전히 침묵하고, `build`에는 `--json`도 `--strict`도 없어서 mode B 스킵을 CI에서
+기계 판독하거나 게이트할 수단이 없다.
+
 ## 참고
 
 - 서빙 계층의 상태코드 매핑과 401 판정: `docs/serving.md`
 - 선언 ↔ 집행 매트릭스: `docs/ENFORCEMENT-MATRIX.md`
+- mode B 관측 계약(스킵 복원·`--field` 도달 범위·잔여): `rfcs/0022-mode-b-observation-surface.md`
 - CLI 표면 전체: `plugins/lnpl/skills/lnpl-authoring/cli-surface.md`

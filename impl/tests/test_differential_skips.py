@@ -258,3 +258,150 @@ workflow W
                          "mode B must identify the skipped op by its index; "
                          "the identically named step that DID run must not "
                          "mask it.")
+
+
+class TestRanStepIndices(unittest.TestCase):
+    """`backend.ran_step_indices` — which planned ops the binary printed.
+
+    Indices, not names: `TestBothModesObserveTheSameSkips.DUPLICATE_NAME` is the
+    workflow that makes the difference observable.
+    """
+
+    def test_step_lines_yield_their_indices(self):
+        lines = ["step 1 validate product", "effect validate product Validation",
+                 "step 2 find product", "status completed"]
+
+        self.assertEqual(backend.ran_step_indices(lines), {"1", "2"})
+
+    def test_a_step_name_containing_spaces_still_yields_one_index(self):
+        self.assertEqual(backend.ran_step_indices(["step 7 step Loop"]), {"7"})
+
+    def test_no_lines_yield_no_indices(self):
+        self.assertEqual(backend.ran_step_indices([]), set())
+
+    def test_effect_and_status_lines_alone_yield_no_indices(self):
+        # Boundary: a binary whose guard skipped everything still prints these.
+        lines = ["effect find product RepositoryCall", "status completed"]
+
+        self.assertEqual(backend.ran_step_indices(lines), set())
+
+    def test_a_malformed_step_line_is_not_counted(self):
+        # `step` with no name is not the contract's shape; counting it would
+        # credit a planned op as run and hide a real skip.
+        self.assertEqual(backend.ran_step_indices(["step 3"]), set())
+
+
+class TestRestoreSkips(unittest.TestCase):
+    """`backend.restore_skips` — RFC-0014 §2.6's absence-as-observation.
+
+    Pure: no toolchain, no build. The function's whole input is the compiled step
+    plan plus the set of indices that printed, so a synthetic `ran_indices`
+    exercises it at the level the logic actually lives at.
+    """
+
+    def _checkout(self, stock):
+        from lnpl.interp import refinement_index, sample_payload
+        with open(CHECKOUT_LNPL, encoding="utf-8") as fh:
+            doc = lower(parse(fh.read()), "checkout").to_document()
+        payload = sample_payload([n for n in doc["nodes"] if n["kind"] == "Entity"],
+                                 refinement_index(doc))
+        payload["stock"] = stock
+        return doc, payload
+
+    def _all_indices(self, doc, workflow_id, payload):
+        return {str(e["index"])
+                for e in backend.step_plan(doc, workflow_id, payload=payload)}
+
+    def test_a_planned_guarded_step_that_never_printed_is_one_record(self):
+        doc, payload = self._checkout(stock=0)
+        # `create order` is plan index 4; the three unguarded steps printed.
+        skips = backend.restore_skips(doc, "wf.checkout", {"1", "2", "3"},
+                                     payload=payload)
+
+        self.assertEqual(skips, [{"mode": "when",
+                                  "condition": "product.stock > 0",
+                                  "step": "create order", "rounds": None}])
+
+    def test_a_guarded_step_that_printed_is_not_a_skip(self):
+        # Positive control: the same plan, the guard taken.
+        doc, payload = self._checkout(stock=1)
+        ran = self._all_indices(doc, "wf.checkout", payload)
+
+        self.assertEqual(backend.restore_skips(doc, "wf.checkout", ran,
+                                               payload=payload), [])
+
+    def test_an_absent_unguarded_step_is_not_a_skip(self):
+        # Boundary: nothing printed at all. An unguarded step's absence means the
+        # run stopped, not that a guard refused it — only guarded ops are skips.
+        doc, payload = self._checkout(stock=0)
+        skips = backend.restore_skips(doc, "wf.checkout", set(), payload=payload)
+
+        self.assertEqual([s["step"] for s in skips], ["create order"])
+
+    def test_a_zero_round_until_is_exactly_one_record(self):
+        doc = lower(parse(UNTIL_COUNTER), "t").to_document()
+        payload = {"counter": 100}
+        # Plan: index 1 `step Start`, 2-17 the unrolled `step Loop`, 18 `step End`.
+        skips = backend.restore_skips(doc, "wf.w", {"1", "18"}, payload=payload)
+
+        self.assertEqual(skips, [{"mode": "until", "condition": "counter >= 10",
+                                  "step": "step Loop", "rounds": 0}],
+                         "rounds 2..N are unrolled copies; counting each absence "
+                         "would report 16 skips against mode A's single record")
+
+    def test_an_until_that_ran_every_round_is_not_a_skip(self):
+        doc = lower(parse(UNTIL_COUNTER), "t").to_document()
+        payload = {"counter": 0}
+        ran = self._all_indices(doc, "wf.w", payload)
+
+        self.assertEqual(backend.restore_skips(doc, "wf.w", ran,
+                                               payload=payload), [])
+
+    def test_a_workflow_with_no_guard_restores_no_skips(self):
+        # Boundary: the unguarded workflows must be untouched by this reading.
+        doc, payload = self._checkout(stock=0)
+        for node in doc["nodes"]:
+            if node["id"] == "wf.checkout":
+                node["children"] = [c for c in node["children"]
+                                    if not c.startswith("wf.checkout.guard")]
+
+        self.assertEqual(backend.restore_skips(doc, "wf.checkout", set(),
+                                               payload=payload), [])
+
+    def test_the_restored_record_carries_exactly_the_comparable_fields(self):
+        # The shape is the contract: `_normalise_skips` projects mode A onto
+        # these four keys, so an extra key here would fail the comparison for a
+        # reason RFC-0014 §2.4 says is not a behavioural difference.
+        doc, payload = self._checkout(stock=0)
+        skips = backend.restore_skips(doc, "wf.checkout", {"1", "2", "3"},
+                                     payload=payload)
+
+        self.assertEqual(sorted(skips[0]), ["condition", "mode", "rounds", "step"])
+
+    def test_a_repeated_step_name_does_not_mask_the_guarded_occurrence(self):
+        # The index-not-name rule, at the level it is implemented rather than
+        # only end to end: `TestBothModesObserveTheSameSkips` covers this too,
+        # but that test needs the toolchain and is skipped without it.
+        # Plan: index 1 `load user` unguarded, index 2 `load user` under the
+        # guard. Only the unguarded one printed. Matching on the NAME would find
+        # `load user` among the ran steps and report no skip at all.
+        doc = lower(parse(TestBothModesObserveTheSameSkips.DUPLICATE_NAME),
+                    "t").to_document()
+        skips = backend.restore_skips(doc, "wf.w", {"1"},
+                                     payload={"token": "present"})
+
+        self.assertEqual(skips, [{"mode": "when", "condition": "token missing",
+                                  "step": "load user", "rounds": None}])
+
+    def test_an_empty_plan_restores_nothing(self):
+        # Negative control for the two positive cases above: with the plan
+        # emptied, the same `ran_indices` must yield nothing. A restoration that
+        # returned a constant would keep one of the three tests green and break
+        # this one.
+        from unittest import mock
+
+        doc, payload = self._checkout(stock=0)
+        with mock.patch.object(backend, "step_plan", return_value=[]):
+            self.assertEqual(backend.restore_skips(doc, "wf.checkout",
+                                                   {"1", "2", "3"},
+                                                   payload=payload), [])

@@ -333,6 +333,35 @@ def _workflow_steps(document, workflow_id):
     return nodes, _steps_in_order(nodes, wf.get("children", []), [])
 
 
+def validation_effect_steps(document, workflow_id):
+    """Names of the workflow's steps that carry a `Validation` effect, in order.
+
+    Issue #55 (r1 N-3): mode B specialises at build time, so a `Validation`
+    outcome is decided from `_lnpl_ops`'s `payload` — and `cli.cmd_build` passes
+    none, which means the derived sample payload, valid by construction. No
+    `--field` value can make a refinement fail there, because `--field` feeds
+    comparison guards only. This is the list `cmd_build` names when it says so.
+
+    Reads the step order through `_workflow_steps`, the same walk `_lnpl_ops`
+    uses, rather than re-deriving it: a second walk could name a step the built
+    module does not have. A step whose name repeats (an unrolled `repeat`/`until`
+    body) is named once — the diagnostic is about steps, not occurrences.
+
+    Raises `BackendError` for an unknown workflow, via `_workflow_steps`. An
+    empty list would read as "nothing to declare" and silence the diagnostic for
+    a typo'd `--workflow`.
+    """
+    nodes, steps = _workflow_steps(document, workflow_id)
+    names = []
+    for step, _cond in steps:
+        if step["name"] in names:
+            continue
+        if any(nodes[child]["kind"] == "Validation"
+               for child in step.get("children", [])):
+            names.append(step["name"])
+    return names
+
+
 def condition_field_names(document, workflow_id):
     """RFC-0008 G8: the ordered condition-field list `lnpl_run` takes as i64 params.
 
@@ -786,6 +815,68 @@ def step_plan(document, workflow_id, seeded=None, payload=None):
     """
     _module_attrs, ops = _lnpl_ops(document, workflow_id, seeded, payload)
     return ops
+
+
+def ran_step_indices(lines):
+    """The plan indices the binary printed, from its stdout `lines`.
+
+    The index, not the name, is what identifies WHICH planned op ran: a workflow
+    may declare the same step twice (`load user` inside a guard and again outside
+    it), and matching on the name would let a step that ran mask an identically
+    named one that was skipped.
+
+    Kept as strings, because the only thing they are compared against is
+    `str(entry["index"])` in `restore_skips`.
+    """
+    indices = set()
+    for line in lines:
+        parts = line.split(" ", 2)
+        if parts[0] == "step" and len(parts) == 3:
+            indices.add(parts[1])
+    return indices
+
+
+def restore_skips(document, workflow_id, ran_indices, seeded=None, payload=None):
+    """The skip records mode B can observe, restored from the compiled plan.
+
+    RFC-0014 §2.6: a guard mode B did not take prints nothing at all — `scf.if`
+    simply does not call `lnpl_step` — so the skip is observable only as an
+    ABSENCE from the plan the module was built from. Reading it back this way
+    rather than emitting a marker op is what keeps the compiled module
+    byte-identical, which `impl/tests/golden/*.std.mlir` requires (those fixtures
+    are pre-change snapshots and are never regenerated).
+
+    Returns one record per skipped STEP, carrying exactly the four fields both
+    modes can observe — `{mode, condition, step, rounds}`. The grain and the
+    field set are the contract: `differential._normalise_skips` projects mode A's
+    per-guard records onto the same shape, and an IR node id has no counterpart
+    here at all (RFC-0014 §2.4).
+
+    `ran_indices` is what the binary printed (`ran_step_indices`). `seeded` and
+    `payload` MUST be the same values the module was built with, or the plan
+    describes a different specialisation than the one that ran; see `_lnpl_ops`.
+
+    Callers: `differential.observe_mode_b` (the comparison) and `cli.cmd_build`
+    (the operator-facing surface, issue #55). One derivation, two readers — a
+    second copy of this reading could disagree with the first about what mode B
+    observed.
+    """
+    skips = []
+    for entry in step_plan(document, workflow_id, seeded=seeded, payload=payload):
+        if entry["guard_mode"] is None or str(entry["index"]) in ran_indices:
+            continue
+        if entry["guard_mode"] == "until" and (entry["unroll_round"] or 1) != 1:
+            # `until` is unrolled to the round cap, and nothing in the IR mutates
+            # a condition field mid-run, so the loop runs either zero rounds or
+            # all of them. Round 1's absence already says "zero rounds"; counting
+            # rounds 2..N again would report one skip per unrolled round against
+            # mode A's single record.
+            continue
+        skips.append({"mode": entry["guard_mode"],
+                      "condition": entry["guard_condition"],
+                      "step": entry["name"],
+                      "rounds": 0 if entry["guard_mode"] == "until" else None})
+    return skips
 
 
 def _mlir_escape(text):
