@@ -1,0 +1,5 @@
+warning: declared-measured-only [perf.report] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: declared-not-enforced [event.daily.rollup] event schedule — declared but unenforced: no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor
+2 warning(s), 0 error(s)
+wrote qa/rerun/cases/batch-report/evidence/artifacts/final/batch-report.lir.json (24 nodes)
+rc=0

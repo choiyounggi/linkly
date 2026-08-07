@@ -1,0 +1,36 @@
+# F-8 재검 — 진단의 기계 채널(exit/JSON) 존재 여부
+--- compile --help:
+usage: lnpl compile [-h] [-o OUTPUT] [--strict] source
+
+positional arguments:
+  source
+
+options:
+  -h, --help           show this help message and exit
+  -o, --output OUTPUT
+  --strict             exit 2 if any diagnostic is reported (otherwise the
+                       exit code is unchanged)
+--- run --help:
+usage: lnpl run [-h] [--payload PAYLOAD] [--workflow WORKFLOW] [--json]
+                [--no-row] [--strict]
+                source
+
+positional arguments:
+  source
+
+options:
+  -h, --help           show this help message and exit
+  --payload PAYLOAD    JSON file with the workflow input
+  --workflow WORKFLOW  workflow node id (default: the first one)
+  --json               emit result and trace as JSON
+  --no-row             start with an empty repository (exercises retry)
+  --strict             exit 2 if any diagnostic is reported (otherwise the
+                       exit code is unchanged)
+--- strict rc 요약(08-strict-*.log 실측): off=0, on=2, run-strict=2, clean-strict=0
+--- 3상태 구분(wiki: tool-diagnostics-without-a-failing-exit-code): clean(rc0+stderr empty) / warned(rc0+stderr, --strict rc2) / failed(rc2) — --strict 도입으로 경고가 exit 채널을 얻음
+--- 파생 실측: 의도적 경고(스케줄 선언)와 오타 no-op을 --strict가 구분하는가
+probe-b1(정당한 on schedule 선언, declared-not-enforced 경고) --strict:
+warning: declared-not-enforced [event.daily.rollup] event schedule — declared but unenforced: no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor
+1 warning(s), 0 error(s)
+wrote /dev/null (8 nodes)
+rc=2

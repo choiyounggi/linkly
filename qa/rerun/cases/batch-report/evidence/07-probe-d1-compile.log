@@ -1,0 +1,2 @@
+compile error: line 24: a second `given` inside one spec block — open a new `spec` block per scenario
+rc=2

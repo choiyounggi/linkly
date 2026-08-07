@@ -1,0 +1,6 @@
+# probe-a2 IR Assignment 내용 일치 카운트 (D2, wiki: lowered-declaration-survival)
+# 소스 set 스텝 2개 ↔ IR Assignment 노드 — id 존재가 아니라 target/expression 원문 일치로 판정
+{"kind": "Assignment", "id": "wf.build.report.step.4.assign", "target": "report.orderCount", "expression": "report.orderCount + 1", "entity": "entity.report"}
+{"kind": "Assignment", "id": "wf.build.report.step.5.assign", "target": "report.totalAmount", "expression": "report.totalAmount + order.amount", "entity": "entity.report"}
+Assignment count = 2
+내용 일치 판정: PASS

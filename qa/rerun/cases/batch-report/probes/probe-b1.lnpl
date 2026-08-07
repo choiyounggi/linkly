@@ -1,0 +1,20 @@
+# probe-b1(재측정) — H-rb1: `on schedule daily at 00:00 UTC` 선언이
+#   파싱→IR→OpenAPI(x-lnpl-schedules)까지 도달하는가 (F-2 재검 핵심)
+# 변수 1개: 원 b1(그럴듯한 스텝 동사 schedule → no-op)과 달리 grammar.md:80-84에
+#   등재된 정식 선언 문법 사용.
+# 예측: compile rc=0 + `declared-not-enforced` 진단 + IR에 daily/00:00/UTC 내용
+#   일치 노드 + OpenAPI에 x-lnpl-schedules.
+
+capability postgres
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+
+event DailyRollup on schedule daily at 00:00 UTC
+
+workflow BuildReport
+    read report
+    set report.orderCount to report.orderCount + 1

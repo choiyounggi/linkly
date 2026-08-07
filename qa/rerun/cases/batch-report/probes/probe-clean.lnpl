@@ -1,0 +1,14 @@
+# probe-clean(재측정) — F-3 오탐 없음 방향의 clean 재료.
+# 공식 예제 셋은 경고 설계(F-8 원 관찰 유지 — shorten이 declared-not-enforced 등
+#   경고를 냄)라 clean 재료로 쓸 수 없어 신규 작성: 진단 0을 목표로 한 최소 파일.
+# 예측: compile 무경고 rc=0, --strict에서도 rc=0 (게이트가 clean/warned를 구분).
+
+capability postgres
+
+entity Report
+    field
+        id UUID
+        orderCount Integer
+
+workflow GetReport
+    read report

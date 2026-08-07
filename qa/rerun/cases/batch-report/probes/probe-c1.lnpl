@@ -1,0 +1,15 @@
+# probe-c1(재측정) — H-rc1: 다단어 엔티티(DailyReport)는 스텝 객체로 참조되는가 (F-4 재검)
+# 변수 1개: 원 재현 그대로 — 엔티티 DailyReport + `create DailyReport`(정확 표기) 스텝.
+# 예측(원 실측): "does not say which entity it means ... Name the entity as the
+#   step's object" — 에러 지시대로 정확 표기해도 같은 에러 반복(오도).
+
+capability postgres
+
+entity DailyReport
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+
+workflow BuildReport
+    create DailyReport

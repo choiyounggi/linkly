@@ -1,0 +1,96 @@
+$ lnpl spec batch-report.lnpl -o artifacts/final/batch-report.spec.json
+warning: declared-measured-only [perf.report] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: declared-not-enforced [event.daily.rollup] event schedule — declared but unenforced: no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor
+2 warning(s), 0 error(s)
+wrote qa/rerun/cases/batch-report/evidence/artifacts/final/batch-report.spec.json (3 case(s))
+rc=0
+
+$ lnpl spec batch-report.lnpl --run
+warning: declared-measured-only [perf.report] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: declared-not-enforced [event.daily.rollup] event schedule — declared but unenforced: no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor
+2 warning(s), 0 error(s)
+FAIL BuildReport spec 1 — completed (status=failed)
+FAIL BuildReport spec 1 — steps 5 (steps=4 want=5)
+FAIL BuildReport spec 1 — slo met (slo_met=False)
+PASS BuildReport spec 1 — rows Report 1 (Report rows=1 want=1)
+     reason: step='set report.orderCount to report.orderCount + 1' — assignment 'report.orderCount' cannot be evaluated: a reference in 'report.orderCount + 1' resolves to nothing
+PASS BuildReport spec 2 — failed (status=failed)
+PASS GetReport spec — failed (status=failed)
+PASS GetReport spec — attempts 3 (max attempts=3 want=3)
+spec: 4 passed, 3 failed
+rc=1
+
+--- F-5 재검: manifest 케이스 수 = 블록 수(3)인가:
+{
+ "spec_version": "0.1",
+ "module": "batch-report",
+ "cases": [
+  {
+   "name": "BuildReport spec 1",
+   "workflow": "wf.build.report",
+   "given": [
+    "valid order"
+   ],
+   "when": [
+    "build report"
+   ],
+   "expect": [
+    "completed",
+    "steps 5",
+    "slo met",
+    "rows Report 1"
+   ]
+  },
+  {
+   "name": "BuildReport spec 2",
+   "workflow": "wf.build.report",
+   "given": [
+    "no amount"
+   ],
+   "when": [
+    "build report"
+   ],
+   "expect": [
+    "failed"
+   ]
+  },
+  {
+   "name": "GetReport spec",
+   "workflow": "wf.get.report",
+   "given": [
+    "empty repository"
+   ],
+   "when": [
+    "get report"
+   ],
+   "expect": [
+    "failed",
+    "attempts 3"
+   ]
+  }
+ ]
+}
+case count = 3
+
+=== 재시도 1 (spec 1에 stored Report orderCount 1 추가) ===
+$ lnpl spec batch-report.lnpl --run
+warning: declared-measured-only [perf.report] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: declared-not-enforced [event.daily.rollup] event schedule — declared but unenforced: no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor
+2 warning(s), 0 error(s)
+PASS BuildReport spec 1 — completed (status=completed)
+PASS BuildReport spec 1 — steps 5 (steps=5 want=5)
+PASS BuildReport spec 1 — slo met (slo_met=True)
+PASS BuildReport spec 1 — rows Report 1 (Report rows=1 want=1)
+PASS BuildReport spec 2 — failed (status=failed)
+PASS GetReport spec — failed (status=failed)
+PASS GetReport spec — attempts 3 (max attempts=3 want=3)
+spec: 7 passed, 0 failed
+rc=0
+
+=== manifest 재추출(수정본 기준) ===
+warning: declared-measured-only [perf.report] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: declared-not-enforced [event.daily.rollup] event schedule — declared but unenforced: no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor
+2 warning(s), 0 error(s)
+wrote qa/rerun/cases/batch-report/evidence/artifacts/final/batch-report.spec.json (3 case(s))
+rc=0
+case count = 3 (블록 3개 → 독립 케이스 3개 = F-5 지원 경로 확인)

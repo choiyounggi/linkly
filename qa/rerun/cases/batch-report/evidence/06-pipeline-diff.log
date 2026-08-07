@@ -1,0 +1,7 @@
+$ lnpl diff --workflow wf.build.report --workdir .claude/tmp/mb-diff-build
+PASS 1/4 execution order — 5 step(s): validate order -> load order -> read report -> set report.orderCount to report.orderCount + 1 -> emit reportBuilt | 0 skip(s)
+PASS 2/4 policy outcome — status=completed
+PASS 3/4 observability signals — 5 effect(s) per step match
+PASS 4/4 masking — no secret marker in either mode's output
+differential: EQUIVALENT
+rc=0

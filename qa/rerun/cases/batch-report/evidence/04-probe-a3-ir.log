@@ -1,0 +1,12 @@
+# probe-a3 IR 구조 카운트 (D2) — repeat 블록 생존 검사
+# 소스: repeat 3 아래 들여쓴 스텝 2개(read order, set ...)
+# IR 실측: Guard(wf.accumulate.all.guard.1)의 children=['wf.accumulate.all.step.2'(read order)] 뿐 —
+#   set(step.3)은 워크플로 직속 형제. 들여쓴 블록이 무진단(rc=0)으로 분리됨.
+Workflow wf.accumulate.all 'AccumulateAll' ['wf.accumulate.all.step.1', 'wf.accumulate.all.guard.1', 'wf.accumulate.all.step.3']
+WorkflowStep wf.accumulate.all.step.1 'read report' ['wf.accumulate.all.step.1.repo']
+WorkflowStep wf.accumulate.all.step.2 'read order' ['wf.accumulate.all.step.2.repo']
+Guard wf.accumulate.all.guard.1 '' ['wf.accumulate.all.step.2']
+WorkflowStep wf.accumulate.all.step.3 'set report.totalAmount to report.totalAmount + order.amount' ['wf.accumulate.all.step.3.assign']
+
+# mode A 실측(04-probe-a3-modeA.log): read order 3회 — 매회 같은 시드 행(id 동일) —
+# set은 1회 실행, totalAmount=2(1+1). N행 집계는 표현 불가 재확인(F-1 잔존 절반).

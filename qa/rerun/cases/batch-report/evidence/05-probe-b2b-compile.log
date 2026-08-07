@@ -1,0 +1,21 @@
+wrote /dev/null (3 nodes)
+rc=0
+--- 최소화 재현: workflow 안 policy를 '허용 이름' retry로 — 미허용 이름 여부와 무관함을 증명 ---
+capability postgres
+
+entity Report
+    field
+        id UUID
+        orderCount Integer
+
+workflow BuildReport
+    policy
+        retry 2
+    read report
+--- compile:
+wrote .claude/tmp/scratch-wf-policy.lir.json (3 nodes)
+rc=0
+--- IR nodes (Workflow에 children 없음 = policy 블록+read report 스텝 전부 증발):
+Entity entity.report children=<none>
+Workflow wf.build.report children=<none>
+Capability cap.postgres children=<none>

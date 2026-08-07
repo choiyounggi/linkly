@@ -1,0 +1,46 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "probe-b1 API",
+    "version": "0.1.0",
+    "description": "Generated from Semantic IR (lir_version 0.1). Do not edit by hand."
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Report": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reportDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "orderCount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "reportDate",
+          "orderCount"
+        ]
+      }
+    }
+  },
+  "x-lnpl-schedules": [
+    {
+      "event": "event.daily.rollup",
+      "every": "daily",
+      "at": "00:00",
+      "zone": "UTC",
+      "enforcement": "unenforced"
+    }
+  ]
+}
+rc=0

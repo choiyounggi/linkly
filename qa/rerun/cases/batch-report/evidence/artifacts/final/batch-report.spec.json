@@ -1,0 +1,50 @@
+{
+  "spec_version": "0.1",
+  "module": "batch-report",
+  "cases": [
+    {
+      "name": "BuildReport spec 1",
+      "workflow": "wf.build.report",
+      "given": [
+        "valid order",
+        "stored Report orderCount 1"
+      ],
+      "when": [
+        "build report"
+      ],
+      "expect": [
+        "completed",
+        "steps 5",
+        "slo met",
+        "rows Report 1"
+      ]
+    },
+    {
+      "name": "BuildReport spec 2",
+      "workflow": "wf.build.report",
+      "given": [
+        "no amount"
+      ],
+      "when": [
+        "build report"
+      ],
+      "expect": [
+        "failed"
+      ]
+    },
+    {
+      "name": "GetReport spec",
+      "workflow": "wf.get.report",
+      "given": [
+        "empty repository"
+      ],
+      "when": [
+        "get report"
+      ],
+      "expect": [
+        "failed",
+        "attempts 3"
+      ]
+    }
+  ]
+}

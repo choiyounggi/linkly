@@ -1,0 +1,2 @@
+error: --workflow 'GetReport' is not a workflow of qa/rerun/cases/batch-report/batch-report.lnpl (valid: wf.build.report, wf.get.report)
+rc=2
