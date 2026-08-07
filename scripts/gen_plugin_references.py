@@ -24,7 +24,7 @@ from lnpl.lower import (ARGUMENT_MECHANISMS, KIND_PREFIX, KIND_WORD,  # noqa: E4
                         PERF_METRICS, POLICY_NAMES, SECURITY_MECHANISMS,
                         VALUELESS_PERF, VERB_LEXICON, derive_id, split_pascal)
 from lnpl.refinements import BASE_CATEGORY, CATEGORY_FACETS, PRESETS  # noqa: E402
-from lnpl.spec import EXPECTATIONS                               # noqa: E402
+from lnpl.spec import EXPECTATIONS, GIVEN_FORMS                  # noqa: E402
 from lnpl.types import SEMANTIC_TYPES                            # noqa: E402
 
 OUT_DIR = os.path.join(REPO, "plugins", "lnpl", "skills",
@@ -187,14 +187,28 @@ def render_spec():
     for key in EXPECTATIONS:
         lines.append("- `%s`" % key)
     lines.append("\n## `given`이 알아듣는 형식\n")
-    lines.append("- `valid <아무 명사>` — 서사용 표지, 필드에 영향 없음")
-    lines.append("- `empty repository` — 빈 저장소로 실행")
-    lines.append("- `<field> <value>` — 선언된 필드를 설정. 기본 payload(샘플 값) 위에 "
-                 "필드 단위로 덮어쓰며, Integer 계열 필드는 int로 변환된다 (issue #46)")
-    lines.append("- `no <field>` — 선언된 필드를 뺌")
-    lines.append("- `stored <entity> <field> <value>` — 사전 저장소 상태 (issue #39). "
-                 "엔티티는 선언명(`Product`)과 바인딩명(`product`) 둘 다 받는다 (issue #46)")
-    lines.append("\n선언되지 않은 필드를 쓰면 거부된다.\n")
+    for _key, form, doc in GIVEN_FORMS:
+        lines.append("- `%s` — %s" % (form, doc))
+    lines.append("\n선언되지 않은 이름을 쓰면 거부된다 — `--run` 없이 `lnpl spec`만 "
+                 "돌려도 매니페스트 단계에서 거부되고, 진단이 어느 워크플로의 어느 "
+                 "블록인지와 수용되는 이름 전체를 댄다 (issue #54).\n")
+    lines.append("\n## 입력 네임스페이스\n")
+    lines.append("필드 형식은 **선언된 전 엔티티 필드의 합집합**에서 이름을 찾는다 "
+                 "(RFC-0015 §G15.2). 맨이름과 `input.<field>`는 같은 것을 가리키며, "
+                 "새로 쓰는 spec은 `input.`을 쓴다.\n")
+    lines.append("단, 기본 payload는 그 합집합이 아니다 — 첫 엔티티와 `validate`가 "
+                 "지목한 엔티티의 필드만 샘플로 채운다 (issue #48: 전 엔티티를 채우면 "
+                 "다른 엔티티의 부재 필드를 읽는 Presence 가드가 뒤집힌다). 그래서 그 "
+                 "밖의 입력 필드는 `input.<field> <value>`로 **명시해야** 하고, "
+                 "read-행 참조 가드를 참으로 만드는 정상 경로도 그렇게 계약화한다 "
+                 "(issue #54).\n")
+    lines.append("\n## `given no`의 스코프\n")
+    lines.append("- 입력 payload에서 그 필드를 뺀다")
+    lines.append("- 기본 시드 행은 그 payload의 복사본이므로, 그 행에서도 사라진다")
+    lines.append("- `stored`는 시드 이후에 덮어쓰므로 `no`보다 뒤에 적용된다 — "
+                 "둘을 같이 쓰면 `stored`가 이긴다")
+    lines.append("- 이미 없는 필드를 빼는 것은 부재를 단언하는 no-op이며 에러가 아니다 "
+                 "— `when <field> missing` 같은 Presence 가드가 계약하는 상태다\n")
     return _doc("spec 블록", "\n".join(lines))
 
 

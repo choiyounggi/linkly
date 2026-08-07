@@ -64,6 +64,11 @@ def extract(decls, module_name):
             if not expect:
                 raise SpecError("workflow %s: %s needs an `expect` section"
                                 % (d.name, label))
+            # Issue #54 [3]: refuse a `given` nobody can build HERE, at the
+            # manifest stage, rather than leaving `run_manifest` as the first
+            # stage that reads one (r1 F-8 — `lnpl spec` without `--run` wrote a
+            # manifest of unrunnable cases and said nothing).
+            _validate_given(given, decls, "workflow %s: %s: " % (d.name, label))
             name = ("%s spec" % d.name if len(blocks) == 1
                     else "%s spec %d" % (d.name, i))
             cases.append({"name": name,
@@ -285,75 +290,234 @@ EXPECTATIONS = {
 }
 
 
+_INPUT_PREFIX = "input."
+
+# The closed `given` vocabulary. One table, three consumers: the runner
+# (`_payload_from_given`), the manifest-stage check (`_validate_given`), and the
+# generated authoring reference (`scripts/gen_plugin_references.py`). A form a
+# reader can write has to appear here or nowhere — the pre-#54 reference kept its
+# own hand-written list, and that copy is what left the first-entity limit
+# undocumented while the diagnostics were equally silent about it (r1 N-4).
+GIVEN_FORMS = (
+    ("valid", "valid <아무 명사>",
+     "서사용 표지 — 필드에 영향 없음"),
+    ("empty-repository", "empty repository",
+     "빈 저장소로 실행 — `stored`와 함께 쓸 수 없다"),
+    ("input-field", "input.<field> <value>",
+     "입력 payload 필드를 설정. 이름은 선언된 전 엔티티 필드의 합집합에서 찾는다 "
+     "(RFC-0015 §G15.2). Integer 계열은 int로 코어션된다"),
+    ("no-input-field", "no input.<field>",
+     "입력 payload에서 그 필드를 뺀다"),
+    ("field", "<field> <value>",
+     "`input.<field> <value>`와 같다 — 맨이름도 입력 payload를 가리킨다"),
+    ("no-field", "no <field>",
+     "`no input.<field>`와 같다"),
+    ("stored", "stored <entity> <field> <value>",
+     "사전 저장소 상태 (issue #39). 엔티티는 선언명(`Product`)과 "
+     "바인딩명(`product`) 둘 다 받는다"),
+)
+
+
+def _declared(names):
+    return ", ".join(sorted(names)) or "none"
+
+
+def _known_forms():
+    return ", ".join("`%s`" % form for _key, form, _doc in GIVEN_FORMS)
+
+
+def _schema_from_nodes(entities):
+    """(declared name, binding name, field names) per entity, from IR nodes."""
+    return tuple((e.get("name") or "?", binding_name(e),
+                  frozenset(f["name"] for f in e.get("fields", [])))
+                 for e in entities)
+
+
+def _schema_from_decls(decls):
+    """The same shape, from parsed declarations — what `extract` has to work with.
+
+    `binding_name` takes anything with a `name`, so the two builders cannot drift
+    on how `stored product` resolves to `Product`.
+    """
+    return tuple((d.name, binding_name({"name": d.name}),
+                  frozenset(line.tokens[0] for line in d.clauses.get("field", [])
+                            if line.tokens))
+                 for d in decls if d.kind == "entity")
+
+
+def _check_given(phrase, schema, where=""):
+    """Classify one `given` line and refuse it if its names are not declared.
+
+    Returns `(form_key, parts)` where `form_key` is a key of `GIVEN_FORMS`. This
+    is the single place that decides what a `given` line MEANS: the runner uses
+    the classification to build the payload, and `extract` uses the same call
+    purely for its refusals, so a line either stage accepts is a line the other
+    accepts too. Names are checked here; types are not — `extract` has no
+    refinement index, so coercion stays with the runner.
+    """
+    fields = frozenset().union(*(f for _n, _b, f in schema)) if schema \
+        else frozenset()
+    tokens = phrase.split()
+
+    def fail(text):
+        raise SpecError(where + text)
+
+    if not tokens:
+        fail("empty `given` line")
+    if phrase == "empty repository":
+        return "empty-repository", ()
+    if tokens[0] == "valid":
+        return "valid", ()
+    if tokens[0] == "stored":
+        if len(tokens) != 4:
+            fail("unsupported given: %r (use `stored <entity> <field> <value>`)"
+                 % phrase)
+        _kw, ent_name, field, value = tokens
+        # The declared name (`Product`) or the binding name (`product`) — `rows
+        # <Entity> <N>` accepts the declared name, and issue #46 measured that
+        # accepting only the lowercase form here reported a DECLARED entity as
+        # undeclared (t1 F-8, t2 F-12).
+        target = next((entry for entry in schema
+                       if entry[0] == ent_name or entry[1] == ent_name), None)
+        if target is None:
+            fail("given %r names %r, which is not a declared entity "
+                 "(declared: %s)"
+                 % (phrase, ent_name, _declared(n for n, _b, _f in schema)))
+        if field not in target[2]:
+            fail("given %r names field %r, which entity %s does not declare"
+                 % (phrase, field, target[0]))
+        return "stored", (ent_name, field, value)
+    if len(tokens) == 2 and tokens[0].startswith(_INPUT_PREFIX):
+        # An unrecognized name is refused rather than absorbed: the input
+        # namespace is a closed set, so a miss is a typo (RFC-0015 §G15.2) and
+        # the diagnostic has to say which set it missed — the pre-#54 message
+        # said only "naming a declared field", which is why r1 N-4 recorded the
+        # diagnostics and the docs as equally silent on the cause.
+        name = tokens[0][len(_INPUT_PREFIX):]
+        if name not in fields:
+            fail("given %r names input field %r, which no declared entity has. "
+                 "The input payload is the union of every declared entity's "
+                 "fields (RFC-0015 §G15.2). Declared: %s"
+                 % (phrase, name, _declared(fields)))
+        return "input-field", (name, tokens[1])
+    if len(tokens) == 2 and tokens[0] == "no" \
+            and tokens[1].startswith(_INPUT_PREFIX):
+        name = tokens[1][len(_INPUT_PREFIX):]
+        if name not in fields:
+            fail("given %r names input field %r, which no declared entity has. "
+                 "The input payload is the union of every declared entity's "
+                 "fields (RFC-0015 §G15.2). Declared: %s"
+                 % (phrase, name, _declared(fields)))
+        return "no-input-field", (name,)
+    if len(tokens) == 2:
+        # The bare name means the same as `input.<field>` (RFC-0015 §G15.2), so
+        # it resolves against the same union; the message points at `stored`
+        # because the other thing an author reaching for a field name may want
+        # is the stored row rather than the input.
+        dropping = tokens[0] == "no"
+        name = tokens[1] if dropping else tokens[0]
+        if name not in fields:
+            fail("given %r names field %r, which no declared entity has "
+                 "(declared: %s). For a stored row use "
+                 "`stored <entity> <field> <value>`."
+                 % (phrase, name, _declared(fields)))
+        return ("no-field", (name,)) if dropping else ("field", (name, tokens[1]))
+    fail("unsupported given: %r — known forms: %s" % (phrase, _known_forms()))
+
+
+def _validate_given(given, decls, where):
+    """Refuse an uninterpretable `given` at manifest time (issue #54 [3], r1 F-8).
+
+    The runner used to be the first stage that looked at a `given` at all, so
+    `lnpl spec source.lnpl` wrote a manifest full of cases that could never run
+    and said nothing. Everything checkable without the IR is checked here.
+    """
+    schema = _schema_from_decls(decls)
+    for phrase in given:
+        _check_given(phrase, schema, where)
+    if (any(_check_given(p, schema, where)[0] == "stored" for p in given)
+            and any(p == "empty repository" for p in given)):
+        raise SpecError(
+            where + "`empty repository` and `stored ...` contradict each other: "
+            "there is no row to store into an empty store. Drop one.")
+
+
 def _payload_from_given(given, entity_node, refinements=None, document=None):
     """`given` lines describe the input. Recognized forms:
         `valid <...>`        a narrative fixture marker (any noun) — no field effect
         `empty repository`   run against an empty repository
-        `<field> <value>`    set a declared field
-        `no <field>`         drop a declared field
+        `input.<field> <value>`
+                             set an input-payload field (issue #54)
+        `no input.<field>`   drop an input-payload field (issue #54)
+        `<field> <value>`    the same as `input.<field> <value>`
+        `no <field>`         the same as `no input.<field>`
         `stored <entity> <field> <value>`
                              prior repository state (issue #39)
 
-    Field forms must name a field the entity declares; anything else is refused.
+    Field forms resolve against the INPUT NAMESPACE — the union of every declared
+    entity's fields (RFC-0015 §G15.2). Issue #54 measured what the pre-#54 scope
+    cost: fields resolved against the FIRST entity only, so a guard operand living
+    on any other entity was both absent from the payload and unsettable, and three
+    separately-filed frictions (r1 N-4, r2 N-2, r4 F-6) all reduced to that. The
+    execution paths never had the narrow scope — `lnpl run`, `lnpl diff` and mode
+    B's host all build their payload from every entity.
+
     A `given` the runner cannot interpret is not silently absorbed as a field
     assignment — a `given` nobody can build is not a fixture (issue #28).
+
+    Scope of `no` (issue #54, r4 F-6): it removes the field from the INPUT
+    payload. Because the default seeded row is a copy of that payload
+    (`repo_policy.default_rows`), the field is absent from the seeded row too;
+    `stored` overrides are applied after seeding and therefore still win. Dropping
+    a field the payload does not carry is a no-op that asserts its absence, not an
+    error — which is what a Presence guard (`when <field> missing`) contracts on.
+
+    What this does NOT widen is the DEFAULT payload: it still samples the first
+    entity plus the entities the workflow validates. Issue #48 fixed that scope
+    deliberately — sampling every entity flips a Presence guard reading another
+    entity's absent field — so reaching a field outside it is what the explicit
+    `input.<field>` form is for.
 
     Returns `(payload, stored)`. `stored` is `{entity_id: {field: value}}`: the
     default seed copies the payload into the row, so without a way to say "the
     stored row differs from the input" a spec cannot express the behaviour issue
     #37 is about at all.
     """
-    fields = {f["name"] for f in entity_node["fields"]} if entity_node else set()
-    field_types = ({f["name"]: f["type"] for f in entity_node["fields"]}
-                   if entity_node else {})
     payload = sample_payload([entity_node] if entity_node else [], refinements)
     entities = [n for n in (document or {}).get("nodes", [])
                 if n["kind"] == "Entity"]
+    # Without a document the caller handed us the one entity it has; that entity
+    # IS the namespace it knows about, and narrowing to it keeps the pre-#54
+    # contract for the call sites that pass an entity alone.
+    namespace = entities or ([entity_node] if entity_node else [])
+    # A name two entities declare takes the LAST declaration's type, which is the
+    # order `sample_payload` itself resolves such a collision in — the spec runner
+    # has to produce the payload `lnpl run` would produce for the same module.
+    field_types = {f["name"]: f["type"]
+                   for e in namespace for f in e.get("fields", [])}
+    schema = _schema_from_nodes(namespace)
+    by_name = {e.get("name"): e for e in namespace}
+    by_binding = {binding_name(e): e for e in namespace}
     stored = {}
     for phrase in given:
-        tokens = phrase.split()
-        if tokens[0] == "valid" or phrase == "empty repository":
+        form, parts = _check_given(phrase, schema)
+        if form in ("valid", "empty-repository"):
             continue        # narrative fixture handled by `when`
-        elif tokens[0] == "stored":
-            if len(tokens) != 4:
-                raise SpecError(
-                    "unsupported given: %r (use `stored <entity> <field> <value>`)"
-                    % phrase)
-            _name, ent_name, field, value = tokens
-            # The declared name (`Product`) or the binding name (`product`) —
-            # `rows <Entity> <N>` accepts the declared name, and issue #46
-            # measured that accepting only the lowercase form here reported a
-            # DECLARED entity as undeclared (t1 F-8, t2 F-12).
-            target = next((e for e in entities
-                           if e.get("name") == ent_name
-                           or binding_name(e) == ent_name), None)
-            if target is None:
-                raise SpecError(
-                    "given %r names %r, which is not a declared entity "
-                    "(declared: %s)"
-                    % (phrase, ent_name,
-                       ", ".join(e.get("name", "?") for e in entities) or "none"))
-            if field not in {f["name"] for f in target.get("fields", [])}:
-                raise SpecError("given %r names field %r, which entity %s does "
-                                "not declare" % (phrase, field, target["name"]))
+        elif form == "stored":
+            ent_name, field, value = parts
+            target = by_name.get(ent_name) or by_binding[ent_name]
             stored.setdefault(target["id"], {})[field] = _coerce(value)
-        elif tokens[0] == "no" and len(tokens) == 2 and tokens[1] in fields:
-            payload.pop(tokens[1], None)
-        elif len(tokens) == 2 and tokens[0] in fields:
+        elif form in ("input-field", "field"):
             # Integer-shaped fields coerce; everything else keeps the raw
             # string so `name 42` stays a valid Text (the pre-#39 contract).
             # The coercion exists because `check_semantic_type` for Integer is
             # an isinstance check: a raw "150" fails the validate step that the
             # JSON payload `150` passes, so the spec could not run the same
             # payload as `lnpl run` (issue #46 — t4 F-5, t2 F-11).
-            payload[tokens[0]] = _typed_value(tokens[1],
-                                              field_types.get(tokens[0]),
-                                              refinements)
-        else:
-            raise SpecError(
-                "unsupported given: %r (use `valid <...>`, `empty repository`, "
-                "`<field> <value>`, `no <field>` naming a declared field, or "
-                "`stored <entity> <field> <value>`)" % phrase)
+            name, raw = parts
+            payload[name] = _typed_value(raw, field_types.get(name), refinements)
+        else:                # no-input-field / no-field
+            payload.pop(parts[0], None)
     if stored and any(g == "empty repository" for g in given):
         raise SpecError(
             "`empty repository` and `stored ...` contradict each other: there is "

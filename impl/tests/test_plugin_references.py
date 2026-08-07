@@ -87,6 +87,36 @@ class GeneratorTest(unittest.TestCase):
         for clause, name in ENFORCEMENT:
             self.assertIn("`%s %s`" % (clause, name), text)
 
+    def test_every_given_form_reaches_the_document(self):
+        # Issue #54: the reference used to keep its OWN hand-written list of
+        # `given` forms, and that copy is what left the first-entity limit
+        # undocumented while the diagnostics were equally silent (r1 N-4).
+        from lnpl.spec import GIVEN_FORMS
+        with open(os.path.join(REFS, "spec.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        for _key, form, doc in GIVEN_FORMS:
+            self.assertIn("`%s`" % form, text)
+            self.assertIn(doc, text)
+
+    def test_the_scope_of_given_no_is_documented(self):
+        # r4 F-6: `no <field>`'s scope was undocumented, so an author could not
+        # tell what it removes from — the input payload, the seeded row, or both.
+        # Asserted as four distinct BULLETS under the scope heading, not as
+        # keywords loose in the file: a keyword-presence gate passes on a
+        # document that mentions the words while answering none of the four
+        # questions an author actually has.
+        with open(os.path.join(REFS, "spec.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("## `given no`의 스코프", text)
+        section = text.split("## `given no`의 스코프", 1)[1].split("\n## ", 1)[0]
+        bullets = [l for l in section.splitlines() if l.startswith("- ")]
+        self.assertEqual(len(bullets), 4, section)
+        # Each question gets its own bullet, in order: what is removed, what
+        # happens to the seeded row, how `stored` interacts, and whether
+        # removing an absent field is an error.
+        for index, claim in enumerate(("입력 payload", "시드", "stored", "no-op")):
+            self.assertIn(claim, bullets[index], bullets)
+
 
 SKILL_DIR = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-authoring")
 SKILL_MD = os.path.join(SKILL_DIR, "SKILL.md")
