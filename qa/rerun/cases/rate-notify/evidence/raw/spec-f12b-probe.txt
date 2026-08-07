@@ -1,0 +1,12 @@
+warning: declared-measured-only [perf.rate.notify] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+1 warning(s), 0 error(s)
+PASS Report spec 1 — completed (status=completed)
+PASS Report spec 1 — steps 4 (steps=4 want=4)
+PASS Report spec 1 — slo met (slo_met=True)
+PASS Report spec 1 — rows Notification 1 (Notification rows=1 want=1)
+FAIL Report spec 2 — completed (status=failed)
+PASS Report spec 2 — attempts 4 (max attempts=4 want=4)
+     reason: step='find measurement' — repository read found no row for entity.measurement
+PASS Report spec 3 — completed (status=completed)
+PASS Report spec 3 — rows Notification 0 (Notification rows=0 want=0)
+spec: 7 passed, 1 failed

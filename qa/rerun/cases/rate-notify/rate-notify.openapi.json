@@ -1,0 +1,95 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "rate-notify API",
+    "version": "0.1.0",
+    "description": "Generated from Semantic IR (lir_version 0.1). Do not edit by hand."
+  },
+  "paths": {
+    "/rate-notify-service/report": {
+      "post": {
+        "operationId": "rate_notify_service_report",
+        "summary": "Report workflow",
+        "description": "Steps: validate measurement -> find measurement -> create notification -> emit notificationSent -> read measurement",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Measurement"
+              }
+            }
+          }
+        },
+        "x-response-slo-ms": 50,
+        "x-retry": 3,
+        "x-timeout-ms": 3000,
+        "x-conditional-steps": [
+          "create notification",
+          "emit notificationSent"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Measurement": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "value": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "acknowledged": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "value",
+          "acknowledged"
+        ]
+      },
+      "Notification": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "priorNotification": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sentAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "priorNotification",
+          "sentAt"
+        ]
+      }
+    }
+  }
+}
