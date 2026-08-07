@@ -259,3 +259,24 @@ def until_effect_source(condition):
     """
     return UNTIL_EFFECT_LOOP.replace("    until token.retryBudget > 5",
                                      "    until " + condition)
+
+# A workflow whose entity carries a `Password`-typed field, for the masking
+# sweep that has to hold on every backend: swapping the repository driver must
+# not change which values reach an output channel. The plain `label` field is
+# the negative control — a channel where it is also missing was never captured,
+# which would make the secret's absence vacuous.
+SECRET_ACCOUNT = """capability postgres
+
+entity Account
+    field
+        id UUID
+        label Text
+        cardSecret Password
+
+service AccountService
+    policy
+        timeout 5s
+
+workflow Fetch
+    read account
+"""

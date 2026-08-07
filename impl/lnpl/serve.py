@@ -6,9 +6,11 @@ issue #48) -> mode A execution -> status-code mapping. The mapping table
 (M1–M9) is normative in docs/serving.md; `map_result` implements the post-run
 rows, the handler implements the pre-run rows.
 
-Contract limits (docs/serving.md): mode A over the Fake capability backend
-(#25 open); `Authorization` is presence-checked, not verified; schedule
-triggers (#49) and mode B are not served.
+Contract limits (docs/serving.md): schedule triggers (#49) and mode B are not
+served. The capability backend and the token provider are the caller's to
+supply (issue #25): with neither, this is the in-memory, presence-checked
+server it has always been; with both, requests read a store that outlives them
+and bearer tokens are actually verified.
 """
 
 import json
@@ -17,6 +19,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .diagnostics import format_lines
+from .drivers import TokenError, audience_for_path
 from .interp import Interpreter
 from .openapi import generate, _slug
 from .repo_policy import default_rows
@@ -84,6 +87,7 @@ _TITLES = {
     "not-found": "no such path",
     "method-not-allowed": "method not allowed",
     "auth-missing": "authorization required",
+    "auth-invalid": "authorization token rejected",
     "body-too-large": "request body too large",
     "body-unreadable": "request body is not a JSON object",
     "deadline-exceeded": "workflow deadline exceeded",
@@ -112,10 +116,16 @@ class _Server(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, address, document, routes):
+    def __init__(self, address, document, routes, repository_factory=None,
+                 token_provider=None):
         super().__init__(address, _Handler)
         self.document = document
         self.routes = routes
+        # A factory, not a driver: each request opens its own store and closes
+        # it, so a connection is never shared across threads. The provider is
+        # the opposite — one immutable object, safe to read from every thread.
+        self.repository_factory = repository_factory
+        self.token_provider = token_provider
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -153,13 +163,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, problem(404, "not-found",
                                     "no OpenAPI path %r" % self.path))
             return
-        if route["auth"] and self.headers.get("Authorization") is None:  # M3
-            # Presence-checked only: verifying the bearer token is #25's
-            # contract, not this server's (docs/serving.md).
-            self._send(401, problem(401, "auth-missing",
-                                    "the service declares `security jwt`; "
-                                    "send an Authorization header"))
-            return
+        if route["auth"]:
+            header = self.headers.get("Authorization")
+            if header is None:                                     # M3
+                self._send(401, problem(401, "auth-missing",
+                                        "the service declares `security jwt`; "
+                                        "send an Authorization header"))
+                return
+            if self.server.token_provider is not None:             # M3a
+                if not self._token_accepted(header):
+                    return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -187,11 +200,50 @@ class _Handler(BaseHTTPRequestHandler):
             payload = {}
         self._run(route["workflow"], payload)
 
+    def _token_accepted(self, header):
+        """True when the bearer token passes; otherwise sends 401 and False.
+
+        The response says only that the token was rejected. Which check failed
+        — signature, audience, expiry — is exactly the feedback someone tuning
+        a forgery wants, so it goes to the server's stderr against a
+        correlation id instead, where the operator can still find it.
+        """
+        scheme, _, token = header.partition(" ")
+        correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        detail = None
+        if scheme.lower() != "bearer" or not token.strip():
+            detail = "authorization scheme is not Bearer"
+        else:
+            try:
+                self.server.token_provider.verify(
+                    token.strip(), audience_for_path(self.path))
+            except (TokenError, ValueError) as exc:
+                detail = str(exc)
+        if detail is None:
+            return True
+        print("serve: token rejected (correlation_id=%s): %s"
+              % (correlation_id, detail), file=sys.stderr)
+        self._send(401, problem(401, "auth-invalid",
+                                "the bearer token was not accepted",
+                                correlation_id=correlation_id))
+        return False
+
     def _run(self, workflow_id, payload):
         doc = self.server.document
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        factory = self.server.repository_factory
+        repository = factory() if factory is not None else None
+        try:
+            self._respond(doc, workflow_id, payload, correlation_id, repository)
+        finally:
+            # `finally`: a request that fails must still release its store, or
+            # the leak is one connection per failed request.
+            if repository is not None:
+                repository.close()
+
+    def _respond(self, doc, workflow_id, payload, correlation_id, repository):
         interp = Interpreter(doc, repo_rows=default_rows(doc, workflow_id, payload),
-                             correlation_id=correlation_id)
+                             correlation_id=correlation_id, repository=repository)
         try:
             result = interp.run_workflow(workflow_id, payload)
         except Exception:
@@ -218,10 +270,18 @@ class _Handler(BaseHTTPRequestHandler):
                                    skipped=result["skipped"]))     # M6/M7/M8
 
 
-def serve(document, host="127.0.0.1", port=8080):
+def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
+          token_provider=None):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
     `serve_forever()` to run, `shutdown()` + `server_close()` to stop.
+
+    `repository_factory` is called once per request for a fresh capability
+    store; omitted, each request gets the in-memory one. `token_provider`
+    turns the M3 presence check into real verification (M3a); omitted, the
+    header is only checked for presence, which is what shipped with #26.
     """
-    return _Server((host, port), document, build_routes(document))
+    return _Server((host, port), document, build_routes(document),
+                   repository_factory=repository_factory,
+                   token_provider=token_provider)

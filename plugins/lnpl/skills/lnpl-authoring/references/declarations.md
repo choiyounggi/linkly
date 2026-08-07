@@ -21,9 +21,9 @@
 |------|------|--------------------------|
 | `policy retry` | **enforced** | run_workflow re-runs a failed step while its effects are idempotent |
 | `policy timeout` | **enforced** | a workflow deadline is computed, and exceeding it fails the run |
-| `policy rollback` | **unenforced** | Phase 1 has no Transaction boundary, so there is nothing to compensate |
+| `policy rollback` | **unenforced** | Phase 1 has no Transaction boundary, so there is nothing to compensate; the #25 drivers commit per operation |
 | `policy parallel` | **unenforced** | parsed, but the execution plan never reads it |
-| `security jwt` | **unenforced** | no token is issued or verified; the mechanism reaches the OpenAPI document only |
+| `security jwt` | **unenforced** | the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md) |
 | `security role` | **unenforced** | the role is never checked against anything |
 | `security encrypt` | **unenforced** | the field is not encrypted (Password masking is a separate, type-driven behaviour) |
 | `performance response` | **measured** | measured and reported per run, but an over-budget run is not blocked |

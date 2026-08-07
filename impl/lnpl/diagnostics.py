@@ -57,12 +57,26 @@ ENFORCEMENT = {
         (ENFORCED, "run_workflow re-runs a failed step while its effects are idempotent"),
     ("policy", "timeout"):
         (ENFORCED, "a workflow deadline is computed, and exceeding it fails the run"),
+    # Still nothing to compensate after #25. A real store now exists, but the
+    # driver commits per operation and no workflow-wide transaction boundary
+    # was introduced — adding the boundary without compensation logic would
+    # make this row read `enforced` while a failed run left its earlier writes
+    # in place.
     ("policy", "rollback"):
-        (UNENFORCED, "Phase 1 has no Transaction boundary, so there is nothing to compensate"),
+        (UNENFORCED, "Phase 1 has no Transaction boundary, so there is nothing "
+                     "to compensate; the #25 drivers commit per operation"),
     ("policy", "parallel"):
         (UNENFORCED, "parsed, but the execution plan never reads it"),
+    # Issue #25 gave `jwt` a real issue/verify path, and the status still reads
+    # UNENFORCED because this diagnostic is emitted at COMPILE time, which does
+    # not know which backend the program will run against. Naming the one path
+    # that does enforce it is the honest form: a single global status would
+    # make one of the two paths lie (the default run, and `serve` with a token
+    # provider, do genuinely different things with the same declaration).
     ("security", "jwt"):
-        (UNENFORCED, "no token is issued or verified; the mechanism reaches the OpenAPI document only"),
+        (UNENFORCED, "the default path issues and verifies nothing; "
+                     "`lnpl serve --jwt-secret-env NAME` verifies the bearer "
+                     "token per request (docs/serving.md M3a, docs/backends.md)"),
     ("security", "role"):
         (UNENFORCED, "the role is never checked against anything"),
     ("security", "encrypt"):

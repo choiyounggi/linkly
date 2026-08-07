@@ -30,6 +30,7 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M1 | 경로가 라우팅 테이블에 없음 | 404 | `not-found` |
 | M2 | 경로는 있으나 메서드 ≠ POST | 405 + `Allow: POST` | `method-not-allowed` |
 | M3 | 서비스가 `security jwt` 선언 ∧ `Authorization` 헤더 부재 | 401 | `auth-missing` |
+| M3a | 토큰 프로바이더 설정됨(`--jwt-secret-env`) ∧ 토큰 검증 실패 | 401 | `auth-invalid` |
 | M4 | `Content-Length` > 1 MiB | 413 | `body-too-large` |
 | M5 | body가 JSON 파싱 실패, 또는 object가 아님 | 400 | `body-unreadable` |
 | M6 | 실행 실패 ∧ `failure_reason`이 `deadline`으로 시작 | 504 | `deadline-exceeded` |
@@ -52,13 +53,21 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 `lnpl run --json`의 `result`와 같은 dict다 — `bindings`는 마스킹을 거친 값이며
 (#43 계약) Password 계열 원문은 어떤 응답에도 실리지 않는다.
 
+어댑터 계약·백엔드 선택·jwt 검증 체크리스트의 정본은 `docs/backends.md`다.
+
 ## 계약 한계 (이 서버가 아닌 것)
 
-- **Fake capability 백엔드 위 모드 A 서빙이다.** 실제 postgres/redis/jwt 백엔드는
-  #25가 열려 있는 동안 없다. 저장은 요청마다 시딩되는 인메모리 FakeRepository다 —
-  요청 간에 상태가 남지 않는다.
-- **401은 `Authorization` 헤더의 존재 검사만이다** (presence-checked, not
-  verified). 토큰 서명·만료 검증은 #25 소관; OpenAPI의 bearerAuth 서술은 그대로다.
+- **capability 백엔드는 기본이 fake다.** 플래그 없이 띄우면 저장은 요청마다
+  시딩되는 인메모리 `FakeRepository`이고 요청 간에 상태가 남지 않는다 — #26이
+  출하한 그대로다. `--backend sqlite:<path>`를 주면 요청마다 자기 연결을 열고
+  닫는 실제 영속 저장소가 되며, **요청 간에 상태가 남는다**. 계약은
+  `docs/backends.md`.
+- **401의 뜻은 프로바이더 설정 여부에 달렸다.** `--jwt-secret-env` 없이 띄우면
+  `Authorization` 헤더의 **존재 검사만**이다(presence-checked, not verified) —
+  아무 값이나 통과한다. 주고 띄우면 M3a가 살아나 서명·`exp`/`nbf`(60초 leeway)·
+  `iss`/`aud`/`typ`를 전부 검증하고, 실패는 401 `auth-invalid`다. 어느 검사가
+  깨졌는지는 응답에 싣지 않는다 — 위조를 다듬는 쪽이 원하는 피드백이라서,
+  correlation id와 함께 서버 stderr로 나간다. 토큰은 `lnpl token`이 발급한다.
 - 스케줄 트리거(#49, `x-lnpl-schedules`)는 서빙되지 않는다. 모드 B(네이티브)
   서빙도 없다.
 - 요청 `Content-Type` 헤더는 검사하지 않는다 — body 파싱 성공 여부가 판정한다.
@@ -67,7 +76,10 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 
 - 동시성: 스레드-퍼-요청(`ThreadingHTTPServer`). 요청마다 인터프리터와 저장소
   rows를 새로 만들므로 락 없이 격리된다. 공유 상태는 컴파일된 문서와 라우팅
-  테이블뿐이며 읽기 전용이다.
+  테이블, 그리고 토큰 프로바이더뿐이며 전부 읽기 전용이다.
+- 실제 백엔드를 쓸 때: 요청마다 **자기 연결**을 열고(`sqlite3` 연결은 만든 스레드에
+  묶인다) `finally`에서 닫는다 — 응답을 쓴 **다음에** 닫으므로, 클라이언트가 응답을
+  받은 시점에 서버가 아직 정리 중일 수 있다.
 - 종료: SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. 워커 스레드는 데몬이라 진행 중 요청을
   기다리지 않는다.
 - 요청별 진단(가드 스킵 등)은 CLI와 같은 채널인 stderr로 나간다.
