@@ -1142,5 +1142,95 @@ class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
         self.assertEqual(mod.get("wf.checkout.guard.1")["count"], 2)
 
 
+ASSIGN_SOURCE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+        name Text
+entity Order
+    field
+        id UUID
+        total Integer
+service ShopService
+    policy
+        retry 0
+workflow Checkout
+    find product
+    create order
+    %s
+"""
+
+
+class TestAssignmentDiagnosticNamesTheStepItIsAbout(unittest.TestCase):
+    """이슈 #56 [2] / r3 N-2: 진단이 `set` 스텝을 "guard condition"이라 부르던 것.
+
+    가드 검사와 할당 검사가 `_Scope.check_reference` 하나를 공유하는데, 메시지가
+    주어를 "guard condition"으로 못박고 있었다. 그래서 `set`이 거부될 때 저자는
+    자기가 쓰지도 않은 가드를 찾아다녔다. 게다가 그 메시지가 붙여 주던 수리 안내
+    (\"대신 `input.<필드>`를 써라\")는 **할당 대상에 대해서는 틀린 안내**다 —
+    `input.`을 대상으로 쓰면 `_derive_assignment`가 따로 거부한다.
+
+    여기서 고정하는 것은 문면뿐이다. 예외 종류도, 거부 조건도, 무엇이 통과하는지도
+    그대로여야 한다.
+    """
+
+    def _lower(self, step):
+        return lower(parse(ASSIGN_SOURCE % step), "shop")
+
+    def _refusal(self, step):
+        with self.assertRaises(LowerError) as caught:
+            self._lower(step)
+        return str(caught.exception)
+
+    # -- 정상: 오칭 교정 ---------------------------------------------------
+    def test_an_assignment_is_not_called_a_guard_condition(self):
+        message = self._refusal("set order.total to 1")
+        self.assertNotIn("guard condition", message)
+        self.assertIn("assignment", message)
+
+    def test_the_refusal_points_at_the_read_verbs_not_the_input_namespace(self):
+        """대상은 `input.`으로 고칠 수 없다 — 안내가 그리로 보내면 안 된다."""
+        message = self._refusal("set order.total to 1")
+        self.assertRegex(message, r"`read`|`load`|`find`")
+        self.assertNotIn("input.total", message)
+
+    def test_the_refusal_still_names_the_entity_and_the_step(self):
+        message = self._refusal("set order.total to 1")
+        self.assertIn("entity.order", message)
+        self.assertIn("set order.total to 1", message)
+
+    # -- 에러 계약이 그대로인가 -------------------------------------------
+    def test_the_rejection_is_still_a_lower_error_on_the_same_condition(self):
+        with self.assertRaises(LowerError):
+            self._lower("set order.total to 1")
+
+    def test_an_assignment_to_a_read_binding_still_lowers(self):
+        """정상 대조군: 거부가 '늘 거부'가 아님을 보인다."""
+        mod = self._lower("set product.stock to product.stock - 1")
+        self.assertEqual(mod.get("wf.checkout.step.3.assign")["target"],
+                         "product.stock")
+
+    # -- 회귀: 진짜 가드는 여전히 가드다 -----------------------------------
+    def test_a_guard_is_still_called_a_guard_condition(self):
+        with self.assertRaises(LowerError) as caught:
+            lower(parse(SCOPED_SOURCE % "order.total > 0"), "shop")
+        self.assertIn("guard condition", str(caught.exception))
+
+    # -- 경계: 대상과 피연산자는 다른 안내를 받는다 ------------------------
+    def test_an_operand_may_still_be_pointed_at_the_input_namespace(self):
+        """피연산자에서는 `input.`이 옳은 수리다 — 대상 규칙이 번지면 안 된다."""
+        message = self._refusal("set product.stock to order.total")
+        self.assertIn("assignment", message)
+        self.assertNotIn("guard condition", message)
+        self.assertIn("input.total", message)
+
+    def test_an_operand_naming_an_undeclared_input_field_is_still_refused(self):
+        message = self._refusal("set product.stock to input.nosuch")
+        self.assertIn("input field", message)
+        self.assertNotIn("guard condition", message)
+
+
 if __name__ == "__main__":
     unittest.main()

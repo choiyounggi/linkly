@@ -26,6 +26,7 @@ from .lexer import (COMPARATORS, SCHEDULE_RECURRENCES, SCHEDULE_ZONES,
                     is_duration)
 from .refinements import (BASE_CATEGORY, FACET_NAMES, PRESETS, facets_for_base,
                           preset)
+from .repo_policy import READ_OPS
 
 KIND_PREFIX = {
     "Entity": "entity",
@@ -89,6 +90,21 @@ VERB_LEXICON = {
     "publish": ("EventEmit", {}),
     "authorize": ("Authorization", {}),
 }
+
+# What a refusal calls the construct it is about. The guard check and the
+# assignment check share `_Scope.check_reference`, and the message used to
+# hard-code "guard condition" for both — so a rejected `set` sent the author
+# looking for a guard they never wrote (r3 N-2). The subject travels with the
+# call instead.
+GUARD_SUBJECT = "guard condition"
+ASSIGN_SUBJECT = "assignment"
+
+# The verbs that put a row in the execution scope, computed from the same pair
+# the lowerer itself uses to build `read_entities`. A refusal that names the
+# repair has to name the *current* repair.
+READ_VERBS = tuple(verb for verb, (kind, attrs) in VERB_LEXICON.items()
+                   if kind == "RepositoryCall"
+                   and attrs.get("operation") in READ_OPS)
 
 # Refinement surface forms (RFC-0002 §Full grammar).
 PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")      # PascalName
@@ -821,13 +837,14 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                     # like any other, so the same judgements apply — including
                     # "is it an Integer".
                     text = "set %s to %s" % (child["target"], child["expression"])
-                    scope.check_reference(child["target"], text)
+                    scope.check_reference(child["target"], text,
+                                          ASSIGN_SUBJECT, is_target=True)
                     for name in references(parse_value(child["expression"])):
-                        scope.check_reference(name, text)
+                        scope.check_reference(name, text, ASSIGN_SUBJECT)
                     # The expression is a `Value` like any other, so `instant +
                     # instant` is as meaningless here as it is in a guard.
                     _value_dimension(parse_value(child["expression"]), scope,
-                                     text)
+                                     text, ASSIGN_SUBJECT)
                     assigned.add(child["target"])
             else:
                 visit(node.get("children") or [])
@@ -872,7 +889,7 @@ def _check_guard(node, scope, assigned, workflow_name, parse_condition,
     _check_dimensions(cond, scope, text)
 
 
-def _value_dimension(value, scope, text):
+def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
     """One `Value`'s dimension: `"instant"`, `"scalar"`, or None if undecidable.
 
     RFC-0016 §Reference-level Specification. Two dimensions, not three: a
@@ -889,10 +906,10 @@ def _value_dimension(value, scope, text):
     if isinstance(value, Lit):
         return "scalar"
     if isinstance(value, Ref):
-        return scope.check_reference(value.name, text)
+        return scope.check_reference(value.name, text, subject)
     if isinstance(value, Arith):
-        left = _value_dimension(value.left, scope, text)
-        right = _value_dimension(value.right, scope, text)
+        left = _value_dimension(value.left, scope, text, subject)
+        right = _value_dimension(value.right, scope, text, subject)
         if left is None or right is None:
             return None
         if left == "instant" and right == "instant":
@@ -928,7 +945,7 @@ def _describe(value):
     return value_to_string(value)
 
 
-def _check_dimensions(cond, scope, text):
+def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
     """Refuse a comparison whose two sides are not the same kind of quantity.
 
     This is what turns t2 F-5 ③ (`payment.createdAt <= 43200m`) from "DateTime
@@ -937,8 +954,8 @@ def _check_dimensions(cond, scope, text):
     them — only the type system does, and it has to say why.
     """
     for term in _comparisons(cond):
-        left = _value_dimension(term.left, scope, text)
-        right = _value_dimension(term.right, scope, text)
+        left = _value_dimension(term.left, scope, text, subject)
+        right = _value_dimension(term.right, scope, text, subject)
         if left is None or right is None:
             continue                      # undecidable from the document alone
         if left != right:
@@ -977,7 +994,8 @@ class _Scope:
         self.declared_fields = declared_fields
         self.base_of = base_of
 
-    def check_reference(self, name, text):
+    def check_reference(self, name, text, subject=GUARD_SUBJECT,
+                        is_target=False):
         """One `Reference`, judged against the document.
 
         Returns the operand's DIMENSION (`"instant"` or `"scalar"`), or None
@@ -1002,21 +1020,44 @@ class _Scope:
         entity = self.by_binding.get(binding)
         if entity is None:
             raise LowerError(
-                "workflow %s: guard condition %r names %r, which is not a "
-                "declared entity" % (self.workflow_name, text, binding))
+                "workflow %s: %s %r names %r, which is not a "
+                "declared entity" % (self.workflow_name, subject, text, binding))
         fields = {f["name"]: f for f in entity["fields"]}
         if field not in fields:
             raise LowerError(
-                "workflow %s: guard condition %r names field %r, which entity %s "
+                "workflow %s: %s %r names field %r, which entity %s "
                 "does not declare"
-                % (self.workflow_name, text, field, entity["name"]))
+                % (self.workflow_name, subject, text, field, entity["name"]))
         if entity["id"] not in self.read_entities:
+            # Same judgement, three wordings — because the repair differs by
+            # where the reference sits. A guard keeps its original sentence
+            # verbatim: RFC-0012 §G12.5 quotes it, and t1/t3 measured that its
+            # "false forever" clause is what makes the cause legible. An
+            # assignment TARGET must not be sent to `input.<field>` at all —
+            # `_derive_assignment` refuses that on the left of `to`, so the
+            # guard's repair line would walk the author into a second,
+            # unrelated refusal (r3 N-2).
+            if is_target:
+                raise LowerError(
+                    "workflow %s: %s %r assigns to %s, but this workflow never "
+                    "reads it — no binding can ever exist, so there is nothing "
+                    "to assign to (read it first with one of %s; `set` writes "
+                    "only to a row this workflow read)"
+                    % (self.workflow_name, subject, text, entity["id"],
+                       " / ".join("`%s`" % v for v in READ_VERBS)))
+            if subject != GUARD_SUBJECT:
+                raise LowerError(
+                    "workflow %s: %s %r reads %s, but this workflow never "
+                    "reads it — no binding can ever exist, so the reference "
+                    "resolves to nothing (to read the run's input instead, "
+                    "write `input.%s`)"
+                    % (self.workflow_name, subject, text, entity["id"], field))
             raise LowerError(
-                "workflow %s: guard condition %r reads %s, but this workflow "
+                "workflow %s: %s %r reads %s, but this workflow "
                 "never reads it — no binding can ever exist, so the guard would "
                 "be false forever (to check the run's input instead, write "
                 "`input.%s`)"
-                % (self.workflow_name, text, entity["id"], field))
+                % (self.workflow_name, subject, text, entity["id"], field))
         return self._dimension_of(fields[field], name, text)
 
     def _dimension_of(self, field_node, name, text):

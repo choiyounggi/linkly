@@ -22,6 +22,7 @@ LNPL은 **의도(what)를 선언**하는 언어다. 구현(how)은 컴파일러�
 | 선언 이름이 어떤 노드 id가 되는지, 스텝이 엔티티를 어떻게 가리키는지 | [references/naming.md](references/naming.md) |
 | `spec` 블록으로 검증을 붙인다 | [references/spec.md](references/spec.md) |
 | CLI 서브커맨드·플래그·종료 코드가 궁금하다 | [cli-surface.md](cli-surface.md) |
+| 규칙이 **왜** 그런지, 또는 어휘에 없는 기능(`sum`/`count` 같은)의 **로드맵**이 궁금하다 | [references/rfcs.md](references/rfcs.md) |
 
 ## 먼저 알아야 할 세 가지 함정
 

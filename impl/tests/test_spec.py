@@ -439,6 +439,107 @@ class TestStoredGiven(unittest.TestCase):
             run_shop(["stored product"], ["completed"])
 
 
+CREATE_ONLY_SRC = """
+capability postgres
+entity Order
+    field
+        id UUID
+        total Integer
+service ShopService
+    policy
+        retry 0
+workflow Checkout
+%s    spec
+        given
+%s
+        when
+            checkout
+        expect
+%s
+"""
+
+
+def run_create_only(steps, given, expect):
+    src = CREATE_ONLY_SRC % (
+        "".join("    %s\n" % s for s in steps),
+        "\n".join("            " + g for g in given),
+        "\n".join("            " + e for e in expect))
+    decls = parse(src)
+    return run_manifest(extract(decls, "shop"), lower(decls, "shop").to_document())
+
+
+class TestCreateConflictIsNotReachableThroughStored(unittest.TestCase):
+    """이슈 #56 [4] / r2 N-3: create 충돌 의미가 spec에서 관측 불가한 이유.
+
+    저장소는 충돌을 구현하고 있다 — `interp.FakeRepository.execute`는 같은
+    (entity, key)에 두 번째 `create`가 오면 거부한다. 관측되지 않은 것은 시드
+    규칙 때문이다: 기본 시드는 워크플로가 **읽는** 엔티티만 채우고
+    (`repo_policy.seeded_entities`), `given stored`는 그렇게 이미 생긴 행의
+    필드를 덮어쓸 뿐이라(`spec.py`의 `rows.get(entity_id, {})`) create만 하는
+    엔티티에는 아무 행도 만들지 못한다.
+
+    이 클래스는 그 계약을 **관측된 대로** 고정한다. 문서(references/spec.md)가
+    같은 말을 하는지는 test_plugin_references.py가 따로 본다.
+    """
+
+    def test_a_single_create_completes_with_one_row(self):
+        """정상: create만 하는 엔티티는 빈 채로 시작하므로 첫 create가 삽입된다."""
+        passed, failed, lines = run_create_only(
+            ["create order"], ["valid order"], ["completed", "rows Order 1"])
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)
+
+    def test_stored_on_a_create_only_entity_changes_nothing(self):
+        """r2 N-3 그 자체: 사전 행을 세우려는 시도가 조용히 아무 일도 안 한다.
+
+        같은 케이스가 `stored` 유무와 **무관하게** 통과한다 — 즉 `stored`는
+        create만 하는 엔티티에 대해 no-op이고, 그 사실을 알리는 진단도 없다.
+        """
+        passed, failed, lines = run_create_only(
+            ["create order"], ["valid order", "stored Order total 5"],
+            ["completed", "rows Order 1"])
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)
+
+    def test_the_conflict_is_reachable_when_one_workflow_creates_twice(self):
+        """에러 케이스: 도달 가능한 유일한 경로, 그리고 그 실패의 형태."""
+        passed, failed, lines = run_create_only(
+            ["create order", "create order"], ["valid order"],
+            ["failed", "error reason conflicts"])
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)
+
+    def test_reading_an_entity_then_creating_it_conflicts_through_the_seed(self):
+        """두 번째 도달 경로 — 이것을 놓쳐서 문서가 한때 배타를 주장했다.
+
+        `find order`는 Order를 읽으므로 시드 규칙이 payload 복사본을 한 행
+        넣는다. 뒤이은 `create order`는 같은 키를 겨냥하므로 충돌한다. 즉
+        "충돌하려면 두 번 create해야 한다"는 거짓이다.
+        """
+        passed, failed, lines = run_create_only(
+            ["find order", "create order"], ["valid order"],
+            ["failed", "error reason conflicts"])
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)
+
+    def test_that_same_double_create_does_not_pass_as_completed(self):
+        """경계: 위 케이스가 '무엇이든 통과'가 아님을 반대 방향으로 고정한다."""
+        _passed, failed, lines = run_create_only(
+            ["create order", "create order"], ["valid order"], ["completed"])
+        self.assertEqual(failed, 1, lines)
+
+    def test_the_seed_rule_is_what_leaves_the_table_empty(self):
+        """원인 고정: 시드가 비는 것은 우연이 아니라 역할 기반 규칙이다."""
+        from lnpl import repo_policy
+        decls = parse(CREATE_ONLY_SRC % ("    create order\n",
+                                         "            valid order",
+                                         "            completed"))
+        doc = lower(decls, "shop").to_document()
+        self.assertEqual(repo_policy.seeded_entities(doc, "wf.checkout"), set())
+        self.assertEqual(
+            repo_policy.default_rows(doc, "wf.checkout", {"id": "x"}), {})
+
+
 class TestExistingVocabularyIsUnchanged(unittest.TestCase):
     """Control: issue #39 EXTENDS the vocabulary; it must not move any of it."""
 
