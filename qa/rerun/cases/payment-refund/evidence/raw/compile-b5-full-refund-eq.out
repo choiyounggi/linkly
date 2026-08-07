@@ -1,0 +1,95 @@
+{
+  "lir_version": "0.1",
+  "module": "probe-b5-full-refund-eq",
+  "nodes": [
+    {
+      "kind": "Entity",
+      "id": "entity.payment",
+      "name": "Payment",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "amountCents",
+          "type": "Integer"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.refund",
+      "name": "Refund",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "amountCents",
+          "type": "Integer"
+        },
+        {
+          "name": "requestedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.refund.full",
+      "name": "RefundFull",
+      "children": [
+        "wf.refund.full.step.1",
+        "wf.refund.full.guard.1"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.refund.full.step.1",
+      "name": "read payment",
+      "children": [
+        "wf.refund.full.step.1.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.refund.full.step.1.repo",
+      "entity": "entity.payment",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.refund.full.step.2",
+      "name": "create refund",
+      "children": [
+        "wf.refund.full.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.refund.full.step.2.repo",
+      "entity": "entity.refund",
+      "operation": "create"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.refund.full.guard.1",
+      "children": [
+        "wf.refund.full.step.2"
+      ],
+      "mode": "when",
+      "condition": "input.amountCents == payment.amountCents"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    }
+  ]
+}

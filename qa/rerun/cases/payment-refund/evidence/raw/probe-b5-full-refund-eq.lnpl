@@ -1,0 +1,19 @@
+# b5 — D11-⑤ 전액 환불 == 필드 간 비교 (원 F-3 재현: 등가·필드 간 비교 표현 가능성)
+capability postgres
+
+entity Payment
+    field
+        id UUID
+        amountCents Integer
+        createdAt DateTime
+
+entity Refund
+    field
+        id UUID
+        amountCents Integer
+        requestedAt DateTime
+
+workflow RefundFull
+    read payment
+    when input.amountCents == payment.amountCents
+    create refund

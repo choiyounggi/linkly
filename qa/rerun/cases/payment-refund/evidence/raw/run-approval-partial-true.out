@@ -1,0 +1,79 @@
+{
+  "result": {
+    "status": "completed",
+    "steps": [
+      {
+        "step": "create payment",
+        "attempts": 1,
+        "duration_ms": 6,
+        "effects": [
+          "RepositoryCall"
+        ]
+      }
+    ],
+    "failed_step": null,
+    "skipped": [],
+    "failure_reason": null,
+    "bindings": {},
+    "duration_ms": 6,
+    "correlation_id": "cid-0001"
+  },
+  "trace": {
+    "correlation_id": "cid-0001",
+    "span": {
+      "name": "Approval",
+      "kind": "Workflow",
+      "duration_ms": 6,
+      "attrs": {},
+      "children": [
+        {
+          "name": "create payment",
+          "kind": "WorkflowStep",
+          "duration_ms": 6,
+          "attrs": {
+            "attempts": 1
+          },
+          "children": [
+            {
+              "name": "repo",
+              "kind": "RepositoryCall",
+              "duration_ms": 1,
+              "attrs": {
+                "found": true
+              },
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    "metrics": [
+      {
+        "name": "step.duration_ms",
+        "labels": {
+          "workflow": "Approval",
+          "step": "create payment"
+        },
+        "value": 6
+      },
+      {
+        "name": "workflow.duration_ms",
+        "labels": {
+          "workflow": "Approval"
+        },
+        "value": 6
+      }
+    ],
+    "logs": [
+      {
+        "level": "INFO",
+        "message": "workflow start",
+        "correlation_id": "cid-0001",
+        "workflow": "Approval",
+        "payload": {
+          "amountCents": 5
+        }
+      }
+    ]
+  }
+}

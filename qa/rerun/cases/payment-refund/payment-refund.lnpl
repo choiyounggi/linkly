@@ -1,0 +1,99 @@
+# payment-refund.lnpl — QA 재측정 r2: 결제 승인·환불 (마스킹·정책·경계값)
+#
+# 원 실측(qa/cases/payment-refund/, 2026-08-05) 대비 **원형 표현**:
+#   입력 금액 검증  — `input.` 가드 (RFC-0015, 원 F-1의 find/update 재해석 우회 제거)
+#   범위 0<금액≤한도 — 한 가드 안 `and` 결합 (RFC-0015, 원 F-2·F-3의 축소 우회 제거)
+#   30일 환불 창    — DateTime 산술 `input.requestedAt - payment.createdAt <= 30d`
+#                     (RFC-0016, 원 F-5의 사전 계산 ageDays 우회 제거)
+#   환불 상한       — 필드 간 비교 `input.amountCents <= payment.amountCents`
+#                     (전액 == 구분은 raw/probe-b5 변형에서 별도 실측)
+#
+# 의도적 프로브 선언(집행되지 않음을 알고 쓴다 — declarations.md 집행 매트릭스):
+#   security jwt / security encrypt — unenforced (마스킹은 Password 타입 주도)
+# 기계(집행됨): policy retry 2(spec attempts=3 도출), policy timeout 3s,
+#   cardNumber Password(타입 주도 마스킹), when 가드(금액·기간 경계)
+# 한도: 0 < amountCents <= 1000000 (= 10000 USD). 30일 창은 30일째 포함(<=).
+#
+# 잔존 제한(재측정 발견): 가드 피연산자는 Integer/DateTime뿐 — Money 필드는 컴파일
+# 거부된다(raw/compile-b1-money-guard.err). 금액은 Integer 센트 단일 필드로 모델링
+# (원 실측의 Money+amountCents 이중 필드 우회와 달리 Money 필드 자체를 두지 않는다).
+
+capability postgres
+capability jwt
+
+entity Payment
+    field
+        id UUID
+        cardNumber Password
+        amountCents Integer
+        createdAt DateTime
+
+entity Refund
+    field
+        id UUID
+        paymentId UUID
+        amountCents Integer
+        requestedAt DateTime
+
+event RefundIssued on Refund create
+
+service PaymentService
+    policy
+        retry 2
+        timeout 3s
+    security
+        jwt
+        encrypt cardNumber
+
+workflow Approval
+    when input.amountCents > 0 and input.amountCents <= 1000000
+    create payment
+    spec
+        given
+            valid payment
+        when
+            approval
+        expect
+            completed
+            steps 1
+            rows Payment 1
+    spec
+        given
+            amountCents 1000001
+        when
+            approval
+        expect
+            completed
+            steps 0
+    spec
+        given
+            amountCents 0
+        when
+            approval
+        expect
+            completed
+            steps 0
+
+workflow RefundRequest
+    read payment
+    when input.requestedAt - payment.createdAt <= 30d and input.amountCents <= payment.amountCents
+    create refund
+    spec
+        given
+            stored payment id 3f2504e0-4f89-41d3-9a0c-0305e82c3301
+            stored payment amountCents 5
+            stored payment createdAt 2026-07-31T09:00:00Z
+            amountCents 3
+        when
+            refund request
+        expect
+            completed
+            steps 2
+    spec
+        given
+            empty repository
+        when
+            refund request
+        expect
+            failed
+            attempts 3

@@ -1,0 +1,1 @@
+compile error: workflow Approval: 'input.amount > 0 and input.amount <= 10000' uses input.amount, whose declared type Money is neither Integer nor DateTime — RFC-0016 computes over whole numbers and instants only (Money and the composite types have no evaluator in either mode)

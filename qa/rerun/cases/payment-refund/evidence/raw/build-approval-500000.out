@@ -1,0 +1,5 @@
+native binary: .claude/tmp/lnpl-build/module
+step 1 create payment
+effect create payment RepositoryCall
+status completed
+exit=0
