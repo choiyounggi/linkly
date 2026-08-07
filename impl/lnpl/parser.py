@@ -10,6 +10,22 @@ from .lexer import (KEYWORDS_CLAUSE, KEYWORDS_TOP, SCHEDULE_AT,
 from .condition import parse_condition, ConditionError
 
 SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database")
+ENTITY_CLAUSES = ("field",)
+
+# The sections of a `spec` block, and the full set a `workflow` accepts.
+# RFC-0002 §Full grammar: WorkflowDecl ::= 'workflow' PascalName EOL
+# WorkflowItem* SpecClause? — steps, then an optional spec block, nothing else.
+SPEC_SECTIONS = ("given", "when", "expect")
+WORKFLOW_CLAUSES = ("spec",) + SPEC_SECTIONS
+
+# Which declaration each misplaced clause belongs to, so the error can say where
+# to move it instead of only what is wrong (issue #53, N-3). Every clause keyword
+# outside `WORKFLOW_CLAUSES` has a row: without one, a workflow body that names a
+# clause keyword parses, `cur_clause` latches, and every later line is absorbed
+# into the clause list that `lower` only ever reads off a `service` — the clause
+# and the rest of the body both vanish with rc=0.
+CLAUSE_OWNER = dict.fromkeys(SERVICE_CLAUSES, "service")
+CLAUSE_OWNER.update(dict.fromkeys(ENTITY_CLAUSES, "entity"))
 
 
 class ParseError(Exception):
@@ -100,12 +116,41 @@ def _append_workflow_item(decl, line):
                              "owns exactly one step or block; write the two "
                              "conditions as one guard joined by `and` (RFC-0015)"
                              % (line.lineno, head, pending["lineno"]))
+        # A guard opens a fresh layout scope, so whatever the previous guard's
+        # indentation implied stops applying here — but not before this line is
+        # itself judged against it (a guard can be the misindented line).
+        _check_guard_layout(decl, line)
         decl.extra["_pending_guard"] = {"mode": head,
                                         "arg": " ".join(line.tokens[1:]),
-                                        "lineno": line.lineno}
+                                        "lineno": line.lineno,
+                                        "indent": line.indent}
         return
 
     _attach(decl, {"item": "step", "line": line}, line)
+
+
+def _check_guard_layout(decl, line):
+    """Reject a line indented into a guard's block that the guard does not own.
+
+    Blocks stay keyword-delimited (RFC-0002 §Block structure), so this column
+    never *builds* structure — it can only contradict the structure already
+    built. That contradiction is the sole signal separating issue #53's N-1
+    (`repeat` over two indented steps) from an ordinary following step: the two
+    are token-identical, and the parse that silently split them reported nothing.
+
+    Tracking stops at the first line judged, so only the item directly following
+    the guarded one is in scope.
+    """
+    visual = decl.extra.pop("_guard_visual", None)
+    if visual is None or line.indent <= visual["column"]:
+        return
+    raise ParseError(
+        "line %d: this line is indented as if it were inside the `%s` guard on "
+        "line %d, but a guard owns exactly one step or block — so it runs "
+        "outside the guard. Wrap the steps in a `pipeline` block and let the "
+        "guard own that, or dedent this line to the guard's own column "
+        "(RFC-0002 §Block structure)"
+        % (line.lineno, visual["mode"], visual["lineno"]))
 
 
 def _attach(decl, item, line):
@@ -115,8 +160,17 @@ def _attach(decl, item, line):
         open_block["steps"].append(line)
         return
     guard = decl.extra.pop("_pending_guard", None)
-    if guard is not None:
+    if guard is None:
+        _check_guard_layout(decl, line)
+    else:
         item = {"item": "guard", "guard": guard, "guarded": item}
+        # Only a guarded item written *deeper* than its guard makes a following
+        # deeper line misleading. At the guard's own column — the style
+        # `examples/guarded.lnpl` uses — layout and structure already agree.
+        if line.indent > guard["indent"]:
+            decl.extra["_guard_visual"] = {"column": guard["indent"],
+                                           "lineno": guard["lineno"],
+                                           "mode": guard["mode"]}
     decl.items.append(item)
 
 
@@ -203,13 +257,32 @@ def parse(source):
             if cur.kind in ("event", "capability", "refine"):
                 raise ParseError(
                     "line %d: %s takes no clauses" % (line.lineno, cur.kind))
+            # A workflow had no allowlist, so a clause keyword meant for another
+            # declaration latched `cur_clause` and swallowed the body silently
+            # (issue #53, N-3). entity and service are checked just above; this
+            # closes the one kind that was not.
+            if cur.kind == "workflow" and head not in WORKFLOW_CLAUSES:
+                owner = CLAUSE_OWNER[head]
+                raise ParseError(
+                    "line %d: `%s` is a `%s` clause and cannot appear in a "
+                    "`workflow` body; move it to the owning `%s` declaration — "
+                    "a workflow takes steps and an optional `spec` block "
+                    "(RFC-0002 §Full grammar: WorkflowItem* SpecClause?)"
+                    % (line.lineno, head, owner, owner))
+            if (cur.kind == "workflow" and head in SPEC_SECTIONS
+                    and not cur.extra.get("specs")):
+                raise ParseError(
+                    "line %d: `%s` belongs inside a `spec` block; open one with "
+                    "`spec` before it (RFC-0002 §Full grammar: SpecClause)"
+                    % (line.lineno, head))
             # Each `spec` keyword opens a NEW block (issue #46): its
             # given/when/expect sections live on the block, not in the shared
             # clause lists — sharing them is what silently merged blocks.
             if cur.kind == "workflow" and head == "spec":
                 cur.extra.setdefault("specs", []).append(
                     {"given": [], "when": [], "expect": [],
-                     "lineno": line.lineno, "_opened": set()})
+                     "lineno": line.lineno, "_opened": set(),
+                     "_indent": line.indent, "_section_indent": None})
             elif (cur.kind == "workflow" and head in ("given", "when", "expect")
                     and cur.extra.get("specs")):
                 block = cur.extra["specs"][-1]
@@ -219,6 +292,7 @@ def parse(source):
                         "open a new `spec` block per scenario"
                         % (line.lineno, head))
                 block["_opened"].add(head)
+                block["_section_indent"] = line.indent
             cur_clause = head
             cur.clauses.setdefault(head, [])
             continue
@@ -238,13 +312,30 @@ def parse(source):
             raise ParseError(
                 "line %d: content line %r outside any clause" % (line.lineno, line.tokens))
 
-        if (cur.kind == "workflow" and cur_clause in ("given", "when", "expect")
+        if (cur.kind == "workflow" and cur_clause in SPEC_SECTIONS
                 and cur.extra.get("specs")):
-            cur.extra["specs"][-1][cur_clause].append(line)
+            block = cur.extra["specs"][-1]
+            # A step written after the block was absorbed by whichever section
+            # was open, so it never became a workflow item (issue #53, N-5).
+            # Only the author's column separates it from a legitimate section
+            # line, so the rule engages only where that column says something —
+            # a spec written flat carries no signal and is left alone.
+            section_indent = block["_section_indent"]
+            if (section_indent is not None
+                    and section_indent > block["_indent"]
+                    and line.indent <= block["_indent"]):
+                raise ParseError(
+                    "line %d: a workflow step cannot follow the `spec` block "
+                    "opened on line %d — a workflow's steps come before its "
+                    "`spec` (RFC-0002 §Full grammar: WorkflowItem* SpecClause?); "
+                    "move this line above the block"
+                    % (line.lineno, block["lineno"]))
+            block[cur_clause].append(line)
             continue
         cur.clauses[cur_clause].append(line)
 
     for d in decls:
+        d.extra.pop("_guard_visual", None)     # scratch state, never lowered
         open_block = d.extra.pop("_open_block", None)
         if open_block is not None and open_block["type"] == "parallel":
             raise ParseError("declaration %s ends with an unclosed `parallel` block "
@@ -254,4 +345,6 @@ def parse(source):
                              % d.name)
         for block in d.extra.get("specs", []):
             block.pop("_opened", None)
+            block.pop("_indent", None)
+            block.pop("_section_indent", None)
     return decls

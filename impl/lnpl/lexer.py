@@ -83,14 +83,26 @@ class LexError(Exception):
 
 
 class Line:
-    """One significant source line, indentation stripped."""
+    """One significant source line, indentation stripped from `tokens`.
 
-    __slots__ = ("lineno", "tokens", "raw")
+    `indent` is the column the line starts at. It is recorded, never used to
+    build structure: RFC-0002 keeps blocks keyword-delimited, so the same token
+    sequence still parses the same way whatever the layout. `parser` reads the
+    column only to reject a layout that contradicts the structure it parsed —
+    a guard's second "indented" step, which is otherwise token-identical to an
+    ordinary following step (issue #53, N-1).
 
-    def __init__(self, lineno, tokens, raw):
+    Required rather than defaulted: a `Line` built without a real column would
+    silently disable that check, which is the failure shape this closes.
+    """
+
+    __slots__ = ("lineno", "tokens", "raw", "indent")
+
+    def __init__(self, lineno, tokens, raw, indent):
         self.lineno = lineno
         self.tokens = tokens
         self.raw = raw
+        self.indent = indent
 
     @property
     def head(self):
@@ -115,16 +127,20 @@ def tokenize(source):
     for i, raw in enumerate(source.splitlines(), start=1):
         if "\t" in raw:
             raise LexError("line %d: tabs are forbidden (RFC-0002 §Block structure)" % i)
-        body = _strip_comment(raw).strip()
-        if not body:
+        body = _strip_comment(raw)
+        text = body.strip()
+        if not text:
             continue
-        tokens = body.split()
+        # Measured after the comment is removed, so `    # note` never counts as
+        # a line and a trailing comment cannot shift the column.
+        indent = len(body) - len(body.lstrip())
+        tokens = text.split()
         for t in tokens:
             if t in RESERVED:
                 raise LexError(
                     "line %d: %r is reserved and must not be used "
                     "(RFC-0002 §Reserved Words)" % (i, t))
-        lines.append(Line(i, tokens, raw))
+        lines.append(Line(i, tokens, raw, indent))
     return lines
 
 

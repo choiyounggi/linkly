@@ -151,12 +151,19 @@ class TestExistingGuardsSurvive(unittest.TestCase):
     def test_sections_before_the_first_spec_block_are_refused(self):
         # Pre-#46 these lines were silently merged into the case; dropping
         # them silently now would be the same sin in the other direction.
+        #
+        # Issue #53 moved the refusal earlier, from `extract` to `parse`: only
+        # `lnpl spec` builds a manifest, so a `given` outside a block still
+        # reached `lnpl compile` with rc=0 and no diagnostic. The parser now
+        # rejects it, which is why this asserts ParseError. `extract`'s own
+        # stray-section guard below is unchanged and still covers decls that
+        # reach it by another route.
         src = ONE_BLOCK.replace(
             "    spec\n",
             "    given\n        amount 0\n    spec\n")
-        with self.assertRaises(SpecError) as ctx:
+        with self.assertRaises(ParseError) as ctx:
             extract(parse(src), "items")
-        self.assertIn("before the first `spec` block", str(ctx.exception))
+        self.assertIn("`spec` block", str(ctx.exception))
 
 
 if __name__ == "__main__":
