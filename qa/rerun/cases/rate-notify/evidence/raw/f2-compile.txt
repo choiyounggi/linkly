@@ -1,0 +1,1 @@
+compile error: workflow Report: `emit`/`publish` references 'event.notification', which is not a declared event (declared: event.notification.sent)

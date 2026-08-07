@@ -1,0 +1,20 @@
+usage: lnpl build [-h] [--workflow WORKFLOW] [--workdir WORKDIR] [--run]
+                  [--field NAME=VALUE] [--skip]
+                  source
+
+positional arguments:
+  source
+
+options:
+  -h, --help           show this help message and exit
+  --workflow WORKFLOW
+  --workdir WORKDIR
+  --run
+  --field NAME=VALUE   condition field value for a `when`/`until` comparison
+                       guard, e.g. --field counter=12 (repeatable). NAME must
+                       name a comparison-guard field of the workflow — one
+                       that does not is rejected, with the valid names listed.
+                       Omitted fields default to 0.
+  --skip               set the Presence `when` guard flag so steps guarded by
+                       an exists/missing check are skipped. Comparison guards
+                       are driven by --field, not by this flag.

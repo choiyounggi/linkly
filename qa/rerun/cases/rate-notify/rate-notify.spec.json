@@ -1,0 +1,55 @@
+{
+  "spec_version": "0.1",
+  "module": "rate-notify",
+  "cases": [
+    {
+      "name": "Report spec 1",
+      "workflow": "wf.report",
+      "given": [
+        "valid measurement",
+        "id 3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "value 150",
+        "acknowledged 1"
+      ],
+      "when": [
+        "report"
+      ],
+      "expect": [
+        "completed",
+        "steps 4",
+        "slo met",
+        "rows Notification 1"
+      ]
+    },
+    {
+      "name": "Report spec 2",
+      "workflow": "wf.report",
+      "given": [
+        "empty repository"
+      ],
+      "when": [
+        "report"
+      ],
+      "expect": [
+        "failed",
+        "attempts 4"
+      ]
+    },
+    {
+      "name": "Report spec 3",
+      "workflow": "wf.report",
+      "given": [
+        "id 3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "value 100",
+        "acknowledged 1"
+      ],
+      "when": [
+        "report"
+      ],
+      "expect": [
+        "completed",
+        "rows Notification 0"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+warning: declared-measured-only [perf.rate.notify] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: guard-skipped-steps [wf.report.guard.3] measurement.acknowledged > 0 — the `until` guard did not run read measurement; the workflow still reports completed, so a caller reading only the status cannot tell this run from one that ran every step
+2 warning(s), 0 error(s)

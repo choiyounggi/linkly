@@ -1,0 +1,83 @@
+$ git status --porcelain -uall   # 2026-08-07 14:28 KST
+?? qa/rerun/cases/rate-notify/DELTA.md
+?? qa/rerun/cases/rate-notify/FINDINGS.md
+?? qa/rerun/cases/rate-notify/evidence/00-env.md
+?? qa/rerun/cases/rate-notify/evidence/01-authoring.md
+?? qa/rerun/cases/rate-notify/evidence/02-compile.md
+?? qa/rerun/cases/rate-notify/evidence/03-ir-validate.md
+?? qa/rerun/cases/rate-notify/evidence/04-modeA.md
+?? qa/rerun/cases/rate-notify/evidence/05-modeB.md
+?? qa/rerun/cases/rate-notify/evidence/06-differential.md
+?? qa/rerun/cases/rate-notify/evidence/07-openapi.md
+?? qa/rerun/cases/rate-notify/evidence/08-spec.md
+?? qa/rerun/cases/rate-notify/evidence/09-no-change-proof.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/build-help.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/compile-f7-eq.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/compile-o.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/compile.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/diff-r1.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/diff-r2.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/diff-r7.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/doctor.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/f2-compile.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r1.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r1.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r2-strict.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r2-strict.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r2.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r2.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r3.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r3.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r4.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r4.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r5.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r5.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r6.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r6.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r7-strict.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r7-strict.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r7.json
+?? qa/rerun/cases/rate-notify/evidence/raw/modeA-r7.stderr
+?? qa/rerun/cases/rate-notify/evidence/raw/modeB-b3.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/modeB-b4.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/modeB-b5.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/modeB-bare.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/modeB-ctrl-hi.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/modeB-ctrl-lo.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/openapi.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/pip-install.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/run-help.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/spec-f12-probe.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/spec-f12b-probe.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/spec-manifest-2.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/spec-manifest.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/spec-run-1.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/spec-run-2.txt
+?? qa/rerun/cases/rate-notify/evidence/raw/validate.txt
+?? qa/rerun/cases/rate-notify/payloads/r1.json
+?? qa/rerun/cases/rate-notify/payloads/r2.json
+?? qa/rerun/cases/rate-notify/payloads/r3.json
+?? qa/rerun/cases/rate-notify/payloads/r4.json
+?? qa/rerun/cases/rate-notify/payloads/r5.json
+?? qa/rerun/cases/rate-notify/payloads/r6.json
+?? qa/rerun/cases/rate-notify/payloads/r7.json
+?? qa/rerun/cases/rate-notify/probes/f12-fail.lnpl
+?? qa/rerun/cases/rate-notify/probes/f12b-runtime-fail.lnpl
+?? qa/rerun/cases/rate-notify/probes/f2-undeclared-event.lnpl
+?? qa/rerun/cases/rate-notify/probes/f7-eq.lnpl
+?? qa/rerun/cases/rate-notify/rate-notify.lir.json
+?? qa/rerun/cases/rate-notify/rate-notify.lnpl
+?? qa/rerun/cases/rate-notify/rate-notify.openapi.json
+?? qa/rerun/cases/rate-notify/rate-notify.spec.json
+
+$ git status --porcelain -uall | grep -v -E '^\?\? (qa/rerun/cases/rate-notify/|\.claude/)'   # 허용 접두 밖 잔여 (0줄이어야 통과)
+게이트 rc=1 (1=잔여 0줄 → 통과)
+
+$ # 컨트롤: qa/rerun/OUT_OF_SCOPE_CONTROL 심은 뒤 동일 게이트 (잡혀야 정상)
+?? qa/rerun/OUT_OF_SCOPE_CONTROL
+게이트 rc=0 (0=심은 파일 검출 → 게이트가 판별함)
+
+$ # 컨트롤 파일 삭제 후 재확인
+게이트 rc=1 (1=잔여 0줄 → 최종 통과)
+
+impl/ plugins/ scripts/ rfcs/ examples/ kb/ qa/cases/ qa/rerun/ 타 케이스 무변경 — out_of_scope 준수.

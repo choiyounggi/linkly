@@ -1,0 +1,65 @@
+# rate-notify.lnpl — 재측정 케이스 r4 (원본: qa/cases/rate-notify/rate-notify.lnpl 동형, spec만 원 의도의 3블록)
+
+capability postgres
+
+entity Measurement
+    field
+        id UUID
+        value Integer
+        acknowledged Integer
+
+entity Notification
+    field
+        id UUID
+        priorNotification UUID
+        sentAt DateTime
+
+event NotificationSent on Notification create
+
+service RateNotifyService
+    policy
+        retry 3
+        timeout 3s
+    performance
+        response < 50ms
+
+workflow Report
+    validate measurement
+    find measurement
+    when measurement.value > 100
+    create notification
+    when priorNotification missing
+    emit notificationSent
+    until measurement.acknowledged > 0
+    read measurement
+    spec
+        given
+            valid measurement
+            id 3f2504e0-4f89-41d3-9a0c-0305e82c3301
+            value 150
+            acknowledged 1
+        when
+            report
+        expect
+            completed
+            steps 4
+            slo met
+            rows Notification 1
+    spec
+        given
+            empty repository
+        when
+            report
+        expect
+            failed
+            attempts 4
+    spec
+        given
+            id 3f2504e0-4f89-41d3-9a0c-0305e82c3301
+            value 100
+            acknowledged 1
+        when
+            report
+        expect
+            completed
+            rows Notification 0

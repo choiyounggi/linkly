@@ -1,0 +1,193 @@
+{
+  "result": {
+    "status": "completed",
+    "steps": [
+      {
+        "step": "validate measurement",
+        "attempts": 1,
+        "duration_ms": 6,
+        "effects": [
+          "Validation"
+        ]
+      },
+      {
+        "step": "find measurement",
+        "attempts": 1,
+        "duration_ms": 6,
+        "effects": [
+          "RepositoryCall"
+        ]
+      },
+      {
+        "step": "create notification",
+        "attempts": 1,
+        "duration_ms": 6,
+        "effects": [
+          "RepositoryCall"
+        ]
+      }
+    ],
+    "failed_step": null,
+    "skipped": [
+      {
+        "guard": "wf.report.guard.2",
+        "mode": "when",
+        "condition": "priorNotification missing",
+        "steps": [
+          "emit notificationSent"
+        ],
+        "rounds": null
+      },
+      {
+        "guard": "wf.report.guard.3",
+        "mode": "until",
+        "condition": "measurement.acknowledged > 0",
+        "steps": [
+          "read measurement"
+        ],
+        "rounds": 0
+      }
+    ],
+    "failure_reason": null,
+    "bindings": {
+      "measurement": {
+        "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "value": 150,
+        "acknowledged": 1,
+        "priorNotification": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+      }
+    },
+    "duration_ms": 18,
+    "correlation_id": "cid-0001",
+    "slo_ms": 50,
+    "slo_met": true
+  },
+  "trace": {
+    "correlation_id": "cid-0001",
+    "span": {
+      "name": "Report",
+      "kind": "Workflow",
+      "duration_ms": 18,
+      "attrs": {},
+      "children": [
+        {
+          "name": "validate measurement",
+          "kind": "WorkflowStep",
+          "duration_ms": 6,
+          "attrs": {
+            "attempts": 1
+          },
+          "children": [
+            {
+              "name": "check",
+              "kind": "Validation",
+              "duration_ms": 1,
+              "attrs": {},
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "find measurement",
+          "kind": "WorkflowStep",
+          "duration_ms": 6,
+          "attrs": {
+            "attempts": 1
+          },
+          "children": [
+            {
+              "name": "repo",
+              "kind": "RepositoryCall",
+              "duration_ms": 1,
+              "attrs": {
+                "found": true
+              },
+              "children": []
+            }
+          ]
+        },
+        {
+          "name": "create notification",
+          "kind": "WorkflowStep",
+          "duration_ms": 6,
+          "attrs": {
+            "attempts": 1
+          },
+          "children": [
+            {
+              "name": "repo",
+              "kind": "RepositoryCall",
+              "duration_ms": 1,
+              "attrs": {
+                "found": true
+              },
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    "metrics": [
+      {
+        "name": "step.duration_ms",
+        "labels": {
+          "workflow": "Report",
+          "step": "validate measurement"
+        },
+        "value": 6
+      },
+      {
+        "name": "step.duration_ms",
+        "labels": {
+          "workflow": "Report",
+          "step": "find measurement"
+        },
+        "value": 6
+      },
+      {
+        "name": "step.duration_ms",
+        "labels": {
+          "workflow": "Report",
+          "step": "create notification"
+        },
+        "value": 6
+      },
+      {
+        "name": "workflow.duration_ms",
+        "labels": {
+          "workflow": "Report"
+        },
+        "value": 18
+      }
+    ],
+    "logs": [
+      {
+        "level": "INFO",
+        "message": "workflow start",
+        "correlation_id": "cid-0001",
+        "workflow": "Report",
+        "payload": {
+          "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+          "value": 150,
+          "acknowledged": 1,
+          "priorNotification": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        }
+      },
+      {
+        "level": "INFO",
+        "message": "guard skipped the guarded item",
+        "correlation_id": "cid-0001",
+        "guard": "wf.report.guard.2",
+        "condition": "priorNotification missing"
+      },
+      {
+        "level": "INFO",
+        "message": "guard skipped the guarded item",
+        "correlation_id": "cid-0001",
+        "guard": "wf.report.guard.3",
+        "condition": "measurement.acknowledged > 0",
+        "rounds": 0
+      }
+    ]
+  }
+}

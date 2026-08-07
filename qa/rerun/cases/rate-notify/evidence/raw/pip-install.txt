@@ -1,0 +1,35 @@
+Obtaining file:///Users/choeyeong-gi/Desktop/workspace/linkly/.worktrees/qa-r4-rate-notify
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Collecting jsonschema (from lnpl==0.2.0)
+  Using cached jsonschema-4.26.0-py3-none-any.whl.metadata (7.6 kB)
+Collecting attrs>=22.2.0 (from jsonschema->lnpl==0.2.0)
+  Using cached attrs-26.1.0-py3-none-any.whl.metadata (8.8 kB)
+Collecting jsonschema-specifications>=2023.03.6 (from jsonschema->lnpl==0.2.0)
+  Using cached jsonschema_specifications-2025.9.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting referencing>=0.28.4 (from jsonschema->lnpl==0.2.0)
+  Using cached referencing-0.37.0-py3-none-any.whl.metadata (2.8 kB)
+Collecting rpds-py>=0.25.0 (from jsonschema->lnpl==0.2.0)
+  Using cached rpds_py-2026.6.3-cp313-cp313-macosx_11_0_arm64.whl.metadata (4.1 kB)
+Using cached jsonschema-4.26.0-py3-none-any.whl (90 kB)
+Using cached attrs-26.1.0-py3-none-any.whl (67 kB)
+Using cached jsonschema_specifications-2025.9.1-py3-none-any.whl (18 kB)
+Using cached referencing-0.37.0-py3-none-any.whl (26 kB)
+Using cached rpds_py-2026.6.3-cp313-cp313-macosx_11_0_arm64.whl (338 kB)
+Building wheels for collected packages: lnpl
+  Building editable for lnpl (pyproject.toml): started
+  Building editable for lnpl (pyproject.toml): finished with status 'done'
+  Created wheel for lnpl: filename=lnpl-0.2.0-0.editable-py3-none-any.whl size=13052 sha256=9f4d2bc8cc3985c30e370a17ec1ac5c17d5b7216a246d1eca96c852f2a8a4e27
+  Stored in directory: /private/var/folders/cj/n9nvfgfx70l583892x9_bvj00000gn/T/pip-ephem-wheel-cache-oq1w8fnl/wheels/84/9b/ad/c6490070b44d7543dc50f68dba5d2903bf7775897501db0d2d
+Successfully built lnpl
+Installing collected packages: rpds-py, attrs, referencing, jsonschema-specifications, jsonschema, lnpl
+Successfully installed attrs-26.1.0 jsonschema-4.26.0 jsonschema-specifications-2025.9.1 lnpl-0.2.0 referencing-0.37.0 rpds-py-2026.6.3
+
+[notice] A new release of pip is available: 24.3.1 -> 26.2.1
+[notice] To update, run: python3.13 -m pip install --upgrade pip
