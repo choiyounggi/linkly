@@ -32,6 +32,7 @@ lnpl --version
 | `--workflow` | 실행할 **워크플로 노드 id**. 없으면 첫 번째 |
 | `--json` | 결과와 트레이스를 JSON으로 |
 | `--no-row` | 빈 저장소로 시작한다(재시도 경로를 관측할 때) |
+| `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로) 또는 `sqlite:<path>`(파일에 남는 실제 저장소). 이슈 #25 |
 | `--strict` | 위와 같다 |
 
 `--workflow`는 선언명이 아니라 노드 id를 받는다(`GetReport`가 아니라
@@ -62,10 +63,31 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 |--------|-----|
 | `--host` | 바인드 주소 (기본 `127.0.0.1` — 루프백 전용) |
 | `--port` | TCP 포트, `0`이면 임시 포트 (기본 `8080`) |
+| `--backend` | `run`과 같다. `sqlite:<path>`를 주면 요청 사이에 상태가 남는다 |
+| `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |
 
 각 워크플로가 `POST /<service-slug>/<workflow-slug>`에서 실행된다. 상태코드
 매핑표(200/400/401/404/405/413/500/504)의 정본과 계약 한계(Fake 백엔드,
 Authorization 존재 검사만)는 `docs/serving.md`. SIGINT로 정상 종료(rc 0).
+
+### `token` — 서빙 경로 하나에 대한 베어러 토큰 발급 (이슈 #25)
+
+```
+lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
+           --secret-env LNPL_JWT_SECRET [--ttl 15m]
+```
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--path` | 토큰이 향하는 **서빙 경로**. `serve`가 서빙하지 않는 경로면 유효한 경로 전부와 함께 거부된다 |
+| `--subject` | `sub` 클레임 — 토큰이 누구를 대변하는가 |
+| `--secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**(시크릿 자체가 아니다) |
+| `--ttl` | 액세스 토큰 수명 (기본 `15m`) |
+
+토큰은 stdout 한 줄로 나온다. `aud`는 경로의 서비스 슬러그에서 유도되므로
+발급과 검증이 같은 함수를 읽는다 — 이웃 서비스용 토큰은 통하지 않는다.
+서명 알고리즘은 HS256 고정이고 검증은 서버 측 allowlist로 한다(`alg: none` 거부).
+자세한 계약은 `docs/backends.md`.
 
 ### `build` — 네이티브 바이너리로 컴파일 (모드 B)
 

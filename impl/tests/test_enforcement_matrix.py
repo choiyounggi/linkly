@@ -407,13 +407,58 @@ class TestGateFailsClosed(unittest.TestCase):
     def test_a_short_row_raises_rather_than_reading_as_empty_cells(self):
         # GFM inserts empty cells for a short row, which would let a truncated
         # row pass as a documented one.
-        mutant = self.markdown.replace(
-            "| security | jwt | unenforced | declared-not-enforced | "
-            "토큰을 발급하지도 검증하지도 않는다. OpenAPI 문서까지만 도달한다 |",
-            "| security | jwt | unenforced |")
+        #
+        # The row is located by its (clause, name) key rather than quoted whole:
+        # a copy of the full line here is a literal anchor into a prose cell,
+        # and it goes stale the moment someone rewords the 근거 — at which point
+        # the mutation stops applying and this control silently stops
+        # controlling anything. Issue #25 reworded exactly this row.
+        prefix = "| security | jwt |"
+        row = next((line for line in self.markdown.splitlines()
+                    if line.startswith(prefix)), None)
+        self.assertIsNotNone(row, "the §B jwt row is gone")
+        mutant = self.markdown.replace(row, prefix + " unenforced |")
         self.assertNotEqual(mutant, self.markdown, "the mutation did not apply")
         with self.assertRaises(AnchorMissing):
             document_coverage_errors(mutant)
+
+
+class TestPathDependentEnforcement(unittest.TestCase):
+    """A declaration enforced on one path and ignored on another must say so.
+
+    `security jwt` is the case: issue #25 gave it a real verification path, but
+    the diagnostic is emitted at compile time, which cannot know the backend.
+    The status therefore describes the weakest path, and the reason has to name
+    the path that does enforce it — otherwise the single status is simply false
+    for one of the two.
+    """
+
+    def test_the_jwt_reason_names_the_path_that_enforces_it(self):
+        _, reason = ENFORCEMENT[("security", "jwt")]
+
+        self.assertIn("--jwt-secret-env", reason)
+        self.assertIn("serve", reason)
+
+    def test_the_jwt_reason_still_says_the_default_path_does_not(self):
+        """Both halves, or the row reads as a promise the default cannot keep."""
+        status, reason = ENFORCEMENT[("security", "jwt")]
+
+        self.assertEqual("unenforced", status)
+        self.assertIn("default", reason)
+
+    def test_the_document_repeats_the_same_path(self):
+        row = next(line for line in read_doc().splitlines()
+                   if line.startswith("| security | jwt |"))
+
+        self.assertIn("--jwt-secret-env", row)
+
+    def test_rollback_still_reports_nothing_to_compensate(self):
+        """A real store arrived in #25; a transaction boundary did not. This
+        row must not drift toward `enforced` on the strength of the store."""
+        status, reason = ENFORCEMENT[("policy", "rollback")]
+
+        self.assertEqual("unenforced", status)
+        self.assertIn("compensate", reason)
 
 
 class TestDiagnosticCodeTable(unittest.TestCase):

@@ -67,9 +67,9 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 |--------|------|--------|-----------|------|
 | policy | retry | enforced | — | `run_workflow`가 실패 스텝을 멱등인 동안 재실행한다 |
 | policy | timeout | enforced | — | 워크플로 데드라인을 계산하고 초과 시 실행을 실패시킨다 |
-| policy | rollback | unenforced | declared-not-enforced | Phase 1에 Transaction 경계가 없어 보상할 대상이 없다 |
+| policy | rollback | unenforced | declared-not-enforced | Phase 1에 Transaction 경계가 없어 보상할 대상이 없다. #25의 드라이버는 연산 단위로 커밋한다 |
 | policy | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
-| security | jwt | unenforced | declared-not-enforced | 토큰을 발급하지도 검증하지도 않는다. OpenAPI 문서까지만 도달한다 |
+| security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
 | security | role | unenforced | declared-not-enforced | 역할을 무엇과도 대조하지 않는다 |
 | security | encrypt | unenforced | declared-not-enforced | 필드를 암호화하지 않는다. Password 마스킹은 타입이 하는 별개 동작이다 |
 | performance | response | measured | declared-measured-only | 실행마다 측정·보고하지만 예산 초과 실행을 차단하지 않는다 |
@@ -81,6 +81,17 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 
 `enforced` 행의 진단 코드 셀이 `—`인 것은 값이 빠진 것이 아니라 **진단을 내지
 않는다는 뜻**이다. 집행되는 선언까지 경고하면 보고 전체가 정보를 잃는다.
+
+### status는 왜 경로별이 아니라 하나인가
+
+`security jwt`는 이제 **경로에 따라 다르게** 동작한다 — `lnpl run`과 기본 `serve`는
+아무것도 검증하지 않고, `lnpl serve --jwt-secret-env NAME`은 서명·`exp`/`nbf`·
+`iss`/`aud`/`typ`를 전부 본다. 그런데 이 진단은 **컴파일 타임**에 나오고, 컴파일러는
+그 프로그램이 어느 백엔드로 실행될지 모른다.
+
+그래서 status는 **가장 약한 경로**(기본값)를 말하고, 집행되는 경로는 `근거` 칸이
+이름으로 지목한다. 한 칸에 하나의 status만 적고 경로를 감추면 두 경로 중 하나에
+대해서는 반드시 거짓이 된다.
 
 ## C. 진단 코드
 
@@ -99,9 +110,20 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 
 ## D. 이 문서가 약속하지 않는 것
 
-이 문서는 **가시화**의 계약이지 집행의 계약이 아니다. `unenforced` 행을
-`enforced`로 바꾸는 일 — jwt 발급·검증, 역할 검사, Transaction 경계와 보상 —
-은 이슈 #25와 `docs/ROADMAP.md`의 소관이다.
+이 문서는 **가시화**의 계약이지 집행의 계약이 아니다.
+
+이슈 #25가 닫은 것: **jwt 발급·검증 경로**(`lnpl token` + `serve
+--jwt-secret-env`, HS256, RFC 8725 체크리스트)와 **실제 영속 저장소**
+(`--backend sqlite:<path>`). 계약과 한계는 `docs/backends.md`.
+
+#25 이후에도 남는 것, 그리고 그 이유:
+
+| 남은 것 | 왜 |
+|---------|-----|
+| `redis` 실제 바인딩 | RFC-0003의 cache TTL이 주입된 **가상 시계** 단위라 프로세스를 넘으면 뜻이 없다. 영속 캐시는 새 프로세스의 시계 0에 대해 언제나 신선해 보인다 — 만료 계약이 거짓인 저장소가 된다 |
+| `policy rollback` | 워크플로 단위 트랜잭션 경계를 만들지 않았다. 보상 로직 없이 경계만 만들면 이 행이 `enforced`로 읽히면서 실패한 실행이 앞선 쓰기를 남긴다 |
+| `security role` / `security encrypt` | 역할 검사와 필드 암호화는 손대지 않았다 |
+| refresh 토큰·회전·폐기 목록 | 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다 |
 
 표의 status를 고치는 것만으로 집행이 생기지는 않는다. 정본은 코드이므로
 `ENFORCEMENT`를 먼저 바꿔야 하고, 그러면 그 주장을 뒷받침하는 실제 구현과

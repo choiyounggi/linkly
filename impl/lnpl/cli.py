@@ -2,6 +2,8 @@
 
     lnpl compile <src.lnpl> [-o out.lir.json]   parse + lower, emit IR
     lnpl run <src.lnpl> [--payload file.json]   compile then execute (mode A)
+    lnpl run <src.lnpl> --backend sqlite:s.db   ... against a real store (#25)
+    lnpl token <src.lnpl> --path /s/w ...       issue a bearer token (#25)
 """
 
 import argparse
@@ -11,7 +13,10 @@ import sys
 
 from . import __version__
 from .diagnostics import format_lines
-from .interp import Interpreter, RunError, refinement_index, sample_payload
+from .drivers import (DriverError, HmacTokenProvider, TokenError,
+                      audience_for_path, open_repository)
+from .interp import (Interpreter, RunError, _duration_ms, refinement_index,
+                     sample_payload)
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
@@ -37,7 +42,7 @@ from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, generate as generate_openapi
-from .serve import ServeError, serve
+from .serve import ServeError, build_routes, serve
 from .spec import SpecError, extract, run_manifest
 
 
@@ -151,17 +156,29 @@ def cmd_run(args):
     target = _select_workflow(args.workflow, args.source, workflows)
 
     rows = _repo_rows(doc, payload, target, empty=args.no_row)
-    interp = Interpreter(doc, repo_rows=rows)
-    result = interp.run_workflow(target, payload)
-    # Compile-time and run-time findings are one report, not two.
-    diagnostics.extend(interp.diagnostics)
+    repository = _open_backend(getattr(args, "backend", "fake"))
+    if repository is _REJECTED:
+        return 2
+    try:
+        interp = Interpreter(doc, repo_rows=rows, repository=repository)
+        result = interp.run_workflow(target, payload)
+        # Compile-time and run-time findings are one report, not two.
+        diagnostics.extend(interp.diagnostics)
 
-    if args.json:
-        sys.stdout.write(_dump({"result": result, "trace": interp.trace.to_dict()}))
-    else:
-        _print_human(result, interp)
-    _emit_diagnostics(diagnostics)
-    return _strict_rc(args, 0 if result["status"] == "completed" else 1, diagnostics)
+        if args.json:
+            sys.stdout.write(_dump({"result": result,
+                                    "trace": interp.trace.to_dict()}))
+        else:
+            _print_human(result, interp)
+        _emit_diagnostics(diagnostics)
+        return _strict_rc(args, 0 if result["status"] == "completed" else 1,
+                          diagnostics)
+    finally:
+        # `finally`, so a failing run releases the store too. Leaving a
+        # connection open is invisible in a one-shot CLI and a leak in the
+        # server that reuses this path.
+        if repository is not None:
+            repository.close()
 
 
 def _print_human(result, interp):
@@ -253,18 +270,110 @@ def cmd_serve(args):
     if not any(n["kind"] == "Workflow" for n in doc["nodes"]):
         print("no workflow to serve", file=sys.stderr)
         return 1
-    server = serve(doc, args.host, args.port)
+
+    # Both are validated before the socket is bound. A store that cannot be
+    # opened, or a signing secret that is not set, is a failed launch — finding
+    # either out on the first request instead means the server came up and is
+    # quietly not the one that was asked for.
+    backend = getattr(args, "backend", "fake")
+    probe = _open_backend(backend)
+    if probe is _REJECTED:
+        return 2
+    if probe is not None:
+        probe.close()
+    token_provider = _token_provider(getattr(args, "jwt_secret_env", None))
+    if token_provider is _REJECTED:
+        return 2
+
+    factory = None if backend == "fake" else (lambda: open_repository(backend))
+    server = serve(doc, args.host, args.port, repository_factory=factory,
+                   token_provider=token_provider)
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
-    print("serving %s on http://%s:%d (mode A, fake backend)"
-          % (args.source, host, port), flush=True)
+    print("serving %s on http://%s:%d (mode A, backend=%s, jwt=%s)"
+          % (args.source, host, port,
+             "fake" if backend == "fake" else backend.split(":", 1)[0],
+             "verified" if token_provider is not None else "presence-checked"),
+          flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+    return 0
+
+
+# Distinguishes "the operator asked for the default in-memory store" (None,
+# which the Interpreter turns into its FakeRepository) from "the selector was
+# rejected" — two answers `open_repository` cannot both return as None.
+_REJECTED = object()
+
+
+def _open_backend(spec):
+    """`--backend`'s value -> a driver, None for the fake, `_REJECTED` on a bad
+    selector (the caller then exits 2, having already printed why).
+
+    Opened here, before the run, so a store that cannot be reached is an
+    operator error at the boundary — the same rc a mistyped `--field` gets —
+    rather than a failed workflow that reads as the program's fault.
+    """
+    try:
+        return open_repository(spec)
+    except (ValueError, DriverError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _token_provider(secret_env):
+    """`--jwt-secret-env`'s value -> a provider, None when unset, `_REJECTED`
+    when the named variable is missing or too short.
+
+    The variable's NAME is what the operator passes and what any message
+    quotes; the value is read here and never printed, logged, or put in an
+    exception. Validated before the workflow starts for the same reason the
+    store is: a secret discovered missing mid-request is an incident, and one
+    discovered at startup is a failed launch.
+    """
+    if secret_env is None:
+        return None
+    secret = os.environ.get(secret_env)
+    if not secret:
+        print("error: %s is not set in the environment" % secret_env,
+              file=sys.stderr)
+        return _REJECTED
+    try:
+        return HmacTokenProvider(secret)
+    except TokenError as exc:
+        print("error: %s (from %s)" % (exc, secret_env), file=sys.stderr)
+        return _REJECTED
+
+
+def cmd_token(args):
+    """Issue a bearer token for one served path (issue #25).
+
+    The audience is derived from the path rather than configured, so the token
+    this prints and the check `lnpl serve` runs read the same function and
+    cannot drift. A path the server does not serve is rejected here with the
+    served set listed — a token for a path that does not exist would fail at
+    request time with nothing to point at.
+    """
+    doc, _, _, _ = _compile(args.source)
+    routes = build_routes(doc)
+    if args.path not in routes:
+        print("error: --path %r is not served (valid: %s)"
+              % (args.path, ", ".join(sorted(routes))), file=sys.stderr)
+        return 2
+    provider = _token_provider(args.secret_env)
+    if provider is _REJECTED:
+        return 2
+    try:
+        ttl_ms = _duration_ms(args.ttl)
+        print(provider.issue(args.subject, audience_for_path(args.path), ttl_ms))
+    except (TokenError, ValueError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
     return 0
 
 
@@ -420,6 +529,7 @@ def main(argv=None):
     r.add_argument("--json", action="store_true", help="emit result and trace as JSON")
     r.add_argument("--no-row", action="store_true",
                    help="start with an empty repository (exercises retry)")
+    r.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
     r.add_argument("--strict", action="store_true", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)
 
@@ -443,7 +553,28 @@ def main(argv=None):
                     help="bind address (default: 127.0.0.1 — loopback only)")
     sv.add_argument("--port", type=int, default=8080,
                     help="TCP port; 0 binds an ephemeral port (default: 8080)")
+    sv.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
+    sv.add_argument("--jwt-secret-env", default=None, metavar="NAME",
+                    help="name of the environment variable holding the HS256 "
+                         "signing secret. Given, `security jwt` services verify "
+                         "the bearer token; omitted, the header is only checked "
+                         "for presence. The value is never read from the "
+                         "command line.")
     sv.set_defaults(func=cmd_serve)
+
+    tk = sub.add_parser("token",
+                        help="issue a bearer token for one served path (#25)")
+    tk.add_argument("source")
+    tk.add_argument("--path", required=True, metavar="PATH",
+                    help="the served path the token is for, e.g. /shop/checkout")
+    tk.add_argument("--subject", required=True,
+                    help="the `sub` claim — who the token speaks for")
+    tk.add_argument("--secret-env", required=True, metavar="NAME",
+                    help="name of the environment variable holding the HS256 "
+                         "signing secret (never the secret itself)")
+    tk.add_argument("--ttl", default="15m",
+                    help="access-token lifetime (default: 15m)")
+    tk.set_defaults(func=cmd_token)
 
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
     bd.add_argument("source")
