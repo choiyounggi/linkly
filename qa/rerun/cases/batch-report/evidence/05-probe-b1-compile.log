@@ -1,0 +1,4 @@
+warning: declared-not-enforced [event.daily.rollup] event schedule — declared but unenforced: no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor
+1 warning(s), 0 error(s)
+wrote .claude/tmp/pb1.lir.json (8 nodes)
+rc=0

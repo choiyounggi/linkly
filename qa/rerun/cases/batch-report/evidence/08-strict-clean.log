@@ -1,0 +1,9 @@
+# clean 재료 검증 — shorten은 경고 설계라 대체(F-8 증거 겸용)
+--- shorten stderr(경고 존재 실측):
+warning: declared-not-enforced [security.shorten] security jwt — declared but unenforced: no token is issued or verified; the mechanism reaches the OpenAPI document only
+warning: declared-measured-only [perf.shorten] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+warning: unknown-verb [line 57] return — `return slug` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+3 warning(s), 0 error(s)
+--- probe-clean --strict:
+wrote /dev/null (5 nodes)
+rc=0

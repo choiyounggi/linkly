@@ -1,0 +1,20 @@
+# probe-b2 — H-b2: policy 절의 미허용 이름(schedule)은 명시적으로 거부되는가
+# 변수 1개: policy 절에 허용 목록(retry/rollback/timeout/parallel) 밖 이름 `schedule`.
+# 예측: compile 에러 — 선언부는 동사와 달리 시끄럽게 실패하는지 측정.
+
+capability postgres
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Money
+
+service ReportService
+    policy
+        schedule daily
+
+workflow NightlyBatch
+    validate report
+    create report

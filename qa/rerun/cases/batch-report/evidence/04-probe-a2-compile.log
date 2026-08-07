@@ -1,0 +1,8 @@
+compile error: workflow BuildReport: guard condition 'set report.orderCount to report.orderCount + 1' reads entity.report, but this workflow never reads it — no binding can ever exist, so the guard would be false forever (to check the run's input instead, write `input.orderCount`)
+rc=2
+--- attempt 2 (read report로 변경) ---
+compile error: workflow BuildReport: 'set report.totalAmount to report.totalAmount + order.amount' uses report.totalAmount, whose declared type Money is neither Integer nor DateTime — RFC-0016 computes over whole numbers and instants only (Money and the composite types have no evaluator in either mode)
+rc=2
+--- attempt 3 (Money→Integer 우회) ---
+wrote .claude/tmp/pa2.lir.json (14 nodes)
+rc=0

@@ -1,0 +1,5 @@
+warning: unknown-verb [line 23] sum — `sum order.amount` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+warning: unknown-verb [line 24] count — `count order` is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op
+2 warning(s), 0 error(s)
+wrote /dev/null (12 nodes)
+rc=2

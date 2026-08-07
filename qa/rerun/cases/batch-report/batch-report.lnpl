@@ -1,0 +1,90 @@
+# batch-report.lnpl(재측정) — 일별 주문 집계 리포트: #43~#50 이후 표현 가능한 부분집합
+#
+# 제품 요구 3개의 표현 범위 (근거: evidence/03-vocab-survey-diff.md, hypothesis-log.md):
+#   (a) 일별 주문 집계(sum/count) — N행 집계는 여전히 불가(H-ra1/ra3: sum/count
+#       unknown-verb 잔존, repeat는 같은 시드 행만 재바인딩). 부분 해소: `set`+이항
+#       산술로 파생값 기록은 가능하나 **Integer·DateTime 한정**(H-ra2 시도 2: Money
+#       산술 거부 — "RFC-0016 computes over whole numbers and instants only").
+#       아래 BuildReport는 orderCount(Integer)만 실제 계산한다. totalAmount(Money)는
+#       필드로 선언만 되고 계산 불가 — F-1 잔존 절반의 생증거.
+#   (b) 배치 트리거(매일 자정) — 부분 해소: `on schedule daily at 00:00 UTC` 선언이
+#       IR·OpenAPI(x-lnpl-schedules, enforcement:"unenforced")까지 도달(H-rb1).
+#       실행기는 없음이 3채널(compile 경고·문서·산출물)에 명시 — 스케줄링 실행은
+#       여전히 외부 시스템 몫. 중복실행 방지·재실행 멱등은 어휘 부재 잔존.
+#   (c) 집계 결과 조회 — 표현 가능 유지. GetReport 동형 패턴.
+#
+# 원 우회의 해제 실측:
+#   - 엔티티명 단일 단어 강제(F-4) 해소 — 그러나 본 파일은 원본과의 diff 최소화를
+#     위해 Report 명명을 유지(다단어 해소 증거는 probes/probe-c1.lnpl).
+#   - spec "워크플로당 1케이스 + 경계 전용 워크플로(CheckOrder)" 우회(F-5) 해제 —
+#     BuildReport가 spec 블록 2개(정상+경계)를 직접 가진다. 블록마다 독립 케이스
+#     (references/spec.md). 원 CheckOrder 워크플로는 존재 이유가 사라져 제거.
+#   - 주의: 스케줄 선언은 declared-not-enforced 경고를 내므로 이 파일은 --strict
+#     게이트와 양립 불가(N-4, evidence/08-diag-channel.log).
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Money
+        placedAt DateTime
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Money
+
+event DailyRollup on schedule daily at 00:00 UTC
+
+event ReportBuilt on Report update
+
+service ReportService
+    policy
+        retry 2
+        timeout 2s
+    performance
+        response < 50ms
+
+workflow BuildReport
+    validate order
+    load order
+    read report
+    set report.orderCount to report.orderCount + 1
+    emit reportBuilt
+# spec 1 재시도 1회: `given valid order`는 서사 표지라 read report의 사전 행이
+# 없어 status=failed (07-spec-validate.log 1차). `stored Report ...`(issue #39/#46)로
+# 사전 저장소 상태를 시드해 해결 — 원 F-1 시절과 달리 이번엔 문서(references/spec.md
+# "given이 알아듣는 형식")에 규칙이 있어 1회로 수렴.
+    spec
+        given
+            valid order
+            stored Report orderCount 1
+        when
+            build report
+        expect
+            completed
+            steps 5
+            slo met
+            rows Report 1
+    spec
+        given
+            no amount
+        when
+            build report
+        expect
+            failed
+
+workflow GetReport
+    validate report
+    find report
+    spec
+        given
+            empty repository
+        when
+            get report
+        expect
+            failed
+            attempts 3

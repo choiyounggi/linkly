@@ -1,0 +1,17 @@
+# probe-b2(재측정) — H-rb2: policy 절의 `schedule`은 여전히 허용 목록 거부인가
+# 변수 1개: 원 b2 재현 — policy 절에 미허용 이름 `schedule`.
+# 예측(원 실측): `unknown policy 'schedule' (allowed: retry, rollback, timeout,
+#   parallel)`, rc=2 — allowed 목록이 변했는지 실측.
+
+capability postgres
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+
+workflow BuildReport
+    policy
+        schedule daily
+    read report

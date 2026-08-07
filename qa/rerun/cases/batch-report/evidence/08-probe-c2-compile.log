@@ -1,0 +1,47 @@
+wrote /dev/null (5 nodes)
+rc=0
+--- c2 IR (load orders가 entity.order로 해석되는지):
+[
+ {
+  "kind": "Entity",
+  "id": "entity.order",
+  "name": "Order",
+  "fields": [
+   {
+    "name": "id",
+    "type": "UUID"
+   },
+   {
+    "name": "amount",
+    "type": "Integer"
+   }
+  ]
+ },
+ {
+  "kind": "Workflow",
+  "id": "wf.list.orders",
+  "name": "ListOrders",
+  "children": [
+   "wf.list.orders.step.1"
+  ]
+ },
+ {
+  "kind": "WorkflowStep",
+  "id": "wf.list.orders.step.1",
+  "name": "load orders",
+  "children": [
+   "wf.list.orders.step.1.repo"
+  ]
+ },
+ {
+  "kind": "RepositoryCall",
+  "id": "wf.list.orders.step.1.repo",
+  "entity": "entity.order",
+  "operation": "read"
+ },
+ {
+  "kind": "Capability",
+  "id": "cap.postgres",
+  "name": "postgres"
+ }
+]

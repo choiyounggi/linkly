@@ -1,0 +1,29 @@
+# probe-d1(재측정) — H-rd1: 한 spec 블록 안 복수 triplet(원 F-5 재현)은 이제
+#   어떻게 되는가 — 조용한 병합(원 실측) vs 시끄러운 거부(spec.md: "한 블록 안에서
+#   같은 절을 두 번 열면 파싱 에러다 (issue #46)")
+# 변수 1개: 원 F-5 재현 그대로 — given/when/expect 2벌을 한 블록에.
+# 예측(문서 근거): 파싱 에러 rc≠0 — 원 "무경고 병합 → 자기모순 케이스"가 닫혔는지.
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Money
+
+workflow CheckOrder
+    validate order
+    load order
+    spec
+        given
+            valid order
+        when
+            check order
+        expect
+            completed
+        given
+            no amount
+        when
+            check order
+        expect
+            failed
