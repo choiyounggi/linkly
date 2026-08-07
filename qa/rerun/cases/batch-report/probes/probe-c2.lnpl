@@ -1,0 +1,13 @@
+# probe-c2(재측정) — H-rc2: 복수형 객체 명사(orders)는 엔티티로 해석되는가 (F-6 재검)
+# 변수 1개: 원 재현 그대로 — entity Order + `load orders` 스텝.
+# 예측(원 실측): "does not say which entity it means", rc=2, 힌트 없음.
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Integer
+
+workflow ListOrders
+    load orders

@@ -1,0 +1,1 @@
+compile error: line 13: `when` follows the guard on line 12, but a guard owns exactly one step or block; write the two conditions as one guard joined by `and` (RFC-0015)

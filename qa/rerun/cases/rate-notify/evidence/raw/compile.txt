@@ -1,0 +1,207 @@
+warning: declared-measured-only [perf.rate.notify] performance response — declared but measured: measured and reported per run, but an over-budget run is not blocked
+1 warning(s), 0 error(s)
+{
+  "lir_version": "0.1",
+  "module": "rate-notify",
+  "nodes": [
+    {
+      "kind": "Service",
+      "id": "svc.rate.notify",
+      "name": "RateNotifyService",
+      "requires": [
+        "cap.postgres"
+      ],
+      "constraints": [
+        "policy.rate.notify",
+        "perf.rate.notify"
+      ],
+      "children": [
+        "wf.report"
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.measurement",
+      "name": "Measurement",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "value",
+          "type": "Integer"
+        },
+        {
+          "name": "acknowledged",
+          "type": "Integer"
+        }
+      ]
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.notification",
+      "name": "Notification",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "priorNotification",
+          "type": "UUID"
+        },
+        {
+          "name": "sentAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "kind": "Event",
+      "id": "event.notification.sent",
+      "name": "NotificationSent",
+      "source": {
+        "ref": "entity.notification",
+        "on": "create"
+      }
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.report",
+      "name": "Report",
+      "children": [
+        "wf.report.step.1",
+        "wf.report.step.2",
+        "wf.report.guard.1",
+        "wf.report.guard.2",
+        "wf.report.guard.3"
+      ]
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.report.step.1",
+      "name": "validate measurement",
+      "children": [
+        "wf.report.step.1.check"
+      ]
+    },
+    {
+      "kind": "Validation",
+      "id": "wf.report.step.1.check",
+      "target": "entity.measurement",
+      "rule": "semantic-types"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.report.step.2",
+      "name": "find measurement",
+      "children": [
+        "wf.report.step.2.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.report.step.2.repo",
+      "entity": "entity.measurement",
+      "operation": "read"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.report.step.3",
+      "name": "create notification",
+      "children": [
+        "wf.report.step.3.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.report.step.3.repo",
+      "entity": "entity.notification",
+      "operation": "create"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.report.guard.1",
+      "children": [
+        "wf.report.step.3"
+      ],
+      "mode": "when",
+      "condition": "measurement.value > 100"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.report.step.4",
+      "name": "emit notificationSent",
+      "children": [
+        "wf.report.step.4.emit"
+      ]
+    },
+    {
+      "kind": "EventEmit",
+      "id": "wf.report.step.4.emit",
+      "event": "event.notification.sent"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.report.guard.2",
+      "children": [
+        "wf.report.step.4"
+      ],
+      "mode": "when",
+      "condition": "priorNotification missing"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.report.step.5",
+      "name": "read measurement",
+      "children": [
+        "wf.report.step.5.repo"
+      ]
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.report.step.5.repo",
+      "entity": "entity.measurement",
+      "operation": "read"
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.report.guard.3",
+      "children": [
+        "wf.report.step.5"
+      ],
+      "mode": "until",
+      "condition": "measurement.acknowledged > 0"
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.rate.notify",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 3
+        },
+        {
+          "name": "timeout",
+          "value": "3s"
+        }
+      ]
+    },
+    {
+      "kind": "Performance",
+      "id": "perf.rate.notify",
+      "budgets": [
+        {
+          "metric": "response",
+          "value": "<50ms"
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres"
+    }
+  ]
+}

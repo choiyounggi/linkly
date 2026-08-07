@@ -1,0 +1,7 @@
+PASS 1/4 execution order — 20 step(s): validate measurement -> find measurement -> create notification -> emit notificationSent -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement -> read measurement | 0 skip(s)
+PASS 2/4 policy outcome — status=completed
+FAIL 3/4 observability signals
+  mode A: {'validate measurement': ['Validation'], 'find measurement': ['RepositoryCall'], 'create notification': ['RepositoryCall'], 'emit notificationSent': ['EventEmit'], 'read measurement': ['RepositoryCall']}
+  mode B: {'validate measurement': ['Validation'], 'find measurement': ['RepositoryCall'], 'create notification': ['RepositoryCall'], 'emit notificationSent': ['EventEmit'], 'read measurement': ['RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall', 'RepositoryCall']}
+PASS 4/4 masking — no secret marker in either mode's output
+differential: DIVERGENT

@@ -1,0 +1,32 @@
+# probe-a2(재측정) — H-ra2: `set`+이항 산술로 파생값 기록(F-1의 절반)이 표현되는가
+# 변수 1개: 원 a2(표 안 동사만, 파생값 없음)에 RFC-0015 `set` 스텝 2개 추가 —
+#   Integer 증가(orderCount)와 Money 합산(totalAmount) 각 1개.
+# 예측: compile 클린 + IR에 Assignment 2건(target/expression 내용 일치) +
+#   mode A에서 계산값 관측(원 실측은 types.md 예시값 1/"0" 고정이었음).
+
+capability postgres
+
+# 시도 3: Money 산술 거부(시도 2 rc=2 — "Money ... has no evaluator"; RFC-0016은
+# Integer·DateTime만 계산). amount/totalAmount를 Integer로 강등한 우회 변형 —
+# 제품 스펙(Money) 이탈이며, 이 이탈 자체가 F-1 부분 판정의 경계 증거다.
+entity Order
+    field
+        id UUID
+        amount Integer
+        placedAt DateTime
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Integer
+
+# 시도 2: create 바인딩에는 set이 붙지 않음(시도 1 rc=2 — "this workflow never
+# reads it"; 04-probe-a2-compile.log). RFC-0015 예제 동형(read 바인딩)으로 변경.
+workflow BuildReport
+    validate order
+    read order
+    read report
+    set report.orderCount to report.orderCount + 1
+    set report.totalAmount to report.totalAmount + order.amount

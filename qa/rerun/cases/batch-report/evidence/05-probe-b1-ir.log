@@ -1,0 +1,3 @@
+# probe-b1 IR 스케줄 노드 내용 일치 (D2, wiki: lowered-declaration-survival)
+{"kind": "Event", "id": "event.daily.rollup", "name": "DailyRollup", "source": {"every": "daily", "at": "00:00", "zone": "UTC"}}
+내용 일치(daily/00:00/UTC): PASS

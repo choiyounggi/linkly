@@ -1,0 +1,77 @@
+# inventory-order.lnpl — 주문·재고 서비스 (QA 재측정 r1)
+#
+# 원 케이스(qa/cases/inventory-order/)의 CASE-SPEC S1~S5를 이번에는 **원형으로**
+# 표현한다 — 과거 우회(리터럴 가드 > 0, 차감 생략, spec 1케이스 축소) 재사용 금지.
+# 어휘는 lnpl-authoring references(생성 레퍼런스 표)의 행에서만 취한다.
+#
+# 원형 표현 목록(재측정 브리프 D2):
+#   ① 수량 인지 재고 가드:  when product.stock >= input.quantity   (원 F-1)
+#   ② 재고 차감:            set product.stock to product.stock - input.quantity (원 F-2)
+#   ④ 거부 신호:            가드 skip 레코드 + --strict rc          (원 F-5, 런타임 측정)
+#   ⑤ 수량 0 거부:          quantity PositiveInteger(min=1) 런타임  (원 F-6, 런타임 측정)
+#   ⑥ spec 3블록 분리:      정상 S1 / 에러 S2 / 경계 S4            (원 F-7)
+#
+# 가드는 바로 다음 항목 하나를 소유한다(references/grammar.md §가드의 스코프).
+# create+set+update를 한 가드 아래 두기 위해 pipeline 블록으로 묶는다(문서의 ② 방식).
+
+capability postgres
+
+entity Product
+    field
+        id UUID
+        name Text
+        stock Integer
+        price Money
+
+entity Order
+    field
+        id UUID
+        quantity PositiveInteger
+        status OrderStatus
+        placedAt DateTime
+
+refine OrderStatus of Text
+    enum created confirmed
+
+event OrderConfirmed on Order create
+
+service OrderService
+    policy
+        retry 3
+        timeout 3s
+
+workflow PlaceOrder
+    validate order
+    find product
+    when product.stock >= input.quantity
+    pipeline
+    create order
+    set product.stock to product.stock - input.quantity
+    update product
+    spec
+        given
+            stored Product stock 5
+        when
+            place order
+        expect
+            completed
+            steps 5
+            rows Order 1
+            effects 5
+            effects complete
+    spec
+        given
+            stored Product stock 1
+        when
+            place order
+        expect
+            completed
+            rows Order 1
+    spec
+        given
+            stored Product stock 0
+        when
+            place order
+        expect
+            steps 2
+            rows Order 0

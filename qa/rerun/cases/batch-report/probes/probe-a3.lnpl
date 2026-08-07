@@ -1,0 +1,26 @@
+# probe-a3(재측정) — H-ra3: repeat+set 조합으로 N행 집계(진짜 sum)가 표현되는가
+# 변수 1개: probe-a2의 set 누적을 repeat 3 블록 안으로 이동 — 반복마다 다른
+#   Order 행이 읽혀 누적되는지.
+# 예측(원 실측 근거): repeat는 같은 시드 행만 재기록 — 누적이 "행 3개의 합"이
+#   아니라 "같은 행 3번"이 됨 → N행 집계는 여전히 불가(F-1 잔존 절반의 경계).
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Integer
+        placedAt DateTime
+
+entity Report
+    field
+        id UUID
+        reportDate DateTime
+        orderCount Integer
+        totalAmount Integer
+
+workflow AccumulateAll
+    read report
+    repeat 3
+        read order
+        set report.totalAmount to report.totalAmount + order.amount

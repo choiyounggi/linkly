@@ -1,0 +1,15 @@
+usage: lnpl run [-h] [--payload PAYLOAD] [--workflow WORKFLOW] [--json]
+                [--no-row] [--strict]
+                source
+
+positional arguments:
+  source
+
+options:
+  -h, --help           show this help message and exit
+  --payload PAYLOAD    JSON file with the workflow input
+  --workflow WORKFLOW  workflow node id (default: the first one)
+  --json               emit result and trace as JSON
+  --no-row             start with an empty repository (exercises retry)
+  --strict             exit 2 if any diagnostic is reported (otherwise the
+                       exit code is unchanged)

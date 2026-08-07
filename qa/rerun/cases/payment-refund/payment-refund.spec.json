@@ -1,0 +1,80 @@
+{
+  "spec_version": "0.1",
+  "module": "payment-refund",
+  "cases": [
+    {
+      "name": "Approval spec 1",
+      "workflow": "wf.approval",
+      "given": [
+        "valid payment"
+      ],
+      "when": [
+        "approval"
+      ],
+      "expect": [
+        "completed",
+        "steps 1",
+        "rows Payment 1"
+      ]
+    },
+    {
+      "name": "Approval spec 2",
+      "workflow": "wf.approval",
+      "given": [
+        "amountCents 1000001"
+      ],
+      "when": [
+        "approval"
+      ],
+      "expect": [
+        "completed",
+        "steps 0"
+      ]
+    },
+    {
+      "name": "Approval spec 3",
+      "workflow": "wf.approval",
+      "given": [
+        "amountCents 0"
+      ],
+      "when": [
+        "approval"
+      ],
+      "expect": [
+        "completed",
+        "steps 0"
+      ]
+    },
+    {
+      "name": "RefundRequest spec 1",
+      "workflow": "wf.refund.request",
+      "given": [
+        "stored payment id 3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "stored payment amountCents 5",
+        "stored payment createdAt 2026-07-31T09:00:00Z",
+        "amountCents 3"
+      ],
+      "when": [
+        "refund request"
+      ],
+      "expect": [
+        "completed",
+        "steps 2"
+      ]
+    },
+    {
+      "name": "RefundRequest spec 2",
+      "workflow": "wf.refund.request",
+      "given": [
+        "empty repository"
+      ],
+      "when": [
+        "refund request"
+      ],
+      "expect": [
+        "failed",
+        "attempts 3"
+      ]
+    }
+  ]
+}

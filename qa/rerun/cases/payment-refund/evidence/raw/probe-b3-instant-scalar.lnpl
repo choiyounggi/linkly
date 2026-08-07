@@ -1,0 +1,17 @@
+# b3 — D11-④ 원 F-5③ 재현 동형: DateTime <= Duration (instant vs scalar)
+capability postgres
+
+entity Payment
+    field
+        id UUID
+        createdAt DateTime
+
+entity Refund
+    field
+        id UUID
+        requestedAt DateTime
+
+workflow RefundRequest
+    read payment
+    when payment.createdAt <= 43200m
+    create refund

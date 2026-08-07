@@ -1,0 +1,3 @@
+# (원본 충실 재현 — service 블록 안 policy schedule)
+compile error: line 16: unknown policy 'schedule' (allowed: retry, rollback, timeout, parallel)
+rc=2

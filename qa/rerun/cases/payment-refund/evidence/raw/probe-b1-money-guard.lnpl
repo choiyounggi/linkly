@@ -1,0 +1,13 @@
+# b1 — D11-③ 원형 재시도: Money 필드 가드 (원 F-4 재현 동형)
+capability postgres
+
+entity Payment
+    field
+        id UUID
+        cardNumber Password
+        amount Money
+        createdAt DateTime
+
+workflow Approval
+    when input.amount > 0 and input.amount <= 10000
+    create payment

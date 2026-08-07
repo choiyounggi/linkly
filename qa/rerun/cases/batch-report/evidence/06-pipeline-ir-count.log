@@ -1,0 +1,8 @@
+# 최종 batch-report.lir.json 선언 전건 생존 카운트 (D2, wiki: lowered-declaration-survival)
+Workflow: [('wf.build.report', 5), ('wf.get.report', 2)] — 소스 2개 일치
+Event: event.daily.rollup {"every": "daily", "at": "00:00", "zone": "UTC"}
+Event: event.report.built {"ref": "entity.report", "on": "update"}
+스케줄 내용 일치(daily/00:00/UTC): PASS
+Assignment: [('report.orderCount', 'report.orderCount + 1')]
+set 스텝 내용 일치: PASS
+Policy 노드: [('policy.report', '')]

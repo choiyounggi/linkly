@@ -1,0 +1,15 @@
+$ lnpl build --workflow wf.build.report --workdir .claude/tmp/mb-build --run
+native binary: .claude/tmp/mb-build/module
+step 1 validate order
+effect validate order Validation
+step 2 load order
+effect load order RepositoryCall
+step 3 read report
+effect read report RepositoryCall
+step 4 set report.orderCount to report.orderCount + 1
+effect set report.orderCount to report.orderCount + 1 Assignment
+step 5 emit reportBuilt
+effect emit reportBuilt EventEmit
+status completed
+exit=0
+rc=0

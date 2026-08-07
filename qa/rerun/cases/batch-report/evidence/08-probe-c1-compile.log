@@ -1,0 +1,51 @@
+wrote /dev/null (5 nodes)
+rc=0
+--- c1 IR (create DailyReport가 entity.daily.report로 해석되는지):
+[
+ {
+  "kind": "Entity",
+  "id": "entity.daily.report",
+  "name": "DailyReport",
+  "fields": [
+   {
+    "name": "id",
+    "type": "UUID"
+   },
+   {
+    "name": "reportDate",
+    "type": "DateTime"
+   },
+   {
+    "name": "orderCount",
+    "type": "Integer"
+   }
+  ]
+ },
+ {
+  "kind": "Workflow",
+  "id": "wf.build.report",
+  "name": "BuildReport",
+  "children": [
+   "wf.build.report.step.1"
+  ]
+ },
+ {
+  "kind": "WorkflowStep",
+  "id": "wf.build.report.step.1",
+  "name": "create DailyReport",
+  "children": [
+   "wf.build.report.step.1.repo"
+  ]
+ },
+ {
+  "kind": "RepositoryCall",
+  "id": "wf.build.report.step.1.repo",
+  "entity": "entity.daily.report",
+  "operation": "create"
+ },
+ {
+  "kind": "Capability",
+  "id": "cap.postgres",
+  "name": "postgres"
+ }
+]
