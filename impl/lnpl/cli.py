@@ -37,6 +37,7 @@ from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, generate as generate_openapi
+from .serve import ServeError, serve
 from .spec import SpecError, extract, run_manifest
 
 
@@ -239,6 +240,34 @@ def cmd_openapi(args):
     return 0
 
 
+def cmd_serve(args):
+    """Issue #26: bind the workflows to their OpenAPI paths over HTTP (mode A).
+
+    The status-code mapping is normative in docs/serving.md. SIGINT is the
+    shutdown path: `serve_forever` surfaces it as KeyboardInterrupt, the socket
+    closes, and the exit code stays 0 — stopping a server on request is not a
+    failure.
+    """
+    doc, _, _, diagnostics = _compile(args.source)
+    _emit_diagnostics(diagnostics)
+    if not any(n["kind"] == "Workflow" for n in doc["nodes"]):
+        print("no workflow to serve", file=sys.stderr)
+        return 1
+    server = serve(doc, args.host, args.port)
+    host, port = server.server_address[:2]
+    # flush: with stdout piped (the normal way to capture the port), a buffered
+    # announce line never reaches the reader while serve_forever blocks.
+    print("serving %s on http://%s:%d (mode A, fake backend)"
+          % (args.source, host, port), flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def _repo_rows(doc, payload, workflow_id, empty=False):
     if empty:
         return {}
@@ -406,6 +435,16 @@ def main(argv=None):
     oa.add_argument("-o", "--output")
     oa.set_defaults(func=cmd_openapi)
 
+    sv = sub.add_parser("serve",
+                        help="serve workflows over HTTP at the OpenAPI paths "
+                             "(interpreter mode A, fake backend)")
+    sv.add_argument("source")
+    sv.add_argument("--host", default="127.0.0.1",
+                    help="bind address (default: 127.0.0.1 — loopback only)")
+    sv.add_argument("--port", type=int, default=8080,
+                    help="TCP port; 0 binds an ephemeral port (default: 8080)")
+    sv.set_defaults(func=cmd_serve)
+
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
     bd.add_argument("source")
     bd.add_argument("--workflow")
@@ -454,7 +493,7 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 2
     except (LexError, ParseError, LowerError, SpecError, OpenApiError,
-            KbError) as exc:
+            ServeError, KbError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)
         return 2
     except RunError as exc:
