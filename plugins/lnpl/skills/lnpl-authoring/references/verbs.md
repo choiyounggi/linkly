@@ -27,3 +27,5 @@
 | `authorize` | `Authorization` | — |
 
 `return`, `log`, `send`, `notify`, `verify` 같은 낱말은 이 표에 **없다**. 자연스러워 보여도 아무 효과가 없다.
+
+`create`가 언제 충돌하고 그 충돌을 spec으로 어디까지 계약할 수 있는지는 [spec.md](spec.md)의 "저장소 시드와 `create` 충돌"에 있다. `set`의 대상이 될 수 있는 바인딩을 어떤 동사가 만드는지는 [grammar.md](grammar.md)의 "할당(`set`)의 대상"에 있다.
