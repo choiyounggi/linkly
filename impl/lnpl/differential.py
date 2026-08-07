@@ -51,8 +51,21 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
         text += "\nbinding %s %s" % (
             name, json.dumps(result["bindings"][name], sort_keys=True,
                              ensure_ascii=False, default=repr))
+    # RFC-0018: accumulate per step NAME, the fold `observe_mode_b` already
+    # uses. A name repeats when `until` or `repeat` unrolls its body, and this
+    # used to be a dict comprehension — last occurrence wins — so a 16-round
+    # loop reported one `RepositoryCall` against mode B's sixteen and class 3/4
+    # went red although both modes ran the same 17 steps (issue #51; the
+    # asymmetry RFC-0017 §Open Questions 1 left undecided).
+    #
+    # Unified toward accumulation, not toward overwriting: folding sixteen
+    # performed effects into one is a normalisation no contract clause permits,
+    # and it would let mode B skip fifteen repository calls and still pass.
+    effects = {}
+    for s in steps:
+        effects.setdefault(s["step"], []).extend(s["effects"])
     return {"order": [s["step"] for s in steps],
-            "effects": {s["step"]: s["effects"] for s in steps},
+            "effects": effects,
             "status": result["status"],
             "skips": _normalise_skips(result["skipped"]),
             "bindings": result["bindings"],

@@ -23,7 +23,8 @@ import unittest
 from lnpl import backend, differential
 from lnpl.lower import lower
 from lnpl.parser import parse
-from lnpl.repo_policy import default_rows
+from lnpl.repo_policy import default_rows, seeded_entities
+from tests.fixtures import REPEAT_EFFECT_LOOP, until_effect_source
 from tests.fixtures import UNTIL_COUNTER as SRC
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -109,6 +110,135 @@ class TestUntilModeEquivalence(unittest.TestCase):
             self.doc, "wf.w", payload, _rows(payload),
             self.workdir)
         self.assertTrue(ok, "\n".join(report))
+
+
+@NEEDS_TOOLS
+class TestUntilRepeatedStepObservation(unittest.TestCase):
+    """Issue #51 / RFC-0018: a step name repeated by a guard must fold the same
+    way in both modes.
+
+    The class above compares ROUND COUNTS, which is why it stayed green through
+    this defect. What diverged is the per-name EFFECT map: `observe_mode_a` used
+    a dict comprehension (last occurrence wins) while `observe_mode_b`
+    accumulates, so a loop whose guarded step carries an effect produced
+    `['RepositoryCall']` against `['RepositoryCall'] * 16` even though both modes
+    ran the same 17 steps.
+
+    Issue #51 reported this as "mode B runs to the round cap when the condition
+    already holds at entry". That is not what happens — the native binary emits
+    exactly one `step` line on the entry-true path — so the entry-true case here
+    is a no-regression control, not a reproduction.
+    """
+
+    def setUp(self):
+        os.makedirs(TMP, exist_ok=True)
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-until-eff-", dir=TMP)
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _observe(self, source, budget):
+        """Both modes' observations of `source` at `token.retryBudget = budget`."""
+        doc = lower(parse(source), "t").to_document()
+        payload = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                   "retryBudget": budget}
+        rows = default_rows(doc, "wf.repro", payload)
+        seeded = seeded_entities(doc, "wf.repro")
+        a = differential.observe_mode_a(doc, "wf.repro", payload, rows)
+        b = differential.observe_mode_b(doc, "wf.repro", self.workdir,
+                                        payload=payload, seeded=seeded)
+        return a, b
+
+    def _assert_cap_rounds_agree(self, condition, budget):
+        """The loop ran the cap in both modes, and both report the same effects."""
+        a, b = self._observe(until_effect_source(condition), budget)
+        self.assertEqual(b["effects"]["read token"], ["RepositoryCall"] * CAP,
+                         "mode B did not run the unrolled body %d times" % CAP)
+        self.assertEqual(a["effects"], b["effects"],
+                         "the two modes ran the same %d steps but folded the "
+                         "repeated step's effects differently" % len(a["order"]))
+
+    def test_entry_false_eq_gives_both_modes_the_same_effect_multiset(self):
+        self._assert_cap_rounds_agree("token.retryBudget == 0", 9)
+
+    def test_entry_false_lt_gives_both_modes_the_same_effect_multiset(self):
+        self._assert_cap_rounds_agree("token.retryBudget < 1", 9)
+
+    def test_entry_false_gt_gives_both_modes_the_same_effect_multiset(self):
+        self._assert_cap_rounds_agree("token.retryBudget > 5", 0)
+
+    def test_entry_true_runs_no_rounds_in_both_modes(self):
+        """Control: the path issue #51 named. It already agreed and must stay so."""
+        a, b = self._observe(until_effect_source("token.retryBudget == 0"), 0)
+        self.assertEqual(a["order"], ["find token"])
+        self.assertEqual(b["order"], a["order"])
+        self.assertEqual(a["skips"], b["skips"])
+        self.assertEqual(a["skips"][0]["rounds"], 0,
+                         "a zero-round `until` must record rounds=0 (RFC-0014)")
+
+    def test_differential_is_equivalent_on_the_issue_51_reproduction(self):
+        """The reproduction from issue #51's body, on the path that diverges."""
+        a, b = self._observe(until_effect_source("token.retryBudget == 0"), 9)
+        ok, report = differential.compare_observations(a, b)
+        self.assertTrue(ok, "\n".join(report))
+
+    def test_repeat_guard_folds_the_same_way(self):
+        """The defect is repetition, not `until` — `repeat` repeats a name too."""
+        a, b = self._observe(REPEAT_EFFECT_LOOP, 0)
+        self.assertEqual(b["effects"]["read token"], ["RepositoryCall"] * 3)
+        self.assertEqual(a["effects"], b["effects"])
+
+
+class TestRepeatedStepFoldDetectsRealDivergence(unittest.TestCase):
+    """RFC-0018 accumulates instead of overwriting so that a REAL divergence in
+    a repeated step still reddens class 3/4.
+
+    Overwriting would have made the two modes agree by discarding evidence: a
+    mode that skipped fifteen of sixteen repository calls folds to the same
+    one-element list as a mode that made all sixteen. These are the seeded
+    divergences that prove the class discriminates.
+
+    Deliberately NOT `@NEEDS_TOOLS`. `compare_observations` is a pure function,
+    so this control must run — and can run — on a machine with no MLIR/LLVM. A
+    control that skips itself where the toolchain is missing is not a control.
+    """
+
+    @staticmethod
+    def _observation(effects):
+        """A minimal observation whose only interesting field is `effects`."""
+        return {"order": ["s"] * CAP, "effects": {"s": effects},
+                "status": "completed", "skips": [], "text": ""}
+
+    def _assert_only_class_3_reddens(self, a_effects, b_effects):
+        ok, report = differential.compare_observations(
+            self._observation(a_effects), self._observation(b_effects))
+        self.assertFalse(ok, "\n".join(report))
+        # "3/4 went red" must be distinguishable from "everything went red":
+        # the other three classes are identical by construction here.
+        failed = sorted(line.split(" ")[1] for line in report
+                        if line.startswith("FAIL"))
+        self.assertEqual(failed, ["3/4"], "\n".join(report))
+        return report
+
+    def test_a_dropped_effect_in_one_round_still_reddens_class_3(self):
+        """Mode B made fifteen of the sixteen repository calls."""
+        self._assert_only_class_3_reddens(["RepositoryCall"] * CAP,
+                                          ["RepositoryCall"] * (CAP - 1))
+
+    def test_a_changed_effect_kind_reddens_class_3(self):
+        """Same count, one round's effect is the wrong kind."""
+        self._assert_only_class_3_reddens(
+            ["RepositoryCall"] * CAP,
+            ["RepositoryCall"] * (CAP - 1) + ["NetworkCall"])
+
+    def test_identical_repeated_effects_pass_class_3(self):
+        """Positive control: the check is not simply always red."""
+        effects = ["RepositoryCall"] * CAP
+        ok, report = differential.compare_observations(
+            self._observation(effects), self._observation(list(effects)))
+        self.assertTrue(ok, "\n".join(report))
+        self.assertTrue(any(line.startswith("PASS 3/4") for line in report),
+                        "\n".join(report))
 
 
 if __name__ == "__main__":
