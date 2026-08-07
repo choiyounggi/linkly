@@ -275,7 +275,7 @@ def _declaration_diagnostics(diagnostics, clause, names, where):
         status, note = entry
         code = ("declared-measured-only" if status == "measured"
                 else "declared-not-enforced")
-        diagnostics.add(code=code, severity="warning", where=where,
+        diagnostics.add(code=code, where=where,
                         subject="%s %s" % (clause, name),
                         message="declared but %s: %s" % (status, note))
 
@@ -687,7 +687,7 @@ class _WfContext:
             # what issue #36 reports, so the fact leaves as a diagnostic while
             # the emitted node stays exactly as before.
             self.diagnostics.add(
-                code="unknown-verb", severity="warning",
+                code="unknown-verb",
                 where="line %d" % line.lineno, subject=verb,
                 message="`%s` is outside VERB_LEXICON: this step derives no "
                         "Effect and runs as a descriptive no-op"

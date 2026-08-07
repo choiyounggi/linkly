@@ -87,6 +87,31 @@ class GeneratorTest(unittest.TestCase):
         for clause, name in ENFORCEMENT:
             self.assertIn("`%s %s`" % (clause, name), text)
 
+    def test_every_diagnostic_code_reaches_the_document_with_its_grade(self):
+        """The grade column must be *derived*, not typed in (#52, RFC-0021).
+
+        `--check` alone cannot see this: it compares the committed file against
+        the generator's own output, so a generator that hardcoded every grade to
+        `warning` would regenerate happily and stay green. This asserts the
+        document against `SEVERITY_OF` itself, which is the only comparison that
+        can tell "derived from the table" from "agrees with the generator".
+        """
+        from lnpl.diagnostics import CODES, SEVERITY_OF
+        with open(os.path.join(REFS, "declarations.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        for code in CODES:
+            self.assertIn("| `%s` | **%s** |" % (code, SEVERITY_OF[code]), text,
+                          "declarations.md disagrees with SEVERITY_OF for %r" % code)
+
+    def test_the_grade_column_is_not_a_single_repeated_value(self):
+        """Negative control: a column of one value carries no information.
+
+        That is precisely the #52 defect one level up — the `severity` field
+        existed but every code read `warning`, so nothing could select on it.
+        """
+        from lnpl.diagnostics import CODES, SEVERITY_OF
+        self.assertGreater(len({SEVERITY_OF[c] for c in CODES}), 1)
+
 
 SKILL_DIR = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-authoring")
 SKILL_MD = os.path.join(SKILL_DIR, "SKILL.md")

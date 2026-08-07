@@ -27,7 +27,12 @@ issue #25 and the roadmap, not this module.
 
 from dataclasses import dataclass
 
-SEVERITIES = ("warning", "error")
+# The grade ladder, weakest first (#52). The tuple order *is* the ranking:
+# `--strict=<level>` gates on everything from that index up, so reordering these
+# reverses every threshold in the CLI. `error` is reserved — no code maps to it
+# today, which `test_diagnostics_channel.py` pins so the next person to use it
+# has to decide what `--strict=error` means.
+SEVERITIES = ("info", "warning", "error")
 
 # The closed set of diagnostic codes. A code is the only field a caller may
 # branch on, so it is a contract: keep the spellings stable, and treat removing
@@ -39,6 +44,28 @@ CODES = (
     "authorization-not-verified",   # #38  Authorization Effect records, never checks
     "guard-skipped-steps",          # #44  a guard was false, so declared steps did not run
 )
+
+# code -> grade (#52). One question decides every row:
+#
+#   does editing the program make this diagnostic go away?
+#
+#   yes -> `warning`. The author probably did not mean this, and the fix is
+#          theirs: drop the typo'd verb, or look at why a guard was false.
+#   no  -> `info`. The program is correct and the platform is stating what it
+#          does with it. No edit removes the line; only the platform changing
+#          does. Reporting it is still the point (#38) — grading it `warning`
+#          is what made `--strict` and a legitimate `on schedule` declaration
+#          mutually exclusive (issue #52, qa/rerun r3 N-4).
+#
+# The grade lives here rather than at each `add()` call so it cannot be decided
+# twice, differently, for the same fact.
+SEVERITY_OF = {
+    "unknown-verb":               "warning",
+    "declared-not-enforced":      "info",
+    "declared-measured-only":     "info",
+    "authorization-not-verified": "info",
+    "guard-skipped-steps":        "warning",
+}
 
 # How the runtime treats a declaration.
 ENFORCED = "enforced"        # the declaration changes what execution does
@@ -110,10 +137,12 @@ class Diagnostic:
     stable interface. `subject` carries the same fact as the message in a form
     a test or a tool can compare — the verb, the declaration, the requirement —
     so nobody has to regex prose to find out what this is about.
+
+    `severity` is derived, not stored: it reads `SEVERITY_OF[code]`, so there is
+    no argument through which a producer could grade the same code two ways.
     """
 
     code: str        # one of CODES
-    severity: str    # one of SEVERITIES
     where: str       # the site: "line 31", or a node id such as "security.login"
     subject: str     # machine-readable subject: "generate" / "security jwt"
     message: str     # one human line; never branched on
@@ -121,8 +150,11 @@ class Diagnostic:
     def __post_init__(self):
         if self.code not in CODES:
             raise ValueError("unknown diagnostic code: %r" % self.code)
-        if self.severity not in SEVERITIES:
-            raise ValueError("unknown severity: %r" % self.severity)
+
+    @property
+    def severity(self):
+        """One of SEVERITIES, decided by the code alone (#52)."""
+        return SEVERITY_OF[self.code]
 
 
 class Diagnostics:
@@ -136,9 +168,14 @@ class Diagnostics:
     def __init__(self):
         self._items = []
 
-    def add(self, code, severity, where, subject, message):
-        """Record one diagnostic and return it."""
-        diagnostic = Diagnostic(code=code, severity=severity, where=where,
+    def add(self, *, code, where, subject, message):
+        """Record one diagnostic and return it.
+
+        Keyword-only: `severity` used to sit second, so a stale positional call
+        would bind a grade string into `where` and store it without complaint.
+        The bare `*` makes every such call fail where it is written.
+        """
+        diagnostic = Diagnostic(code=code, where=where,
                                 subject=subject, message=message)
         self._items.append(diagnostic)
         return diagnostic
@@ -174,6 +211,23 @@ def _records(diagnostics):
     return list(diagnostics)
 
 
+def to_records(diagnostics):
+    """Diagnostics -> plain dicts, for a caller that reads JSON not prose (#52).
+
+    Not a second formatter: `format_lines` still owns the only human rendering,
+    and this owns none — it hands over the record's own fields so a consumer can
+    branch on `code` and `severity` instead of regexing a `message` that was
+    never a stable interface (r3 F-8).
+
+    `severity` is spelled out because it is a derived property, so
+    `dataclasses.asdict` would silently drop it — and dropping the grade is
+    exactly what would make this channel useless for a graded CI gate.
+    """
+    return [{"code": d.code, "severity": d.severity, "where": d.where,
+             "subject": d.subject, "message": d.message}
+            for d in _records(diagnostics)]
+
+
 def format_lines(diagnostics):
     """Diagnostics -> the lines to show a person, summary last.
 
@@ -188,7 +242,8 @@ def format_lines(diagnostics):
     lines = ["%s: %s [%s] %s — %s" % (d.severity, d.code, d.where, d.subject,
                                       d.message)
              for d in records]
+    infos = sum(1 for d in records if d.severity == "info")
     warnings = sum(1 for d in records if d.severity == "warning")
     errors = sum(1 for d in records if d.severity == "error")
-    lines.append("%d warning(s), %d error(s)" % (warnings, errors))
+    lines.append("%d info, %d warning(s), %d error(s)" % (infos, warnings, errors))
     return lines

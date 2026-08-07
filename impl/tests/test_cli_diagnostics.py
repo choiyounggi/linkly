@@ -19,6 +19,7 @@ import shutil
 import unittest
 
 from lnpl import cli
+from lnpl.diagnostics import SEVERITY_OF
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOGIN = os.path.join(REPO, "examples", "login.lnpl")
@@ -31,6 +32,73 @@ entity User
         id UUID
 workflow Login
     validate input
+"""
+
+# Issue #52 fixtures. `on schedule daily` is a legitimate declaration whose
+# UNENFORCED status is permanent by design (RFC-0016; issue #26 owns the
+# executor), so it emits `declared-not-enforced` — grade `info`. Nothing the
+# author can edit removes that line, which is why gating on it made #45 and #49
+# mutually exclusive.
+SCHEDULE_ONLY = """
+service Rollup
+
+entity Report
+    field
+        id UUID
+
+event DailyRollup on schedule daily at 00:00 UTC
+
+workflow GetReport
+    read Report
+"""
+
+# The contrast: `frobnicate` is outside VERB_LEXICON, so the step derives no
+# Effect and silently does nothing — grade `warning`, and editing removes it.
+TYPO_ONLY = """
+entity Report
+    field
+        id UUID
+
+workflow GetReport
+    read Report
+    frobnicate Report
+"""
+
+# Both grades in one module, so a threshold has something to separate.
+SCHEDULE_AND_TYPO = """
+service Rollup
+
+entity Report
+    field
+        id UUID
+
+event DailyRollup on schedule daily at 00:00 UTC
+
+workflow GetReport
+    read Report
+    frobnicate Report
+"""
+
+# The same schedule declaration with a spec block, so `spec --run` reaches the
+# gate instead of exiting 1 on "no spec block found".
+SCHEDULE_WITH_SPEC = """
+service Rollup
+
+entity Report
+    field
+        id UUID
+
+event DailyRollup on schedule daily at 00:00 UTC
+
+workflow GetReport
+    read Report
+    spec
+        given
+            valid report
+        when
+            get report
+        expect
+            completed
 """
 
 # Unenforced declarations and not a single step to run.
@@ -76,6 +144,22 @@ def run_cli_split(argv):
     return rc, out.getvalue(), err.getvalue()
 
 
+def run_cli_usage_error(argv):
+    """Same, for argv argparse rejects before dispatch — it raises SystemExit.
+
+    Returns the exit code rather than a return value, because that is the only
+    thing a shell sees either way: `2 = compile error, usage error, strict gate`
+    is one class to a caller reading `$?`.
+    """
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            cli.main(argv)
+        except SystemExit as exc:
+            return exc.code, out.getvalue(), err.getvalue()
+    raise AssertionError("expected a usage error for %r" % (argv,))
+
+
 class TestGoldenScenarioDiagnostics(unittest.TestCase):
     """`examples/login.lnpl` carries three unknown verbs and three declarations."""
 
@@ -88,7 +172,8 @@ class TestGoldenScenarioDiagnostics(unittest.TestCase):
 
     def test_compile_ends_with_the_summary_line(self):
         _, _, err = run_cli_split(["compile", LOGIN])
-        self.assertEqual(err.strip().splitlines()[-1], "6 warning(s), 0 error(s)")
+        self.assertEqual(err.strip().splitlines()[-1],
+                         "3 info, 3 warning(s), 0 error(s)")
 
     def test_compile_names_each_out_of_lexicon_verb(self):
         _, _, err = run_cli_split(["compile", LOGIN])
@@ -200,7 +285,8 @@ class TestRunMergesBothProducers(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("authorization-not-verified", err)
         self.assertIn("admin", err)
-        self.assertEqual(err.strip().splitlines()[-1], "1 warning(s), 0 error(s)")
+        self.assertEqual(err.strip().splitlines()[-1],
+                         "1 info, 0 warning(s), 0 error(s)")
 
     def test_run_reports_compile_time_and_run_time_findings_together(self):
         path = self._write("both.lnpl", BOTH_PRODUCERS)
@@ -211,7 +297,8 @@ class TestRunMergesBothProducers(unittest.TestCase):
         self.assertIn("authorization-not-verified", err)   # run time
         # One report, one summary — not two reports stapled together.
         self.assertEqual(err.count("warning(s)"), 1)
-        self.assertEqual(err.strip().splitlines()[-1], "3 warning(s), 0 error(s)")
+        self.assertEqual(err.strip().splitlines()[-1],
+                         "2 info, 1 warning(s), 0 error(s)")
 
     def test_compile_of_the_same_module_omits_only_the_runtime_finding(self):
         path = self._write("both.lnpl", BOTH_PRODUCERS)
@@ -219,15 +306,28 @@ class TestRunMergesBothProducers(unittest.TestCase):
         self.assertIn("security jwt", err)
         self.assertIn("generate", err)
         self.assertNotIn("authorization-not-verified", err)
-        self.assertEqual(err.strip().splitlines()[-1], "2 warning(s), 0 error(s)")
+        self.assertEqual(err.strip().splitlines()[-1],
+                         "1 info, 1 warning(s), 0 error(s)")
 
-    def test_the_runtime_diagnostic_stays_off_stdout_and_off_the_trace(self):
+    def test_the_runtime_diagnostic_stays_out_of_the_result_and_the_trace(self):
+        """Since #52 the record rides on stdout — but only in its own key.
+
+        The original form of this test asserted the code appeared nowhere in
+        stdout at all. `run --json` now publishes the diagnostics deliberately
+        (r3 F-8), so the assertion moved to where the risk actually is: the
+        `result` and `trace` objects are consumed as the run's own output, and a
+        diagnostic leaking into either would be the artifact corruption that put
+        diagnostics on stderr in the first place.
+        """
         path = self._write("rt.lnpl", RUNTIME_ONLY)
         _, out, err = run_cli_split(["run", path, "--json"])
         self.assertIn("authorization-not-verified", err)
-        self.assertNotIn("authorization-not-verified", out)
         payload = json.loads(out)
+        self.assertNotIn("authorization-not-verified", json.dumps(payload["result"]))
         self.assertNotIn("authorization-not-verified", json.dumps(payload["trace"]))
+        # ...and it is present exactly once, in the channel built for it.
+        self.assertEqual([d["code"] for d in payload["diagnostics"]],
+                         ["authorization-not-verified"])
         # The span attribute the interpreter always wrote is still there.
         self.assertIn("admin", json.dumps(payload["trace"]))
 
@@ -266,7 +366,8 @@ class TestStrictExitGate(unittest.TestCase):
         rc, out, err = run_cli_split(["compile", LOGIN, "--strict"])
         self.assertEqual(rc, 2)
         self.assertEqual(err.count("unknown-verb"), 3)
-        self.assertEqual(err.strip().splitlines()[-1], "6 warning(s), 0 error(s)")
+        self.assertEqual(err.strip().splitlines()[-1],
+                         "3 info, 3 warning(s), 0 error(s)")
         # The artifact on stdout is still the artifact.
         self.assertEqual(json.loads(out)["module"], "login")
 
@@ -358,6 +459,244 @@ class TestStrictExitGate(unittest.TestCase):
         self.assertIn("no workflow to run", err)
 
 
+class TestStrictLevelSelection(unittest.TestCase):
+    """`--strict=<level>` picks which grades gate (issue #52).
+
+    The defect this closes: `--strict` fired on *any* diagnostic, so a program
+    carrying a legitimate `on schedule daily` declaration returned rc 2 on every
+    run — #45's gate and #49's schedule declaration could not both be used
+    (qa/rerun r3 N-4; the same shape as r1 N-1 and r4 N-1 for a `performance`
+    budget). The grade ladder gives the caller a threshold, exactly as
+    Kubernetes makes field validation a per-request `Ignore|Warn|Strict` choice
+    rather than one global switch.
+
+    Bare `--strict` is unchanged: it already shipped in v0.3.0, and quietly
+    loosening a live CI gate is worse than leaving the ergonomics opt-in.
+    """
+
+    def setUp(self):
+        os.makedirs(TMP, exist_ok=True)
+        # r3 N-4's reproduction: an intended declaration, nothing else.
+        self.schedule = os.path.join(TMP, "schedule.lnpl")
+        with open(self.schedule, "w", encoding="utf-8") as fh:
+            fh.write(SCHEDULE_ONLY)
+        # The contrast: a verb outside the lexicon, which the gate must keep.
+        self.typo = os.path.join(TMP, "typo.lnpl")
+        with open(self.typo, "w", encoding="utf-8") as fh:
+            fh.write(TYPO_ONLY)
+        # Both at once, so a threshold has something to separate.
+        self.mixed = os.path.join(TMP, "mixed.lnpl")
+        with open(self.mixed, "w", encoding="utf-8") as fh:
+            fh.write(SCHEDULE_AND_TYPO)
+        self.clean = os.path.join(TMP, "clean.lnpl")
+        with open(self.clean, "w", encoding="utf-8") as fh:
+            fh.write(CLEAN_SOURCE)
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+
+    # ---- r3 N-4: the mutual exclusion is gone ------------------------------
+    def test_a_schedule_declaration_passes_the_warning_gate(self):
+        """The whole point of #52: rc 2 -> rc 0 without deleting the report."""
+        rc, _, err = run_cli_split(["compile", self.schedule, "--strict=warning"])
+        self.assertEqual(rc, 0)
+        # The grade changed what gates, not what is said.
+        self.assertIn("declared-not-enforced", err)
+        self.assertIn("event schedule", err)
+        self.assertIn("info:", err)
+
+    def test_the_same_declaration_still_gates_under_the_bare_flag(self):
+        """Before/after in one test: the flag that shipped keeps its meaning."""
+        bare_rc, _, _ = run_cli_split(["compile", self.schedule, "--strict"])
+        warn_rc, _, _ = run_cli_split(["compile", self.schedule, "--strict=warning"])
+        self.assertEqual(bare_rc, 2)
+        self.assertEqual(warn_rc, 0)
+
+    def test_the_warning_gate_still_catches_a_typo(self):
+        """The negative control: a threshold that passed everything is no gate."""
+        rc, _, err = run_cli_split(["compile", self.typo, "--strict=warning"])
+        self.assertEqual(rc, 2)
+        self.assertIn("unknown-verb", err)
+
+    def test_a_mixed_module_gates_on_its_highest_grade(self):
+        rc, _, err = run_cli_split(["compile", self.mixed, "--strict=warning"])
+        self.assertEqual(rc, 2)
+        self.assertIn("declared-not-enforced", err)
+        self.assertIn("unknown-verb", err)
+
+    # ---- bare --strict is byte-identical to --strict=info -------------------
+    def test_bare_strict_is_the_info_threshold(self):
+        for source in (self.schedule, self.typo, self.mixed, self.clean):
+            bare = run_cli_split(["compile", source, "--strict"])
+            info = run_cli_split(["compile", source, "--strict=info"])
+            self.assertEqual(bare[0], info[0], source)
+            self.assertEqual(bare[2], info[2], source)
+
+    def test_the_level_never_changes_the_report(self):
+        _, _, plain_err = run_cli_split(["compile", self.mixed])
+        _, _, warn_err = run_cli_split(["compile", self.mixed, "--strict=warning"])
+        self.assertEqual(plain_err, warn_err,
+                         "--strict selects an exit code, it never edits stderr")
+
+    # ---- the threshold reaches every command that has the flag -------------
+    def test_run_honours_the_level(self):
+        bare_rc, _, _ = run_cli_split(["run", self.schedule, "--strict"])
+        warn_rc, _, _ = run_cli_split(["run", self.schedule, "--strict=warning"])
+        self.assertEqual(bare_rc, 2)
+        self.assertEqual(warn_rc, 0)
+
+    def test_spec_honours_the_level(self):
+        # `spec` needs a spec block, or it exits 1 before the gate is reached —
+        # and rc 1 is a real failure the gate must never repaint as 2.
+        source = os.path.join(TMP, "schedule-spec.lnpl")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(SCHEDULE_WITH_SPEC)
+        bare_rc, _, _ = run_cli_split(["spec", source, "--run", "--strict"])
+        warn_rc, out, _ = run_cli_split(["spec", source, "--run", "--strict=warning"])
+        self.assertEqual(bare_rc, 2)
+        self.assertEqual(warn_rc, 0)
+        self.assertIn("0 failed", out)   # rc 0 is a pass, not an absent run
+
+    # ---- boundary ----------------------------------------------------------
+    def test_no_diagnostics_exits_0_at_every_level(self):
+        for level in ("--strict", "--strict=info", "--strict=warning",
+                      "--strict=error"):
+            rc, _, err = run_cli_split(["compile", self.clean, level])
+            self.assertEqual(rc, 0, level)
+            self.assertEqual(err, "", level)
+
+    def test_the_error_level_gates_on_nothing_today(self):
+        """D2a: `error` is a reserved rung, and the help text says so.
+
+        Without the help line a caller could put `--strict=error` in CI and
+        believe they had a gate. The pairing is the point, so both halves are
+        asserted here.
+        """
+        rc, _, err = run_cli_split(["compile", self.mixed, "--strict=error"])
+        self.assertEqual(rc, 0)
+        self.assertIn("unknown-verb", err)      # still reported, just not gating
+
+    def test_the_help_text_says_the_error_level_matches_nothing(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit):
+                cli.main(["compile", "--help"])
+        helptext = out.getvalue()
+        self.assertIn("--strict", helptext)
+        self.assertIn("error", helptext)
+        self.assertIn("reserved", helptext)
+
+    # ---- error ------------------------------------------------------------
+    def test_an_unknown_level_is_rejected_naming_the_accepted_set(self):
+        code, out, err = run_cli_usage_error(["compile", self.typo,
+                                              "--strict=bogus"])
+        self.assertEqual(code, 2)
+        for level in ("info", "warning", "error"):
+            self.assertIn(level, err)
+        self.assertIn("bogus", err)
+        # A usage error must not look like a successful compile.
+        self.assertEqual(out, "")
+
+    def test_the_flag_before_the_source_is_rejected_with_a_correction(self):
+        """`--strict src.lnpl` swallows the path as the level (nargs="?").
+
+        argparse's own `choices=` message would list the grades and leave the
+        author staring at a path that is obviously not one, so the rejection
+        says what to write instead. Without this the shape reads as the
+        unrelated "the following arguments are required: source".
+        """
+        code, out, err = run_cli_usage_error(["compile", "--strict", self.typo])
+        self.assertEqual(code, 2)
+        self.assertIn("--strict=", err)
+        self.assertIn("after the source", err)
+        self.assertEqual(out, "")
+
+
+class TestRunJsonDiagnosticsChannel(unittest.TestCase):
+    """`run --json` carries the diagnostics as data (issue #52, r3 F-8).
+
+    CI could gate on the exit code once `--strict` existed, but reading *which*
+    diagnostics fired meant regexing stderr, and the message is explicitly not a
+    stable interface. The records already have machine-readable fields, so the
+    JSON mode emits them instead of asking anyone to parse prose.
+
+    `compile` and `spec` deliberately do not carry them: their stdout is the IR
+    document and the manifest, and a diagnostics key would corrupt the artifact
+    — which is the same reason diagnostics went to stderr in the first place.
+    """
+
+    def setUp(self):
+        os.makedirs(TMP, exist_ok=True)
+        self.clean = os.path.join(TMP, "clean.lnpl")
+        with open(self.clean, "w", encoding="utf-8") as fh:
+            fh.write(CLEAN_SOURCE)
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+
+    def test_the_json_payload_carries_every_reported_diagnostic(self):
+        rc, out, err = run_cli_split(["run", LOGIN, "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        # Same count and same order as the human report, which is the claim
+        # that makes the two channels one fact rather than two.
+        reported = [line for line in err.strip().splitlines()
+                    if not line.endswith("error(s)")]
+        self.assertEqual(len(payload["diagnostics"]), len(reported))
+        self.assertEqual([d["code"] for d in payload["diagnostics"]],
+                         [line.split(": ", 1)[1].split(" ", 1)[0]
+                          for line in reported])
+
+    def test_every_record_carries_the_five_fields(self):
+        _, out, _ = run_cli_split(["run", LOGIN, "--json"])
+        for record in json.loads(out)["diagnostics"]:
+            self.assertEqual(set(record),
+                             {"code", "severity", "where", "subject", "message"})
+
+    def test_the_serialised_grade_agrees_with_the_table(self):
+        # The serialisation is derived, not restated: if it ever hardcoded a
+        # grade this is the assertion that catches the drift.
+        _, out, _ = run_cli_split(["run", LOGIN, "--json"])
+        for record in json.loads(out)["diagnostics"]:
+            self.assertEqual(record["severity"], SEVERITY_OF[record["code"]])
+
+    def test_both_producers_reach_the_payload(self):
+        """Compile-time and run-time findings are one list, as on stderr."""
+        source = os.path.join(TMP, "both.lnpl")
+        with open(source, "w", encoding="utf-8") as fh:
+            fh.write(BOTH_PRODUCERS)
+        _, out, _ = run_cli_split(["run", source, "--json"])
+        codes = [d["code"] for d in json.loads(out)["diagnostics"]]
+        self.assertIn("unknown-verb", codes)                 # from lowering
+        self.assertIn("authorization-not-verified", codes)   # from the run
+
+    def test_a_clean_module_carries_an_empty_list_not_a_missing_key(self):
+        """Boundary: a consumer must never branch on the key's existence."""
+        _, out, err = run_cli_split(["run", self.clean, "--json"])
+        payload = json.loads(out)
+        self.assertIn("diagnostics", payload)
+        self.assertEqual(payload["diagnostics"], [])
+        self.assertEqual(err, "")
+
+    def test_the_existing_keys_are_untouched(self):
+        _, out, _ = run_cli_split(["run", LOGIN, "--json"])
+        payload = json.loads(out)
+        self.assertIn("result", payload)
+        self.assertIn("trace", payload)
+        self.assertEqual(payload["result"]["status"], "completed")
+
+    def test_without_json_the_records_stay_off_stdout(self):
+        """Human mode must not gain a JSON blob."""
+        _, out, err = run_cli_split(["run", LOGIN])
+        self.assertNotIn('"severity"', out)
+        self.assertIn("unknown-verb", err)
+
+    def test_compile_stdout_stays_the_ir_document(self):
+        """The asymmetry is deliberate — the artifact must not grow a key."""
+        _, out, _ = run_cli_split(["compile", LOGIN])
+        self.assertNotIn("diagnostics", json.loads(out))
+
+
 class TestUnaffectedBehaviour(unittest.TestCase):
     def setUp(self):
         os.makedirs(TMP, exist_ok=True)
@@ -398,7 +737,7 @@ class TestUnaffectedBehaviour(unittest.TestCase):
         self.assertIn("no workflow to run", err)
         self.assertIn("security jwt", err)
         self.assertIn("policy rollback", err)
-        self.assertIn("2 warning(s), 0 error(s)", err)
+        self.assertIn("2 info, 0 warning(s), 0 error(s)", err)
 
     def test_compile_reports_the_same_module_that_run_could_not_execute(self):
         source = os.path.join(TMP, "no-workflow.lnpl")

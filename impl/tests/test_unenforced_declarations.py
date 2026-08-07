@@ -166,7 +166,7 @@ class TestUnenforcedDeclarationsAreReported(unittest.TestCase):
         self.assertEqual(len(diags), 1)
         self.assertEqual(diags[0].code, "declared-not-enforced")
         self.assertEqual(diags[0].subject, "security jwt")
-        self.assertEqual(diags[0].severity, "warning")
+        self.assertEqual(diags[0].severity, "info")   # #52
         self.assertEqual(diags[0].where, "security.login")
 
     def test_response_budget_is_reported_as_measured_only(self):
@@ -330,7 +330,7 @@ class TestAuthorizationIsRecordedNeverChecked(unittest.TestCase):
         self.assertEqual(diags[0].code, "authorization-not-verified")
         self.assertEqual(diags[0].subject, "admin")
         self.assertEqual(diags[0].where, "wf.login.step.1.authz")
-        self.assertEqual(diags[0].severity, "warning")
+        self.assertEqual(diags[0].severity, "info")   # #52
         # And it did not block anything — which is exactly the problem.
         self.assertEqual(result["status"], "completed")
 

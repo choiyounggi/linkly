@@ -14,7 +14,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "impl"))
 
 from lnpl import __version__                                    # noqa: E402
-from lnpl.diagnostics import CODES, ENFORCEMENT                  # noqa: E402
+from lnpl.diagnostics import CODES, ENFORCEMENT, SEVERITY_OF     # noqa: E402
 from lnpl.lexer import (ARITH_OPS, ASSIGN_KEYWORDS, COMPARATORS,  # noqa: E402
                         DURATION_UNITS, KEYWORDS_CLAUSE, KEYWORDS_CONTROL,
                         KEYWORDS_TOP, LOGICAL_OPS, PAYLOAD_NAMESPACE, RESERVED,
@@ -145,8 +145,13 @@ def render_declarations():
     for (clause, name), (status, why) in ENFORCEMENT.items():
         lines.append("| `%s %s` | **%s** | %s |" % (clause, name, status, why))
     lines.append("\n## 진단 코드\n")
+    lines.append("등급은 `--strict[=LEVEL]`이 무엇을 게이팅하는지를 정한다"
+                 "(RFC-0021). `warning`은 프로그램을 고치면 사라지는 것이고, "
+                 "`info`는 고쳐도 사라지지 않는 플랫폼 상태의 진술이다.\n")
+    lines.append("| 코드 | 등급 |")
+    lines.append("|------|------|")
     for code in CODES:
-        lines.append("- `%s`" % code)
+        lines.append("| `%s` | **%s** |" % (code, SEVERITY_OF[code]))
     lines.append("")
     return _doc("선언과 집행 (ENFORCEMENT)", "\n".join(lines))
 

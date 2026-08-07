@@ -12,7 +12,7 @@ import os
 import sys
 
 from . import __version__
-from .diagnostics import format_lines
+from .diagnostics import SEVERITIES, format_lines, to_records
 from .drivers import (DriverError, HmacTokenProvider, TokenError,
                       audience_for_path, open_repository)
 from .interp import (Interpreter, RunError, _duration_ms, refinement_index,
@@ -81,19 +81,50 @@ def _emit_diagnostics(diagnostics):
         print(line, file=sys.stderr)
 
 
-STRICT_HELP = "exit 2 if any diagnostic is reported (otherwise the exit code is unchanged)"
+STRICT_HELP = ("gate the exit code on diagnostics: bare `--strict` fails on any "
+               "of them, `--strict=warning` only on warnings and above "
+               "(so an intended `on schedule` or `performance` declaration "
+               "stops blocking CI). `error` is reserved and matches no "
+               "diagnostic today")
+
+
+def _strict_level(value):
+    """argparse `type` for `--strict`: a grade name, or a corrective rejection.
+
+    Validated here rather than with `choices=` because of one shape. `--strict`
+    takes its level with `nargs="?"`, so `lnpl compile --strict src.lnpl` hands
+    the *path* over as the level; argparse's own message would list the choices
+    and leave the author staring at a path that is obviously not one. Raising
+    during conversion also puts the rejection before the command runs, so a
+    usage error never emits half an IR document first.
+    """
+    if value in SEVERITIES:
+        return value
+    raise argparse.ArgumentTypeError(
+        "takes one of %s, not %r — write `--strict=<level>`, or put `--strict` "
+        "after the source if you meant the bare flag"
+        % (", ".join(SEVERITIES), value))
 
 
 def _strict_rc(args, rc, diagnostics):
-    """Under `--strict`, a clean exit that reported diagnostics becomes rc 2.
+    """Under `--strict`, a clean exit carrying gating diagnostics becomes rc 2.
 
     Only rc 0 is promoted. A non-zero rc already names a more specific failure
     (1 = the run/spec failed, 3 = runtime error, 4 = backend error) and
     overwriting it would trade a precise signal for a vaguer one. Reusing 2 puts
     the gate in the existing "rejected" class, so CI branches on one code
     (issue #45, t3 F-8). The diagnostic text on stderr is not touched.
+
+    Which diagnostics gate is the caller's choice, not the code's (issue #52).
+    `SEVERITIES` is ordered weakest-first, so the threshold is an index compare:
+    bare `--strict` resolves to `info`, the lowest rung, which is exactly the
+    "any diagnostic" behaviour that shipped in v0.3.0.
     """
-    if getattr(args, "strict", False) and rc == 0 and diagnostics:
+    level = getattr(args, "strict", None)   # argparse already validated it
+    if level is None or rc != 0:
+        return rc
+    floor = SEVERITIES.index(level)
+    if any(SEVERITIES.index(d.severity) >= floor for d in diagnostics):
         return 2
     return rc
 
@@ -166,8 +197,12 @@ def cmd_run(args):
         diagnostics.extend(interp.diagnostics)
 
         if args.json:
+            # The diagnostics ride along as data, so CI can gate by grade
+            # without parsing stderr (#52, r3 F-8). Always present, `[]` when
+            # clean, so a consumer never branches on the key's existence.
             sys.stdout.write(_dump({"result": result,
-                                    "trace": interp.trace.to_dict()}))
+                                    "trace": interp.trace.to_dict(),
+                                    "diagnostics": to_records(diagnostics)}))
         else:
             _print_human(result, interp)
         _emit_diagnostics(diagnostics)
@@ -519,7 +554,8 @@ def main(argv=None):
     c = sub.add_parser("compile", help="parse and lower to Semantic IR")
     c.add_argument("source")
     c.add_argument("-o", "--output")
-    c.add_argument("--strict", action="store_true", help=STRICT_HELP)
+    c.add_argument("--strict", nargs="?", const="info", default=None,
+                     type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     c.set_defaults(func=cmd_compile)
 
     r = sub.add_parser("run", help="compile then execute (interpreter mode A)")
@@ -530,14 +566,16 @@ def main(argv=None):
     r.add_argument("--no-row", action="store_true",
                    help="start with an empty repository (exercises retry)")
     r.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
-    r.add_argument("--strict", action="store_true", help=STRICT_HELP)
+    r.add_argument("--strict", nargs="?", const="info", default=None,
+                     type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("spec", help="extract `spec` blocks as a test manifest")
     sp.add_argument("source")
     sp.add_argument("-o", "--output", help="write the manifest to this path")
     sp.add_argument("--run", action="store_true", help="execute the manifest")
-    sp.add_argument("--strict", action="store_true", help=STRICT_HELP)
+    sp.add_argument("--strict", nargs="?", const="info", default=None,
+                     type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     sp.set_defaults(func=cmd_spec)
 
     oa = sub.add_parser("openapi", help="generate an OpenAPI 3.1 document from the IR")
