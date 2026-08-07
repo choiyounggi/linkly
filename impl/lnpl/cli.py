@@ -12,7 +12,7 @@ import os
 import sys
 
 from . import __version__
-from .diagnostics import SEVERITIES, format_lines, to_records
+from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
 from .drivers import (DriverError, HmacTokenProvider, TokenError,
                       audience_for_path, open_repository)
 from .interp import (Interpreter, RunError, _duration_ms, refinement_index,
@@ -22,7 +22,8 @@ from .lower import LowerError, lower
 from .parser import ParseError, parse
 from .repo_policy import default_rows
 from .backend import (BackendError, build as build_native, condition_field_names,
-                      run_binary)
+                      ran_step_indices, restore_skips, run_binary,
+                      validation_effect_steps)
 
 
 def _parse_fields(specs):
@@ -436,6 +437,25 @@ def cmd_build(args):
         print("no workflow to build", file=sys.stderr)
         return 1
     target = _select_workflow(args.workflow, args.source, workflows)
+    # Issue #55 (r1 N-3): say where this build's Validation outcome came from,
+    # BEFORE the `--field` check below can end the command with rc 2. That is the
+    # exact path the misreading took — `--field slug=1` on a refinement-bearing
+    # workflow was rejected with `valid: (none)`, which is true and explains
+    # nothing. Emitted for the build, not the run: mode B decides the outcome at
+    # compile time, so `--run` is irrelevant to whether it holds.
+    diagnostics = Diagnostics()
+    validated = validation_effect_steps(doc, target)
+    if validated:
+        diagnostics.add(
+            code="validation-sample-derived",
+            where=target,
+            subject=", ".join(validated),
+            message="mode B decides the Validation outcome at build time from a "
+                    "derived sample payload, which is valid by construction — so "
+                    "no --field value can make a refinement fail here. --field "
+                    "drives comparison guards only; use `lnpl run --payload` "
+                    "(mode A) to exercise refinement enforcement")
+    _emit_diagnostics(diagnostics)
     # Validate --field here, at the boundary, and before the native build: a
     # name no guard compares on cannot change the run whatever its value, so it
     # is always a typo. Silently dropping it left the guard reading the default
@@ -460,6 +480,41 @@ def cmd_build(args):
     if args.run:
         rc, lines = run_binary(path, skip=args.skip, condition_fields=fields)
         print("\n".join(lines))
+        # Issue #55 (r1 N-2, r1 F-5): the binary prints nothing for a step its
+        # guard refused, so mode B's rejection was invisible here while mode A
+        # reported the same fact three ways. `restore_skips` reads the absence
+        # against the compiled plan — the reading RFC-0014 §2.6 already made
+        # normative for mode B — so nothing about the emitted module changes.
+        #
+        # `build_native` above was called without `seeded`/`payload`, so the plan
+        # must be derived with those same defaults or it would describe a
+        # different specialisation than the one that ran.
+        skips = restore_skips(doc, target, ran_step_indices(lines))
+        if skips:
+            print("  (%d step(s) skipped by guard, restored from the compiled "
+                  "plan)" % len(skips))
+            diagnostics = Diagnostics()
+            for record in skips:
+                # The guard's own text, so the reader learns WHY the step did not
+                # run rather than only that something did not.
+                print("  skipped by `%s %s`: %s"
+                      % (record["mode"], record["condition"] or "",
+                         record["step"]))
+                # `where` is the workflow id, not the guard's: mode B's observation
+                # surface has no IR node ids at all (RFC-0014 §2.4), so the
+                # workflow is the finest site it can honestly name. One record per
+                # STEP, because grouping by guard is a mode A channel — see
+                # rfcs/0022 for both differences.
+                diagnostics.add(
+                    code="guard-skipped-steps",
+                    where=target,
+                    subject=record["condition"] or "(unconditional)",
+                    message="the `%s` guard did not run %s; mode B's binary "
+                            "prints nothing for a step it skips, so this record "
+                            "is restored from the compiled step plan "
+                            "(RFC-0014 §2.6)"
+                            % (record["mode"], record["step"]))
+            _emit_diagnostics(diagnostics)
         print("exit=%d" % rc)
     return 0
 
@@ -624,7 +679,11 @@ def main(argv=None):
                          "guard, e.g. --field counter=12 (repeatable). NAME must "
                          "name a comparison-guard field of the workflow — one that "
                          "does not is rejected, with the valid names listed. "
-                         "Omitted fields default to 0.")
+                         "Omitted fields default to 0. Comparison guards only: "
+                         "refinement/validation values are not injectable through "
+                         "this flag, because mode B derives the Validation outcome "
+                         "at build time from a sample payload — use `lnpl run "
+                         "--payload` (mode A) for refinement enforcement.")
     bd.add_argument("--skip", action="store_true",
                     help="set the Presence `when` guard flag so steps guarded by "
                          "an exists/missing check are skipped. Comparison guards "

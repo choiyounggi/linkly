@@ -95,11 +95,33 @@ lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
 |--------|-----|
 | `--workflow` | 대상 워크플로 노드 id |
 | `--workdir` | 빌드 작업 디렉터리 (기본 `.claude/tmp/lnpl-build`) |
-| `--run` | 빌드 후 실행 |
-| `--field` | `NAME=VALUE`. 비교 가드 필드의 값을 준다(반복 가능). 이름은 그 워크플로의 비교 가드 필드여야 하고, 아니면 유효한 이름과 함께 거부된다. 생략한 필드는 0 |
+| `--run` | 빌드 후 실행. 거짓 가드로 실행되지 않은 스텝을 복원해 함께 보고한다(아래) |
+| `--field` | `NAME=VALUE`. 비교 가드 필드의 값을 준다(반복 가능). 이름은 그 워크플로의 비교 가드 필드여야 하고, 아니면 유효한 이름과 함께 거부된다. 생략한 필드는 0. **비교 가드 전용** — refinement/검증 값은 이 레버로 주입되지 않는다(아래) |
 | `--skip` | Presence `when` 가드의 플래그를 세워 존재 검사로 가드된 스텝을 건너뛴다. 비교 가드는 이 플래그가 아니라 `--field`가 몬다 |
 
 MLIR/LLVM 툴체인이 필요하다. 없으면 `bash scripts/dev_doctor.sh`가 알려준다.
+
+**스킵 관측(이슈 #55).** 가드가 거짓이면 바이너리는 그 스텝의 줄을 아예 찍지 않는다.
+`--run`은 컴파일된 스텝 계획과 대조해 그 부재를 복원하고 stdout에 이름을 붙여 적으며,
+stderr로 `guard-skipped-steps`(warning)를 낸다. mode A와 두 가지가 다르다 — 진단이
+**스텝당 한 건**이고(mode A는 가드당 한 건), 위치가 가드 노드 id가 아니라 워크플로
+id다. mode B의 관측 표면에 가드가 없기 때문이다.
+
+```
+status completed
+  (1 step(s) skipped by guard, restored from the compiled plan)
+  skipped by `when token.retryBudget > 0`: call token
+```
+
+**`--field`의 도달 범위.** 비교 가드의 파라미터만 몬다. refinement 검증은 mode B에서
+빌드 시점에 파생 sample payload로 확정되므로 어떤 `--field` 값도 refinement를
+실패시키지 못한다. `build`는 Validation effect가 있는 워크플로마다
+`validation-sample-derived`(info)로 그 사실을 말한다. refinement 집행을 실측하려면
+`lnpl run --payload`(mode A)를 쓴다.
+
+`build`에는 `--strict`도 `--json`도 없다 — mode B 스킵은 사람이 읽는 채널로만
+나가고, rc는 스킵이 있어도 0이다. 정본과 잔여 목록은
+`rfcs/0022-mode-b-observation-surface.md`.
 
 ### `diff` — 차등 검사: 모드 A vs 모드 B
 
@@ -143,15 +165,20 @@ MLIR/LLVM 툴체인이 필요하다. 없으면 `bash scripts/dev_doctor.sh`가 �
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
 (`unknown-verb`, `guard-skipped-steps`), `info`는 고쳐도 사라지지 않는 플랫폼
 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
-`authorization-not-verified`). 등급별 표는 `references/declarations.md`에
-생성되어 있다. CI에서 의도한 선언을 통과시키려면 `--strict=warning`을 쓴다.
+`authorization-not-verified`, `validation-sample-derived`). 등급별 표는
+`references/declarations.md`에 생성되어 있다 — 등급을 정하는 것은 그 표가 아니라
+`diagnostics.SEVERITY_OF`이고, 문서는 그것의 사본이다. CI에서 의도한 선언을
+통과시키려면 `--strict=warning`을 쓴다.
 
 위치 정보는 두 종류다:
 
 - **파싱·lowering 에러**는 `line N`을 갖는다 — 소스 줄을 바로 가리킨다.
 - **집행 진단**(`declared-not-enforced`, `declared-measured-only`,
-  `unknown-verb`, `authorization-not-verified`, `guard-skipped-steps`)은
-  **노드 id**만 갖는다(`[perf.rate.notify]`). 파일:라인이 아니다.
+  `unknown-verb`, `authorization-not-verified`, `guard-skipped-steps`,
+  `validation-sample-derived`)은 **노드 id**만 갖는다(`[perf.rate.notify]`).
+  파일:라인이 아니다. mode B에서 나오는 두 진단(`guard-skipped-steps`,
+  `validation-sample-derived`)의 노드 id는 **워크플로 id**다 — 그 표면에는 가드
+  노드 id가 없다(rfcs/0022 표 1).
 
 집행 진단이 어느 줄에서 왔는지 알아야 하면 `compile -o`로 IR을 뽑아 그 노드 id를
 찾는다. 노드 id에서 선언명을 되짚는 규칙은

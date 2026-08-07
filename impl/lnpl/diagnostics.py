@@ -43,6 +43,7 @@ CODES = (
     "declared-measured-only",       # #38  observed and reported, never blocks
     "authorization-not-verified",   # #38  Authorization Effect records, never checks
     "guard-skipped-steps",          # #44  a guard was false, so declared steps did not run
+    "validation-sample-derived",     # #55  mode B decided Validation from a sample payload
 )
 
 # code -> grade (#52). One question decides every row:
@@ -65,6 +66,11 @@ SEVERITY_OF = {
     "declared-measured-only":     "info",
     "authorization-not-verified": "info",
     "guard-skipped-steps":        "warning",
+    # #55: no edit to the program removes this one. Mode B specialises at build
+    # time, so its Validation outcome comes from a derived sample payload rather
+    # than from anything the caller can pass — a statement about the channel, not
+    # about the source.
+    "validation-sample-derived":  "info",
 }
 
 # How the runtime treats a declaration.
