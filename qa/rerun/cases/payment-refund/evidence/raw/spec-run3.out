@@ -1,0 +1,12 @@
+PASS Approval spec 1 — completed (status=completed)
+PASS Approval spec 1 — steps 1 (steps=1 want=1)
+PASS Approval spec 1 — rows Payment 1 (Payment rows=1 want=1)
+PASS Approval spec 2 — completed (status=completed)
+PASS Approval spec 2 — steps 0 (steps=0 want=0)
+PASS Approval spec 3 — completed (status=completed)
+PASS Approval spec 3 — steps 0 (steps=0 want=0)
+PASS RefundRequest spec 1 — completed (status=completed)
+FAIL RefundRequest spec 1 — steps 2 (steps=1 want=2)
+PASS RefundRequest spec 2 — failed (status=failed)
+PASS RefundRequest spec 2 — attempts 3 (max attempts=3 want=3)
+spec: 10 passed, 1 failed

@@ -1,0 +1,14 @@
+# b2 — D11-② 연쇄 when 2개 (원 F-2 재현 동형: 첫 가드 무진단 탈락 여부)
+capability postgres
+
+entity Payment
+    field
+        id UUID
+        cardNumber Password
+        amountCents Integer
+        createdAt DateTime
+
+workflow Approval
+    when input.amountCents > 0
+    when input.amountCents <= 1000000
+    create payment

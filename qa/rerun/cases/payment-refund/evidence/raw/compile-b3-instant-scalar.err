@@ -1,0 +1,1 @@
+compile error: workflow RefundRequest: 'payment.createdAt <= 43200m' compares payment.createdAt (instant) with a duration literal (scalar) — RFC-0016 compares like with like. An instant and a number are not the same quantity; subtract two instants to get a duration, then compare that to a duration such as `30d`

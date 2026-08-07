@@ -1,0 +1,3 @@
+native binary: .claude/tmp/lnpl-build/module
+status completed
+exit=0

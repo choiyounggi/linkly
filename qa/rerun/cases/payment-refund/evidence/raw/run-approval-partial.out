@@ -1,0 +1,59 @@
+{
+  "result": {
+    "status": "completed",
+    "steps": [],
+    "failed_step": null,
+    "skipped": [
+      {
+        "guard": "wf.approval.guard.1",
+        "mode": "when",
+        "condition": "input.amountCents > 0 and input.amountCents <= 1000000",
+        "steps": [
+          "create payment"
+        ],
+        "rounds": null
+      }
+    ],
+    "failure_reason": null,
+    "bindings": {},
+    "duration_ms": 0,
+    "correlation_id": "cid-0001"
+  },
+  "trace": {
+    "correlation_id": "cid-0001",
+    "span": {
+      "name": "Approval",
+      "kind": "Workflow",
+      "duration_ms": 0,
+      "attrs": {},
+      "children": []
+    },
+    "metrics": [
+      {
+        "name": "workflow.duration_ms",
+        "labels": {
+          "workflow": "Approval"
+        },
+        "value": 0
+      }
+    ],
+    "logs": [
+      {
+        "level": "INFO",
+        "message": "workflow start",
+        "correlation_id": "cid-0001",
+        "workflow": "Approval",
+        "payload": {
+          "amountCents": 0
+        }
+      },
+      {
+        "level": "INFO",
+        "message": "guard skipped the guarded item",
+        "correlation_id": "cid-0001",
+        "guard": "wf.approval.guard.1",
+        "condition": "input.amountCents > 0 and input.amountCents <= 1000000"
+      }
+    ]
+  }
+}

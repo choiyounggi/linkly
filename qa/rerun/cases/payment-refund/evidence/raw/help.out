@@ -1,0 +1,19 @@
+usage: lnpl [-h] [--version]
+            {compile,run,spec,openapi,build,diff,kb,agents} ...
+
+compile and run LNPL sources
+
+positional arguments:
+  {compile,run,spec,openapi,build,diff,kb,agents}
+    compile             parse and lower to Semantic IR
+    run                 compile then execute (interpreter mode A)
+    spec                extract `spec` blocks as a test manifest
+    openapi             generate an OpenAPI 3.1 document from the IR
+    build               compile to a native binary (mode B)
+    diff                differential check: mode A vs mode B
+    kb                  inspect the knowledge base (RFC-0005)
+    agents              run the RFC-0006 agent cycle over a source
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit

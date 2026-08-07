@@ -1,0 +1,5 @@
+PASS 1/4 execution order — 2 step(s): read payment -> create refund | 0 skip(s)
+PASS 2/4 policy outcome — status=completed
+PASS 3/4 observability signals — 2 effect(s) per step match
+PASS 4/4 masking — no secret marker in either mode's output
+differential: EQUIVALENT
