@@ -705,7 +705,7 @@ class Interpreter:
         # the exit code could ever have seen it (issue #45's gate).
         for record in result["skipped"]:
             self.diagnostics.add(
-                code="guard-skipped-steps", severity="warning",
+                code="guard-skipped-steps",
                 where=record["guard"],
                 subject=record["condition"] or "(unconditional)",
                 message="the `%s` guard did not run %s; the workflow still "
@@ -832,7 +832,7 @@ class Interpreter:
             # then succeeds, which reads exactly like an authorization that
             # passed — issue #38's sharpest edge, so it leaves a diagnostic.
             self.diagnostics.add(
-                code="authorization-not-verified", severity="warning",
+                code="authorization-not-verified",
                 where=effect["id"], subject=effect.get("requirement") or "unspecified",
                 message="the authorization requirement is recorded on the trace "
                         "and never checked; this step cannot deny anything")

@@ -19,7 +19,7 @@ lnpl --version
 | 플래그 | 뜻 |
 |--------|-----|
 | `-o` / `--output` | IR을 파일로 쓴다. 없으면 stdout으로 나간다 |
-| `--strict` | 진단이 하나라도 있으면 rc 2 |
+| `--strict[=LEVEL]` | 진단을 종료 코드로 게이팅한다. 무인자면 진단이 하나라도 있으면 rc 2(= `--strict=info`). `--strict=warning`이면 warning 이상만 rc 2 — 의도한 `on schedule`·`performance` 선언(등급 `info`)은 통과시킨다. `error`는 예약이라 오늘 어떤 진단과도 일치하지 않는다. 이슈 #52 |
 
 `-o` 없이 쓰면 IR 문서가 **stdout**으로 나간다. 진단은 항상 stderr다 — 그래서
 `-o` 없이 stdout을 파이프해도 산출물이 오염되지 않는다.
@@ -139,6 +139,12 @@ MLIR/LLVM 툴체인이 필요하다. 없으면 `bash scripts/dev_doctor.sh`가 �
 ## 진단은 어디를 가리키나
 
 진단은 **stderr로 나가고 종료 코드는 0**이다. `--strict`를 줘야 rc 2로 올라간다.
+
+진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
+(`unknown-verb`, `guard-skipped-steps`), `info`는 고쳐도 사라지지 않는 플랫폼
+상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
+`authorization-not-verified`). 등급별 표는 `references/declarations.md`에
+생성되어 있다. CI에서 의도한 선언을 통과시키려면 `--strict=warning`을 쓴다.
 
 위치 정보는 두 종류다:
 

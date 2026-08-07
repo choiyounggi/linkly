@@ -35,8 +35,12 @@
 
 ## 진단 코드
 
-- `unknown-verb`
-- `declared-not-enforced`
-- `declared-measured-only`
-- `authorization-not-verified`
-- `guard-skipped-steps`
+등급은 `--strict[=LEVEL]`이 무엇을 게이팅하는지를 정한다(RFC-0021). `warning`은 프로그램을 고치면 사라지는 것이고, `info`는 고쳐도 사라지지 않는 플랫폼 상태의 진술이다.
+
+| 코드 | 등급 |
+|------|------|
+| `unknown-verb` | **warning** |
+| `declared-not-enforced` | **info** |
+| `declared-measured-only` | **info** |
+| `authorization-not-verified` | **info** |
+| `guard-skipped-steps` | **warning** |
