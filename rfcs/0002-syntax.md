@@ -6,6 +6,7 @@
 - Updated-by: RFC-0008 (§Full grammar)
 - Updated-by: RFC-0009 (§Open Questions)
 - Updated-by: RFC-0012 (§Full grammar)
+- Updated-by: RFC-0019 (§Block structure)
 
 ## Motivation
 
@@ -228,6 +229,8 @@ facet 이름 6종(`pattern` `minLength` `maxLength` `min` `max` `enum`)은
 없다. 제어 의도는 `when` `repeat` `parallel` `until` `pipeline`로만 표현한다.
 
 ### Block structure (D5 개정판)
+
+> 갱신됨: RFC-0019
 
 1. **키워드 구획** — 블록 경계는 키워드가 정한다. 최상위 선언 키워드는 이전
    블록 전체를 자동 종결한다. 절 키워드는 소속 선언의 하위 구획을 열고, 다음
