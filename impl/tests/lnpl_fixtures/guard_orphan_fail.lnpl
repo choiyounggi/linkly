@@ -1,0 +1,16 @@
+entity Product
+    field
+        id UUID
+        stock Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+
+workflow Place
+    validate product
+    find product
+    when product.stock > 0
+    create order
+    set product.stock to product.stock - 1

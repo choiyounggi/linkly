@@ -33,5 +33,6 @@
 | RFC-0020 spec `given`의 입력 네임스페이스 | spec의 `given`에서 입력 필드를 어떻게 지목하는지 | `rfcs/0020-spec-given-input-namespace.md` |
 | RFC-0021 진단 등급과 `--strict` 문턱 | `--strict`가 무엇을 게이팅하는지, 진단 등급이 무엇인지 | `rfcs/0021-diagnostic-severity-levels.md` |
 | RFC-0022 mode B의 관측 표면 | mode B가 스킵과 `--field`를 어떻게 드러내는지 | `rfcs/0022-mode-b-observation-surface.md` |
+| RFC-0023 가드 밖으로 새어 나간 상태 변경의 컴파일 타임 진단 | 가드 뒤의 스텝이 왜 가드 밖인지, 그리고 컴파일러가 그걸 언제 경고하는지 | `rfcs/0023-guard-scope-diagnostic.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.
