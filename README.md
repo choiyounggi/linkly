@@ -31,7 +31,7 @@ to the same observable behaviour. [Full status below](#status).
 
 The surface language — **LNPL** (working name, `.lnpl`) — carries declarations only:
 
-```
+```lnpl
 entity User
     field
         id UUID
@@ -39,10 +39,14 @@ entity User
         password Password
         createdAt DateTime
 
+entity Session
+    field
+        id UUID
+        issuedAt DateTime
+
 service LoginService
     policy
         retry 3
-        rollback
         timeout 3s
     security
         jwt
@@ -51,13 +55,25 @@ service LoginService
         cache 5m
 
 workflow Login
-    validate input
-    authenticate
+    validate user
+    authenticate user
     cache user
-    generate token
-    audit login
-    return token
+    create session
 ```
+
+Every step there derives a real effect — `Validation`, `RepositoryCall`,
+`CacheAccess`, `RepositoryCall` — and the workflow runs to `completed`. Two of the
+declarations do **not** change execution, and the compiler says so rather than
+letting you assume otherwise: `security jwt` issues and verifies nothing on the
+default path (`lnpl serve --jwt-secret-env NAME` is what verifies a bearer token
+per request), and `performance response` is measured and reported but never
+blocks an over-budget run. `lnpl compile` prints both as diagnostics.
+
+The verb vocabulary is **closed**. A word outside it is not an error — it compiles
+into a step that derives no effect and does nothing, with an `unknown-verb`
+diagnostic beside the document. The lexicon lives in
+[`plugins/lnpl/skills/lnpl-authoring/references/verbs.md`](plugins/lnpl/skills/lnpl-authoring/references/verbs.md),
+generated from the compiler's own table.
 
 No `if` / `for` / `while` / `switch` — those are reserved and unusable. Control
 vocabulary is `when` / `repeat` / `parallel` / `until` / `pipeline`. Blocks are
@@ -81,6 +97,12 @@ prefixes stay reusable.
 ---
 
 ## Try it
+
+The commands below run `examples/login.lnpl`, which is the regression fixture for
+issue #36 — it deliberately holds three verbs outside the lexicon (`generate` /
+`audit` / `return`), so its output shows what a no-op step looks like and what the
+`unknown-verb` diagnostic says about it. It is a reproduction case, not a model to
+copy; `examples/checkout.lnpl` is the clean one.
 
 ```bash
 # The project pins its Python in a venv, so verification behaves the same no matter
@@ -143,16 +165,21 @@ The repo doubles as the marketplace and hosts two plugins with different audienc
 |--------|----------|----------|
 | [`lnpl`](plugins/lnpl/README.md) | people writing `.lnpl` | vocabulary routing, compile diagnostics on save, spec derivation, a completion gate, KB lookup |
 | [`lnpl-dev`](plugins/lnpl-dev/README.md) | people building linkly itself | environment-prerequisite diagnosis, RFC process lint, the mutation harness's traps |
+| [`lnpl-mcp`](plugins/lnpl-mcp/README.md) | anyone who would rather call the compiler than shell out to it | `lnpl compile` and `kb.route` as MCP tools, returning diagnostics as records instead of stderr prose |
 
 Contributors install `/plugin install lnpl-dev@linkly` as well.
 
-The hooks need `lnpl` on `PATH` — `pip install .`. The session entry point is
-[AGENTS.md](AGENTS.md); `CLAUDE.md` is one line that loads it.
+The diagnostics hook does **not** need `lnpl` on `PATH`. It resolves the compiler
+in this order and stops at the first hit: `$LNPL_BIN`, the nearest
+`.venv/bin/lnpl` found walking up from the edited file, `$CLAUDE_PROJECT_DIR/.venv/bin/lnpl`,
+`PATH`, then `python3 -m lnpl`. A project-local `.venv/bin/pip install .` is
+enough — a hook runs in the agent's process environment, which does not carry the
+`PATH` your shell rc sets. The session entry point is [AGENTS.md](AGENTS.md);
+`CLAUDE.md` is one line that loads it.
 
-> For developers: the test suite also needs the `lnpl` console script in `.venv`
-> (the hook and doctor tests locate the CLI with `command -v lnpl`). Run
-> `.venv/bin/pip install .` once after creating the venv, and
-> `pip install --force-reinstall --no-deps .` after editing `impl/lnpl/`.
+> For developers: `lnpl-doctor` and its tests still look for the `lnpl` console
+> script in `.venv`. Run `.venv/bin/pip install .` once after creating the venv,
+> and `pip install --force-reinstall --no-deps .` after editing `impl/lnpl/`.
 
 ### Mode B — a native binary
 

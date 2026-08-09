@@ -1,4 +1,19 @@
 # login.lnpl — 골든 시나리오 "Login" (정본: plans/rfc-suite/plan.md)
+#
+# 이 파일은 **이슈 #36의 회귀 픽스처다. 따라 쓸 예제가 아니다.**
+#
+# 아래 워크플로의 `generate token` / `audit login` / `return token` 세 스텝은 실수가
+# 아니라 **의도된 재현 형태**다. 셋 다 VERB_LEXICON 밖이라 Effect를 만들지 않고,
+# #36이 보고한 버그는 "Effect가 없다"가 아니라 그 사실이 **아무 말도 없이** 지나갔다는
+# 것이었다. 지금은 `unknown-verb` 진단 세 건이 나온다.
+#
+# `impl/tests/test_unknown_verb.py::TestGoldenScenario`가 정확히
+# `["audit", "generate", "return"]`을 assert하고, 같은 클래스가 **골든 IR이 움직이지
+# 않는 것**도 함께 핀으로 박는다. 그래서 이 세 동사를 "고치면" 회귀 테스트의 대상이
+# 사라지고 `examples/login.lir.json`에서 파생된 negative 통제들이 무효가 된다.
+#
+# 어휘 안에서 쓴 권장 형태를 찾는다면 README의 첫 예제나 `examples/checkout.lnpl`을
+# 본다. 동사 정본은 plugins/lnpl/skills/lnpl-authoring/references/verbs.md다.
 
 capability postgres
 capability redis
