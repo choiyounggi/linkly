@@ -58,6 +58,18 @@ def run_session_hook(env):
                           capture_output=True, text=True, env=base)
 
 
+def spoken_context(testcase, proc):
+    """훅이 말한 내용. 침묵했으면 트레이스백이 아니라 판정으로 실패한다.
+
+    `json.loads("")` 는 ERROR와 원시 트레이스백을 낸다 — 통과한 것은 아니지만,
+    "훅이 말했어야 하는데 조용했다"는 사실이 그 트레이스백에 없다.
+    """
+    if not proc.stdout.strip():
+        testcase.fail("훅이 말했어야 하는 상황에서 조용했다 (rc=%d, stderr=%r)"
+                      % (proc.returncode, proc.stderr[:200]))
+    return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
 class ReviewerAgentTest(unittest.TestCase):
 
     def test_the_agent_file_exists(self):
@@ -119,6 +131,9 @@ class HooksJsonTest(unittest.TestCase):
         self.assertIn("${CLAUDE_PLUGIN_ROOT}", command)
         self.assertIn("lnpl-session-start.sh", command)
         self.assertTrue(os.path.isfile(SESSION_HOOK))
+        # 어느 시작에서 도는지가 계약의 일부다. `startup`만 걸면 `/clear`
+        # 뒤의 세션은 전제 확인 없이 출발한다.
+        self.assertEqual(entries[0]["matcher"], "startup|resume|clear")
 
     def test_the_post_tool_use_hook_is_still_wired(self):
         # 새 훅을 붙이면서 기존 훅을 떨어뜨리는 것이 이 파일의 실패 모드다.
@@ -151,8 +166,8 @@ class SessionStartBehaviourTest(unittest.TestCase):
     def test_it_speaks_when_the_compiler_cannot_be_found(self):
         proc = run_session_hook({"LNPL_BIN": "/nonexistent/lnpl"})
         self.assertEqual(proc.returncode, 0, "세션 시작을 막으면 안 된다")
-        payload = json.loads(proc.stdout)
-        out = payload["hookSpecificOutput"]
+        self.assertTrue(proc.stdout.strip(), "훅이 조용했다")
+        out = json.loads(proc.stdout)["hookSpecificOutput"]
         self.assertEqual(out["hookEventName"], "SessionStart")
         self.assertIn("lnpl-doctor", out["additionalContext"])
 
@@ -160,7 +175,7 @@ class SessionStartBehaviourTest(unittest.TestCase):
         shim = self._shim("mismatch", "lnpl 9.9.9")
         proc = run_session_hook({"LNPL_BIN": shim})
         self.assertEqual(proc.returncode, 0)
-        context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+        context = spoken_context(self, proc)
         self.assertIn("9.9.9", context)
         self.assertIn(__version__, context)
 
@@ -172,8 +187,21 @@ class SessionStartBehaviourTest(unittest.TestCase):
         os.chmod(path, 0o755)
         proc = run_session_hook({"LNPL_BIN": path})
         self.assertEqual(proc.returncode, 0)
-        context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+        context = spoken_context(self, proc)
         self.assertIn("--version", context)
+
+    def test_a_version_that_merely_starts_with_the_plugin_version_disagrees(self):
+        """접두사는 일치가 아니다.
+
+        `0.3.0` 과 `0.3.01` 은 다른 버전인데, 비교를 접두사 검사로 쓰면 같다고
+        읽힌다. 굵은 불일치(`9.9.9`)만 픽스처로 두면 그 약화가 통과한다 —
+        이 케이스가 그 자리를 막는다.
+        """
+        shim = self._shim("prefix", "lnpl %s1" % __version__)
+        proc = run_session_hook({"LNPL_BIN": shim})
+        self.assertEqual(proc.returncode, 0)
+        context = spoken_context(self, proc)
+        self.assertIn("%s1" % __version__, context)
 
     def test_a_matching_shim_is_silent(self):
         # 음성 통제: 버전이 맞으면 위 두 경로가 아니라 침묵이어야 한다.
