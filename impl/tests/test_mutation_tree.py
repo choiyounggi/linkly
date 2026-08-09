@@ -32,6 +32,10 @@ EXEMPT = {
     ".claude",
     # 부재를 검증하는 음성 경로 (test_kb.py). 존재하면 그 테스트가 무의미해진다.
     "no-such-kb",
+    # 같은 이유 (test_mcp_server.py): MCP 도구가 없는 파일을 크래시가 아니라
+    # `isError`로 되돌리는지 보는 입력이다. 복사되면 파일이 생겨 그 테스트가
+    # 검증하려던 경로를 타지 않는다.
+    "no-such-file.lnpl",
 }
 
 

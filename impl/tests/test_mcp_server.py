@@ -1,0 +1,211 @@
+"""MCP stdio 서버의 계약 테스트.
+
+`handle()`을 직접 부르지 않고 **`serve()` 루프를 통째로** 돌린다. 이 서버의
+계약은 함수 반환값이 아니라 stdin/stdout 위의 줄들이기 때문이다 — 알림에
+응답하지 않는 것, 깨진 줄에도 죽지 않는 것, 한 줄에 한 메시지를 쓰는 것은
+루프를 돌려야만 관측된다.
+
+두 종류의 실패를 구분하는 것이 이 파일의 핵심이다:
+
+  * **프로토콜 오류**(`error`) — 클라이언트가 이 서버가 모르는 것을 요구했다.
+  * **도구 오류**(`isError: true`) — 요구는 정당했고 실행이 실패했다. 모델이
+    읽고 고칠 수 있어야 하므로 결과로 되돌린다.
+
+둘을 뒤섞으면 모델은 자기가 고칠 수 있는 실패와 고칠 수 없는 실패를 구별하지
+못한다.
+"""
+import io
+import json
+import os
+import unittest
+
+from lnpl import __version__
+from lnpl.mcp_server import (INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
+                             PARSE_ERROR, PROTOCOL_VERSION, TOOLS, serve)
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PLUGIN = os.path.join(REPO, "plugins", "lnpl-mcp")
+
+NOISY = ("entity Note\n    field\n        id UUID\n\n"
+         "workflow Save\n    validate note\n    return note\n")
+CLEAN = ("entity Note\n    field\n        id UUID\n\n"
+         "workflow Save\n    validate note\n    create note\n")
+
+
+def converse(*messages):
+    """메시지들을 줄로 넣고 나온 줄들을 파싱해 돌려준다."""
+    lines = "".join(json.dumps(m) + "\n" for m in messages)
+    out = io.StringIO()
+    serve(stdin=io.StringIO(lines), stdout=out)
+    return [json.loads(line) for line in out.getvalue().splitlines() if line]
+
+
+def call(tool, arguments, mid=9):
+    return converse({"jsonrpc": "2.0", "id": mid, "method": "tools/call",
+                     "params": {"name": tool, "arguments": arguments}})[0]
+
+
+def payload_of(response):
+    """`content[0].text`의 JSON. 도구가 성공했을 때만 의미가 있다."""
+    return json.loads(response["result"]["content"][0]["text"])
+
+
+class HandshakeTest(unittest.TestCase):
+
+    def test_initialize_reports_the_real_compiler_version(self):
+        res = converse({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-06-18"}})[0]
+        self.assertEqual(res["result"]["serverInfo"],
+                         {"name": "lnpl", "version": __version__})
+        self.assertEqual(res["result"]["capabilities"], {"tools": {}})
+
+    def test_it_echoes_the_protocol_version_the_client_asked_for(self):
+        res = converse({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2024-11-05"}})[0]
+        self.assertEqual(res["result"]["protocolVersion"], "2024-11-05")
+
+    def test_it_falls_back_to_its_own_version_when_none_is_asked_for(self):
+        res = converse({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {}})[0]
+        self.assertEqual(res["result"]["protocolVersion"], PROTOCOL_VERSION)
+
+    def test_a_notification_gets_no_reply(self):
+        # 알림에 응답하면 클라이언트의 id 대응이 어긋난다.
+        out = converse({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual(out, [])
+
+    def test_one_line_per_response_in_order(self):
+        out = converse(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        self.assertEqual([r["id"] for r in out], [1, 2])
+
+
+class ToolsListTest(unittest.TestCase):
+
+    def test_every_tool_is_listed_with_a_schema(self):
+        res = converse({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})[0]
+        listed = res["result"]["tools"]
+        self.assertEqual([t["name"] for t in listed],
+                         [t["name"] for t in TOOLS])
+        for tool in listed:
+            with self.subTest(tool=tool["name"]):
+                self.assertEqual(tool["inputSchema"]["type"], "object")
+                self.assertTrue(tool["description"].strip())
+
+
+class CompileToolTest(unittest.TestCase):
+
+    def test_it_returns_diagnostics_as_records_not_prose(self):
+        res = call("lnpl_compile", {"text": NOISY})
+        self.assertIs(res["result"]["isError"], False)
+        body = payload_of(res)
+        self.assertEqual(body["unknown_verbs"], 1)
+        self.assertEqual(body["counts"]["unknown-verb"], 1)
+        record = body["diagnostics"][0]
+        # 코드와 등급으로 분기할 수 있어야 한다 — message를 정규식으로 긁는 것이
+        # 아니라.
+        self.assertEqual(record["code"], "unknown-verb")
+        self.assertEqual(record["severity"], "warning")
+        self.assertEqual(record["subject"], "return")
+
+    def test_a_clean_source_reports_nothing(self):
+        body = payload_of(call("lnpl_compile", {"text": CLEAN}))
+        self.assertEqual(body["diagnostics"], [])
+        self.assertEqual(body["unknown_verbs"], 0)
+        self.assertGreater(body["nodes"], 0)
+
+    def test_it_compiles_a_committed_example_by_path(self):
+        path = os.path.join(REPO, "examples", "checkout.lnpl")
+        body = payload_of(call("lnpl_compile", {"path": path}))
+        self.assertEqual(body["source"], path)
+        self.assertEqual(body["unknown_verbs"], 0)
+
+    def test_giving_both_text_and_path_is_a_tool_error(self):
+        res = call("lnpl_compile", {"text": CLEAN, "path": "x.lnpl"})
+        self.assertIs(res["result"]["isError"], True)
+        self.assertIn("정확히 하나", res["result"]["content"][0]["text"])
+
+    def test_giving_neither_text_nor_path_is_a_tool_error(self):
+        res = call("lnpl_compile", {})
+        self.assertIs(res["result"]["isError"], True)
+
+    def test_a_missing_file_is_a_tool_error_not_a_crash(self):
+        res = call("lnpl_compile",
+                   {"path": os.path.join(REPO, "no-such-file.lnpl")})
+        self.assertIs(res["result"]["isError"], True)
+        self.assertIn("파일이 없다", res["result"]["content"][0]["text"])
+
+    def test_source_that_cannot_compile_is_a_tool_error(self):
+        # `if`는 예약어다. 컴파일 거부는 도구의 실패이지 프로토콜의 실패가 아니다.
+        res = call("lnpl_compile",
+                   {"text": "entity N\n    field\n        id UUID\n\n"
+                            "workflow S\n    if x\n"})
+        self.assertIs(res["result"]["isError"], True)
+        self.assertNotIn("error", res)
+
+
+class KbRouteToolTest(unittest.TestCase):
+
+    def test_it_routes_a_task_to_kb_documents(self):
+        body = payload_of(call("lnpl_kb_route",
+                               {"task": "choose a postgres index"}))
+        self.assertIn("database-postgres-index-selection", body["route"])
+
+    def test_a_missing_task_is_a_tool_error(self):
+        res = call("lnpl_kb_route", {})
+        self.assertIs(res["result"]["isError"], True)
+
+
+class ProtocolErrorTest(unittest.TestCase):
+    """도구 오류와 달리, 이쪽은 `error`로 나가야 한다."""
+
+    def test_an_unknown_tool_is_a_protocol_error_and_lists_what_exists(self):
+        res = call("no_such_tool", {})
+        self.assertEqual(res["error"]["code"], INVALID_PARAMS)
+        self.assertIn("lnpl_compile", res["error"]["message"])
+
+    def test_an_unknown_method_is_a_protocol_error(self):
+        res = converse({"jsonrpc": "2.0", "id": 6,
+                        "method": "resources/list"})[0]
+        self.assertEqual(res["error"]["code"], METHOD_NOT_FOUND)
+
+    def test_a_wrong_jsonrpc_version_is_refused(self):
+        res = converse({"jsonrpc": "1.0", "id": 7, "method": "tools/list"})[0]
+        self.assertEqual(res["error"]["code"], INVALID_REQUEST)
+
+    def test_a_malformed_line_does_not_kill_the_loop(self):
+        out = io.StringIO()
+        serve(stdin=io.StringIO(
+            "{not json\n"
+            "\n"                       # 빈 줄은 건너뛴다
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'),
+            stdout=out)
+        responses = [json.loads(l) for l in out.getvalue().splitlines() if l]
+        self.assertEqual(responses[0]["error"]["code"], PARSE_ERROR)
+        self.assertIn("tools", responses[1]["result"],
+                      "깨진 줄 하나가 이후 요청을 삼켰다")
+
+
+class PluginPackagingTest(unittest.TestCase):
+
+    def test_the_mcp_config_points_at_the_shipped_launcher(self):
+        with open(os.path.join(PLUGIN, ".mcp.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        server = cfg["lnpl"]
+        self.assertEqual(server["command"], "python3")
+        self.assertEqual(server["args"], ["${CLAUDE_PLUGIN_ROOT}/server.py"])
+        # 절대 경로를 박으면 설치된 위치에서 깨진다.
+        self.assertTrue(os.path.isfile(os.path.join(PLUGIN, "server.py")))
+
+    def test_the_plugin_manifest_names_itself(self):
+        with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"),
+                  encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        self.assertEqual(manifest["name"], "lnpl-mcp")
+        self.assertEqual(manifest["version"], __version__)
+
+
+if __name__ == "__main__":
+    unittest.main()
