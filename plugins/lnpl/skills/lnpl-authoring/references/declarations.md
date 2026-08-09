@@ -21,9 +21,9 @@
 |------|------|--------------------------|
 | `policy retry` | **enforced** | run_workflow re-runs a failed step while its effects are idempotent |
 | `policy timeout` | **enforced** | a workflow deadline is computed, and exceeding it fails the run |
-| `policy rollback` | **unenforced** | Phase 1 has no Transaction boundary, so there is nothing to compensate |
+| `policy rollback` | **unenforced** | Phase 1 has no Transaction boundary, so there is nothing to compensate; the #25 drivers commit per operation |
 | `policy parallel` | **unenforced** | parsed, but the execution plan never reads it |
-| `security jwt` | **unenforced** | no token is issued or verified; the mechanism reaches the OpenAPI document only |
+| `security jwt` | **unenforced** | the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md) |
 | `security role` | **unenforced** | the role is never checked against anything |
 | `security encrypt` | **unenforced** | the field is not encrypted (Password masking is a separate, type-driven behaviour) |
 | `performance response` | **measured** | measured and reported per run, but an over-budget run is not blocked |
@@ -35,8 +35,13 @@
 
 ## 진단 코드
 
-- `unknown-verb`
-- `declared-not-enforced`
-- `declared-measured-only`
-- `authorization-not-verified`
-- `guard-skipped-steps`
+등급은 `--strict[=LEVEL]`이 무엇을 게이팅하는지를 정한다(RFC-0021). `warning`은 프로그램을 고치면 사라지는 것이고, `info`는 고쳐도 사라지지 않는 플랫폼 상태의 진술이다.
+
+| 코드 | 등급 |
+|------|------|
+| `unknown-verb` | **warning** |
+| `declared-not-enforced` | **info** |
+| `declared-measured-only` | **info** |
+| `authorization-not-verified` | **info** |
+| `guard-skipped-steps` | **warning** |
+| `validation-sample-derived` | **info** |

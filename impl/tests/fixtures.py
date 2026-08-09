@@ -199,3 +199,84 @@ workflow W
     step Loop
     step End
 """
+
+
+# `UNTIL_COUNTER`'s guarded step carries no effect, and that is exactly what hid
+# issue #51: the observation maps fold per step NAME, and with an empty effect
+# list both modes fold to the same empty list however they fold. The loop below
+# is the same shape with ONE difference — the guarded step carries a
+# `RepositoryCall` — which is the variable that makes the fold asymmetry visible
+# (RFC-0018).
+#
+# `find token` sits OUTSIDE the loop on purpose. A condition that reads a
+# binding its own body creates diverges for an unrelated reason (mode A has no
+# binding at entry and runs one round; mode B projects the seed statically and
+# runs none), which would redden these tests from the wrong mechanism.
+UNTIL_EFFECT_LOOP = """capability postgres
+
+entity Token
+    field
+        id UUID
+        retryBudget Integer
+
+service S
+    policy
+        timeout 5s
+
+workflow Repro
+    find token
+    until token.retryBudget > 5
+    read token
+"""
+
+
+# The same repeated-name shape reached through `repeat` instead of `until`.
+# The fold asymmetry is a property of REPETITION, not of `until`: `repeat`
+# unrolls its body unconditionally and hits it identically (measured, issue #51).
+REPEAT_EFFECT_LOOP = """capability postgres
+
+entity Token
+    field
+        id UUID
+        retryBudget Integer
+
+service S
+    policy
+        timeout 5s
+
+workflow Repro
+    validate token
+    repeat 3
+    read token
+"""
+
+
+def until_effect_source(condition):
+    """`UNTIL_EFFECT_LOOP` with its guard condition replaced.
+
+    Substitutes the whole indented line, so callers never manage indentation —
+    the same relation `guarded_source` has to `GUARDED`.
+    """
+    return UNTIL_EFFECT_LOOP.replace("    until token.retryBudget > 5",
+                                     "    until " + condition)
+
+# A workflow whose entity carries a `Password`-typed field, for the masking
+# sweep that has to hold on every backend: swapping the repository driver must
+# not change which values reach an output channel. The plain `label` field is
+# the negative control — a channel where it is also missing was never captured,
+# which would make the secret's absence vacuous.
+SECRET_ACCOUNT = """capability postgres
+
+entity Account
+    field
+        id UUID
+        label Text
+        cardSecret Password
+
+service AccountService
+    policy
+        timeout 5s
+
+workflow Fetch
+    read account
+"""

@@ -442,7 +442,9 @@ class TestScheduleTrigger(unittest.TestCase):
         diag = [d for d in mod.diagnostics.all()
                 if d.subject == "event schedule"][0]
         self.assertEqual(diag.code, "declared-not-enforced")
-        self.assertEqual(diag.severity, "warning")
+        # #52: a legitimate schedule declaration is `info` — the platform
+        # stating what it does, not a mistake the author can edit away.
+        self.assertEqual(diag.severity, "info")
         self.assertIn("#26", diag.message)
 
     def test_negative_control_a_document_without_a_schedule_is_silent(self):

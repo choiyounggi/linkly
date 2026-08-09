@@ -16,6 +16,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
 
 from .condition import PAYLOAD_NAMESPACE
 from .diagnostics import Diagnostics
+from .drivers import DriverError
 from .refinements import BASE_CATEGORY
 from .repo_policy import READ_OPS, binding_name, row_key
 from .types import SEMANTIC_TYPES
@@ -86,6 +87,32 @@ class FakeRepository:
             table[key] = {"id": key}
         return {"affected": 1}
 
+    # -- RepositoryDriver contract (drivers.py) ----------------------------
+    # This class is the contract's reference implementation, so the three
+    # methods below exist to make that explicit rather than to add behaviour:
+    # seeding is what the constructor already does, and the other two are
+    # genuinely nothing here. A real driver has to work for its answers.
+
+    def seed(self, rows):
+        """Insert only where absent — the constructor's job, done later.
+
+        `setdefault` at both levels is what makes a re-seed non-destructive:
+        a row an earlier run wrote stays as it was found, which is the property
+        that lets one seed rule serve a store that persists.
+        """
+        for entity_id, table in (rows or {}).items():
+            target = self.rows.setdefault(entity_id, {})
+            for key, row in table.items():
+                target.setdefault(key, dict(row) if isinstance(row, dict) else row)
+
+    def persist(self, entity_id, key, row):
+        """Nothing to do: a read binds the dict this table holds, so a write
+        through the binding has already landed."""
+        return None
+
+    def close(self):
+        return None
+
 
 class FakeCache:
     """Stands in for a `redis` capability. TTL is the Performance budget."""
@@ -112,6 +139,10 @@ class FakeCache:
 
     def invalidate(self, key):
         self.store.pop(key, None)
+
+    def close(self):
+        """The CacheDriver contract's release hook. In-memory, so nothing."""
+        return None
 
 
 class Span:
@@ -464,13 +495,32 @@ def mask_payload(payload, entity_node):
 
 
 class Interpreter:
-    def __init__(self, document, clock=None, repo_rows=None, correlation_id="cid-0001"):
+    def __init__(self, document, clock=None, repo_rows=None,
+                 correlation_id="cid-0001", *, repository=None, cache=None):
+        """`repository`/`cache` bind the declared capabilities to a real
+        backend (issue #25); with neither, this builds exactly the in-memory
+        pair it always did.
+
+        Both are keyword-only, after a bare `*`. The four positional
+        parameters keep their order and meaning, so none of the existing call
+        sites changes — and a stale positional call cannot silently bind a
+        driver to `correlation_id`, which is the failure a middle insertion
+        would have caused at every one of them.
+        """
         self.doc = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.refinements = refinement_index(document)
         self.clock = clock or Clock()
-        self.repo = FakeRepository(repo_rows)
-        self.cache = FakeCache(self.clock)
+        if repository is None:
+            self.repo = FakeRepository(repo_rows)
+        else:
+            # The seed rule is the store's, not the Fake's: a real driver gets
+            # the same rows and inserts only what is absent, so a row an
+            # earlier run left behind survives this one's seeding.
+            self.repo = repository
+            self.repo.seed(repo_rows or {})
+        self.cache = cache if cache is not None else FakeCache(self.clock)
+        self._entity_by_binding = None
         self.trace = Trace(correlation_id)
         # Registered event publications. RFC-0003 leaves the *mechanism* open
         # (§Open Questions 3 — transactional outbox or otherwise); the contract it
@@ -481,6 +531,24 @@ class Interpreter:
         # cannot produce these, so routing them through the trace would make the
         # two modes disagree about a signal the contract says must match.
         self.diagnostics = Diagnostics()
+
+    def _entity_id_for_binding(self, binding):
+        """The Entity a bound name came from, or None.
+
+        `repo_policy.binding_name` is the one place that decides what a read
+        binds a row under, so the reverse lookup is built from it rather than
+        from a second rule that could drift. Built once per run and cached:
+        the map is a property of the document, not of the step.
+
+        None is a legitimate answer — a name bound by something other than a
+        repository read has no row to flush — and the Fake ignores the call
+        either way, so the default path cannot change behaviour here.
+        """
+        if self._entity_by_binding is None:
+            self._entity_by_binding = {
+                binding_name(node): node["id"]
+                for node in self.doc["nodes"] if node["kind"] == "Entity"}
+        return self._entity_by_binding.get(binding)
 
     # ---- constraint lookup -------------------------------------------------
     def _service_for(self, workflow_id):
@@ -637,7 +705,7 @@ class Interpreter:
         # the exit code could ever have seen it (issue #45's gate).
         for record in result["skipped"]:
             self.diagnostics.add(
-                code="guard-skipped-steps", severity="warning",
+                code="guard-skipped-steps",
                 where=record["guard"],
                 subject=record["condition"] or "(unconditional)",
                 message="the `%s` guard did not run %s; the workflow still "
@@ -694,6 +762,29 @@ class Interpreter:
                     "assignment %r cannot be evaluated: a reference in %r "
                     "resolves to nothing" % (target, effect["expression"]))
             row[field] = value
+            # The write above lands in the dict the read bound. For the Fake
+            # that dict IS the stored row and this is a no-op; for a real store
+            # it is a detached copy, and without this flush the assignment
+            # would be visible for the rest of the run and gone afterwards —
+            # a silent update, which is the failure mode one level down from
+            # the one issue #38 named.
+            # Not a silent skip when the binding names no entity. The compiler
+            # already refuses `set input.x` ("not state") and an assignment to
+            # an entity the workflow never reads ("never reads it"), so a
+            # binding with no entity behind it means the document did not come
+            # from the compiler. Skipping the flush there would drop the write
+            # on a real store and keep it on the Fake — the two backends would
+            # disagree, silently, on exactly the operation this flush exists
+            # for.
+            entity_id = self._entity_id_for_binding(binding)
+            if entity_id is None:
+                raise RunError(
+                    "assignment target %r names no declared entity, so the "
+                    "write has no row to address" % target)
+            try:
+                self.repo.persist(entity_id, row_key(entity_id, payload), row)
+            except DriverError as exc:
+                raise RunError(str(exc)) from exc
             child.attrs["target"] = target
             child.attrs["value"] = value
             self.trace.log("INFO", "assignment applied",
@@ -701,8 +792,15 @@ class Interpreter:
         elif kind == "Validation":
             self._validate(effect, payload)
         elif kind == "RepositoryCall":
-            row = self.repo.execute(effect["entity"], effect["operation"],
-                                    row_key(effect["entity"], payload))
+            # One of two places a driver fault is translated. A DriverError
+            # becomes a RunError with its message and cause intact, so a real
+            # backend's failure is an ordinary failed run — the same status and
+            # the same rc a Fake failure produces — instead of a traceback.
+            try:
+                row = self.repo.execute(effect["entity"], effect["operation"],
+                                        row_key(effect["entity"], payload))
+            except DriverError as exc:
+                raise RunError(str(exc)) from exc
             child.attrs["found"] = row is not None
             if effect["operation"] in READ_OPS and isinstance(row, dict):
                 # RFC-0012 §G12.2: a completed read binds its row into the
@@ -718,20 +816,23 @@ class Interpreter:
                 raise RunError("repository read found no row for %s" % effect["entity"])
         elif kind == "CacheAccess":
             key = effect["key"].replace("{id}", str(payload.get("id", "-")))
-            if effect["operation"] == "set":
-                self.cache.set(key, payload, con["cache_ttl_ms"])
-                child.attrs["ttl_ms"] = con["cache_ttl_ms"]
-            elif effect["operation"] == "get":
-                child.attrs["hit"] = self.cache.get(key) is not None
-            else:
-                self.cache.invalidate(key)
+            try:
+                if effect["operation"] == "set":
+                    self.cache.set(key, payload, con["cache_ttl_ms"])
+                    child.attrs["ttl_ms"] = con["cache_ttl_ms"]
+                elif effect["operation"] == "get":
+                    child.attrs["hit"] = self.cache.get(key) is not None
+                else:
+                    self.cache.invalidate(key)
+            except DriverError as exc:
+                raise RunError(str(exc)) from exc
         elif kind == "Authorization":
             child.attrs["requirement"] = effect.get("requirement")
             # Recording the requirement is all Phase 1 does with it. The step
             # then succeeds, which reads exactly like an authorization that
             # passed — issue #38's sharpest edge, so it leaves a diagnostic.
             self.diagnostics.add(
-                code="authorization-not-verified", severity="warning",
+                code="authorization-not-verified",
                 where=effect["id"], subject=effect.get("requirement") or "unspecified",
                 message="the authorization requirement is recorded on the trace "
                         "and never checked; this step cannot deny anything")

@@ -4,7 +4,7 @@ The document is the human-readable copy; `diagnostics.ENFORCEMENT` and
 `lower.VERB_LEXICON` are canonical. A doc that quietly says "enforced" about
 something nobody enforces is worse than no doc, so the two are compared here.
 
-Four named checks, each owning one property, each with its own negative control
+Five named checks, each owning one property, each with its own negative control
 that mutates only what that check owns:
 
     (1) matrix completeness  — ENFORCEMENT covers exactly the language's closed
@@ -13,6 +13,7 @@ that mutates only what that check owns:
     (3) document validity    — each §B row's status and code cell match the code
     (4) verb cross-reference — the §A table matches VERB_LEXICON, and the three
                                verbs the golden uses are still outside it
+    (5) diagnostic severity  — each §C row's severity cell matches SEVERITY_OF
 
 Coverage and validity are deliberately separate: a set-equality check on row
 names is blind to cell contents, so a table can reach full coverage while a cell
@@ -25,7 +26,8 @@ import os
 import re
 import unittest
 
-from lnpl.diagnostics import CODES, ENFORCEMENT, ENFORCEMENT_STATUSES
+from lnpl.diagnostics import (CODES, ENFORCEMENT, ENFORCEMENT_STATUSES,
+                              SEVERITY_OF)
 from lnpl.lexer import EVENT_TRIGGERS
 from lnpl.lower import (PERF_METRICS, POLICY_NAMES, SECURITY_MECHANISMS,
                         VERB_LEXICON)
@@ -189,6 +191,31 @@ def document_validity_errors(markdown):
                               % (key, NO_DIAGNOSTIC, code))
         elif code not in CODES:
             errors.append("%r: %r is not a declared diagnostic code" % (key, code))
+    return errors
+
+
+def diagnostic_severity_errors(markdown):
+    """(5) Does §C's severity column hold the grade the code holds?
+
+    The grade is decided by `diagnostics.SEVERITY_OF` alone (issue #52,
+    RFC-0021's ladder); §C is a human-readable copy of it, exactly as §B is a
+    copy of `ENFORCEMENT`.
+
+    This check exists because the two drifted and nothing noticed: after the
+    ladder landed, three codes had become `info` while the document still called
+    every one of them a `warning`. The check that was here asserted the
+    DOCUMENT'S OWN claim — that the severity column held only "warning" — so it
+    stayed green on a document that contradicted the code. Comparing against
+    `SEVERITY_OF` is what makes it a check rather than a restatement.
+    """
+    errors = []
+    for cells in parse_table(markdown, HEADING_C, 4):
+        code, documented = cells[0], cells[1]
+        if code not in SEVERITY_OF:
+            errors.append("%r: not a declared diagnostic code" % code)
+        elif SEVERITY_OF[code] != documented:
+            errors.append("%r: documented as %r, the code grades it %r"
+                          % (code, documented, SEVERITY_OF[code]))
     return errors
 
 
@@ -407,13 +434,58 @@ class TestGateFailsClosed(unittest.TestCase):
     def test_a_short_row_raises_rather_than_reading_as_empty_cells(self):
         # GFM inserts empty cells for a short row, which would let a truncated
         # row pass as a documented one.
-        mutant = self.markdown.replace(
-            "| security | jwt | unenforced | declared-not-enforced | "
-            "토큰을 발급하지도 검증하지도 않는다. OpenAPI 문서까지만 도달한다 |",
-            "| security | jwt | unenforced |")
+        #
+        # The row is located by its (clause, name) key rather than quoted whole:
+        # a copy of the full line here is a literal anchor into a prose cell,
+        # and it goes stale the moment someone rewords the 근거 — at which point
+        # the mutation stops applying and this control silently stops
+        # controlling anything. Issue #25 reworded exactly this row.
+        prefix = "| security | jwt |"
+        row = next((line for line in self.markdown.splitlines()
+                    if line.startswith(prefix)), None)
+        self.assertIsNotNone(row, "the §B jwt row is gone")
+        mutant = self.markdown.replace(row, prefix + " unenforced |")
         self.assertNotEqual(mutant, self.markdown, "the mutation did not apply")
         with self.assertRaises(AnchorMissing):
             document_coverage_errors(mutant)
+
+
+class TestPathDependentEnforcement(unittest.TestCase):
+    """A declaration enforced on one path and ignored on another must say so.
+
+    `security jwt` is the case: issue #25 gave it a real verification path, but
+    the diagnostic is emitted at compile time, which cannot know the backend.
+    The status therefore describes the weakest path, and the reason has to name
+    the path that does enforce it — otherwise the single status is simply false
+    for one of the two.
+    """
+
+    def test_the_jwt_reason_names_the_path_that_enforces_it(self):
+        _, reason = ENFORCEMENT[("security", "jwt")]
+
+        self.assertIn("--jwt-secret-env", reason)
+        self.assertIn("serve", reason)
+
+    def test_the_jwt_reason_still_says_the_default_path_does_not(self):
+        """Both halves, or the row reads as a promise the default cannot keep."""
+        status, reason = ENFORCEMENT[("security", "jwt")]
+
+        self.assertEqual("unenforced", status)
+        self.assertIn("default", reason)
+
+    def test_the_document_repeats_the_same_path(self):
+        row = next(line for line in read_doc().splitlines()
+                   if line.startswith("| security | jwt |"))
+
+        self.assertIn("--jwt-secret-env", row)
+
+    def test_rollback_still_reports_nothing_to_compensate(self):
+        """A real store arrived in #25; a transaction boundary did not. This
+        row must not drift toward `enforced` on the strength of the store."""
+        status, reason = ENFORCEMENT[("policy", "rollback")]
+
+        self.assertEqual("unenforced", status)
+        self.assertIn("compensate", reason)
 
 
 class TestDiagnosticCodeTable(unittest.TestCase):
@@ -428,9 +500,48 @@ class TestDiagnosticCodeTable(unittest.TestCase):
         self.assertEqual(len(documented), len(CODES))
         self.assertEqual(sorted(documented), sorted(CODES))
 
-    def test_every_documented_code_is_a_warning(self):
-        rows = parse_table(self.markdown, HEADING_C, 4)
-        self.assertEqual(sorted({cells[1] for cells in rows}), ["warning"])
+    def test_every_documented_severity_matches_the_code(self):
+        # Replaces an assertion that every documented severity was "warning".
+        # That was the document repeating itself: it could not fail on a grade
+        # the code disagreed with, only on one the document spelled differently.
+        self.assertEqual(diagnostic_severity_errors(self.markdown), [])
+
+    def test_negative_control_a_flipped_severity_is_caught(self):
+        mutant = self.markdown.replace(
+            "| guard-skipped-steps | warning |",
+            "| guard-skipped-steps | info |")
+        self.assertNotEqual(mutant, self.markdown, "the mutation did not apply")
+        errors = diagnostic_severity_errors(mutant)
+        self.assertTrue(errors, "check 5 did not notice a flipped severity")
+        self.assertIn("guard-skipped-steps", str(errors))
+
+    def test_negative_control_a_flipped_severity_leaves_coverage_green(self):
+        # Each mutation must redden exactly the check that owns it: the code set
+        # §C documents is unchanged by a wrong grade.
+        mutant = self.markdown.replace(
+            "| guard-skipped-steps | warning |",
+            "| guard-skipped-steps | info |")
+        rows = parse_table(mutant, HEADING_C, 4)
+        self.assertEqual(sorted(cells[0] for cells in rows), sorted(CODES))
+
+    def test_negative_control_an_invented_severity_word_is_caught(self):
+        # Boundary: a grade outside the ladder is not merely a mismatch.
+        mutant = self.markdown.replace(
+            "| unknown-verb | warning |", "| unknown-verb | critical |")
+        self.assertNotEqual(mutant, self.markdown, "the mutation did not apply")
+        errors = diagnostic_severity_errors(mutant)
+        self.assertTrue(errors, "check 5 did not notice an invented grade")
+        self.assertIn("critical", str(errors))
+
+    def test_the_ladder_is_not_flat(self):
+        # The regression that hid the drift for a whole wave: if every code
+        # carried one grade, `--strict=<level>` would have nothing to select on
+        # and a document claiming "all warning" would be accidentally right.
+        documented = {cells[1] for cells in
+                      parse_table(self.markdown, HEADING_C, 4)}
+        self.assertGreater(len(documented), 1,
+                           "§C must show more than one grade, or RFC-0021's "
+                           "threshold has nothing to choose between")
 
     def test_the_runtime_code_is_documented_as_runtime(self):
         rows = {cells[0]: cells[3] for cells in
