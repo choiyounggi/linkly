@@ -652,6 +652,8 @@ def lower(decls, module_name):
         _check_scoped_conditions(ctx.emitted, registry, d.name, base_of,
                                  top_ids)
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
+        _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
+                           mod.diagnostics, d.name)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -674,6 +676,11 @@ class _WfContext:
         self._step_n = 0
         self._guard_n = 0
         self._block_n = {"parallel": 0, "pipeline": 0}
+        # step id -> source line. The IR carries no line numbers (a node is a
+        # meaning, not a location), but a diagnostic has to send the author
+        # somewhere. `_step` is the only place a line and an id are both in
+        # hand, so the pairing is recorded here for the later passes.
+        self.step_lines = {}
 
     def plan(self, item):
         """Emit the nodes for one body item; returns the id the parent should own."""
@@ -691,6 +698,7 @@ class _WfContext:
 
     def _step(self, line):
         step_id = self._next_step_id()
+        self.step_lines[step_id] = line.lineno
         verb = line.tokens[0]
         obj = line.tokens[1] if len(line.tokens) > 1 else None
         if verb == ASSIGN_VERB:
@@ -745,6 +753,128 @@ class _WfContext:
             fields["condition"] = guard["arg"]
         self.emitted.append(_node("Guard", node_id, children=[inner_id], **fields))
         return node_id
+
+
+STEP_SUBJECT = "step"
+
+# What a guarded state change is called when it escapes its guard. Lives beside
+# GUARD_SUBJECT for the same reason that one does: the wording travels with the
+# diagnostic instead of being spelled again at each site.
+ORPHAN_HINT = ("Repeat the guard line before this step, or wrap both in a "
+               "`parallel` block.")
+
+
+def _touched_entities(step_node, by_id):
+    """Entity ids this WorkflowStep reads or writes, from its derived Effects.
+
+    Read off the Effect nodes rather than off the step's words: the Effect is
+    what execution acts on, and it is the production derivation both modes
+    already agree about. A `CacheAccess` carries a key rather than an entity, so
+    it contributes nothing here — the consequence this check is about is a
+    change to *stored* state.
+    """
+    found = set()
+    for child_id in step_node.get("children") or []:
+        child = by_id.get(child_id)
+        if child is None:
+            continue
+        if child["kind"] in ("RepositoryCall", "Assignment"):
+            if child.get("entity"):
+                found.add(child["entity"])
+        elif child["kind"] == "Validation":
+            if child.get("target"):
+                found.add(child["target"])
+    return found
+
+
+def _steps_outside_guards(node_id, by_id):
+    """WorkflowSteps reachable from `node_id` that no Guard owns.
+
+    A Guard subtree is skipped whole: whatever is under a guard is already
+    conditional, and whether *that* guard is the right one is a different
+    question from the one this check asks.
+    """
+    node = by_id.get(node_id)
+    if node is None:
+        return []
+    if node["kind"] == "Guard":
+        return []
+    if node["kind"] == "WorkflowStep":
+        return [node]
+    out = []
+    for child_id in node.get("children") or []:
+        out.extend(_steps_outside_guards(child_id, by_id))
+    return out
+
+
+def _check_guard_scope(emitted, top_ids, step_lines, registry, diagnostics,
+                       workflow_name):
+    """A guard owns the next item only — say so when that silently matters.
+
+    RFC-0002 gives `when` exactly one item, and `references/grammar.md` documents
+    it. But the grammar is not where an author is standing when they write
+
+        when product.stock >= input.quantity
+        create order
+        set product.stock to product.stock - input.quantity
+
+    which compiles with no diagnostic at all and then decrements stock on a run
+    where the guard was false. Only the *runtime* said anything, through
+    `guard-skipped-steps`, and only about the one step the guard did own.
+
+    The judgement is a consequence, not a shape. "A step follows a guard" is
+    ordinary and correct — every workflow does it. What is worth a warning is a
+    step that touches the very state the guard was protecting, from outside the
+    guard. So the condition's own references decide the entity set, and only a
+    later unguarded step that reads or writes one of those entities is reported.
+    Shape alone would fire on `examples/guarded.lnpl`, where two guards sit in a
+    row over different concerns, and a check that must be exempted per example
+    measures nothing (issue #35 taught this repo that lesson once already).
+    """
+    from .condition import ConditionError, parse_condition, references
+    from .repo_policy import binding_name
+
+    by_id = {node["id"]: node for node in emitted}
+    entity_of_binding = {binding_name(ent): ent["id"]
+                         for ent in registry.values()}
+    ordered = list(top_ids or [])
+
+    for i, nid in enumerate(ordered):
+        guard = by_id.get(nid)
+        if guard is None or guard["kind"] != "Guard":
+            continue
+        text = guard.get("condition")
+        if not text:
+            continue                      # `repeat` carries a count
+        try:
+            cond = parse_condition(text)
+        except ConditionError:
+            continue                      # already refused elsewhere
+        if cond is None:
+            continue
+
+        protected = set()
+        for name in references(cond):
+            binding = name.split(".")[0]
+            eid = entity_of_binding.get(binding)
+            if eid:
+                protected.add(eid)
+        if not protected:
+            continue                      # e.g. `input.` only — no row to protect
+
+        for later_id in ordered[i + 1:]:
+            for step in _steps_outside_guards(later_id, by_id):
+                if not (_touched_entities(step, by_id) & protected):
+                    continue
+                where = step_lines.get(step["id"])
+                diagnostics.add(
+                    code="guard-orphaned-steps",
+                    where=("line %d" % where) if where else workflow_name,
+                    subject=step["name"],
+                    message="`%s %s` owns only the next item, so `%s` runs "
+                            "whether or not that condition held. %s"
+                            % (guard.get("mode", "when"), text, step["name"],
+                               ORPHAN_HINT))
 
 
 def _check_event_refs(emitted, declared_event_ids, workflow_name):
