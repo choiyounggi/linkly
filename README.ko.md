@@ -30,7 +30,7 @@ linkly는 새 언어 하나가 아니다. 그 전제가 요구하는 플랫폼 �
 
 표면 언어 **LNPL**(워킹네임, `.lnpl`)은 선언만 담는다:
 
-```
+```lnpl
 entity User
     field
         id UUID
@@ -38,10 +38,14 @@ entity User
         password Password
         createdAt DateTime
 
+entity Session
+    field
+        id UUID
+        issuedAt DateTime
+
 service LoginService
     policy
         retry 3
-        rollback
         timeout 3s
     security
         jwt
@@ -50,13 +54,23 @@ service LoginService
         cache 5m
 
 workflow Login
-    validate input
-    authenticate
+    validate user
+    authenticate user
     cache user
-    generate token
-    audit login
-    return token
+    create session
 ```
+
+위 네 스텝은 전부 실제 Effect를 만든다 — `Validation` · `RepositoryCall` ·
+`CacheAccess` · `RepositoryCall` — 그리고 워크플로는 `completed`로 끝난다. 선언 중
+둘은 실행을 **바꾸지 않으며**, 컴파일러가 그 사실을 진단으로 말해준다: `security jwt`는
+기본 경로에서 토큰을 발급하지도 검증하지도 않고(요청마다 bearer 토큰을 검증하는 것은
+`lnpl serve --jwt-secret-env NAME`이다), `performance response`는 측정·보고만 하고
+초과를 막지 않는다.
+
+동사 어휘는 **닫혀 있다.** 그 밖의 낱말은 에러가 아니라, 아무 효과도 내지 않는 스텝으로
+컴파일되고 문서 옆에 `unknown-verb` 진단이 붙는다. 어휘 정본은
+[`plugins/lnpl/skills/lnpl-authoring/references/verbs.md`](plugins/lnpl/skills/lnpl-authoring/references/verbs.md)이며
+컴파일러의 테이블에서 생성된다.
 
 `if` / `for` / `while` / `switch`는 없다 — 예약어로 두고 사용을 금지한다. 제어 어휘는
 `when` / `repeat` / `parallel` / `until` / `pipeline`이다. 블록은 **키워드**가 구획하고
@@ -77,6 +91,11 @@ decoding의 중첩 한계를 구조적으로 충족하고, 노드 단위 diff와
 ---
 
 ## 실행해보기
+
+아래 명령이 돌리는 `examples/login.lnpl`은 이슈 #36의 회귀 픽스처다 — 어휘 밖 동사
+셋(`generate` / `audit` / `return`)을 **일부러** 담고 있어서, 효과 없는 스텝이 어떻게
+보이는지와 `unknown-verb` 진단이 그것을 뭐라고 말하는지를 출력으로 보여준다. 따라 쓸
+모범이 아니라 재현 케이스다. 깨끗한 쪽은 `examples/checkout.lnpl`이다.
 
 ```bash
 # 프로젝트는 Python을 venv로 고정한다 — PATH의 `python3`가 무엇이든 검증이 같게 돈다.

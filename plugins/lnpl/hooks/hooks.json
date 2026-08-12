@@ -1,6 +1,18 @@
 {
-  "description": "lnpl 진단 훅 — .lnpl을 Write/Edit한 직후 컴파일 진단을 모델에게 되돌린다.",
+  "description": "lnpl 훅 — 세션 시작에 컴파일러 전제를 확인하고, .lnpl을 Write/Edit한 직후 컴파일 진단을 모델에게 되돌린다.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/lnpl-session-start.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",

@@ -163,7 +163,7 @@ status completed
 진단은 **stderr로 나가고 종료 코드는 0**이다. `--strict`를 줘야 rc 2로 올라간다.
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
-(`unknown-verb`, `guard-skipped-steps`), `info`는 고쳐도 사라지지 않는 플랫폼
+(`unknown-verb`, `guard-skipped-steps`, `guard-orphaned-steps`), `info`는 고쳐도 사라지지 않는 플랫폼
 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`). 등급별 표는
 `references/declarations.md`에 생성되어 있다 — 등급을 정하는 것은 그 표가 아니라
@@ -179,6 +179,8 @@ status completed
   파일:라인이 아니다. mode B에서 나오는 두 진단(`guard-skipped-steps`,
   `validation-sample-derived`)의 노드 id는 **워크플로 id**다 — 그 표면에는 가드
   노드 id가 없다(rfcs/0022 표 1).
+- **`guard-orphaned-steps`는 예외로 `line N`을 갖는다.** 저자가 옮겨야 하는 것이
+  그 스텝이라, 노드 id를 되짚게 하는 대신 줄을 바로 가리킨다(RFC-0023 §5).
 
 집행 진단이 어느 줄에서 왔는지 알아야 하면 `compile -o`로 IR을 뽑아 그 노드 id를
 찾는다. 노드 id에서 선언명을 되짚는 규칙은

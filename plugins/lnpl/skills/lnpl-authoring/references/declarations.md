@@ -44,4 +44,5 @@
 | `declared-measured-only` | **info** |
 | `authorization-not-verified` | **info** |
 | `guard-skipped-steps` | **warning** |
+| `guard-orphaned-steps` | **warning** |
 | `validation-sample-derived` | **info** |
