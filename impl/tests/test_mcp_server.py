@@ -17,6 +17,7 @@
 import io
 import json
 import os
+import subprocess
 import unittest
 
 from lnpl import __version__
@@ -72,6 +73,18 @@ class HandshakeTest(unittest.TestCase):
     def test_a_notification_gets_no_reply(self):
         # 알림에 응답하면 클라이언트의 id 대응이 어긋난다.
         out = converse({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual(out, [])
+
+    def test_any_id_less_message_gets_no_reply_not_just_the_known_one(self):
+        """알림 규칙은 메서드 이름이 아니라 `id` 부재로 정해진다.
+
+        `notifications/initialized` 하나만 테스트하면, 그 이름을 특별 취급하는
+        분기가 규칙 전체를 대신하고 있어도 초록이다. JSON-RPC에서 id 없는
+        메시지에 응답하면 클라이언트의 id 대응이 어긋난다 — 이름과 무관하게.
+        """
+        out = converse({"jsonrpc": "2.0", "method": "notifications/progress",
+                        "params": {"token": 1}},
+                       {"jsonrpc": "2.0", "method": "some/unknown/notice"})
         self.assertEqual(out, [])
 
     def test_one_line_per_response_in_order(self):
@@ -186,6 +199,69 @@ class ProtocolErrorTest(unittest.TestCase):
         self.assertEqual(responses[0]["error"]["code"], PARSE_ERROR)
         self.assertIn("tools", responses[1]["result"],
                       "깨진 줄 하나가 이후 요청을 삼켰다")
+
+
+LAUNCHER = os.path.join(PLUGIN, "server.py")
+INITIALIZE = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {}}) + "\n"
+
+
+def run_launcher(env, cwd):
+    """런처를 실제 프로세스로 띄우고 initialize 한 줄을 넣는다.
+
+    `serve()`를 직접 부르면 런처가 하는 유일한 일 — 패키지를 **찾는 것** —
+    을 건너뛴다. 그 해석이 이 파일의 전부이므로 프로세스로 돌려야 한다.
+    설치된 lnpl을 우연히 집지 않도록 PATH와 PYTHONPATH를 비운 환경에서 돈다.
+    """
+    base = {"PATH": "/usr/bin:/bin"}
+    base.update(env)
+    return subprocess.run(["python3", LAUNCHER], input=INITIALIZE,
+                          capture_output=True, text=True, env=base, cwd=cwd)
+
+
+class LauncherResolutionTest(unittest.TestCase):
+    """런처의 세 해석 분기와 fail-loud 경로.
+
+    감사가 지적한 공백이다: `.mcp.json`이 이 파일을 가리킨다는 것만 확인하고
+    **이 파일이 실제로 무엇을 하는지**는 아무 테스트도 보지 않았다. 여기가
+    깨지면 서버는 뜨지 않고, 클라이언트는 "연결 실패"만 본다.
+    """
+
+    def _initialized(self, proc):
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(proc.stdout.strip(), "런처가 아무것도 내지 않았다")
+        return json.loads(proc.stdout.splitlines()[0])["result"]
+
+    def test_it_uses_lnpl_impl_when_given(self):
+        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl")}, cwd="/")
+        result = self._initialized(proc)
+        self.assertEqual(result["serverInfo"]["name"], "lnpl")
+        self.assertEqual(result["serverInfo"]["version"], __version__)
+
+    def test_it_walks_up_from_the_working_directory(self):
+        # LNPL_IMPL 없이, 레포 안의 하위 디렉터리에서 띄운다.
+        proc = run_launcher({}, cwd=os.path.join(REPO, "examples"))
+        result = self._initialized(proc)
+        self.assertEqual(result["serverInfo"]["version"], __version__)
+
+    def test_walk_up_beats_nothing_but_lnpl_impl_beats_walk_up(self):
+        # 둘 다 가능한 자리에서 LNPL_IMPL이 이겨야 한다 — 명시가 추론을 이긴다.
+        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl")},
+                            cwd=os.path.join(REPO, "examples"))
+        self._initialized(proc)
+
+    def test_it_fails_loudly_when_the_package_cannot_be_found(self):
+        # 어디서도 못 찾는 자리. 조용히 죽으면 클라이언트는 이유를 모른다.
+        proc = run_launcher({}, cwd="/")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("could not locate", proc.stderr)
+        self.assertIn("LNPL_IMPL", proc.stderr,
+                      "무엇을 시도했는지 말하지 않으면 고칠 수가 없다")
+
+    def test_a_bad_lnpl_impl_does_not_pretend_to_work(self):
+        proc = run_launcher({"LNPL_IMPL": "/nonexistent/impl"}, cwd="/")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("could not locate", proc.stderr)
 
 
 class PluginPackagingTest(unittest.TestCase):
