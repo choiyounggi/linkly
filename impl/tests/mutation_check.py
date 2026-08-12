@@ -429,7 +429,7 @@ NOOP_CONTROL = ("CONTROL (must survive): reword a docstring",
 TREE_CONTENTS = ("impl", "examples", "schemas", "scripts", "kb", "rfcs", "docs",
                  "plans", "mlir", "CHARTER.md", ".venv",
                  "plugins", ".claude-plugin", "AGENTS.md", "CLAUDE.md",
-                 "pyproject.toml")
+                 "pyproject.toml", "README.md", "README.ko.md")
 
 
 def make_tree(dest):

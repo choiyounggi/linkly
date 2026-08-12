@@ -9,4 +9,4 @@ the agent protocol's, and `openapi.py`'s default is the version stamped on a
 *generated* OpenAPI document.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

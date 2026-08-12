@@ -159,7 +159,7 @@ fires on save:
 /plugin install lnpl@linkly
 ```
 
-The repo doubles as the marketplace and hosts two plugins with different audiences:
+The repo doubles as the marketplace and hosts three plugins with different audiences:
 
 | Plugin | Audience | Contents |
 |--------|----------|----------|
@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**1346 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**1969 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**15 RFCs — 14 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
+**24 RFCs — 23 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -279,8 +279,17 @@ suite is defined against.
 | [0012 Execution Scope](rfcs/0012-execution-scope.md) | What a guard condition may name, and how a step's result binds for the next one. *Updates 0002 §Full grammar, 0008 §Reference-level Specification/1. Full Grammar, 0003 §Guard* |
 | [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | An absolute bound on step attempts that does not read the declared `retry` budget — so losing that budget is a failure, not an infinite loop. *Updates 0003 §Policy Enforcement* |
 | [0014 Guard Skip Observability](rfcs/0014-guard-skip-observability.md) | A skipped step no longer passes for a completed one — the skip becomes a recorded, contracted signal instead of an INFO line. *Updates 0008 §Guard Runtime Semantics* |
+| [0015 Value Semantics](rfcs/0015-value-semantics.md) | What a guard may compare and what `set` may write: field references, one binary arithmetic term, `and`-composition, the `input.` payload namespace. Aggregation (`sum`/`count`) needs a row-set expression first, so its roadmap lives in §Alternatives. *Updates 0001 §A.4, 0002 §Full grammar, 0008 §1* |
+| [0016 Time and Schedule Semantics](rfcs/0016-time-and-schedule-semantics.md) | DateTime as an epoch-ms codec so a duration is an i64 and both modes compare it identically; `event … on schedule daily at HH:MM UTC` reaches the IR and OpenAPI, and stays unenforced. *Updates 0001 §A.4, 0002 §Full grammar, 0008 §1* |
+| [0017 Guarded Example Correction](rfcs/0017-guarded-example-correction.md) | Why the shipped `guarded.lnpl` was rewritten rather than exempted from the guard that went red on it. *Updates 0008 §5.2* |
+| [0018 Repeated Step Observation Fold](rfcs/0018-repeated-step-observation-fold.md) | How a step that runs more than once folds into one observation, so mode A and mode B can be compared by name. *Updates 0017 §Open Questions 1* |
+| [0019 Misleading Indentation](rfcs/0019-misleading-indentation.md) | Indentation carries no meaning, yet indentation that contradicts the block structure is refused — a silent lie about scope is worse than a missing convention. *Updates 0002 §Block structure* |
+| [0020 Spec `given` Input Namespace](rfcs/0020-spec-given-input-namespace.md) | How a `spec` case names a field of the run payload, so a guard on `input.` can be contracted at all. |
+| [0021 Diagnostic Severity Levels](rfcs/0021-diagnostic-severity-levels.md) | The severity ladder and what `--strict[=LEVEL]` gates. `warning` is what a fixed program stops emitting; `info` is the platform stating what it does. |
+| [0022 Mode B Observation Surface](rfcs/0022-mode-b-observation-surface.md) | What a native build must say about skipped steps and `--field` reach, so "it ran" and "it was skipped" stay distinguishable. *Updates 0014 §2.5·§2.6, 0021 §codes* |
+| [0023 Guard Scope Diagnostic](rfcs/0023-guard-scope-diagnostic.md) | A guard owns only the next item, so a later step can change the very state the guard protected. `guard-orphaned-steps` reports that at compile time — judged by consequence, not by shape. *Updates 0021 §codes* |
 
-Fourteen are `Accepted`; 0000 is superseded by 0007, which was itself formally
+Twenty-three are `Accepted`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -340,7 +349,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 1346 tests in 35.456s
+Ran 1969 tests in 68.650s
 
 OK
 ```
@@ -469,7 +478,7 @@ nodes), its lowering path is **MLIR → native**, the knowledge base is a
 
 ```
 CHARTER.md                  Stage-0 vision document (preserved verbatim — the RFCs are canonical)
-rfcs/0000~0014              The RFCs (0000 Superseded, the other 14 Accepted)
+rfcs/0000~0023              The RFCs (0000 Superseded, the other 23 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR
