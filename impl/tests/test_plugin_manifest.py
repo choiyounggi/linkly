@@ -27,11 +27,15 @@ class MarketplaceTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(MARKET))
         self.assertIsInstance(load(MARKET), dict)
 
-    def test_marketplace_declares_both_plugins(self):
-        # `lnpl`은 .lnpl 작성자용, `lnpl-dev`는 linkly 기여자용 — 대상 사용자가
-        # 달라 하나로 합치지 않는다.
+    def test_marketplace_declares_every_plugin(self):
+        # 셋은 대상 사용자와 전달 방식이 서로 달라 합치지 않는다:
+        #   `lnpl`     — .lnpl을 쓰는 쪽. 스킬 + 쓰기 시점 진단 훅.
+        #   `lnpl-dev` — linkly 자체를 만드는 쪽. 환경·RFC·뮤테이션 하네스.
+        #   `lnpl-mcp` — 같은 컴파일러를 셸이 아니라 MCP 툴로 부르는 쪽.
+        #                진단을 stderr 줄글이 아니라 구조로 받는다.
         entries = load(MARKET)["plugins"]
-        self.assertEqual(sorted(e["name"] for e in entries), ["lnpl", "lnpl-dev"])
+        self.assertEqual(sorted(e["name"] for e in entries),
+                         ["lnpl", "lnpl-dev", "lnpl-mcp"])
 
     def test_plugin_names_are_unique(self):
         names = [e["name"] for e in load(MARKET)["plugins"]]

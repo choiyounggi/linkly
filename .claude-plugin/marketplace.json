@@ -45,6 +45,26 @@
         "mutation-testing",
         "claude-code"
       ]
+    },
+    {
+      "name": "lnpl-mcp",
+      "description": "The LNPL compiler as MCP tools — structured diagnostics instead of stderr prose, and knowledge-base routing before a design decision.",
+      "category": "development",
+      "author": {
+        "name": "choiyounggi",
+        "url": "https://github.com/choiyounggi"
+      },
+      "source": "./plugins/lnpl-mcp",
+      "homepage": "https://github.com/choiyounggi/linkly",
+      "version": "0.3.0",
+      "tags": [
+        "lnpl",
+        "linkly",
+        "mcp",
+        "diagnostics",
+        "compiler",
+        "claude-code"
+      ]
     }
   ]
 }
