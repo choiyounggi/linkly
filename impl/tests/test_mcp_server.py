@@ -275,6 +275,20 @@ class PluginPackagingTest(unittest.TestCase):
         # 절대 경로를 박으면 설치된 위치에서 깨진다.
         self.assertTrue(os.path.isfile(os.path.join(PLUGIN, "server.py")))
 
+    def test_it_declares_no_environment_passthrough(self):
+        """`env` 로 변수를 되넘기지 않는다.
+
+        stdio 서버는 자식 프로세스라 부모 환경을 그대로 물려받는다. 그래서
+        `"env": {"LNPL_IMPL": "${LNPL_IMPL}"}` 같은 passthrough는 사용자가
+        `export` 했을 때 얻는 것이 없고, 그 변수가 보통 설정돼 있지 않다는
+        점에서 실패 모드만 하나 늘린다. 런처는 `os.environ` 에서 직접 읽는다.
+        """
+        with open(os.path.join(PLUGIN, ".mcp.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        self.assertNotIn(
+            "env", cfg["lnpl"],
+            "설정돼 있지 않은 변수를 되넘기면 서버 기동만 위태로워진다")
+
     def test_the_plugin_manifest_names_itself(self):
         with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"),
                   encoding="utf-8") as fh:
