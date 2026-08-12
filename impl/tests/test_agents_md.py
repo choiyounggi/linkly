@@ -62,8 +62,11 @@ class RoutingFileExistsTest(unittest.TestCase):
 class SkillReferenceIntegrityTest(unittest.TestCase):
     def test_every_skill_it_names_exists(self):
         named = skills_named_in(read(AGENTS))
-        # `lnpl-dev`는 플러그인 이름이지 스킬이 아니다.
+        # 플러그인 이름은 스킬이 아니다. AGENTS.md의 라우팅 서두가 대상별로
+        # 플러그인을 소개하면서 이름을 부르는데, 그 자리에는 같은 이름의 스킬이
+        # 없다 — `lnpl`만 스킬 이름과 겹친다.
         named.discard("lnpl-dev")
+        named.discard("lnpl-mcp")
         missing = sorted(named - real_skills())
         self.assertEqual(missing, [],
                          "AGENTS.md가 없는 스킬을 부른다: %s" % missing)

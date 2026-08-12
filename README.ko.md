@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 1346개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 1969개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 15편 — 14편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
+**RFC 24편 — 23편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -231,8 +231,17 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0012 실행 스코프와 스텝 결과 바인딩](rfcs/0012-execution-scope.md) | 가드 조건식이 무엇을 가리킬 수 있는가, 그리고 한 step의 결과가 다음 step에 어떻게 묶이는가. *0002 §Full grammar·0008 §Reference-level Specification/1. Full Grammar·0003 §Guard 갱신* |
 | [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | 선언된 `retry` 예산을 읽지 않는 절대 시도 상한 — 그 예산을 잃어도 무한 루프가 아니라 실패로 끝나게 한다. *0003 §Policy Enforcement 갱신* |
 | [0014 가드 스킵의 관측 가능성](rfcs/0014-guard-skip-observability.md) | 스킵된 스텝이 더 이상 완주한 스텝으로 위장되지 않는다 — 스킵이 INFO 한 줄이 아니라 기록되는 계약 신호가 된다. *0008 §Guard Runtime Semantics 갱신* |
+| [0015 값 의미론](rfcs/0015-value-semantics.md) | 가드가 무엇을 비교할 수 있고 `set`이 무엇을 쓸 수 있는가 — 필드 참조, 이항 산술 1개, `and` 결합, `input.` 페이로드 네임스페이스. 집계(`sum`/`count`)는 행 집합 표현이 먼저라 로드맵이 §Alternatives에 있다. *0001 §A.4·0002 §Full grammar·0008 §1 갱신* |
+| [0016 시간 값 의미론과 스케줄 트리거](rfcs/0016-time-and-schedule-semantics.md) | DateTime을 epoch-ms 코덱으로 두어 기간이 i64가 되고 두 모드가 같게 비교한다. `event … on schedule daily at HH:MM UTC`는 IR과 OpenAPI까지 도달하고 집행되지 않는다. *0001 §A.4·0002 §Full grammar·0008 §1 갱신* |
+| [0017 guarded.lnpl 예제 정정](rfcs/0017-guarded-example-correction.md) | 가드가 빨개진 예제를 예외로 빼지 않고 다시 쓴 이유. *0008 §5.2 갱신* |
+| [0018 반복 스텝 관측의 fold 규칙](rfcs/0018-repeated-step-observation-fold.md) | 두 번 이상 도는 스텝이 하나의 관측으로 접히는 방식 — 그래야 모드 간 비교를 이름으로 할 수 있다. *0017 §Open Questions 1 갱신* |
+| [0019 구조와 모순되는 들여쓰기의 거부](rfcs/0019-misleading-indentation.md) | 들여쓰기는 의미가 없지만, 블록 구조와 모순되는 들여쓰기는 거부한다 — 스코프에 대한 조용한 거짓말이 관례 부재보다 나쁘다. *0002 §Block structure 갱신* |
+| [0020 spec `given`의 입력 네임스페이스](rfcs/0020-spec-given-input-namespace.md) | `spec` 케이스가 실행 payload의 필드를 지목하는 법 — 그래야 `input.` 가드를 계약할 수 있다. |
+| [0021 진단 등급과 `--strict` 문턱](rfcs/0021-diagnostic-severity-levels.md) | 등급 사다리와 `--strict[=LEVEL]`가 게이팅하는 것. `warning`은 프로그램을 고치면 사라지는 것, `info`는 플랫폼이 자기가 하는 일을 진술한 것. |
+| [0022 mode B의 관측 표면](rfcs/0022-mode-b-observation-surface.md) | 네이티브 빌드가 스킵된 스텝과 `--field` 도달을 무엇으로 말해야 하는가 — "돌았다"와 "건너뛰었다"가 구별되도록. *0014 §2.5·§2.6·0021 §코드 갱신* |
+| [0023 가드 밖으로 새어 나간 상태 변경](rfcs/0023-guard-scope-diagnostic.md) | 가드는 다음 항목 하나만 소유하므로 뒤의 스텝이 가드가 지키려던 상태를 바꿀 수 있다. `guard-orphaned-steps`가 그것을 컴파일 타임에 말한다 — 형태가 아니라 결과로 판정한다. *0021 §코드 갱신* |
 
-14편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+23편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -289,7 +298,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 1346 tests in 35.456s
+Ran 1969 tests in 68.650s
 
 OK
 ```
@@ -407,7 +416,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0014              RFC (0000은 Superseded, 나머지 14편은 Accepted)
+rfcs/0000~0023              RFC (0000은 Superseded, 나머지 23편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
