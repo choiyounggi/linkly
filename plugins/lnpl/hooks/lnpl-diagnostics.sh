@@ -23,20 +23,35 @@ case "$FILE" in
 esac
 [ -f "$FILE" ] || exit 0
 
-# `lnpl`이 없으면 사용자 워크플로를 깨지 않는다. 다만 세션당 한 번은 알린다 —
-# 훅이 조용히 죽어 있으면 플러그인이 설치된 줄 알면서 아무 보호도 못 받는다.
-if ! command -v lnpl >/dev/null 2>&1; then
+# lnpl 실행기 해석은 이 플러그인의 훅 둘이 공유한다 — 두 벌 구현하면 갈라진다.
+# 정본과 순서의 근거는 lib/resolve-lnpl.sh 의 머리말에 있다.
+# CLAUDE_PLUGIN_ROOT 가 아니라 이 스크립트 자신의 위치로 푼다: 테스트는 훅을
+# `bash <경로>` 로 직접 부르고, 그때 그 변수는 없다.
+HOOK_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) || HOOK_DIR="."
+# shellcheck source=lib/resolve-lnpl.sh
+. "$HOOK_DIR/lib/resolve-lnpl.sh"
+
+# stdout(IR)은 버리고 stderr(진단)만 잡는다. 리디렉션 순서가 중요하다 —
+# 뒤집으면 stderr를 버리고 IR을 잡는다.
+compile_capture() {
+  run_lnpl compile "$1" 2>&1 >/dev/null
+}
+
+resolve_lnpl_bin "$FILE"
+
+# 해석은 **매번** 시도한다. 마커는 아래에서 안내의 반복만 억제한다 — 마커를
+# 이유로 해석을 건너뛰면, 한 번 CLI를 못 찾은 세션은 남은 내내 무방비가 된다.
+if [ -z "$LNPL_MODE" ]; then
   SESSION=$(printf '%s' "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null)
   MARK_DIR="${HOME}/.claude/lnpl-plugin"
   MARK="${MARK_DIR}/notified-${SESSION}"
   [ -e "$MARK" ] && exit 0
   mkdir -p "$MARK_DIR" 2>/dev/null && : > "$MARK" 2>/dev/null
-  echo "lnpl CLI가 PATH에 없어 .lnpl 진단을 건너뛰었다. \`lnpl-doctor\` 스킬로 진단하라." >&2
+  echo "lnpl CLI를 찾지 못해 .lnpl 진단을 건너뛰었다 (LNPL_BIN / 상위 .venv/bin/lnpl / CLAUDE_PROJECT_DIR / PATH / python3 -m lnpl 순으로 시도). \`lnpl-doctor\` 스킬로 진단하라." >&2
   exit 2
 fi
 
-# stdout(IR)은 버리고 stderr(진단)만 잡는다. 리디렉션 순서가 중요하다.
-OUT=$(lnpl compile "$FILE" 2>&1 >/dev/null)
+OUT=$(compile_capture "$FILE")
 RC=$?
 
 if [ "$RC" -ne 0 ]; then
