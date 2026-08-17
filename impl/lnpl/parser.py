@@ -309,8 +309,27 @@ def parse(source):
             continue
 
         if cur_clause is None:
+            # Exhaustive listing (issue #63), matching the compiler's existing
+            # closed-set diagnostics (type errors, workflow id errors, spec
+            # `given` errors) instead of guessing at the typo. `workflow` is
+            # not listed here: line 300 above always consumes a workflow-body
+            # content line as a step before this branch runs, so `workflow`
+            # never reaches it.
+            if cur.kind == "service":
+                raise ParseError(
+                    "line %d: content line %r outside any clause — a `service` "
+                    "declaration opens: %s"
+                    % (line.lineno, line.tokens, ", ".join(SERVICE_CLAUSES)))
+            if cur.kind == "entity":
+                raise ParseError(
+                    "line %d: content line %r outside any clause — an `entity` "
+                    "declaration opens: %s"
+                    % (line.lineno, line.tokens, ", ".join(ENTITY_CLAUSES)))
             raise ParseError(
-                "line %d: content line %r outside any clause" % (line.lineno, line.tokens))
+                "line %d: content line %r outside any clause — %s `%s` "
+                "declaration takes no clause lines"
+                % (line.lineno, line.tokens,
+                   "an" if cur.kind == "event" else "a", cur.kind))
 
         if (cur.kind == "workflow" and cur_clause in SPEC_SECTIONS
                 and cur.extra.get("specs")):
