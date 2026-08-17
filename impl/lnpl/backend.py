@@ -51,21 +51,34 @@ from lnpl.interp import (RunError, refinement_index, sample_payload,
 # sites became one. `repo_policy` imports nothing from `interp`/`backend`/`cli`,
 # so this is cycle-safe.
 from lnpl.repo_policy import READ_OPS, seeded_entities
+from lnpl import resources
 
 MLIR_OPT = "mlir-opt"
 MLIR_TRANSLATE = "mlir-translate"
 BREW_LLVM_BIN = "/opt/homebrew/opt/llvm/bin"
 
 # This file is <repo>/impl/lnpl/backend.py, so three dirnames reach the repo.
-# The dialect definition is located from here rather than from the cwd, because
-# `build()` runs against an arbitrary workdir while the tests run from the root.
+# Kept for the tmp-staging path below (verify_lnpl_module), which is always a
+# repo-local directory — never shipped as wheel data.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
-LNPL_IRDL_PATH = os.path.join(REPO_ROOT, "mlir", "lnpl.irdl.mlir")
+# The dialect definition is located via resources.data_path() rather than
+# REPO_ROOT directly, so a `pip install`-ed wheel (no repo checkout) resolves
+# it from the bundled assets instead — see resources.py. Resolution failure is
+# swallowed here (None) rather than raised at import time, so the module still
+# imports cleanly; pinned_llvm_version() and verify_lnpl_module() below turn a
+# None/missing path into a BackendError with the same recovery hint, instead of
+# a raw crash on import or an opaque mlir-opt error at call time.
+try:
+    LNPL_IRDL_PATH = resources.data_path("mlir/lnpl.irdl.mlir")
+except resources.DataNotFoundError:
+    LNPL_IRDL_PATH = None
 # RFC-0004 OQ①: the one committed, machine-read declaration of the pinned
-# LLVM/MLIR version. Anchored on __file__ (like LNPL_IRDL_PATH), never cwd —
-# `build()` runs in an arbitrary workdir.
-LLVM_PIN_PATH = os.path.join(REPO_ROOT, "mlir", "llvm.pin")
+# LLVM/MLIR version. Resolved the same way as LNPL_IRDL_PATH.
+try:
+    LLVM_PIN_PATH = resources.data_path("mlir/llvm.pin")
+except resources.DataNotFoundError:
+    LLVM_PIN_PATH = None
 
 
 class BackendError(Exception):
@@ -91,6 +104,8 @@ def pinned_llvm_version():
     The pin file is the one machine-read declaration of the version; nothing else
     in the tree restates it. Format: one `llvm <version>` line.
     """
+    if LLVM_PIN_PATH is None or not os.path.isfile(LLVM_PIN_PATH):
+        raise BackendError(resources.recovery_hint("mlir/llvm.pin"))
     with open(LLVM_PIN_PATH, encoding="utf-8") as fh:
         line = fh.readline().strip()
     parts = line.split()
@@ -135,6 +150,10 @@ def verify_lnpl_module(text, stage="S4 (lnpl dialect verification)", path=None):
         target = path
 
     try:
+        # Preflight: fail with the recovery hint before mlir-opt's own (far
+        # less actionable) "file not found" error.
+        if LNPL_IRDL_PATH is None or not os.path.isfile(LNPL_IRDL_PATH):
+            raise BackendError(resources.recovery_hint("mlir/lnpl.irdl.mlir"))
         return _run([tool(MLIR_OPT), "--irdl-file", LNPL_IRDL_PATH,
                      "--mlir-print-debuginfo", target], stage)
     finally:

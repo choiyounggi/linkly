@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "lnpl"
@@ -14,6 +14,6 @@ dependencies = ["jsonschema"]
 [project.scripts]
 lnpl = "lnpl.cli:main"
 
-[tool.setuptools]
-package-dir = { "" = "impl" }
-packages = ["lnpl"]
+[tool.hatch.build.targets.wheel]
+packages = ["impl/lnpl"]
+force-include = { "mlir/lnpl.irdl.mlir" = "lnpl/assets/mlir/lnpl.irdl.mlir", "mlir/llvm.pin" = "lnpl/assets/mlir/llvm.pin", "kb" = "lnpl/assets/kb" }

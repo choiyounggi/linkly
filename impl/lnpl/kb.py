@@ -19,6 +19,8 @@ moved underneath it.
 import os
 import re
 
+from lnpl import resources
+
 CATEGORIES = ("Architecture", "Naming", "Performance", "Security", "Testing",
               "Concurrency", "Database", "Cloud", "Patterns", "AntiPatterns",
               "Style", "Framework")
@@ -51,7 +53,13 @@ class KnowledgeBase:
     """A KB rooted at a directory laid out per RFC-0005."""
 
     def __init__(self, root=None):
-        self.root = root or os.path.join(_repo_root(), "kb")
+        if root is not None:
+            self.root = root
+        else:
+            try:
+                self.root = resources.data_path("kb")
+            except resources.DataNotFoundError as exc:
+                raise KbError(str(exc)) from exc
         if not os.path.isdir(self.root):
             raise KbError("no KB at %s" % self.root)
         self._index = None        # doc_id -> {category, dir, triggers, path}
