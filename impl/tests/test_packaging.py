@@ -28,9 +28,8 @@ class PyprojectTest(unittest.TestCase):
         self.assertTrue(callable(main))
 
     def test_package_dir_is_impl(self):
-        tool = self.cfg["tool"]["setuptools"]
-        self.assertEqual(tool["package-dir"], {"": "impl"})
-        self.assertEqual(tool["packages"], ["lnpl"])
+        tool = self.cfg["tool"]["hatch"]["build"]["targets"]["wheel"]
+        self.assertEqual(tool["packages"], ["impl/lnpl"])
 
     def test_version_matches_package_dunder(self):
         self.assertEqual(self.cfg["project"]["version"], lnpl.__version__)
