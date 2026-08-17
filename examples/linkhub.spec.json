@@ -1,0 +1,52 @@
+{
+  "spec_version": "0.1",
+  "module": "linkhub",
+  "cases": [
+    {
+      "name": "SaveBookmark spec 1",
+      "workflow": "wf.save.bookmark",
+      "given": [
+        "empty repository"
+      ],
+      "when": [
+        "saveBookmark"
+      ],
+      "expect": [
+        "completed",
+        "effects complete",
+        "rows Bookmark 1",
+        "cache written"
+      ]
+    },
+    {
+      "name": "SaveBookmark spec 2",
+      "workflow": "wf.save.bookmark",
+      "given": [
+        "input.url not-a-url"
+      ],
+      "when": [
+        "saveBookmark"
+      ],
+      "expect": [
+        "failed",
+        "effects complete",
+        "error reason does not match URL's pattern"
+      ]
+    },
+    {
+      "name": "GetBookmark spec",
+      "workflow": "wf.get.bookmark",
+      "given": [
+        "empty repository"
+      ],
+      "when": [
+        "getBookmark"
+      ],
+      "expect": [
+        "failed",
+        "effects complete",
+        "rows Bookmark 0"
+      ]
+    }
+  ]
+}

@@ -74,6 +74,14 @@ GUARDED_LIR = os.path.join(_REPO, "examples", "guarded.lir.json")
 GUARDED_SPEC = os.path.join(_REPO, "examples", "guarded.spec.json")
 GUARDED_OPENAPI = os.path.join(_REPO, "examples", "guarded.openapi.json")
 
+# The exemplar (issue #66): the file to copy, not a regression fixture. Every
+# step is a real VERB_LEXICON verb, `pipeline` is exercised for real, and the
+# three committed artifacts follow the same quartet shape as the others.
+LINKHUB_LNPL = os.path.join(_REPO, "examples", "linkhub.lnpl")
+LINKHUB_LIR = os.path.join(_REPO, "examples", "linkhub.lir.json")
+LINKHUB_SPEC = os.path.join(_REPO, "examples", "linkhub.spec.json")
+LINKHUB_OPENAPI = os.path.join(_REPO, "examples", "linkhub.openapi.json")
+
 GUARDED = """
 capability postgres
 capability redis

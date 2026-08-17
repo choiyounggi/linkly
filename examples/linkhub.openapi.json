@@ -1,0 +1,117 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "linkhub API",
+    "version": "0.1.0",
+    "description": "Generated from Semantic IR (lir_version 0.1). Do not edit by hand."
+  },
+  "paths": {
+    "/link-hub-service/save-bookmark": {
+      "post": {
+        "operationId": "link_hub_service_save_bookmark",
+        "summary": "SaveBookmark workflow",
+        "description": "Steps: validate input -> create bookmark -> cache bookmark -> emit bookmarkSaved",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Bookmark"
+              }
+            }
+          }
+        },
+        "x-retry": 3
+      }
+    },
+    "/link-hub-service/get-bookmark": {
+      "post": {
+        "operationId": "link_hub_service_get_bookmark",
+        "summary": "GetBookmark workflow",
+        "description": "Steps: validate input -> find bookmark",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Bookmark"
+              }
+            }
+          }
+        },
+        "x-retry": 3
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "VisitCount": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
+      },
+      "URL": {
+        "type": "string",
+        "pattern": "^https?://[^\\s]+$",
+        "maxLength": 2048
+      },
+      "Bookmark": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "$ref": "#/components/schemas/URL"
+          },
+          "title": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "savedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "visits": {
+            "$ref": "#/components/schemas/VisitCount"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "url",
+          "title",
+          "owner",
+          "savedAt",
+          "visits"
+        ]
+      }
+    }
+  }
+}

@@ -15,6 +15,7 @@ LNPL은 **의도(what)를 선언**하는 언어다. 구현(how)은 컴파일러�
 
 | 지금 하려는 일 | 읽을 것 |
 |----------------|---------|
+| 잘 쓴 완성품을 보고 형태를 익힌다 | [examples/linkhub.lnpl](../../../../examples/linkhub.lnpl) — 따라 쓸 예제 |
 | 워크플로 스텝을 쓴다 (`validate input`, `cache user` …) | [references/verbs.md](references/verbs.md) |
 | `policy` / `security` / `performance`를 선언한다 | [references/declarations.md](references/declarations.md) |
 | 필드 타입이나 `refine`을 정한다 | [references/types.md](references/types.md) |

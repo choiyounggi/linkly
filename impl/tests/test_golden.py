@@ -40,9 +40,10 @@ from lnpl.repo_policy import default_rows, row_key, seeded_entities
 from lnpl.spec import extract
 from tests.fixtures import (CHECKOUT_LIR, CHECKOUT_LNPL, CHECKOUT_OPENAPI,
                             CHECKOUT_SPEC, GUARDED_LIR, GUARDED_LNPL,
-                            GUARDED_OPENAPI, GUARDED_SPEC, LOGIN_OPENAPI,
-                            LOGIN_SPEC, SHORTEN_LIR, SHORTEN_LNPL,
-                            SHORTEN_OPENAPI, SHORTEN_SPEC)
+                            GUARDED_OPENAPI, GUARDED_SPEC, LINKHUB_LIR,
+                            LINKHUB_LNPL, LINKHUB_OPENAPI, LINKHUB_SPEC,
+                            LOGIN_OPENAPI, LOGIN_SPEC, SHORTEN_LIR,
+                            SHORTEN_LNPL, SHORTEN_OPENAPI, SHORTEN_SPEC)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(REPO, "examples", "login.lnpl")
@@ -294,6 +295,27 @@ class TestGuardedGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase
     SRC = GUARDED_LNPL
     SPEC = GUARDED_SPEC
     OPENAPI = GUARDED_OPENAPI
+
+
+class TestLinkhubGoldenPair(GoldenPairContract, unittest.TestCase):
+    """The exemplar (issue #66): the file to copy, not a regression fixture.
+
+    Like `shorten.lnpl`, a `refine` node leads the canonical order — this file
+    declares two (`VisitCount`, then the emit-on-use `URL` preset).
+    """
+
+    SRC = LINKHUB_LNPL
+    GOLDEN_IR = LINKHUB_LIR
+    FIRST_NODE_ID = "refine.visit.count"
+    LAST_NODE_IDS = ["perf.link.hub", "cap.postgres", "cap.redis"]
+    REGEN_CMD = ("python3 -m lnpl compile examples/linkhub.lnpl "
+                 "-o examples/linkhub.lir.json")
+
+
+class TestLinkhubGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = LINKHUB_LNPL
+    SPEC = LINKHUB_SPEC
+    OPENAPI = LINKHUB_OPENAPI
 
 
 class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
