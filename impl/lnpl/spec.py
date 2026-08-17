@@ -87,14 +87,17 @@ def _workflow_id(name):
 # error, never a silent pass. A spec that always passes is not a spec.
 
 def _expect_completed(_phrase, result, _interp):
+    """`completed` — the run finished without failing."""
     return result["status"] == "completed", "status=%s" % result["status"]
 
 
 def _expect_failed(_phrase, result, _interp):
+    """`failed` — the run stopped on a failure."""
     return result["status"] == "failed", "status=%s" % result["status"]
 
 
 def _expect_step_count(phrase, result, _interp):
+    """`steps <N>` — the number of steps the run executed."""
     tokens = phrase.split()
     want = int(tokens[-1])
     got = len(result["steps"])
@@ -102,6 +105,7 @@ def _expect_step_count(phrase, result, _interp):
 
 
 def _expect_slo(phrase, result, _interp):
+    """`slo met` — whether the run's SLO was satisfied."""
     tokens = phrase.split()
     if len(tokens) == 2 and tokens[1] == "met":
         return bool(result.get("slo_met")), "slo_met=%s" % result.get("slo_met")
@@ -109,7 +113,8 @@ def _expect_slo(phrase, result, _interp):
 
 
 def _expect_duration(phrase, result, _interp):
-    # `duration < 50ms`
+    """`duration <op> <limit>` — wall time against a comparator (`<`, `<=`,
+    `>`, `>=`) and a duration literal (e.g. `50ms`)."""
     tokens = phrase.split()
     if len(tokens) != 3 or tokens[1] not in COMPARATORS:
         raise SpecError("unsupported duration expectation: %r" % phrase)
@@ -122,6 +127,7 @@ def _expect_duration(phrase, result, _interp):
 
 
 def _expect_cache(phrase, _result, interp):
+    """`cache written` — whether the run wrote at least one cache entry."""
     tokens = phrase.split()
     if len(tokens) == 2 and tokens[1] == "written":
         return len(interp.cache.store) > 0, "cache entries=%d" % len(interp.cache.store)
@@ -129,7 +135,7 @@ def _expect_cache(phrase, _result, interp):
 
 
 def _expect_attempts(phrase, result, _interp):
-    # `attempts 4` — the highest attempt count any step needed
+    """`attempts <N>` — the highest attempt count any step needed."""
     want = int(phrase.split()[-1])
     got = max([s["attempts"] for s in result["steps"]] or [0])
     return got == want, "max attempts=%d want=%d" % (got, want)
@@ -170,7 +176,7 @@ def _entity_id_for(interp, name):
 
 
 def _expect_rows(phrase, _result, interp):
-    """`rows <EntityName> <N>` — the store's state after the run.
+    """`rows <Entity> <N>` — the store's state after the run.
 
     Led by `rows`, not by `entity`: `entity` opens a declaration (lexer
     KEYWORDS_TOP), so an expectation starting with it would be parsed as one.

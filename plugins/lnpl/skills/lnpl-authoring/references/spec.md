@@ -11,18 +11,22 @@
 
 ## `expect`가 받는 키
 
-- `completed`
-- `failed`
-- `steps`
-- `slo`
-- `duration`
-- `cache`
-- `attempts`
-- `result`
-- `rows`
-- `emitted`
-- `error`
-- `effects`
+| 키 | 형식·의미 |
+|------|-----------|
+| `completed` | `completed` — the run finished without failing. |
+| `failed` | `failed` — the run stopped on a failure. |
+| `steps` | `steps <N>` — the number of steps the run executed. |
+| `slo` | `slo met` — whether the run's SLO was satisfied. |
+| `duration` | `duration <op> <limit>` — wall time against a comparator (`<`, `<=`, `>`, `>=`) and a duration literal (e.g. `50ms`). |
+| `cache` | `cache written` — whether the run wrote at least one cache entry. |
+| `attempts` | `attempts <N>` — the highest attempt count any step needed. |
+| `result` | `result <ref> <op> <value>` / `result <ref> exists\|missing`. |
+| `rows` | `rows <Entity> <N>` — the store's state after the run. |
+| `emitted` | `emitted <Name>` / `emitted <Name> count <N>` / `emitted <Name> payload <field> exists\|missing`. |
+| `error` | `error step <name…>` / `error reason <substring…>` — the failure contract. |
+| `effects` | `effects <N>` — the total effect count; `effects complete` — no no-op step. |
+
+> It is opt-in rather than an automatic failure whenever the module carries an `unknown-verb` diagnostic, because a descriptive step is a legitimate way to write LNPL: the golden `examples/login.lnpl` declares three (`generate token`, `audit login`, `return token`), and `diagnostics.py` records that as intended usage. Failing every such spec would reject the golden scenario, so the author states the guarantee where the author means it.
 
 ## `given`이 알아듣는 형식
 
