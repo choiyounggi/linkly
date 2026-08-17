@@ -1,7 +1,7 @@
 {
   "name": "lnpl-mcp",
   "description": "Expose the LNPL compiler to the model as MCP tools instead of a shell command. `lnpl compile` writes its diagnostics to stderr and exits 0, so a caller that branches on the exit code misses every warning — and an unknown verb is a warning that means the step does nothing at runtime. These tools return the diagnostic records as structured data, call the already-imported compiler directly (no PATH lookup, no stream redirection), and route a design decision to the knowledge base before it is made.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": {
     "name": "choiyounggi",
     "url": "https://github.com/choiyounggi"
