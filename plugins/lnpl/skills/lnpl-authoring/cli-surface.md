@@ -170,18 +170,23 @@ status completed
 `diagnostics.SEVERITY_OF`이고, 문서는 그것의 사본이다. CI에서 의도한 선언을
 통과시키려면 `--strict=warning`을 쓴다.
 
-위치 정보는 두 종류다:
+위치 정보는 네 종류다:
 
-- **파싱·lowering 에러**는 `line N`을 갖는다 — 소스 줄을 바로 가리킨다.
-- **집행 진단**(`declared-not-enforced`, `declared-measured-only`,
-  `unknown-verb`, `authorization-not-verified`, `guard-skipped-steps`,
-  `validation-sample-derived`)은 **노드 id**만 갖는다(`[perf.rate.notify]`).
-  파일:라인이 아니다. mode B에서 나오는 두 진단(`guard-skipped-steps`,
-  `validation-sample-derived`)의 노드 id는 **워크플로 id**다 — 그 표면에는 가드
-  노드 id가 없다(rfcs/0022 표 1).
-- **`guard-orphaned-steps`는 예외로 `line N`을 갖는다.** 저자가 옮겨야 하는 것이
-  그 스텝이라, 노드 id를 되짚게 하는 대신 줄을 바로 가리킨다(RFC-0023 §5).
+- **파싱·lowering 에러**와 **`unknown-verb`**는 `line N`만 갖는다 — 소스 줄을
+  바로 가리킨다.
+- **집행 진단** 3종(`declared-not-enforced`, `declared-measured-only`,
+  `authorization-not-verified`)은 **노드 id와 `(line N)` 둘 다** 갖는다
+  (`[security.shorten] (line 46)`, RFC-0024). `line`은 IR 노드의 선택 필드라
+  lowering이 그 노드의 줄을 아는 경우에만 실린다. `authorization-not-verified`는
+  런타임(`interp.py`) 진단이라 `lnpl compile`에는 나오지 않고 `lnpl run`(또는
+  인터프리터를 직접 돈 경로)에서만 관측된다 — `compile`이 인터프리터를 돌리지
+  않는 것은 RFC-0024가 바꾸지 않았다.
+- **mode B 두 진단**(`guard-skipped-steps`, `validation-sample-derived`)은
+  **워크플로 id**만 갖는다 — 그 표면에는 가드 노드 id가 없다(rfcs/0022 표 1).
+  RFC-0024가 손대지 않은 범위다.
+- **`guard-orphaned-steps`는 예외로 `line N`만 갖는다.** 저자가 옮겨야 하는 것이
+  그 스텝이라, 노드 id를 되짚게 하는 대신 줄을 바로 가리킨다(RFC-0023 §5,
+  RFC-0024가 손대지 않은 범위다).
 
-집행 진단이 어느 줄에서 왔는지 알아야 하면 `compile -o`로 IR을 뽑아 그 노드 id를
-찾는다. 노드 id에서 선언명을 되짚는 규칙은
+노드 id에서 선언명을 되짚는 규칙은
 [references/naming.md](references/naming.md)에 있다.

@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**1975 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**1985 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**24 RFCs — 23 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
+**25 RFCs — 24 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -288,8 +288,9 @@ suite is defined against.
 | [0021 Diagnostic Severity Levels](rfcs/0021-diagnostic-severity-levels.md) | The severity ladder and what `--strict[=LEVEL]` gates. `warning` is what a fixed program stops emitting; `info` is the platform stating what it does. |
 | [0022 Mode B Observation Surface](rfcs/0022-mode-b-observation-surface.md) | What a native build must say about skipped steps and `--field` reach, so "it ran" and "it was skipped" stay distinguishable. *Updates 0014 §2.5·§2.6, 0021 §codes* |
 | [0023 Guard Scope Diagnostic](rfcs/0023-guard-scope-diagnostic.md) | A guard owns only the next item, so a later step can change the very state the guard protected. `guard-orphaned-steps` reports that at compile time — judged by consequence, not by shape. *Updates 0021 §codes* |
+| [0024 Enforcement Diagnostic Line](rfcs/0024-enforcement-diagnostic-line.md) | Enforcement diagnostics (`declared-not-enforced`/`declared-measured-only`/`authorization-not-verified`) now carry `(line N)` alongside the node id, so two declarations sharing one clause's node id are no longer indistinguishable by location. *Updates 0023 §5* |
 
-Twenty-three are `Accepted`; 0000 is superseded by 0007, which was itself formally
+Twenty-four are `Accepted`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -349,7 +350,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 1975 tests in 56.300s
+Ran 1985 tests in 62.354s
 
 OK
 ```

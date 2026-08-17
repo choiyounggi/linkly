@@ -835,7 +835,11 @@ class Interpreter:
                 code="authorization-not-verified",
                 where=effect["id"], subject=effect.get("requirement") or "unspecified",
                 message="the authorization requirement is recorded on the trace "
-                        "and never checked; this step cannot deny anything")
+                        "and never checked; this step cannot deny anything",
+                # RFC-0024: the runtime has no source text in hand, only the IR —
+                # so it reads the line lowering already recorded on this Effect
+                # node, rather than re-deriving one.
+                line=self.nodes[effect["id"]].get("line"))
         elif kind == "NetworkCall":
             child.attrs["target"] = effect.get("target")
         elif kind == "EventEmit":

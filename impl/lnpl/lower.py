@@ -283,8 +283,13 @@ def _declaration_diagnostics(diagnostics, clause, names, where):
     above already reject anything outside the closed sets, so an absent key means
     the matrix and the language drifted, which is the drift gate's failure to
     report, not a new error to invent at compile time.
+
+    `names` is `[(name, lineno), ...]` (RFC-0024) — the source line of the
+    clause line each name came from, paired at the call site where the parser's
+    per-line `lineno` is still in hand, and carried straight through to the
+    diagnostic rather than re-derived here.
     """
-    for name in names:
+    for name, lineno in names:
         entry = ENFORCEMENT.get((clause, name))
         if entry is None or entry[0] == ENFORCED:
             continue
@@ -293,7 +298,8 @@ def _declaration_diagnostics(diagnostics, clause, names, where):
                 else "declared-not-enforced")
         diagnostics.add(code=code, where=where,
                         subject="%s %s" % (clause, name),
-                        message="declared but %s: %s" % (status, note))
+                        message="declared but %s: %s" % (status, note),
+                        line=lineno)
 
 
 def _parse_security_line(tokens, lineno):
@@ -536,8 +542,10 @@ def lower(decls, module_name):
             rules = [_parse_policy_line(l.tokens, l.lineno) for l in d.clauses["policy"]]
             constraint_nodes.append(_node("Policy", pid, rules=rules))
             constraints.append(pid)
-            _declaration_diagnostics(mod.diagnostics, "policy",
-                                     [r["name"] for r in rules], pid)
+            _declaration_diagnostics(
+                mod.diagnostics, "policy",
+                [(r["name"], l.lineno)
+                 for r, l in zip(rules, d.clauses["policy"])], pid)
         if "security" in d.clauses:
             secid = ".".join([KIND_PREFIX["Security"]] + segs)
             mechs = [_parse_security_line(l.tokens, l.lineno) for l in d.clauses["security"]]
@@ -545,15 +553,19 @@ def lower(decls, module_name):
             constraints.append(secid)
             # `role admin` is the same declaration as `role owner` as far as
             # enforcement goes, so the head token is the subject.
-            _declaration_diagnostics(mod.diagnostics, "security",
-                                     [m.split(" ", 1)[0] for m in mechs], secid)
+            _declaration_diagnostics(
+                mod.diagnostics, "security",
+                [(m.split(" ", 1)[0], l.lineno)
+                 for m, l in zip(mechs, d.clauses["security"])], secid)
         if "performance" in d.clauses:
             perfid = ".".join([KIND_PREFIX["Performance"]] + segs)
             budgets = [_parse_perf_line(l.tokens, l.lineno) for l in d.clauses["performance"]]
             constraint_nodes.append(_node("Performance", perfid, budgets=budgets))
             constraints.append(perfid)
-            _declaration_diagnostics(mod.diagnostics, "performance",
-                                     [b["metric"] for b in budgets], perfid)
+            _declaration_diagnostics(
+                mod.diagnostics, "performance",
+                [(b["metric"], l.lineno)
+                 for b, l in zip(budgets, d.clauses["performance"])], perfid)
         # Capability attribution (formerly the provisional R3). A service takes the
         # capabilities its own `database` clause names; with no such clause, a
         # single-service module attributes all of them, and a multi-service module
@@ -591,7 +603,8 @@ def lower(decls, module_name):
         for n, line in enumerate(d.clauses.get("goal", []), start=1):
             statement = " ".join(line.tokens)
             goal_nodes.append(_node("BusinessRule", "%s.goal.%d" % (sid, n),
-                                    name=statement, statement=statement))
+                                    name=statement, statement=statement,
+                                    line=line.lineno))
 
         children = [g["id"] for g in goal_nodes]
         children += [derive_id(w.name, "Workflow")
@@ -600,7 +613,8 @@ def lower(decls, module_name):
             "Service", sid, name=d.name,
             requires=requires or None,
             constraints=constraints or None,
-            children=children or None))
+            children=children or None,
+            line=d.lineno))
         service_nodes.extend(goal_nodes)
 
     # A.6.4 emit-on-use: a preset a field named rides into this document as a
@@ -617,7 +631,8 @@ def lower(decls, module_name):
         mod.add(n)
 
     for ent in registry.values():
-        mod.add(_node("Entity", ent["id"], name=ent["name"], fields=ent["fields"]))
+        mod.add(_node("Entity", ent["id"], name=ent["name"], fields=ent["fields"],
+                      line=ent["decl"].lineno))
 
     declared_event_ids = set()
     for d in by_kind["event"]:
@@ -637,16 +652,17 @@ def lower(decls, module_name):
             # RFC-0016: the declaration reaches the IR and the OpenAPI schedule
             # metadata and stops there. Saying so is what separates it from
             # `performance batch`, which parses into silence (t3 F-2).
-            _declaration_diagnostics(mod.diagnostics, "event", ["schedule"],
-                                     where=eid)
-        mod.add(_node("Event", eid, name=d.name, source=source))
+            _declaration_diagnostics(mod.diagnostics, "event",
+                                     [("schedule", d.lineno)], where=eid)
+        mod.add(_node("Event", eid, name=d.name, source=source, line=d.lineno))
 
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
         ctx = _WfContext(wid, registry, mod.diagnostics)
         top_ids = [ctx.plan(item) for item in d.items]
-        mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None))
+        mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
+                      line=d.lineno))
         for node in ctx.emitted:
             mod.add(node)
         _check_scoped_conditions(ctx.emitted, registry, d.name, base_of,
@@ -660,7 +676,8 @@ def lower(decls, module_name):
 
     for d in by_kind["capability"]:
         mod.add(_node("Capability", derive_id(d.name, "Capability"),
-                      name=d.name, version=d.extra.get("version")))
+                      name=d.name, version=d.extra.get("version"),
+                      line=d.lineno))
 
     return mod
 
@@ -676,10 +693,11 @@ class _WfContext:
         self._step_n = 0
         self._guard_n = 0
         self._block_n = {"parallel": 0, "pipeline": 0}
-        # step id -> source line. The IR carries no line numbers (a node is a
-        # meaning, not a location), but a diagnostic has to send the author
-        # somewhere. `_step` is the only place a line and an id are both in
-        # hand, so the pairing is recorded here for the later passes.
+        # step id -> source line. Nodes carry their own optional `line` field
+        # since RFC-0024, but `_check_guard_scope` (RFC-0023) runs after every
+        # step in the workflow has already been emitted and needs the orphan
+        # step's line rather than the node it is about — recording the pairing
+        # here as it is made is simpler than re-deriving it from `self.emitted`.
         self.step_lines = {}
 
     def plan(self, item):
@@ -718,7 +736,8 @@ class _WfContext:
                         % " ".join(line.tokens))
         self.emitted.append(_node("WorkflowStep", step_id,
                                   name=" ".join(line.tokens),
-                                  children=[derived["id"]] if derived else None))
+                                  children=[derived["id"]] if derived else None,
+                                  line=line.lineno))
         if derived:
             self.emitted.append(derived)
         return step_id
@@ -734,12 +753,13 @@ class _WfContext:
                              % (block["lineno"], block["type"]))
         if kind == "Concurrency":
             self.emitted.append(_node(kind, node_id, mode="parallel",
-                                      children=child_ids))
+                                      children=child_ids, line=block["lineno"]))
         else:
             # RFC-0001 requires Pipeline.name; the grammar makes the name optional,
             # so an unnamed pipeline gets a derived one (formerly gap A.4-4).
             name = block["name"] or slug
-            self.emitted.append(_node(kind, node_id, name=name, children=child_ids))
+            self.emitted.append(_node(kind, node_id, name=name, children=child_ids,
+                                      line=block["lineno"]))
         return node_id
 
     def _guard(self, guard, guarded):
@@ -751,7 +771,8 @@ class _WfContext:
             fields["count"] = int(guard["arg"])
         else:
             fields["condition"] = guard["arg"]
-        self.emitted.append(_node("Guard", node_id, children=[inner_id], **fields))
+        self.emitted.append(_node("Guard", node_id, children=[inner_id],
+                                  line=guard["lineno"], **fields))
         return node_id
 
 
@@ -1230,27 +1251,31 @@ def _derive_effect(step_id, verb, obj, registry, lineno):
         field_names = [f["name"] for f in ent["fields"]]
         if obj and obj in field_names:
             ftype = next(f["type"] for f in ent["fields"] if f["name"] == obj)
-            return _node(kind, eid, target="%s.%s" % (ent["id"], obj), rule=ftype)
+            return _node(kind, eid, target="%s.%s" % (ent["id"], obj), rule=ftype,
+                        line=lineno)
         # `input` (or no object) validates the workflow's input payload: every
         # declared field is checked by its semantic type's built-in rule.
-        return _node(kind, eid, target=ent["id"], rule="semantic-types")
+        return _node(kind, eid, target=ent["id"], rule="semantic-types",
+                    line=lineno)
 
     if kind == "RepositoryCall":
         ent = _resolve_entity(registry, obj, verb, lineno)
-        return _node(kind, eid, entity=ent["id"], operation=fixed["operation"])
+        return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
+                    line=lineno)
 
     if kind == "CacheAccess":
         base = obj
         if base is None:
             ent = _resolve_entity(registry, None, verb, lineno)
             base = ent["id"].split(".")[-1]
-        return _node(kind, eid, key="%s:{id}" % base, operation=fixed["operation"])
+        return _node(kind, eid, key="%s:{id}" % base, operation=fixed["operation"],
+                    line=lineno)
 
     if kind == "NetworkCall":
-        return _node(kind, eid, target=obj or "unspecified")
+        return _node(kind, eid, target=obj or "unspecified", line=lineno)
 
     if kind == "Authorization":
-        return _node(kind, eid, requirement=obj or "unspecified")
+        return _node(kind, eid, requirement=obj or "unspecified", line=lineno)
 
     if kind == "EventEmit":
         # `emit <Event>`: the object names a declared event. Without one there is
@@ -1259,7 +1284,7 @@ def _derive_effect(step_id, verb, obj, registry, lineno):
             raise LowerError(
                 "line %d: `%s` needs the event to emit as its object "
                 "(e.g. `emit userCreated`)" % (lineno, verb))
-        return _node(kind, eid, event=_event_ref(obj, lineno))
+        return _node(kind, eid, event=_event_ref(obj, lineno), line=lineno)
 
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
 
@@ -1311,7 +1336,8 @@ def _derive_assignment(step_id, line, registry):
 
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Assignment"])
     return _node("Assignment", eid, target=target,
-                 expression=value_to_string(value), entity=entity["id"])
+                 expression=value_to_string(value), entity=entity["id"],
+                 line=line.lineno)
 
 
 def _resolve_entity(registry, obj, verb, lineno):

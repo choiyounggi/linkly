@@ -102,6 +102,10 @@
         "$ref": "#/$defs/nodeId"
       }
     },
+    "lineNumber": {
+      "type": "integer",
+      "minimum": 1
+    },
     "meta": {
       "type": "object",
       "properties": {
@@ -210,6 +214,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "children": {
           "$ref": "#/$defs/nodeIdArray"
         },
@@ -245,6 +252,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "children": {
           "$ref": "#/$defs/nodeIdArray"
         },
@@ -279,6 +289,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "children": {
           "$ref": "#/$defs/nodeIdArray"
         },
@@ -309,6 +322,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "name": {
           "type": "string"
@@ -393,6 +409,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "name": {
           "type": "string"
         },
@@ -420,6 +439,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "name": {
           "type": "string",
@@ -455,6 +477,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "name": {
           "type": "string"
         },
@@ -486,6 +511,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "target": {
           "type": "string"
@@ -519,6 +547,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "children": {
           "$ref": "#/$defs/nodeIdArray"
         },
@@ -550,6 +581,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "children": {
           "$ref": "#/$defs/nodeIdArray"
         },
@@ -580,6 +614,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "children": {
           "$ref": "#/$defs/nodeIdArray"
@@ -614,6 +651,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "target": {
           "type": "string"
         },
@@ -646,6 +686,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "mode": {
           "enum": [
@@ -686,6 +729,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "target": {
           "type": "string"
         },
@@ -720,6 +766,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "entity": {
           "$ref": "#/$defs/nodeId"
@@ -759,6 +808,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "key": {
           "type": "string"
         },
@@ -792,6 +844,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "children": {
           "$ref": "#/$defs/nodeIdArray"
         },
@@ -818,6 +873,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "requirement": {
           "type": "string"
@@ -847,6 +905,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "event": {
           "$ref": "#/$defs/nodeId"
         },
@@ -874,6 +935,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "rules": {
           "type": "array",
@@ -920,6 +984,9 @@
         "meta": {
           "$ref": "#/$defs/meta"
         },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
         "mechanisms": {
           "type": "array",
           "items": {
@@ -947,6 +1014,9 @@
         },
         "meta": {
           "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
         },
         "budgets": {
           "type": "array",

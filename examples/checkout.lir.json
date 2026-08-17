@@ -18,7 +18,8 @@
       ],
       "children": [
         "wf.checkout"
-      ]
+      ],
+      "line": 34
     },
     {
       "kind": "Entity",
@@ -41,7 +42,8 @@
           "name": "price",
           "type": "Money"
         }
-      ]
+      ],
+      "line": 18
     },
     {
       "kind": "Entity",
@@ -64,7 +66,8 @@
           "name": "placedAt",
           "type": "DateTime"
         }
-      ]
+      ],
+      "line": 25
     },
     {
       "kind": "Event",
@@ -73,7 +76,8 @@
       "source": {
         "ref": "entity.order",
         "on": "create"
-      }
+      },
+      "line": 32
     },
     {
       "kind": "Workflow",
@@ -84,7 +88,8 @@
         "wf.checkout.step.2",
         "wf.checkout.step.3",
         "wf.checkout.guard.1"
-      ]
+      ],
+      "line": 44
     },
     {
       "kind": "WorkflowStep",
@@ -92,13 +97,15 @@
       "name": "validate product",
       "children": [
         "wf.checkout.step.1.check"
-      ]
+      ],
+      "line": 45
     },
     {
       "kind": "Validation",
       "id": "wf.checkout.step.1.check",
       "target": "entity.product",
-      "rule": "semantic-types"
+      "rule": "semantic-types",
+      "line": 45
     },
     {
       "kind": "WorkflowStep",
@@ -106,13 +113,15 @@
       "name": "find product",
       "children": [
         "wf.checkout.step.2.repo"
-      ]
+      ],
+      "line": 46
     },
     {
       "kind": "RepositoryCall",
       "id": "wf.checkout.step.2.repo",
       "entity": "entity.product",
-      "operation": "read"
+      "operation": "read",
+      "line": 46
     },
     {
       "kind": "WorkflowStep",
@@ -120,13 +129,15 @@
       "name": "cache product",
       "children": [
         "wf.checkout.step.3.cache"
-      ]
+      ],
+      "line": 47
     },
     {
       "kind": "CacheAccess",
       "id": "wf.checkout.step.3.cache",
       "key": "product:{id}",
-      "operation": "set"
+      "operation": "set",
+      "line": 47
     },
     {
       "kind": "WorkflowStep",
@@ -134,13 +145,15 @@
       "name": "create order",
       "children": [
         "wf.checkout.step.4.repo"
-      ]
+      ],
+      "line": 49
     },
     {
       "kind": "RepositoryCall",
       "id": "wf.checkout.step.4.repo",
       "entity": "entity.order",
-      "operation": "create"
+      "operation": "create",
+      "line": 49
     },
     {
       "kind": "Guard",
@@ -148,6 +161,7 @@
       "children": [
         "wf.checkout.step.4"
       ],
+      "line": 48,
       "mode": "when",
       "condition": "product.stock > 0"
     },
@@ -189,17 +203,20 @@
     {
       "kind": "Capability",
       "id": "cap.postgres",
-      "name": "postgres"
+      "name": "postgres",
+      "line": 14
     },
     {
       "kind": "Capability",
       "id": "cap.redis",
-      "name": "redis"
+      "name": "redis",
+      "line": 15
     },
     {
       "kind": "Capability",
       "id": "cap.jwt",
-      "name": "jwt"
+      "name": "jwt",
+      "line": 16
     }
   ]
 }

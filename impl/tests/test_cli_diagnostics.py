@@ -647,11 +647,13 @@ class TestRunJsonDiagnosticsChannel(unittest.TestCase):
                          [line.split(": ", 1)[1].split(" ", 1)[0]
                           for line in reported])
 
-    def test_every_record_carries_the_five_fields(self):
+    def test_every_record_carries_the_six_fields(self):
+        # RFC-0024 added `line` (int or null) alongside the original five.
         _, out, _ = run_cli_split(["run", LOGIN, "--json"])
         for record in json.loads(out)["diagnostics"]:
             self.assertEqual(set(record),
-                             {"code", "severity", "where", "subject", "message"})
+                             {"code", "severity", "where", "subject", "message",
+                              "line"})
 
     def test_the_serialised_grade_agrees_with_the_table(self):
         # The serialisation is derived, not restated: if it ever hardcoded a
