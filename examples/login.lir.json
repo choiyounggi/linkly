@@ -18,7 +18,8 @@
       ],
       "children": [
         "wf.login"
-      ]
+      ],
+      "line": 31
     },
     {
       "kind": "Entity",
@@ -41,7 +42,8 @@
           "name": "createdAt",
           "type": "DateTime"
         }
-      ]
+      ],
+      "line": 22
     },
     {
       "kind": "Event",
@@ -50,7 +52,8 @@
       "source": {
         "ref": "entity.user",
         "on": "create"
-      }
+      },
+      "line": 29
     },
     {
       "kind": "Workflow",
@@ -63,7 +66,8 @@
         "wf.login.step.4",
         "wf.login.step.5",
         "wf.login.step.6"
-      ]
+      ],
+      "line": 42
     },
     {
       "kind": "WorkflowStep",
@@ -71,13 +75,15 @@
       "name": "validate input",
       "children": [
         "wf.login.step.1.check"
-      ]
+      ],
+      "line": 43
     },
     {
       "kind": "Validation",
       "id": "wf.login.step.1.check",
       "target": "entity.user",
-      "rule": "semantic-types"
+      "rule": "semantic-types",
+      "line": 43
     },
     {
       "kind": "WorkflowStep",
@@ -85,13 +91,15 @@
       "name": "authenticate",
       "children": [
         "wf.login.step.2.repo"
-      ]
+      ],
+      "line": 44
     },
     {
       "kind": "RepositoryCall",
       "id": "wf.login.step.2.repo",
       "entity": "entity.user",
-      "operation": "read"
+      "operation": "read",
+      "line": 44
     },
     {
       "kind": "WorkflowStep",
@@ -99,28 +107,33 @@
       "name": "cache user",
       "children": [
         "wf.login.step.3.cache"
-      ]
+      ],
+      "line": 45
     },
     {
       "kind": "CacheAccess",
       "id": "wf.login.step.3.cache",
       "key": "user:{id}",
-      "operation": "set"
+      "operation": "set",
+      "line": 45
     },
     {
       "kind": "WorkflowStep",
       "id": "wf.login.step.4",
-      "name": "generate token"
+      "name": "generate token",
+      "line": 46
     },
     {
       "kind": "WorkflowStep",
       "id": "wf.login.step.5",
-      "name": "audit login"
+      "name": "audit login",
+      "line": 47
     },
     {
       "kind": "WorkflowStep",
       "id": "wf.login.step.6",
-      "name": "return token"
+      "name": "return token",
+      "line": 48
     },
     {
       "kind": "Policy",
@@ -163,17 +176,20 @@
     {
       "kind": "Capability",
       "id": "cap.postgres",
-      "name": "postgres"
+      "name": "postgres",
+      "line": 18
     },
     {
       "kind": "Capability",
       "id": "cap.redis",
-      "name": "redis"
+      "name": "redis",
+      "line": 19
     },
     {
       "kind": "Capability",
       "id": "cap.jwt",
-      "name": "jwt"
+      "name": "jwt",
+      "line": 20
     }
   ]
 }

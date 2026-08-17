@@ -120,10 +120,14 @@ class DocumentCoverageTest(unittest.TestCase):
         self.assertEqual(missing, [], "문서에 없는 플래그: %s" % missing)
 
     def test_the_diagnostic_location_limit_is_stated(self):
-        """t4 F-11: diagnostics point at node ids, not file:line."""
+        """t4 F-11: most diagnostics point at node ids, not file:line — and
+        RFC-0024's exception (enforcement diagnostics carry both) is
+        documented too, not silently left as the old node-id-only claim."""
         text = read_doc()
         self.assertIn("노드 id", text)
         self.assertIn("line", text)
+        self.assertIn("RFC-0024", text)
+        self.assertIn("(line N)", text)
 
     def test_the_skill_routes_to_it(self):
         skill = os.path.join(os.path.dirname(DOC), "SKILL.md")

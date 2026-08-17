@@ -16,7 +16,8 @@
       ],
       "children": [
         "wf.retrieve.with.cache"
-      ]
+      ],
+      "line": 50
     },
     {
       "kind": "Entity",
@@ -35,7 +36,8 @@
           "name": "retryBudget",
           "type": "Integer"
         }
-      ]
+      ],
+      "line": 44
     },
     {
       "kind": "Workflow",
@@ -46,7 +48,8 @@
         "wf.retrieve.with.cache.step.2",
         "wf.retrieve.with.cache.guard.1",
         "wf.retrieve.with.cache.guard.2"
-      ]
+      ],
+      "line": 56
     },
     {
       "kind": "WorkflowStep",
@@ -54,13 +57,15 @@
       "name": "validate token",
       "children": [
         "wf.retrieve.with.cache.step.1.check"
-      ]
+      ],
+      "line": 57
     },
     {
       "kind": "Validation",
       "id": "wf.retrieve.with.cache.step.1.check",
       "target": "entity.token",
-      "rule": "semantic-types"
+      "rule": "semantic-types",
+      "line": 57
     },
     {
       "kind": "WorkflowStep",
@@ -68,13 +73,15 @@
       "name": "find token",
       "children": [
         "wf.retrieve.with.cache.step.2.repo"
-      ]
+      ],
+      "line": 58
     },
     {
       "kind": "RepositoryCall",
       "id": "wf.retrieve.with.cache.step.2.repo",
       "entity": "entity.token",
-      "operation": "read"
+      "operation": "read",
+      "line": 58
     },
     {
       "kind": "WorkflowStep",
@@ -82,13 +89,15 @@
       "name": "cache token",
       "children": [
         "wf.retrieve.with.cache.step.3.cache"
-      ]
+      ],
+      "line": 60
     },
     {
       "kind": "CacheAccess",
       "id": "wf.retrieve.with.cache.step.3.cache",
       "key": "token:{id}",
-      "operation": "set"
+      "operation": "set",
+      "line": 60
     },
     {
       "kind": "Guard",
@@ -96,6 +105,7 @@
       "children": [
         "wf.retrieve.with.cache.step.3"
       ],
+      "line": 59,
       "mode": "when",
       "condition": "token.cachedAt exists"
     },
@@ -105,12 +115,14 @@
       "name": "call token",
       "children": [
         "wf.retrieve.with.cache.step.4.net"
-      ]
+      ],
+      "line": 62
     },
     {
       "kind": "NetworkCall",
       "id": "wf.retrieve.with.cache.step.4.net",
-      "target": "token"
+      "target": "token",
+      "line": 62
     },
     {
       "kind": "Guard",
@@ -118,6 +130,7 @@
       "children": [
         "wf.retrieve.with.cache.step.4"
       ],
+      "line": 61,
       "mode": "when",
       "condition": "token.retryBudget > 0"
     },
@@ -144,12 +157,14 @@
     {
       "kind": "Capability",
       "id": "cap.postgres",
-      "name": "postgres"
+      "name": "postgres",
+      "line": 41
     },
     {
       "kind": "Capability",
       "id": "cap.redis",
-      "name": "redis"
+      "name": "redis",
+      "line": 42
     }
   ]
 }

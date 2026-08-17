@@ -47,7 +47,8 @@
       ],
       "children": [
         "wf.shorten"
-      ]
+      ],
+      "line": 42
     },
     {
       "kind": "Entity",
@@ -78,7 +79,8 @@
           "name": "createdAt",
           "type": "DateTime"
         }
-      ]
+      ],
+      "line": 31
     },
     {
       "kind": "Event",
@@ -87,7 +89,8 @@
       "source": {
         "ref": "entity.link",
         "on": "create"
-      }
+      },
+      "line": 40
     },
     {
       "kind": "Workflow",
@@ -99,7 +102,8 @@
         "wf.shorten.step.3",
         "wf.shorten.step.4",
         "wf.shorten.step.5"
-      ]
+      ],
+      "line": 51
     },
     {
       "kind": "WorkflowStep",
@@ -107,13 +111,15 @@
       "name": "validate input",
       "children": [
         "wf.shorten.step.1.check"
-      ]
+      ],
+      "line": 52
     },
     {
       "kind": "Validation",
       "id": "wf.shorten.step.1.check",
       "target": "entity.link",
-      "rule": "semantic-types"
+      "rule": "semantic-types",
+      "line": 52
     },
     {
       "kind": "WorkflowStep",
@@ -121,12 +127,14 @@
       "name": "authorize owner",
       "children": [
         "wf.shorten.step.2.authz"
-      ]
+      ],
+      "line": 53
     },
     {
       "kind": "Authorization",
       "id": "wf.shorten.step.2.authz",
-      "requirement": "owner"
+      "requirement": "owner",
+      "line": 53
     },
     {
       "kind": "WorkflowStep",
@@ -134,13 +142,15 @@
       "name": "create link",
       "children": [
         "wf.shorten.step.3.repo"
-      ]
+      ],
+      "line": 54
     },
     {
       "kind": "RepositoryCall",
       "id": "wf.shorten.step.3.repo",
       "entity": "entity.link",
-      "operation": "create"
+      "operation": "create",
+      "line": 54
     },
     {
       "kind": "WorkflowStep",
@@ -148,13 +158,15 @@
       "name": "cache link",
       "children": [
         "wf.shorten.step.4.cache"
-      ]
+      ],
+      "line": 55
     },
     {
       "kind": "CacheAccess",
       "id": "wf.shorten.step.4.cache",
       "key": "link:{id}",
-      "operation": "set"
+      "operation": "set",
+      "line": 55
     },
     {
       "kind": "WorkflowStep",
@@ -162,12 +174,14 @@
       "name": "emit linkCreated",
       "children": [
         "wf.shorten.step.5.emit"
-      ]
+      ],
+      "line": 56
     },
     {
       "kind": "EventEmit",
       "id": "wf.shorten.step.5.emit",
-      "event": "event.link.created"
+      "event": "event.link.created",
+      "line": 56
     },
     {
       "kind": "Policy",
@@ -203,17 +217,20 @@
     {
       "kind": "Capability",
       "id": "cap.postgres",
-      "name": "postgres"
+      "name": "postgres",
+      "line": 24
     },
     {
       "kind": "Capability",
       "id": "cap.redis",
-      "name": "redis"
+      "name": "redis",
+      "line": 25
     },
     {
       "kind": "Capability",
       "id": "cap.jwt",
-      "name": "jwt"
+      "name": "jwt",
+      "line": 26
     }
   ]
 }

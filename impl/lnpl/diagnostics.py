@@ -148,12 +148,20 @@ class Diagnostic:
 
     `severity` is derived, not stored: it reads `SEVERITY_OF[code]`, so there is
     no argument through which a producer could grade the same code two ways.
+
+    `line` (RFC-0024) is the 1-based source line the diagnostic is about, when
+    the producer has one in hand — the IR node's own optional `line` field for a
+    compile-time producer, or a node lookup for a runtime one. `None` when no
+    node the diagnostic is about carries a line (e.g. it predates RFC-0024's
+    lowering coverage), in which case rendering falls back to the pre-RFC-0024
+    form.
     """
 
     code: str        # one of CODES
     where: str       # the site: "line 31", or a node id such as "security.login"
     subject: str     # machine-readable subject: "generate" / "security jwt"
     message: str     # one human line; never branched on
+    line: int = None  # 1-based source line, or None (RFC-0024)
 
     def __post_init__(self):
         if self.code not in CODES:
@@ -176,15 +184,19 @@ class Diagnostics:
     def __init__(self):
         self._items = []
 
-    def add(self, *, code, where, subject, message):
+    def add(self, *, code, where, subject, message, line=None):
         """Record one diagnostic and return it.
 
         Keyword-only: `severity` used to sit second, so a stale positional call
         would bind a grade string into `where` and store it without complaint.
         The bare `*` makes every such call fail where it is written.
+
+        `line` (RFC-0024) is optional and defaults to `None` — a producer that
+        has no source line for its subject (or predates RFC-0024) does not have
+        to invent one.
         """
         diagnostic = Diagnostic(code=code, where=where,
-                                subject=subject, message=message)
+                                subject=subject, message=message, line=line)
         self._items.append(diagnostic)
         return diagnostic
 
@@ -232,7 +244,7 @@ def to_records(diagnostics):
     exactly what would make this channel useless for a graded CI gate.
     """
     return [{"code": d.code, "severity": d.severity, "where": d.where,
-             "subject": d.subject, "message": d.message}
+             "subject": d.subject, "message": d.message, "line": d.line}
             for d in _records(diagnostics)]
 
 
@@ -247,9 +259,14 @@ def format_lines(diagnostics):
     records = _records(diagnostics)
     if not records:
         return []
-    lines = ["%s: %s [%s] %s — %s" % (d.severity, d.code, d.where, d.subject,
-                                      d.message)
-             for d in records]
+    lines = [
+        ("%s: %s [%s] (line %d) %s — %s" % (d.severity, d.code, d.where,
+                                            d.line, d.subject, d.message)
+         if d.line is not None else
+         "%s: %s [%s] %s — %s" % (d.severity, d.code, d.where, d.subject,
+                                  d.message))
+        for d in records
+    ]
     infos = sum(1 for d in records if d.severity == "info")
     warnings = sum(1 for d in records if d.severity == "warning")
     errors = sum(1 for d in records if d.severity == "error")

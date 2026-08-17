@@ -332,10 +332,21 @@ def self_test():
     mutated_extra = copy.deepcopy(golden)
     find_node(mutated_extra, "svc.login")["extra"] = True
 
+    # RFC-0024: `line` is `{"type": "integer", "minimum": 1}` on every node
+    # kind — one negative per keyword it introduces (wf.login carries a `line`
+    # in the golden, so both mutants actually exercise the new branch).
+    mutated_line_zero = copy.deepcopy(golden)
+    find_node(mutated_line_zero, "wf.login")["line"] = 0
+
+    mutated_line_string = copy.deepcopy(golden)
+    find_node(mutated_line_string, "wf.login")["line"] = "4"
+
     negatives = [
         ("required field removed: wf.login.name", mutated_missing),
         ("undefined kind injected: Foo", mutated_kind),
         ("undefined extra field injected: svc.login.extra", mutated_extra),
+        ("line below minimum: wf.login.line = 0", mutated_line_zero),
+        ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives()
 
     for label, doc in negatives:

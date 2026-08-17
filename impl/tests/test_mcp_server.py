@@ -129,6 +129,23 @@ class CompileToolTest(unittest.TestCase):
         self.assertEqual(body["unknown_verbs"], 0)
         self.assertGreater(body["nodes"], 0)
 
+    def test_an_enforcement_diagnostic_carries_its_declaration_line(self):
+        # RFC-0024 (issue #67): the record's `line` is what an agent jumps to
+        # without grepping the source for the subject's text a second time.
+        path = os.path.join(REPO, "examples", "shorten.lnpl")
+        body = payload_of(call("lnpl_compile", {"path": path}))
+        by_code = {r["code"]: r for r in body["diagnostics"]}
+        self.assertEqual(by_code["declared-not-enforced"]["line"], 46)
+        self.assertEqual(by_code["declared-measured-only"]["line"], 48)
+
+    def test_an_unknown_verb_record_carries_no_line(self):
+        # unknown-verb is out of RFC-0024's scope — its `where` already spells
+        # `line N`, and the field stays present-but-null rather than absent, so
+        # a caller can rely on the key existing on every record.
+        record = payload_of(call("lnpl_compile", {"text": NOISY}))["diagnostics"][0]
+        self.assertIn("line", record)
+        self.assertIsNone(record["line"])
+
     def test_it_compiles_a_committed_example_by_path(self):
         path = os.path.join(REPO, "examples", "checkout.lnpl")
         body = payload_of(call("lnpl_compile", {"path": path}))
