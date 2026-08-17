@@ -14,8 +14,8 @@
 #          모두 집행한다), performance/cache 10m(CacheAccess set은 TTL 없이
 #          RunError), performance/response < 40ms(측정 35ms)
 #   서술 — authorize owner(선언만 되고 집행 없음 — issue #38),
-#          return slug(VERB_LEXICON에 없는 동사 — 효과 없는 스텝, issue #36),
 #          capability jwt, event LinkCreated
+#          (#36 no-op 실증은 login.lnpl(전용 회귀 픽스처)의 역할이다)
 #
 # policy는 timeout 2s만 둔다. 유일한 RepositoryCall이 create(비멱등)라 retry가
 # 걸릴 수 없고, Validation 스텝에는 걸려서 결정적인 페이로드 거부를 4번 반복하게
@@ -54,7 +54,6 @@ workflow Shorten
     create link
     cache link
     emit linkCreated
-    return slug
     spec
         given
             empty repository
@@ -62,6 +61,7 @@ workflow Shorten
             shorten
         expect
             completed
-            steps 6
+            effects complete
+            steps 5
             slo met
             cache written

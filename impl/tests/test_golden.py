@@ -520,7 +520,7 @@ class TestShortenRefinementIsLoadBearing(unittest.TestCase):
         self.assertEqual(reasons, [])
         self.assertEqual([s["step"] for s in result["steps"]],
                          ["validate input", "authorize owner", "create link",
-                          "cache link", "emit linkCreated", "return slug"])
+                          "cache link", "emit linkCreated"])
 
     def test_a_target_that_is_not_a_url_is_rejected(self):
         doc = self._doc()

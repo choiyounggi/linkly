@@ -67,3 +67,4 @@ workflow RetrieveWithCache
             retrieveWithCache
         expect
             completed
+            effects complete
