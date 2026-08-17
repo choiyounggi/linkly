@@ -202,6 +202,62 @@ class GeneratorTest(unittest.TestCase):
             self.assertIn("`%s`" % form, text)
             self.assertIn(doc, text)
 
+    def test_every_expect_format_reaches_the_document(self):
+        # Issue #61: the section used to be a bare key list — `rows`,
+        # `effects`, and `emitted` gave no hint of the formats or comparators
+        # they take, so a reader had to go read spec.py to find out.
+        with open(os.path.join(REFS, "spec.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        for signature in ("rows <Entity> <N>", "effects <N>", "effects complete",
+                          "emitted <Name>", "error reason"):
+            self.assertIn(signature, text, "%r missing from expect section" % signature)
+
+    def test_render_refuses_an_expect_handler_with_no_docstring(self):
+        # A new expect key added without a docstring must fail the build, not
+        # render a blank cell — a silent gap is what issue #61 exists to close.
+        gen = load_gen()
+        def _fake(_phrase, _result, _interp):
+            return True, "ok"
+        gen.EXPECTATIONS = dict(gen.EXPECTATIONS)
+        gen.EXPECTATIONS["fake"] = _fake
+        with self.assertRaises(RuntimeError) as caught:
+            gen.render_spec()
+        self.assertIn("fake", str(caught.exception))
+
+    def test_render_refuses_an_expect_handler_whose_docstring_has_no_format(self):
+        # A docstring can exist but still say nothing quotable — e.g. prose
+        # with no backticked signature. That must fail closed too.
+        gen = load_gen()
+        def _fake(_phrase, _result, _interp):
+            return True, "ok"
+        _fake.__doc__ = "does the fake thing, no format quoted here"
+        gen.EXPECTATIONS = dict(gen.EXPECTATIONS)
+        gen.EXPECTATIONS["fake"] = _fake
+        with self.assertRaises(RuntimeError) as caught:
+            gen.render_spec()
+        self.assertIn("fake", str(caught.exception))
+
+    def test_a_multi_line_docstring_paragraph_joins_into_one_table_cell(self):
+        # Boundary: `_expect_emitted`'s first paragraph spans two physical
+        # lines in the source and contains a literal `|` (`exists|missing`).
+        # The generated cell must join the lines and escape the pipe, or the
+        # markdown table row breaks — either into a ragged cell or extra columns.
+        with open(os.path.join(REFS, "spec.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        rows = {cells[0]: cells[1] for cells in table_rows(text, "키")}
+        self.assertIn("`emitted`", rows)
+        self.assertIn("`emitted <Name> payload <field> exists|missing`", rows["`emitted`"])
+        self.assertNotIn("\n", rows["`emitted`"])
+
+    def test_the_effects_complete_opt_in_rationale_is_quoted(self):
+        # D2: the "why is this opt-in" paragraph is what motivated issue #61 —
+        # without it, a reader sees `effects complete` exists but not why it
+        # doesn't fire automatically on every unknown-verb diagnostic.
+        with open(os.path.join(REFS, "spec.md"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("opt-in rather than", text)
+        self.assertIn("login.lnpl", text)
+
     def test_the_scope_of_given_no_is_documented(self):
         # r4 F-6: `no <field>`'s scope was undocumented, so an author could not
         # tell what it removes from — the input payload, the seeded row, or both.

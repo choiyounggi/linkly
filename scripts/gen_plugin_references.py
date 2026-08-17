@@ -8,6 +8,7 @@
     python scripts/gen_plugin_references.py --check    # 다르면 exit 1
 """
 import glob
+import inspect
 import os
 import re
 import sys
@@ -250,14 +251,49 @@ def render_types():
     return _doc("타입과 Refinement", "\n".join(lines))
 
 
+def _expect_format_cell(key, handler):
+    """`EXPECTATIONS[key]`의 docstring 첫 문단을 표 한 칸으로 만든다.
+
+    첫 문단이 없거나(docstring 결손) 백틱 형식 시그니처가 하나도 없으면
+    fail-closed로 거부한다 — 새 expect 키가 문서화 없이 조용히 통과하는
+    것을 issue #61이 막으려는 바로 그 구멍이다.
+    """
+    doc = inspect.getdoc(handler)
+    if not doc:
+        raise RuntimeError(
+            "expect key %r (%s)에 docstring이 없다 — references/spec.md에 "
+            "실리려면 형식 시그니처를 담은 docstring이 필요하다" % (key, handler.__name__))
+    first_para = doc.split("\n\n", 1)[0]
+    cell = " ".join(line.strip() for line in first_para.splitlines())
+    if "`" not in cell:
+        raise RuntimeError(
+            "expect key %r (%s)의 docstring 첫 문단에 백틱 형식 시그니처가 "
+            "없다 — references/spec.md에 실리려면 필요하다" % (key, handler.__name__))
+    return cell.replace("|", "\\|")
+
+
+def _effects_opt_in_note():
+    """`_expect_effects` docstring에서 opt-in 근거 문단만 뽑아 인용한다."""
+    doc = inspect.getdoc(EXPECTATIONS["effects"])
+    for para in doc.split("\n\n"):
+        if para.startswith("It is opt-in rather than"):
+            return " ".join(line.strip() for line in para.splitlines())
+    raise RuntimeError(
+        "`_expect_effects`의 docstring에서 opt-in 근거 문단을 찾지 못했다 — "
+        "render_spec()의 인용 로직이나 docstring 둘 중 하나가 어긋났다")
+
+
 def render_spec():
     lines = ["워크플로 안의 `spec` 블록은 `given` / `when` / `expect` 세 절을 갖는다.",
              "워크플로당 블록 여러 개를 선언할 수 있고 블록마다 독립 케이스 하나가 된다 —",
              "정상/에러/경계 시나리오는 블록을 나눠 쓴다. 한 블록 안에서 같은 절을 두 번",
              "열면 파싱 에러다 (issue #46).\n",
-             "## `expect`가 받는 키\n"]
-    for key in EXPECTATIONS:
-        lines.append("- `%s`" % key)
+             "## `expect`가 받는 키\n",
+             "| 키 | 형식·의미 |",
+             "|------|-----------|"]
+    for key, handler in EXPECTATIONS.items():
+        lines.append("| `%s` | %s |" % (key, _expect_format_cell(key, handler)))
+    lines.append("\n> " + _effects_opt_in_note())
     lines.append("\n## `given`이 알아듣는 형식\n")
     for _key, form, doc in GIVEN_FORMS:
         lines.append("- `%s` — %s" % (form, doc))
