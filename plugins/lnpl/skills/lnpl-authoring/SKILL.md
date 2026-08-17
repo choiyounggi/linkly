@@ -29,6 +29,10 @@ LNPL은 **의도(what)를 선언**하는 언어다. 구현(how)은 컴파일러�
 **1. 사전에 없는 동사는 에러가 아니라 no-op이다.**
 `return token`, `log event`, `send email` 같은 스텝은 컴파일에 성공하고 아무 효과도
 내지 않는다. 동사는 반드시 `references/verbs.md`의 표에서 고른다.
+이걸 spec으로 계약하는 수단이 `expect`의 `effects complete`다(저장소 변경이
+있으면 `rows`도) — no-op 스텝이 하나라도 있으면 `effects complete`가 FAIL한다.
+게이트 쪽은 `lnpl compile --strict=warning`이 1단계에서 막는다(issue #62,
+`lnpl-verify` 스킬).
 
 **2. 선언했다고 집행되는 게 아니다.**
 `security jwt`는 토큰을 발급하지도 검증하지도 않는다. `policy rollback`은 아무것도

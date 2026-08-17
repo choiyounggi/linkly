@@ -13,7 +13,8 @@
       ],
       "expect": [
         "completed",
-        "steps 6",
+        "effects complete",
+        "steps 5",
         "slo met",
         "cache written"
       ]

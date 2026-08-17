@@ -98,8 +98,7 @@
         "wf.shorten.step.2",
         "wf.shorten.step.3",
         "wf.shorten.step.4",
-        "wf.shorten.step.5",
-        "wf.shorten.step.6"
+        "wf.shorten.step.5"
       ]
     },
     {
@@ -169,11 +168,6 @@
       "kind": "EventEmit",
       "id": "wf.shorten.step.5.emit",
       "event": "event.link.created"
-    },
-    {
-      "kind": "WorkflowStep",
-      "id": "wf.shorten.step.6",
-      "name": "return slug"
     },
     {
       "kind": "Policy",

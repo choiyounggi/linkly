@@ -10,7 +10,7 @@
       "post": {
         "operationId": "shorten_service_shorten",
         "summary": "Shorten workflow",
-        "description": "Steps: validate input -> authorize owner -> create link -> cache link -> emit linkCreated -> return slug",
+        "description": "Steps: validate input -> authorize owner -> create link -> cache link -> emit linkCreated",
         "responses": {
           "200": {
             "description": "the workflow completed"

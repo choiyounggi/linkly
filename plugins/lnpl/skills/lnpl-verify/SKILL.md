@@ -8,16 +8,23 @@ description: Use before claiming a `.lnpl` change is done, complete, working, or
 "아마 될 거예요"로 끝내지 않는다. 아래를 **실행한 출력**으로 완료를 증명한다.
 실행하지 않았다면 완료가 아니다.
 
-## 1. 컴파일과 진단
+## 1. 컴파일과 진단 — `--strict=warning` 게이트
 
 ```
-lnpl compile <파일>
+lnpl compile <파일> --strict=warning
 ```
 
-진단은 **stderr로 나가고 종료 코드는 0**이다 — 보지 않으면 사라진다.
+진단은 stderr로 나간다. `--strict=warning`은 `warning` 등급 이상(예: 미지
+동사가 내는 `unknown-verb`)이 하나라도 있으면 **종료 코드를 0이 아니게
+만든다** — no-op 동사 유출이 조용히 통과하지 못하게 막는 1단계 기계 게이트다
+(issue #62). `info` 등급(`declared-not-enforced`, `declared-measured-only` 등
+— 선언은 했으나 집행하지 않는다는 서술)은 이 게이트를 통과시킨다.
 
-**진단 0건이 완료 조건이 아니다.** 커밋된 예제 셋 다 경고를 내고,
-`examples/shorten.lnpl`은 일부러 낸다(집행되지 않는 선언을 서술로 남긴 것).
+**진단 0건이 완료 조건이 아니다.** 커밋된 예제(`shorten`/`checkout`/`guarded`)는
+`info` 진단을 일부러 낸다(집행되지 않는 선언을 서술로 남긴 것) — `info`는
+`--strict=warning`을 통과한다. `warning` 등급이 실제로 게이트를 막는 실증은
+`examples/login.lnpl`(issue #36 전용 회귀 픽스처, 절대 고치지 않는다)이
+보여준다 — 어휘 밖 동사 셋이 `unknown-verb` 경고를 내고 rc≠0으로 멈춘다.
 게이트를 통과시키려고 정당한 선언을 지우지 마라 — 그건 게이트가 코드를 나쁘게
 만드는 것이다.
 

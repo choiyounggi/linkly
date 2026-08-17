@@ -12,7 +12,8 @@
         "retrieveWithCache"
       ],
       "expect": [
-        "completed"
+        "completed",
+        "effects complete"
       ]
     }
   ]
