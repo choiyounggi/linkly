@@ -19,6 +19,7 @@ Manifest shape:
 
 import re
 
+from .drivers import FakeNetworkDriver
 from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import COMPARATORS
 from .repo_policy import binding_name, default_rows
@@ -332,6 +333,12 @@ GIVEN_FORMS = (
      "인덱스 다중 행 시드(RFC-0025 §8) — row_key=str(i). 같은 i에 여러 줄을 "
      "반복해 한 행에 필드를 더한다. 엔티티는 `stored`와 같이 선언명·바인딩명 "
      "둘 다 받는다. `list <entity>`가 읽는 RowSet을 이렇게 채운다"),
+    ("network-stub", "call <target> returns <status>",
+     "네트워크 응답 스텁(RFC-0027 §7, issue #76). status는 정수. 스텁 없는 "
+     "target은 fake 드라이버 기본값(200/빈 바디)을 결정적으로 받는다"),
+    ("network-stub-body", "call <target> returns <status> body.<key> <value>",
+     "네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 "
+     "행 필드를 쌓는 것과 같은 자리"),
 )
 
 
@@ -408,6 +415,28 @@ def _check_given(phrase, schema, where=""):
         if indexed:
             return "stored-indexed", (ent_name, indexed.group(2), field, value)
         return "stored", (ent_name, field, value)
+    if tokens[0] == "call":
+        # RFC-0027 §7: `<target>` is a free string (NetworkCall.target is
+        # never checked against a declared registry — §2), so unlike
+        # `stored` there is no entity/field lookup here.
+        if len(tokens) == 4 and tokens[2] == "returns":
+            target, status = tokens[1], tokens[3]
+            if not status.isdigit():
+                fail("given %r needs an integer status, got %r"
+                     % (phrase, status))
+            return "network-stub", (target, status)
+        if len(tokens) == 6 and tokens[2] == "returns" \
+                and tokens[4].startswith("body."):
+            target, status, key = tokens[1], tokens[3], tokens[4][len("body."):]
+            if not status.isdigit():
+                fail("given %r needs an integer status, got %r"
+                     % (phrase, status))
+            if not key:
+                fail("given %r names no body key after 'body.'" % phrase)
+            return "network-stub-body", (target, status, key, tokens[5])
+        fail("unsupported given: %r (use `call <target> returns <status>` "
+             "or `call <target> returns <status> body.<key> <value>`)"
+             % phrase)
     if len(tokens) == 2 and tokens[0].startswith(_INPUT_PREFIX):
         # An unrecognized name is refused rather than absorbed: the input
         # namespace is a closed set, so a miss is a typo (RFC-0015 §G15.2) and
@@ -576,6 +605,40 @@ def _indexed_seeds_from_given(given, document):
     return seeds
 
 
+def _network_stubs_from_given(given):
+    """RFC-0027 §7: `call <target> returns <status>` [`body.<key> <value>`]
+    lines -> `{target: (status, body)}`, for `FakeNetworkDriver`.
+
+    No `schema`/`document` needed (unlike `_indexed_seeds_from_given`):
+    `<target>` is never checked against a declared registry (§7). Repeated
+    lines for the same target merge — a bare status overwrites the status of
+    an existing entry without touching its body, and a body line adds one
+    field, both "last write wins" (RFC-0012 §G12.2) applied to a stub
+    instead of a bound row.
+    """
+    stubs = {}
+    for phrase in given:
+        # Cheap pre-filter before delegating to `_check_given`: an empty
+        # schema is fine for the "call" forms (they never look at it), but
+        # `stored`/`input.*` phrases in the SAME `given` list need the real
+        # one — this function is not their classifier, so it must not run
+        # them through `_check_given` at all.
+        if phrase.split(None, 1)[:1] != ["call"]:
+            continue
+        form, parts = _check_given(phrase, ())
+        if form == "network-stub":
+            target, status = parts
+            _prev_status, body = stubs.get(target, (None, {}))
+            stubs[target] = (int(status), body)
+        elif form == "network-stub-body":
+            target, status, key, value = parts
+            _prev_status, body = stubs.get(target, (None, {}))
+            body = dict(body)
+            body[key] = _coerce(value)
+            stubs[target] = (int(status), body)
+    return stubs
+
+
 def _typed_value(text, type_name, refinements):
     """A `given <field> <value>` token in the declared field's shape.
 
@@ -669,7 +732,11 @@ def run_manifest(manifest, document):
             table = rows.setdefault(entity_id, {})
             for index, fields in by_index.items():
                 table.setdefault(index, {}).update(fields)
-        interp = Interpreter(document, repo_rows=rows)
+        # RFC-0027 §7: a fresh, per-case stub table — a `--network http`
+        # equivalent has no place here (§1): spec's determinism depends on
+        # every NetworkCall answering from `given`, never a real request.
+        network = FakeNetworkDriver(_network_stubs_from_given(case["given"]))
+        interp = Interpreter(document, repo_rows=rows, network=network)
         try:
             result = interp.run_workflow(case["workflow"], payload)
             # `result` expectations resolve bare references against the input, so

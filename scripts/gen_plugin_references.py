@@ -515,6 +515,9 @@ RFC_ROUTES = {
              "집계 값을 전혀 계산하지 않는지", ()),
     "0026": ("`unknown-verb`/`guard-orphaned-steps`가 왜 구조화 `line`을 갖는지, "
              "did-you-mean 제안이 별칭과 철자 오타를 어떻게 나눠 잡는지", ()),
+    "0027": ("`call`/`request ... as <name>`로 네트워크 응답을 바인딩하고 "
+             "실패를 status 값으로 분기하고 싶다 — `--network`의 fake/http "
+             "선택이 무엇을 고르는지, 접속 실패가 왜 예외가 아니라 값인지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")
