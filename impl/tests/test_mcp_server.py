@@ -31,6 +31,13 @@ NOISY = ("entity Note\n    field\n        id UUID\n\n"
          "workflow Save\n    validate note\n    return note\n")
 CLEAN = ("entity Note\n    field\n        id UUID\n\n"
          "workflow Save\n    validate note\n    create note\n")
+# `steps 99`는 실제 스텝 수(2)와 어긋나도록 고정한 것 — 실패 케이스가
+# 기대/실측을 병기하는지 결정적으로 확인하기 위함.
+BAD_SPEC = ("entity Note\n    field\n        id UUID\n        title Text\n\n"
+           "workflow SaveNote\n    validate input\n    create note\n"
+           "    spec\n        given\n            empty repository\n"
+           "        when\n            saveNote\n        expect\n"
+           "            completed\n            steps 99\n")
 
 
 def converse(*messages):
@@ -186,6 +193,38 @@ class KbRouteToolTest(unittest.TestCase):
     def test_a_missing_task_is_a_tool_error(self):
         res = call("lnpl_kb_route", {})
         self.assertIs(res["result"]["isError"], True)
+
+
+class SpecToolTest(unittest.TestCase):
+
+    def test_it_reports_every_case_pass_for_a_committed_example(self):
+        path = os.path.join(REPO, "examples", "linkhub.lnpl")
+        body = payload_of(call("lnpl_spec", {"path": path}))
+        self.assertTrue(body["spec_present"])
+        self.assertEqual([c["status"] for c in body["cases"]],
+                         ["pass", "pass", "pass"])
+        self.assertEqual(body["summary"]["failed"], 0)
+        self.assertGreater(body["summary"]["passed"], 0)
+
+    def test_a_failing_case_reports_expected_and_actual(self):
+        body = payload_of(call("lnpl_spec", {"text": BAD_SPEC}))
+        self.assertTrue(body["spec_present"])
+        case = body["cases"][0]
+        self.assertEqual(case["status"], "fail")
+        self.assertEqual(body["summary"]["failed"], 1)
+        fail_line = next(l for l in case["lines"] if l.startswith("FAIL"))
+        # 실측(got)과 기대(want)가 한 줄에 같이 있어야 한다 — 둘 중 하나만
+        # 보고 고칠 수는 없다.
+        self.assertIn("steps=2", fail_line)
+        self.assertIn("want=99", fail_line)
+
+    def test_source_without_a_spec_block_is_not_an_error(self):
+        # 없음은 에러가 아니라 데이터다 — MCP 소비자는 rc=1 대신 이 필드로
+        # "spec이 없다"를 받는다.
+        body = payload_of(call("lnpl_spec", {"text": CLEAN}))
+        self.assertIs(body["spec_present"], False)
+        self.assertEqual(body["cases"], [])
+        self.assertEqual(body["summary"], {"passed": 0, "failed": 0})
 
 
 class ProtocolErrorTest(unittest.TestCase):
