@@ -513,6 +513,8 @@ RFC_ROUTES = {
     "0025": ("`list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — "
              "RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 "
              "집계 값을 전혀 계산하지 않는지", ()),
+    "0026": ("`unknown-verb`/`guard-orphaned-steps`가 왜 구조화 `line`을 갖는지, "
+             "did-you-mean 제안이 별칭과 철자 오타를 어떻게 나눠 잡는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

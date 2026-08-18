@@ -72,6 +72,42 @@ workflow Login
     validate input
 """
 
+# RFC-0026: `persist` is a `VERB_ALIASES` entry (tier 1 — a semantic
+# near-synonym of `create`; character-similarity alone would never surface
+# `create` as `persist`'s closest VERB_LEXICON match).
+SEMANTIC_ALIAS = """
+entity User
+    field
+        id UUID
+        email Email
+workflow Login
+    validate input
+    persist token
+"""
+
+# `craete` is a spelling typo one edit away from `create` — tier 2
+# (`difflib`, cutoff 0.6) catches it without an alias table entry.
+SPELLING_TYPO = """
+entity User
+    field
+        id UUID
+        email Email
+workflow Login
+    validate input
+    craete token
+"""
+
+# `zzz` is not close to any VERB_LEXICON verb by alias or by spelling.
+NO_SUGGESTION = """
+entity User
+    field
+        id UUID
+        email Email
+workflow Login
+    validate input
+    zzz token
+"""
+
 
 def compile_module(source, name="t"):
     return lower(parse(source), name)
@@ -187,6 +223,35 @@ class TestBoundaries(unittest.TestCase):
         self.assertEqual([d.subject for d in diags], ["generate", "generate"])
         self.assertEqual([d.where for d in diags], ["line 7", "line 9"])
         self.assertEqual(len(set(d.where for d in diags)), 2)
+
+
+class TestLineIsStructured(unittest.TestCase):
+    """RFC-0026 widens RFC-0024's `line` to `unknown-verb`."""
+
+    def test_the_diagnostic_carries_its_source_line_as_an_int(self):
+        diag = compile_module(ONE_UNKNOWN).diagnostics.by_code("unknown-verb")[0]
+        self.assertEqual(diag.line, 8)
+        # `where`'s pre-existing surface is unchanged (RFC-0026 §1).
+        self.assertEqual(diag.where, "line 8")
+
+
+class TestDidYouMean(unittest.TestCase):
+    """RFC-0026: a two-tier suggestion — VERB_ALIASES first, difflib second."""
+
+    def test_a_semantic_alias_suggests_its_lexicon_verb(self):
+        diag = compile_module(SEMANTIC_ALIAS).diagnostics.by_code("unknown-verb")[0]
+        self.assertEqual(diag.suggestion, "create")
+        self.assertIn("did you mean 'create'?", diag.message)
+
+    def test_a_spelling_typo_suggests_its_closest_lexicon_verb(self):
+        diag = compile_module(SPELLING_TYPO).diagnostics.by_code("unknown-verb")[0]
+        self.assertEqual(diag.suggestion, "create")
+        self.assertIn("did you mean 'create'?", diag.message)
+
+    def test_an_unrelated_word_gets_no_suggestion(self):
+        diag = compile_module(NO_SUGGESTION).diagnostics.by_code("unknown-verb")[0]
+        self.assertIsNone(diag.suggestion)
+        self.assertNotIn("did you mean", diag.message)
 
 
 if __name__ == "__main__":
