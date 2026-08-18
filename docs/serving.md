@@ -41,6 +41,9 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 - **가드 거부는 200이다.** RFC-0014가 skipped를 status와 직교하는 신호로 정의한다
   — 가드가 제 역할을 한 실행은 CLI에서 rc 0이고, HTTP만 4xx를 주면 같은 실행이
   두 표면에서 다른 판정을 받는다. 관측 계약은 200 본문의 `skipped[]`가 나른다.
+  각 skip 레코드는 `guard`/`mode`/`condition`/`steps`/`rounds`에 더해
+  `evaluations[]`(이슈 #83 — 조건이 실제로 비교한 값들, sensitive 필드는
+  마스킹 후)를 싣는다.
 - 빈 body는 payload `{}`로 실행된다(특례 없음). `validate` 스텝이 있는 워크플로는
   M7로 400이 되고, 없는 워크플로는 그대로 실행된다.
 - M6이 M7보다 먼저다: validate 스텝 직전에 데드라인이 소진된 실행은 타임아웃이지
