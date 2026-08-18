@@ -379,7 +379,10 @@ class TestGuardSkipManifest(unittest.TestCase):
         self.assertEqual(result["skipped"],
                          [{"guard": "wf.w.guard.1", "mode": "when",
                            "condition": "token missing",
-                           "steps": ["cache user"], "rounds": None}])
+                           "steps": ["cache user"], "rounds": None,
+                           "evaluations": [{"ref": "token", "value": "present",
+                                           "op": "missing", "expected": None,
+                                           "holds": False}]}])
 
     def test_a_false_when_still_logs_the_trace_line(self):
         # RFC-0003 §Guard keeps the trace obligation; the manifest is additive.
@@ -396,7 +399,10 @@ class TestGuardSkipManifest(unittest.TestCase):
         self.assertEqual(result["skipped"],
                          [{"guard": "wf.w.guard.1", "mode": "until",
                            "condition": "counter >= 10",
-                           "steps": ["step Loop"], "rounds": 0}],
+                           "steps": ["step Loop"], "rounds": 0,
+                           "evaluations": [{"ref": "counter", "value": 100,
+                                           "op": ">=", "expected": 10,
+                                           "holds": True}]}],
                          "t4 F-9: a 0-round `until` left no mark at all, so "
                          "`when`-skip and `until`-0 were indistinguishable.")
 
@@ -625,9 +631,10 @@ class TestStepResultBinding(unittest.TestCase):
         interp = Interpreter(doc, repo_rows=rows)
         return interp, interp.run_workflow(CHECKOUT_WORKFLOW, payload)
 
-    def assertSkipped(self, result, condition, why, skipped=None):
+    def assertSkipped(self, result, condition, why, skipped=None, evaluations=()):
         """The guard skipped, and the record says WHICH guard, on WHAT
-        condition, over WHICH steps (issue #44 record shape).
+        condition, over WHICH steps (issue #44 record shape), and WHAT it
+        actually measured (issue #83's `evaluations`).
 
         Asserting the whole record rather than the guard id keeps these
         assertions discriminating: a manifest that dropped the condition or the
@@ -637,7 +644,8 @@ class TestStepResultBinding(unittest.TestCase):
         self.assertEqual(records, [{"guard": GUARD_ID, "mode": "when",
                                     "condition": condition,
                                     "steps": ["create order"],
-                                    "rounds": None}], why)
+                                    "rounds": None,
+                                    "evaluations": list(evaluations)}], why)
 
     def test_the_guard_reads_the_fetched_row_not_the_input_payload(self):
         # The input says 5 (guard would be TRUE on the payload); the stored row
@@ -649,7 +657,9 @@ class TestStepResultBinding(unittest.TestCase):
             result, "product.stock > 0",
             "issue #37: the stored row has stock=0, so `when "
             "product.stock > 0` is false and the guarded item is "
-            "skipped. The payload's stock=5 must not decide this.")
+            "skipped. The payload's stock=5 must not decide this.",
+            evaluations=[{"ref": "product.stock", "value": 0, "op": ">",
+                         "expected": 0, "holds": False}])
         self.assertEqual([s["step"] for s in result["steps"]],
                          ["validate product", "find product", "cache product"],
                          "issue #37: `create order` is guarded and the guard is "
@@ -692,14 +702,18 @@ class TestStepResultBinding(unittest.TestCase):
             result, "product.stock > 0",
             "RFC-0012 G12.4: no RepositoryCall has completed, so "
             "`product.stock` resolves to nothing and the comparison "
-            "is false — not an error, and not vacuously true.")
+            "is false — not an error, and not vacuously true.",
+            evaluations=[{"ref": "product.stock", "value": None, "op": ">",
+                         "expected": 0, "holds": False}])
 
     def test_an_unbound_reference_does_not_exist(self):
         _interp, result = self._run(condition="product.stock exists",
                                     guard_first=True)
         self.assertSkipped(
             result, "product.stock exists",
-            "RFC-0012 G12.4: `exists` on an unbound reference is false.")
+            "RFC-0012 G12.4: `exists` on an unbound reference is false.",
+            evaluations=[{"ref": "product.stock", "value": None,
+                         "op": "exists", "expected": None, "holds": False}])
 
     def test_a_field_absent_from_the_row_is_false(self):
         # Boundary: the binding exists, but the row has no such field.
@@ -707,7 +721,9 @@ class TestStepResultBinding(unittest.TestCase):
         self.assertSkipped(
             result, "product.nosuch > 0",
             "RFC-0012 G12.4: a field the row does not carry compares "
-            "false rather than raising.")
+            "false rather than raising.",
+            evaluations=[{"ref": "product.nosuch", "value": None, "op": ">",
+                         "expected": 0, "holds": False}])
 
     def test_a_field_absent_from_the_row_is_missing(self):
         _interp, result = self._run(condition="product.nosuch missing")
@@ -750,7 +766,9 @@ class TestStepResultBinding(unittest.TestCase):
             second, "product.stock > 0",
             "the second run's guard is evaluated before its own read, "
             "so nothing is bound yet and it must skip. If it opened, "
-            "it read the FIRST run's binding.")
+            "it read the FIRST run's binding.",
+            evaluations=[{"ref": "product.stock", "value": None, "op": ">",
+                         "expected": 0, "holds": False}])
         self.assertNotIn("create order", [s["step"] for s in second["steps"]])
 
 

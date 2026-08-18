@@ -247,6 +247,15 @@ def _print_human(result, interp):
         print("  skipped by `%s %s`: %s"
               % (record["mode"], record["condition"] or "",
                  ", ".join(record["steps"]) or "(no step)"))
+        for e in record.get("evaluations") or []:
+            # Issue #83: the same evaluations[] the JSON trace carries (already
+            # masked), printed for a reader who never asked for --json. No new
+            # flag — always included (plan D4, simplicity over configurability).
+            if e["expected"] is None:
+                print("    %s %s (measured=%s)" % (e["ref"], e["op"], e["value"]))
+            else:
+                print("    %s %s %s (measured=%s)"
+                      % (e["ref"], e["op"], e["expected"], e["value"]))
     for entry in interp.trace.logs:
         if entry["level"] in ("WARN", "ERROR"):
             print("  %-5s %s" % (entry["level"], entry["message"]))

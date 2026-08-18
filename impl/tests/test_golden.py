@@ -412,7 +412,10 @@ class TestCheckoutExecution(unittest.TestCase):
         self.assertEqual(result["skipped"],
                          [{"guard": "wf.checkout.guard.1", "mode": "when",
                            "condition": "product.stock > 0",
-                           "steps": ["create order"], "rounds": None}])
+                           "steps": ["create order"], "rounds": None,
+                           "evaluations": [{"ref": "product.stock", "value": 0,
+                                           "op": ">", "expected": 0,
+                                           "holds": False}]}])
         # the create never reached the repository
         self.assertEqual(interp.repo.calls, [("entity.product", "read")])
 

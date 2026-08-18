@@ -230,7 +230,18 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
             inner_ids = node.get("children", [])
             if mode == "when":
                 if not _condition_holds(node.get("condition"), payload, bindings):
-                    result["skipped"].append(_skip_record(nodes, node))
+                    # Issue #83: a second, pure re-evaluation just to collect the
+                    # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
+                    # line above on purpose: that line is a mutation_check.py
+                    # anchor, and re-evaluating here instead of threading a
+                    # collector through the control-flow call leaves it byte-
+                    # identical.
+                    raw_evals = []
+                    _condition_holds(node.get("condition"), payload, bindings,
+                                     collector=raw_evals)
+                    result["skipped"].append(_skip_record(
+                        nodes, node,
+                        evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
                     interp.trace.log("INFO", "guard skipped the guarded item",
                                      guard=node_id, condition=node.get("condition"))
                     continue
@@ -268,7 +279,15 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                     # not run" had two shapes — one observable, one silent. The
                     # two paths are the same fact, so they get the same record.
                     # A loop that ran at least one round skipped nothing.
-                    result["skipped"].append(_skip_record(nodes, node, rounds=0))
+                    # Issue #83: the condition is pure (no side effect on
+                    # payload/bindings), so re-evaluating it here to collect
+                    # evaluations does not change what already decided rounds==0.
+                    raw_evals = []
+                    _condition_holds(node.get("condition"), payload, bindings,
+                                     collector=raw_evals)
+                    result["skipped"].append(_skip_record(
+                        nodes, node, rounds=0,
+                        evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
                     interp.trace.log("INFO", "guard skipped the guarded item",
                                      guard=node_id, condition=node.get("condition"),
                                      rounds=0)
@@ -302,19 +321,29 @@ def _guarded_step_names(nodes, ids):
     return out
 
 
-def _skip_record(nodes, node, rounds=None):
+def _skip_record(nodes, node, rounds=None, evaluations=None):
     """One `result["skipped"]` entry — the record shape issue #44 defines.
 
     `rounds` is None for `when` (it evaluates once) and 0 for an `until` that
     never entered its body. `guard` is mode A's own node id: useful for a
     debugger, and deliberately excluded from the mode A/B comparison, which is
     keyed on the fields both modes can observe.
+
+    `evaluations` (issue #83, RFC-0014 D3-D4 addendum) is additive only — the
+    five keys above are unchanged. It is a list of already-masked
+    `{"ref", "value", "op", "expected", "holds"}` entries, one per
+    Presence/Comparison term the condition evaluated (`_condition_holds`'s
+    `collector`). Like `guard`, it names something mode B cannot produce, so
+    `differential._normalise_skips` — an ALLOW-list of exactly
+    `{mode, condition, step, rounds}` — excludes it the same way it already
+    excludes `guard`, with no change needed there.
     """
     return {"guard": node["id"],
             "mode": node["mode"],
             "condition": node.get("condition"),
             "steps": _guarded_step_names(nodes, node.get("children", [])),
-            "rounds": rounds}
+            "rounds": rounds,
+            "evaluations": evaluations if evaluations is not None else []}
 
 
 def resolve_reference(name, payload, bindings):
@@ -349,7 +378,7 @@ def resolve_reference(name, payload, bindings):
     return row.get(field)
 
 
-def _condition_holds(condition, payload, bindings):
+def _condition_holds(condition, payload, bindings, collector=None):
     """Mode A condition evaluation: Presence + Comparison.
 
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
@@ -360,6 +389,12 @@ def _condition_holds(condition, payload, bindings):
     one on purpose: a call site that forgot it would silently evaluate every
     qualified reference as absent, which is issue #37 reappearing as a false
     negative instead of a crash.
+
+    `collector` (issue #83, optional, default `None`): when a caller passes a
+    list, each Presence/Comparison term evaluated appends one raw (unmasked)
+    `{"ref", "value", "op", "expected", "holds"}` entry to it — the trace guard
+    skips carry as `evaluations`. `None` collects nothing, so every existing
+    call site (`differential.py`, `spec.py`, the tests) is unaffected.
     """
     if condition is None:
         return True
@@ -377,45 +412,61 @@ def _condition_holds(condition, payload, bindings):
         return True
 
     if isinstance(cond, Presence):
-        present = resolve_reference(cond.field, payload, bindings) is not None
-        return present if cond.kind == "exists" else not present
+        raw = resolve_reference(cond.field, payload, bindings)
+        holds = (raw is not None) if cond.kind == "exists" else (raw is None)
+        if collector is not None:
+            collector.append({"ref": cond.field, "value": raw, "op": cond.kind,
+                              "expected": None, "holds": holds})
+        return holds
 
     if isinstance(cond, Comparison):
-        return _comparison_holds(cond, condition, payload, bindings)
+        return _comparison_holds(cond, condition, payload, bindings, collector)
 
     if isinstance(cond, And):
         # Every term is evaluated, not short-circuited: the terms are pure, so
         # the result is the same, and a value fault in a later term must surface
         # in both modes rather than depending on where the run stopped reading.
-        results = [_comparison_holds(term, condition, payload, bindings)
+        results = [_comparison_holds(term, condition, payload, bindings, collector)
                    for term in cond.terms]
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
 
 
-def _comparison_holds(cmp_node, condition, payload, bindings):
-    """One `Comparison` against this scope. Unresolved reference -> False."""
+def _comparison_holds(cmp_node, condition, payload, bindings, collector=None):
+    """One `Comparison` against this scope. Unresolved reference -> False.
+
+    `collector` (issue #83): see `_condition_holds`. `ref` is the left
+    operand's normalized text (`_value_text` — a bare `Ref` renders as its own
+    dotted name), and `value`/`expected` are the left/right operands as
+    evaluated here, unmasked (`_masked_evaluation` in `_flatten_items` masks a
+    sensitive one before it reaches a skip record).
+    """
     left = eval_value(cmp_node.left, condition, payload, bindings)
     right = eval_value(cmp_node.right, condition, payload, bindings)
+    op = cmp_node.op
     if left is None or right is None:
         # A reference that names nothing behaves as it did before RFC-0015:
         # `null < X`, `null == X` and the rest are all false, on either side.
-        return False
-    op = cmp_node.op
-    if op == '<':
-        return left < right
-    if op == '<=':
-        return left <= right
-    if op == '>':
-        return left > right
-    if op == '>=':
-        return left >= right
-    if op == '==':
-        return left == right
-    if op == '!=':
-        return left != right
-    raise RunError(f"Unknown comparator {op!r}")
+        holds = False
+    elif op == '<':
+        holds = left < right
+    elif op == '<=':
+        holds = left <= right
+    elif op == '>':
+        holds = left > right
+    elif op == '>=':
+        holds = left >= right
+    elif op == '==':
+        holds = left == right
+    elif op == '!=':
+        holds = left != right
+    else:
+        raise RunError(f"Unknown comparator {op!r}")
+    if collector is not None:
+        collector.append({"ref": _value_text(cmp_node.left), "value": left,
+                          "op": op, "expected": right, "holds": holds})
+    return holds
 
 
 def eval_value(value, condition, payload, bindings):
@@ -544,6 +595,28 @@ def mask_payload(payload, entity_node):
     masked_names = {f["name"] for f in entity_node.get("fields", [])
                     if f.get("base", f.get("type")) in MASKED_TYPES}
     return {k: (MASK if k in masked_names else v) for k, v in payload.items()}
+
+
+def _masked_evaluation(interp, entry):
+    """One collected evaluation entry (issue #83, D3), masked through the same
+    `mask_payload` chokepoint every other outbound channel uses — no second
+    masking rule. `ref` naming a bound entity's sensitive field gets its
+    `value` replaced; a bare reference or an `input.*` one names no entity
+    (RFC-0012 §G12.1) and is returned unchanged, as is a ref this document has
+    no such entity/field for.
+    """
+    ref = entry["ref"]
+    if "." not in ref:
+        return entry
+    binding, _, field = ref.partition(".")
+    if binding == PAYLOAD_NAMESPACE:
+        return entry
+    entity_id = interp._entity_id_for_binding(binding)
+    if entity_id is None:
+        return entry
+    entity_view = interp._entity_view(interp.nodes[entity_id])
+    masked = mask_payload({field: entry["value"]}, entity_view)
+    return dict(entry, value=masked[field])
 
 
 class Interpreter:
@@ -771,7 +844,12 @@ class Interpreter:
                         "reports completed, so a caller reading only the status "
                         "cannot tell this run from one that ran every step"
                         % (record["mode"],
-                           ", ".join(record["steps"]) or "(no step)"))
+                           ", ".join(record["steps"]) or "(no step)"),
+                # RFC-0024 (issue #82 line= migration): same precedent as
+                # `authorization-not-verified` below — the Guard node's own
+                # lowering already recorded a line, so this reads it rather
+                # than re-deriving one.
+                line=self.nodes[record["guard"]].get("line"))
 
         root.end_ms = self.clock.now
         total = root.duration_ms

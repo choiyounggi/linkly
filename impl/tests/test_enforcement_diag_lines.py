@@ -102,6 +102,82 @@ class TestRuntimeAuthorizationDiagnosticCarriesLine(unittest.TestCase):
         self.assertIn("(line 53)", auth_lines[0])
 
 
+CHECKOUT_SRC = os.path.join(REPO, "examples", "checkout.lnpl")
+
+
+def _checkout_doc():
+    with open(CHECKOUT_SRC, encoding="utf-8") as fh:
+        return lower(parse(fh.read()), "checkout").to_document()
+
+
+def _run_checkout(doc, stock):
+    from lnpl.repo_policy import default_rows
+    entities = [n for n in doc["nodes"] if n["kind"] == "Entity"]
+    payload = sample_payload(entities, refinement_index(doc))
+    payload["stock"] = stock
+    interp = Interpreter(doc, repo_rows=default_rows(doc, "wf.checkout", payload))
+    result = interp.run_workflow("wf.checkout", payload)
+    return interp, result
+
+
+class TestGuardSkippedStepsCarriesLine(unittest.TestCase):
+    """`guard-skipped-steps` (issue #83's D5, migrating issue #82's line=
+    plan) — the same RFC-0024 precedent as `authorization-not-verified`
+    above: the Guard node's own lowering already recorded a line, read here
+    rather than re-derived. `examples/checkout.lnpl`'s `when
+    product.stock > 0` is the guard that fires on `stock=0`.
+    """
+
+    def test_guard_skipped_steps_carries_the_guard_s_line(self):
+        doc = _checkout_doc()
+        interp, result = _run_checkout(doc, stock=0)
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["skipped"])
+        guard_node = next(n for n in doc["nodes"]
+                          if n["id"] == "wf.checkout.guard.1")
+        by_code = [d for d in interp.diagnostics
+                  if d.code == "guard-skipped-steps"]
+        self.assertEqual(len(by_code), 1)
+        self.assertIsNotNone(guard_node["line"])
+        self.assertEqual(by_code[0].line, guard_node["line"])
+
+    def test_it_renders_as_line_n_in_the_run_output(self):
+        doc = _checkout_doc()
+        interp, _result = _run_checkout(doc, stock=0)
+        guard_node = next(n for n in doc["nodes"]
+                          if n["id"] == "wf.checkout.guard.1")
+        rendered = format_lines(interp.diagnostics)
+        skip_lines = [l for l in rendered if "guard-skipped-steps" in l]
+        self.assertEqual(len(skip_lines), 1)
+        self.assertIn("(line %d)" % guard_node["line"], skip_lines[0])
+
+    def test_a_guard_true_run_emits_no_such_diagnostic(self):
+        # Positive control: the guard taken, nothing to carry a line for.
+        doc = _checkout_doc()
+        interp, result = _run_checkout(doc, stock=1)
+        self.assertEqual(result["skipped"], [])
+        self.assertNotIn("guard-skipped-steps",
+                         [d.code for d in interp.diagnostics])
+
+    def test_a_guard_node_without_a_line_renders_the_pre_rfc_form(self):
+        # Boundary: the same fallback authorization-not-verified relies on
+        # (RFC-0024 made `line` optional so an absent one degrades, not
+        # errors) — an IR whose Guard node predates line-recording.
+        doc = _checkout_doc()
+        guard_node = next(n for n in doc["nodes"]
+                          if n["id"] == "wf.checkout.guard.1")
+        del guard_node["line"]
+        interp, _result = _run_checkout(doc, stock=0)
+        by_code = [d for d in interp.diagnostics
+                  if d.code == "guard-skipped-steps"]
+        self.assertEqual(len(by_code), 1)
+        self.assertIsNone(by_code[0].line)
+        rendered = format_lines(interp.diagnostics)
+        skip_lines = [l for l in rendered if "guard-skipped-steps" in l]
+        self.assertEqual(len(skip_lines), 1)
+        self.assertNotIn("(line", skip_lines[0])
+
+
 class TestMissingLineFallsBackToTheOldFormat(unittest.TestCase):
     """Boundary: a node lowering never recorded a line for (or an IR handed
     in from outside this compiler) must not crash the diagnostic — RFC-0024
