@@ -16,7 +16,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
 
 from .condition import PAYLOAD_NAMESPACE
 from .diagnostics import Diagnostics
-from .drivers import DriverError
+from .drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
 from .refinements import BASE_CATEGORY
 from .repo_policy import binding_name, row_key
 from .types import SEMANTIC_TYPES
@@ -621,12 +621,13 @@ def _masked_evaluation(interp, entry):
 
 class Interpreter:
     def __init__(self, document, clock=None, repo_rows=None,
-                 correlation_id="cid-0001", *, repository=None, cache=None):
-        """`repository`/`cache` bind the declared capabilities to a real
-        backend (issue #25); with neither, this builds exactly the in-memory
-        pair it always did.
+                 correlation_id="cid-0001", *, repository=None, cache=None,
+                 network=None):
+        """`repository`/`cache`/`network` bind the declared capabilities to a
+        real backend (issue #25, #64); with none given, this builds exactly
+        the in-memory set it always did.
 
-        Both are keyword-only, after a bare `*`. The four positional
+        All three are keyword-only, after a bare `*`. The four positional
         parameters keep their order and meaning, so none of the existing call
         sites changes — and a stale positional call cannot silently bind a
         driver to `correlation_id`, which is the failure a middle insertion
@@ -645,6 +646,9 @@ class Interpreter:
             self.repo = repository
             self.repo.seed(repo_rows or {})
         self.cache = cache if cache is not None else FakeCache(self.clock)
+        # RFC-0027 §1: no stub table by default — every unstubbed target gets
+        # the deterministic (200, {}) FakeNetworkDriver already answers.
+        self.network = network if network is not None else FakeNetworkDriver()
         self._entity_by_binding = None
         self.trace = Trace(correlation_id)
         # Registered event publications. RFC-0003 leaves the *mechanism* open
@@ -870,10 +874,11 @@ class Interpreter:
             raise RunError("deadline exhausted before step %r" % step["name"])
         for child_id in step.get("children", []):
             effect = self.nodes[child_id]
-            self._run_effect(effect, span, con, payload, bindings, rowsets)
+            self._run_effect(effect, span, con, payload, bindings, rowsets, deadline)
         self.clock.advance()
 
-    def _run_effect(self, effect, span, con, payload, bindings, rowsets):
+    def _run_effect(self, effect, span, con, payload, bindings, rowsets,
+                    deadline=None):
         kind = effect["kind"]
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
@@ -1003,7 +1008,39 @@ class Interpreter:
                 # node, rather than re-deriving one.
                 line=self.nodes[effect["id"]].get("line"))
         elif kind == "NetworkCall":
+            # RFC-0027 §3: the driver is invoked whether or not the call is
+            # bound — this is what makes NetworkCall a real outbound call
+            # rather than the trace-only simulation it was before this RFC.
+            # `as`-less calls still observe nothing new (§ below), which is
+            # what keeps the unbound path byte-identical to the pre-RFC-0027
+            # no-op (backward compatibility, golden silence).
+            remaining_ms = ((deadline - self.clock.now) if deadline is not None
+                            else DEFAULT_NETWORK_TIMEOUT_MS)
+            try:
+                status, body = self.network.call(effect["target"], payload,
+                                                  remaining_ms)
+            except DriverError as exc:
+                if effect.get("result"):
+                    # RFC-0027 §3, D3: a bound call's transport failure is a
+                    # value the guard can branch on, not a run failure.
+                    status, body = 0, {}
+                else:
+                    # The fifth `DriverError`->`RunError` translation site
+                    # (Assignment's persist, RepositoryCall's query/execute,
+                    # CacheAccess, and this one) — an observation-only step
+                    # must not silently swallow a real failure (RFC-0027 §3).
+                    raise RunError(str(exc)) from exc
             child.attrs["target"] = effect.get("target")
+            if effect.get("result"):
+                child.attrs["status"] = status
+                # RFC-0027 §2/§4: flattened — `status` plus the body's
+                # top-level keys in one dict, since `Reference` (RFC-0012
+                # §G12.1) reads at most two segments (`<name>.<field>`) and
+                # cannot express `<name>.body.<key>`. `status` wins any key
+                # collision with the body.
+                bound = dict(body) if isinstance(body, dict) else {}
+                bound["status"] = status
+                bindings[effect["result"]] = bound
         elif kind == "EventEmit":
             # RFC-0003: the step's synchronous part ends at *registering* the
             # publish. Delivery is at-least-once, so every emission carries a

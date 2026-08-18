@@ -14,7 +14,7 @@ import sys
 from . import __version__
 from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
 from .drivers import (DriverError, HmacTokenProvider, TokenError,
-                      audience_for_path, open_repository)
+                      audience_for_path, open_network, open_repository)
 from .interp import (Interpreter, RunError, _duration_ms, refinement_index,
                      sample_payload)
 from .lexer import LexError
@@ -191,8 +191,12 @@ def cmd_run(args):
     repository = _open_backend(getattr(args, "backend", "fake"))
     if repository is _REJECTED:
         return 2
+    network = _open_network(getattr(args, "network", "fake"))
+    if network is _REJECTED:
+        return 2
     try:
-        interp = Interpreter(doc, repo_rows=rows, repository=repository)
+        interp = Interpreter(doc, repo_rows=rows, repository=repository,
+                             network=network)
         result = interp.run_workflow(target, payload)
         # Compile-time and run-time findings are one report, not two.
         diagnostics.extend(interp.diagnostics)
@@ -215,6 +219,8 @@ def cmd_run(args):
         # server that reuses this path.
         if repository is not None:
             repository.close()
+        if network is not None:
+            network.close()
 
 
 def _print_human(result, interp):
@@ -367,6 +373,17 @@ def _open_backend(spec):
     try:
         return open_repository(spec)
     except (ValueError, DriverError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _open_network(spec):
+    """`--network`'s value -> a NetworkDriver, None for the fake, `_REJECTED`
+    on a bad selector — the `_open_backend` selector mirrored (RFC-0027 §1).
+    """
+    try:
+        return open_network(spec)
+    except ValueError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return _REJECTED
 
@@ -630,6 +647,7 @@ def main(argv=None):
     r.add_argument("--no-row", action="store_true",
                    help="start with an empty repository (exercises retry)")
     r.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
+    r.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
     r.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)

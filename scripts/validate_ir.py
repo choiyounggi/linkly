@@ -228,6 +228,56 @@ def rowset_negatives():
     ]
 
 
+NETWORK_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "network",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.charge.card",
+            "name": "ChargeCard",
+            "children": ["wf.charge.card.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.charge.card.step.1",
+            "name": "call PaymentGateway as paymentResult",
+            "children": ["wf.charge.card.step.1.net"],
+        },
+        {
+            "kind": "NetworkCall",
+            "id": "wf.charge.card.step.1.net",
+            "target": "PaymentGateway",
+            "result": "paymentResult",
+        },
+    ],
+}
+
+
+def network_negatives():
+    """RFC-0027 §2 — `NetworkCall.result`, a new optional string field. One
+    negative per keyword the field turns on (`type`), plus one proving the
+    pre-existing `required`/`additionalProperties` checks still apply
+    unchanged once `result` is present (the same "still independent" claim
+    ROWSET_FIXTURE's negatives make for the query branch).
+    """
+    n1 = copy.deepcopy(NETWORK_FIXTURE)
+    del n1["nodes"][2]["target"]                          # required 누락 —
+                                                            # result가 있어도 여전히 걸린다
+
+    n2 = copy.deepcopy(NETWORK_FIXTURE)
+    n2["nodes"][2]["result"] = 42                          # type 위반 — string이 아님
+
+    n3 = copy.deepcopy(NETWORK_FIXTURE)
+    n3["nodes"][2]["binding"] = "paymentResult"            # 미선언 속성(오타 대역)
+
+    return [
+        ("required field removed: NetworkCall.target (result field present)", n1),
+        ("result is not a string: NetworkCall.result = 42", n2),
+        ("undeclared property on a NetworkCall: binding (typo for result)", n3),
+    ]
+
+
 SCHEDULE_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "rollup",
@@ -383,6 +433,7 @@ def self_test():
         ("SCHEDULE_EVENT_FIXTURE (RFC-0016 schedule source)",
          SCHEDULE_EVENT_FIXTURE),
         ("ROWSET_FIXTURE (RFC-0025 query RepositoryCall)", ROWSET_FIXTURE),
+        ("NETWORK_FIXTURE (RFC-0027 NetworkCall.result)", NETWORK_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -420,7 +471,7 @@ def self_test():
         ("line below minimum: wf.login.line = 0", mutated_line_zero),
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
-      + rowset_negatives()
+      + rowset_negatives() + network_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

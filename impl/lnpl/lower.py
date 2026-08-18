@@ -27,6 +27,7 @@ from .lexer import (COMPARATORS, SCHEDULE_RECURRENCES, SCHEDULE_ZONES,
                     is_duration)
 from .refinements import (BASE_CATEGORY, FACET_NAMES, PRESETS, facets_for_base,
                           preset)
+from .repo_policy import binding_name
 
 KIND_PREFIX = {
     "Entity": "entity",
@@ -752,7 +753,7 @@ class _WfContext:
             derived = _derive_assignment(step_id, line, self.registry)
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
-                                     line.lineno)
+                                     line.lineno, line.tokens[2:])
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -1010,8 +1011,16 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                      and node.get("operation") == "read"}
     declared_fields = {f["name"]: f for ent in registry.values()
                        for f in ent["fields"]}
+    # RFC-0027 §2/§4: a `call/request ... as <name>` binding has no backing
+    # Entity, so it cannot be checked against a declared field list — a
+    # response body's shape is only known at run time. `check_reference`
+    # treats a qualified reference into this set the way it already treats a
+    # bare payload reference: unchecked here, resolved (or absent) at runtime
+    # (RFC-0012 §G12.4).
+    network_bindings = {node["result"] for node in emitted
+                        if node["kind"] == "NetworkCall" and node.get("result")}
     scope = _Scope(workflow_name, by_binding, read_entities, declared_fields,
-                   base_of or {})
+                   base_of or {}, network_bindings)
     by_id = {node["id"]: node for node in emitted}
 
     # Source order, not emission order: `_WfContext._guard` emits its guarded step
@@ -1266,11 +1275,15 @@ class _Scope:
     """
 
     def __init__(self, workflow_name, by_binding, read_entities, declared_fields,
-                 base_of):
+                 base_of, network_bindings=frozenset()):
         self.workflow_name = workflow_name
         self.by_binding = by_binding
         self.read_entities = read_entities
         self.declared_fields = declared_fields
+        # RFC-0027 §2/§4: names bound by `call/request ... as <name>` — no
+        # Entity behind them, so `check_reference` skips the field-existence
+        # check for these (a response body has no declared shape).
+        self.network_bindings = network_bindings
         self.base_of = base_of
 
     def check_reference(self, name, text, subject=GUARD_SUBJECT,
@@ -1295,6 +1308,13 @@ class _Scope:
                     % (self.workflow_name, text, field,
                        ", ".join(sorted(self.declared_fields)) or "none"))
             return self._dimension_of(self.declared_fields[field], name, text)
+
+        if binding in self.network_bindings:
+            # RFC-0027 §2/§4: a network result binding's shape is not
+            # declared anywhere (a response body is not an Entity), so any
+            # field name is accepted here — the same "unchecked, resolved at
+            # runtime" treatment `input.*` gets, one level down.
+            return None
 
         entity = self.by_binding.get(binding)
         if entity is None:
@@ -1366,8 +1386,13 @@ class _Scope:
             % (self.workflow_name, text, name, declared))
 
 
-def _derive_effect(step_id, verb, obj, registry, lineno):
-    """R1: closed-lexicon lookup. Returns an Effect node dict, or None."""
+def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
+    """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
+
+    `rest` is the step line's tokens past the object (`tokens[2:]`) — every
+    verb but `NetworkCall` ignores it; only `call`/`request` read an `as
+    <name>` trailing clause there (RFC-0027 §2).
+    """
     entry = VERB_LEXICON.get(verb)
     if entry is None:
         return None
@@ -1400,7 +1425,38 @@ def _derive_effect(step_id, verb, obj, registry, lineno):
                     line=lineno)
 
     if kind == "NetworkCall":
-        return _node(kind, eid, target=obj or "unspecified", line=lineno)
+        target = obj or "unspecified"
+        if not rest:
+            # RFC-0027 §3: the unbound, backward-compatible form — no
+            # `result` field, byte-identical to the pre-RFC-0027 no-op.
+            return _node(kind, eid, target=target, line=lineno)
+        if len(rest) == 2 and rest[0] == "as":
+            name = rest[1]
+            # RFC-0027 §2, check 1: `<name>.status` must be a valid
+            # `Reference` (RFC-0012 §G12.1), which requires camelCase — the
+            # same shape `condition._is_camel_name` already enforces for
+            # every other binding name.
+            if not re.match(r"^[a-z][a-zA-Z0-9]*$", name):
+                raise LowerError(
+                    "line %d: `as %s` is not a valid binding name — it must "
+                    "be camelCase, like every other binding name "
+                    "(RFC-0012 §G12.1)" % (lineno, name))
+            # RFC-0027 §2, check 2: a network result binding and an entity's
+            # single-row binding share the same grammar position
+            # (`<binding>.<field>`), so their names cannot collide — unlike
+            # RowSet bindings (RFC-0025 §5), which are disambiguated by the
+            # `Aggregate` production's distinct first token instead.
+            for ent in registry.values():
+                if name == binding_name(ent):
+                    raise LowerError(
+                        "line %d: `as %s` collides with entity %s's "
+                        "single-row binding name — a network result "
+                        "binding cannot share a name with it "
+                        "(RFC-0027 §2)" % (lineno, name, ent["name"]))
+            return _node(kind, eid, target=target, result=name, line=lineno)
+        raise LowerError(
+            "line %d: call/request accepts either no trailing words or "
+            "'as <name>', got %r" % (lineno, tuple(rest)))
 
     if kind == "Authorization":
         return _node(kind, eid, requirement=obj or "unspecified", line=lineno)

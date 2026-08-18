@@ -31,7 +31,7 @@ class DifferentialError(Exception):
     """Raised when the two modes disagree, or one of them could not run."""
 
 
-def observe_mode_a(document, workflow_id, payload, repo_rows):
+def observe_mode_a(document, workflow_id, payload, repo_rows, network=None):
     """Run the interpreter and reduce its trace to the observable four.
 
     Issue #43: the masking class scans `text`, so `text` must carry every
@@ -39,8 +39,13 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
     QA probe caught leaking (F-9 — the scan was green while `--json` returned
     the raw secret), so the (already masked) bindings are serialised into the
     scanned surface. Classes 1-3 are structural and unaffected.
+
+    `network` (RFC-0027 §8) lets a caller vary a `NetworkCall`'s stubbed
+    response/failure across comparisons — mode B never reads it (it computes
+    no network values at all), which is exactly what the equivalence proof
+    demonstrates: the response value is not one of RFC-0004's four classes.
     """
-    interp = Interpreter(document, repo_rows=repo_rows)
+    interp = Interpreter(document, repo_rows=repo_rows, network=network)
     result = interp.run_workflow(workflow_id, payload)
     steps = []
     for span in (interp.trace.root.children if interp.trace.root else []):
@@ -356,7 +361,8 @@ def _check_rows_are_reproducible(document, workflow_id, payload, repo_rows, seed
                            reference.get(field)))
 
 
-def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
+def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
+           network=None):
     """Compare the two modes. Returns (ok, report_lines).
 
     RFC-0008: The skip flag for Presence guards is derived from the payload,
@@ -366,6 +372,9 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     `seeded` is issue #35's seed condition — see `observe_mode_b`. `None` resolves
     to the default role-based policy, the same rule `cli._repo_rows` materialises
     for mode A, so the common case cannot disagree by construction.
+
+    `network` (RFC-0027 §8) is mode A's `NetworkDriver` only — see
+    `observe_mode_a`.
     """
     if not backend.toolchain_available():
         raise DifferentialError(
@@ -379,7 +388,7 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     _check_rows_are_reproducible(document, workflow_id, payload, repo_rows,
                                  resolved)
 
-    a = observe_mode_a(document, workflow_id, payload, repo_rows)
+    a = observe_mode_a(document, workflow_id, payload, repo_rows, network=network)
     b = observe_mode_b(document, workflow_id, workdir, payload=payload,
                        seeded=resolved)
     return compare_observations(a, b)

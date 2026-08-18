@@ -33,6 +33,7 @@ lnpl --version
 | `--json` | 결과와 트레이스를 JSON으로 |
 | `--no-row` | 빈 저장소로 시작한다(재시도 경로를 관측할 때) |
 | `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로) 또는 `sqlite:<path>`(파일에 남는 실제 저장소). 이슈 #25 |
+| `--network` | `NetworkCall` 드라이버. `fake`(기본, 결정적, I/O 없음) 또는 `http`(`http.client`로 실제 요청). RFC-0027, 이슈 #64 |
 | `--strict` | 위와 같다 |
 
 `--workflow`는 선언명이 아니라 노드 id를 받는다(`GetReport`가 아니라
