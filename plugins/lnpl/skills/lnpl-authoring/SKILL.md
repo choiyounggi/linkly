@@ -53,9 +53,9 @@ lnpl compile <파일>
 진단은 **stderr로 나가고 종료 코드는 0**이다(`--strict`를 주면 rc 2. 단 `build`에는
 `--strict`가 없다). 즉 보지 않으면 사라진다. `unknown-verb`,
 `declared-not-enforced`, `declared-measured-only`, `authorization-not-verified`,
-`guard-skipped-steps`, `guard-orphaned-steps`, `validation-sample-derived` 중
-하나라도 나오면, 그게 의도한 것인지 사용자에게 확인하고 넘어간다. 조용히
-무시하지 않는다.
+`guard-skipped-steps`, `guard-orphaned-steps`, `validation-sample-derived`,
+`aggregation-orphaned-list` 중 하나라도 나오면, 그게 의도한 것인지 사용자에게
+확인하고 넘어간다. 조용히 무시하지 않는다.
 
 `guard-orphaned-steps`는 특히 조용히 넘기지 마라 — 가드는 **다음 항목 하나**만
 소유하므로, 그 진단이 가리키는 스텝은 조건이 거짓이어도 실행된다(RFC-0023).

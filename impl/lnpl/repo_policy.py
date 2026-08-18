@@ -91,9 +91,19 @@ def repository_calls(document, workflow_id):
 
 
 def seeded_entities(document, workflow_id):
-    """The entity ids the default seed populates — those the workflow reads."""
+    """The entity ids the default seed populates — those the workflow `read`s.
+
+    `operation == "read"` only, not `READ_OPS` (`read`+`query`) — narrowed by
+    RFC-0025 §5. The original reason `query` was ever in this set was to keep
+    the SAME single-row invariant `read` needs (so a later read finds
+    something rather than failing "no row for entity"); `list`(`query`) has
+    no analogous failure to avoid — an empty RowSet is a normal 0-row result,
+    not an error (RFC-0025 §5) — so auto-seeding it produces exactly the
+    wrong default: a single field-less row (a copy of the payload, missing
+    whatever field an aggregate sums) where the correct default is nothing.
+    """
     return {entity_id for entity_id, operation in repository_calls(document, workflow_id)
-            if operation in READ_OPS}
+            if operation == "read"}
 
 
 def row_key(entity_id, payload):

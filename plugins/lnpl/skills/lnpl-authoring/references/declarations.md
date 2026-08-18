@@ -46,3 +46,4 @@
 | `guard-skipped-steps` | **warning** |
 | `guard-orphaned-steps` | **warning** |
 | `validation-sample-derived` | **info** |
+| `aggregation-orphaned-list` | **warning** |

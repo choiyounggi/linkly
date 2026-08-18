@@ -157,6 +157,77 @@ def assignment_negatives():
     ]
 
 
+# RFC-0025 §1: `operation: "query"` was already in `nodeRepositoryCall.operation`'s
+# enum before this RFC — `IDEMPOTENT_OPS`/`READ_OPS` carried it too — but no verb
+# had ever reached it, so no fixture here had ever exercised that branch. The
+# golden example has no `query` RepositoryCall, so a golden mutation cannot
+# reach this branch either; it needs its own fixture, the same reasoning
+# `ASSIGNMENT_FIXTURE` documents for `Assignment`.
+ROWSET_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "rowset",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.link",
+            "name": "Link",
+            "fields": [
+                {"name": "id", "type": "UUID"},
+                {"name": "clicks", "type": "Integer"},
+            ],
+        },
+        {
+            "kind": "Workflow",
+            "id": "wf.summarize.clicks",
+            "name": "SummarizeClicks",
+            "children": ["wf.summarize.clicks.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.summarize.clicks.step.1",
+            "name": "list link",
+            "children": ["wf.summarize.clicks.step.1.repo"],
+        },
+        {
+            "kind": "RepositoryCall",
+            "id": "wf.summarize.clicks.step.1.repo",
+            "entity": "entity.link",
+            "operation": "query",
+        },
+    ],
+}
+
+
+def rowset_negatives():
+    """RFC-0025 §1 — the `query` branch of `RepositoryCall`, exercised by a real
+    document for the first time. One negative per keyword the branch turns on:
+    required / enum (the surface word, not the operation) / additionalProperties
+    / cross-reference — the same four ASSIGNMENT_FIXTURE checks, aimed at this
+    branch instead.
+    """
+    n1 = copy.deepcopy(ROWSET_FIXTURE)
+    del n1["nodes"][3]["entity"]                         # required 누락
+
+    n2 = copy.deepcopy(ROWSET_FIXTURE)
+    n2["nodes"][3]["operation"] = "list"                 # enum 밖 — 표면 동사
+                                                          # 이름을 내부 operation
+                                                          # 값으로 착각하는 실수
+
+    n3 = copy.deepcopy(ROWSET_FIXTURE)
+    n3["nodes"][3]["cursor"] = "abc"                     # 미선언 속성
+
+    n4 = copy.deepcopy(ROWSET_FIXTURE)
+    n4["nodes"][3]["entity"] = "Entity.Link"             # nodeId 형식 위반(교차참조)
+
+    return [
+        ("required field removed: RepositoryCall.entity (query branch)", n1),
+        ("operation outside the enum: 'list' (the surface verb, not the "
+         "internal operation)", n2),
+        ("undeclared property on a query RepositoryCall: cursor", n3),
+        ("entity is not a node id: 'Entity.Link' (query branch)", n4),
+    ]
+
+
 SCHEDULE_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "rollup",
@@ -311,6 +382,7 @@ def self_test():
         ("ASSIGNMENT_FIXTURE (RFC-0015 Assignment)", ASSIGNMENT_FIXTURE),
         ("SCHEDULE_EVENT_FIXTURE (RFC-0016 schedule source)",
          SCHEDULE_EVENT_FIXTURE),
+        ("ROWSET_FIXTURE (RFC-0025 query RepositoryCall)", ROWSET_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -347,7 +419,8 @@ def self_test():
         ("undefined extra field injected: svc.login.extra", mutated_extra),
         ("line below minimum: wf.login.line = 0", mutated_line_zero),
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
-    ] + refinement_negatives() + assignment_negatives() + schedule_negatives()
+    ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
+      + rowset_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

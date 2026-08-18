@@ -50,7 +50,7 @@ from lnpl.interp import (RunError, refinement_index, sample_payload,
 # second copy of the seeding rule is the defect Wave 1 removed when three seeding
 # sites became one. `repo_policy` imports nothing from `interp`/`backend`/`cli`,
 # so this is cycle-safe.
-from lnpl.repo_policy import READ_OPS, seeded_entities
+from lnpl.repo_policy import seeded_entities
 from lnpl import resources
 
 MLIR_OPT = "mlir-opt"
@@ -478,6 +478,15 @@ def _has_cache_budget(document, workflow_id):
 # mode A's actual trace over a (retry × timeout × position) matrix rather than
 # against a restatement of the rule. If a third consumer ever needs this model,
 # extract it to a neutral module instead of adding a second mirror.
+# RFC-0025 §10: a backend-local set, NOT `repo_policy.READ_OPS` (`read`+
+# `query`) — mode B's fail_at prediction below only ever needs to treat
+# `read` as able to fail-on-not-found; `query` (`list`) never fails that way
+# (RFC-0025 §5, an empty RowSet is a normal result). A tuple, not a bare `==`
+# comparison, so the deliberate-mismatch tests keep the seam they already
+# patch (`backend.READ_OPS = ()`) to prove `differential.verify` catches mode
+# B losing track of how a read fails.
+READ_OPS = ("read",)
+
 _STEP_COST_MS = 5        # interp `Clock.step_cost_ms`, advanced once per step
 _READ_MISS_COST_MS = 1   # interp `_run_effect` advances 1ms before raising
 # interp `MAX_STEP_ATTEMPTS` — the bound that does not read the declared budget
@@ -784,6 +793,15 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
             if kind == "CacheAccess" and operation == "set" and not has_cache_budget:
                 fail_at = index
             elif kind == "RepositoryCall" and operation in READ_OPS:
+                # RFC-0025 §5/§6.1: `READ_OPS` here is `("read",)` (module-
+                # local, above) — narrowed from `repo_policy.READ_OPS`
+                # (read+query). `query` (`list`) never fails on finding
+                # nothing, it binds an empty RowSet (interp
+                # `FakeRepository`/driver `query` returns `[]`, never raises).
+                # Predicting failure here for an unseeded `query`-only entity
+                # would have mode B diverge from mode A on every `list` of a
+                # genuinely empty store — exactly the 0-row case RFC-0025 §5
+                # makes routine, not exceptional.
                 if node["entity"] not in seeded_now and node["entity"] not in created:
                     fail_at = index
             elif kind == "RepositoryCall" and operation == "create":

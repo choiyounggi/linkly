@@ -1024,19 +1024,21 @@ class TestRefactoringAgent(unittest.TestCase):
         nodes = self._apply(server, self._run(server))
         self.assertEqual(nodes["wf.w.split.1"]["name"], "update user")
 
-    def test_a_query_operation_is_named_with_the_dictionarys_verb(self):
-        """`query` is not in `patterns-repository-call`'s verb dictionary.
+    def test_a_query_operation_is_named_with_the_verb_that_produces_it(self):
+        """RFC-0025: `list` is the one `VERB_LEXICON` entry mapped to
+        `operation == "query"`, so it is the only name that round-trips.
 
-        The dictionary maps authenticate/load/find/read → read, plus create/insert,
-        update, delete. A step named `query user` would not round-trip through it,
-        so the name uses `find`, the entry that means the same operation.
+        Before RFC-0025 this used `find` instead — harmless only because no
+        verb ever produced `operation="query"` for a real document to reach
+        this branch with. `list` does now, and `find` would silently turn a
+        RowSet-binding step into a single-row read (RFC-0025 §5).
         """
         doc = json.loads(json.dumps(TWO_ACCESS))
         call = next(n for n in doc["nodes"] if n["id"] == "wf.w.step.1.b")
         call["operation"] = "query"
         server = self._server(doc)
         nodes = self._apply(server, self._run(server))
-        self.assertEqual(nodes["wf.w.split.1"]["name"], "find user")
+        self.assertEqual(nodes["wf.w.split.1"]["name"], "list user")
 
     def test_it_refuses_when_no_step_owns_two_accesses(self):
         server = Server(golden(), KnowledgeBase())

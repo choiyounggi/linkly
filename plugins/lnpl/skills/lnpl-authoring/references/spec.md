@@ -37,6 +37,7 @@
 - `<field> <value>` — `input.<field> <value>`와 같다 — 맨이름도 입력 payload를 가리킨다
 - `no <field>` — `no input.<field>`와 같다
 - `stored <entity> <field> <value>` — 사전 저장소 상태 (issue #39). 엔티티는 선언명(`Product`)과 바인딩명(`product`) 둘 다 받는다
+- `stored <entity>[<i>] <field> <value>` — 인덱스 다중 행 시드(RFC-0025 §8) — row_key=str(i). 같은 i에 여러 줄을 반복해 한 행에 필드를 더한다. 엔티티는 `stored`와 같이 선언명·바인딩명 둘 다 받는다. `list <entity>`가 읽는 RowSet을 이렇게 채운다
 
 선언되지 않은 이름을 쓰면 거부된다 — `--run` 없이 `lnpl spec`만 돌려도 매니페스트 단계에서 거부되고, 진단이 어느 워크플로의 어느 블록인지와 수용되는 이름 전체를 댄다 (issue #54).
 

@@ -46,9 +46,13 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 `set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽은** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.
 
-읽기 동사: `authenticate` `load` `find` `read` — 이 동사들만 바인딩을 만든다.
+읽기 동사: `authenticate` `load` `find` `read` — 이 동사들만 단일 행 바인딩을 만든다.
 
 바인딩을 만들지 않는 동사: `create` `insert` `update` `delete` — 만든 행은 실행 스코프에 들어오지 않는다.
+
+행 집합(RowSet) 동사: `list` — 단일 행이 아니라 RowSet을 별개 이름공간에 바인딩한다.
+
+`set`의 대상이 될 수 없다 — 집계 표현식으로만 소비된다(RFC-0025 §2/§5).
 
 그래서 `create report` 다음의 `set report.total to 1`은 거부된다.
 
