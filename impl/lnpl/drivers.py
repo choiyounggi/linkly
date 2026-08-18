@@ -45,6 +45,9 @@ ACCEPTED_OPS = tuple(READ_OPS) + WRITE_OPS
 # The closed table of backend selectors `--backend` accepts.
 BACKENDS = ("fake", "sqlite")
 
+# The closed table of network selectors `--network` accepts (RFC-0027 §1).
+NETWORKS = ("fake", "http")
+
 # Every connection waits this long for a lock instead of raising at once.
 BUSY_TIMEOUT_MS = 5000
 
@@ -108,6 +111,18 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    def query(self, entity_id):
+        """Every row for `entity_id`, ordered by row_key ascending.
+
+        Empty list when the entity has no rows — never `None`, and never an
+        error (RFC-0025 §5: an empty RowSet is a valid binding, not an absent
+        one). Row-key order is part of the contract, not an implementation
+        detail: `SqliteRepositoryDriver` orders by `ORDER BY row_key`, and any
+        other implementation must agree with that order for a document to
+        mean the same thing under either `--backend` (RFC-0025 §7).
+        """
+        raise NotImplementedError
+
     def persist(self, entity_id, key, row):
         """Write back a row mutated through an execution-scope binding.
 
@@ -158,6 +173,29 @@ class TokenProvider:
         raise NotImplementedError
 
 
+class NetworkDriver:
+    """The `NetworkCall` effect's adapter contract (RFC-0027 §1, issue #64).
+
+    Reference implementation: `FakeNetworkDriver` (deterministic, no I/O).
+    """
+
+    def call(self, target, payload, timeout_ms):
+        """Call `target` once.
+
+        -> (status: int, body: dict). A response was received for every
+        status this returns, 5xx included — that is a value, not a fault
+        (RFC-0027 §3). Raise `DriverError` only when no response arrived at
+        all (connection refused, DNS failure, timeout). `timeout_ms` is this
+        one call's budget; a driver must never wait past it, and must never
+        treat "unset" as "wait forever" (RFC-0003 §Execution Model).
+        """
+        raise NotImplementedError
+
+    def close(self):
+        """Release resources. Safe to call more than once."""
+        raise NotImplementedError
+
+
 # --------------------------------------------------------------------------
 # sqlite
 # --------------------------------------------------------------------------
@@ -171,6 +209,8 @@ CREATE TABLE IF NOT EXISTS lnpl_rows (
 )
 """
 _SELECT_ROW = "SELECT payload FROM lnpl_rows WHERE entity_id = ? AND row_key = ?"
+_SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
+                    "ORDER BY row_key")
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
                      "VALUES (?, ?, ?)")
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
@@ -255,6 +295,13 @@ class SqliteRepositoryDriver(RepositoryDriver):
             return self._touch(entity_id, operation, key)
         raise DriverError("unsupported repository operation %r (accepted: %s)"
                           % (operation, ", ".join(ACCEPTED_OPS)))
+
+    def query(self, entity_id):
+        try:
+            found = self._conn.execute(_SELECT_ALL_ROWS, (entity_id,)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot query %s: %s" % (entity_id, exc)) from exc
+        return [json.loads(row[0]) for row in found]
 
     def persist(self, entity_id, key, row):
         try:
@@ -452,6 +499,78 @@ def audience_for_path(path):
 
 
 # --------------------------------------------------------------------------
+# network
+# --------------------------------------------------------------------------
+
+# RFC-0027 §5: no policy timeout declared -> this, never an infinite wait
+# (backend/common/reliability/timeouts-and-retries — library defaults are
+# unreliable and some are infinite; one hung call without a timeout exhausts
+# the pool).
+DEFAULT_NETWORK_TIMEOUT_MS = 30_000
+
+
+class FakeNetworkDriver(NetworkDriver):
+    """Reference implementation (RFC-0027 §1). `stubs` is `{target: (status,
+    body)}`, built from a spec's `given call <target> returns <status>` lines
+    (RFC-0027 §7) or empty by default. An unstubbed target answers
+    deterministically — `(200, {})` — rather than raising, so a spec case
+    that names no stub is still reproducible.
+    """
+
+    def __init__(self, stubs=None):
+        self.stubs = dict(stubs or {})
+
+    def call(self, target, payload, timeout_ms):
+        return self.stubs.get(target, (200, {}))
+
+    def close(self):
+        pass
+
+
+class HttpNetworkDriver(NetworkDriver):
+    """`http.client` only — standard library, zero dependencies (RFC-0027
+    §1). `target` is read as a URL; the method is fixed `POST` (RFC-0027
+    §Open Questions 4).
+    """
+
+    def call(self, target, payload, timeout_ms):
+        import http.client
+        import urllib.parse
+
+        parts = urllib.parse.urlsplit(target)
+        body = json.dumps(payload).encode("utf-8")
+        path = urllib.parse.urlunsplit(("", "", parts.path or "/",
+                                        parts.query, "")) or "/"
+        try:
+            conn = http.client.HTTPSConnection(
+                parts.hostname, parts.port, timeout=timeout_ms / 1000
+            ) if parts.scheme == "https" else http.client.HTTPConnection(
+                parts.hostname, parts.port, timeout=timeout_ms / 1000)
+            try:
+                conn.request("POST", path, body=body,
+                             headers={"Content-Type": "application/json"})
+                response = conn.getresponse()
+                raw = response.read()
+            finally:
+                conn.close()
+        except (OSError, http.client.HTTPException) as exc:
+            # No response arrived at all — connect refused, DNS failure,
+            # timeout. A 5xx status never reaches this branch: the connection
+            # already succeeded by the time a status line exists (RFC-0027 §3).
+            raise DriverError(str(exc)) from exc
+        try:
+            parsed = json.loads(raw) if raw else {}
+        except ValueError:
+            # RFC-0027 §1: the value shape (dict) stays stable even when the
+            # peer does not speak JSON.
+            parsed = {}
+        return response.status, parsed if isinstance(parsed, dict) else {}
+
+    def close(self):
+        pass
+
+
+# --------------------------------------------------------------------------
 # selection
 # --------------------------------------------------------------------------
 
@@ -470,3 +589,18 @@ def open_repository(spec):
         return SqliteRepositoryDriver(spec[len("sqlite:"):])
     raise ValueError("unknown backend %r (accepted: %s)"
                      % (spec, ", ".join(BACKENDS)))
+
+
+def open_network(spec):
+    """`--network`'s value -> a NetworkDriver, or None for the default
+    (RFC-0027 §1, the `open_repository` selector mirrored).
+
+    `None` means "the Interpreter builds its own FakeNetworkDriver". The
+    lookup is a closed table with a defined miss, same as `open_repository`.
+    """
+    if spec == "fake":
+        return None
+    if spec == "http":
+        return HttpNetworkDriver()
+    raise ValueError("unknown network %r (accepted: %s)"
+                     % (spec, ", ".join(NETWORKS)))

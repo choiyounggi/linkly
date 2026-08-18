@@ -4,6 +4,8 @@
 
 - Status: **Accepted** (RFC-0012, 2026-08-05)
 - Updates: RFC-0002 §Full grammar, RFC-0008 §Reference-level Specification/1. Full Grammar, RFC-0003 §Guard
+- Updated-by: RFC-0025 (§G12.2), RFC-0025 (§G12.4), RFC-0025 (§G12.5)
+- Updated-by: RFC-0027 (§G12.2)
 
 RFC-0007 §2.2 규칙 5(연쇄 갱신)에 따라 대상 RFC와 **직전 갱신 RFC를 모두** 지목한다.
 `Condition` 생산 규칙은 RFC-0002 본문에 있고 RFC-0008이 이미 그 절을 갱신했으므로, 두 문서를

@@ -16,9 +16,9 @@ What is enforced here (RFC-0003 §Policy Enforcement):
 
 from .condition import PAYLOAD_NAMESPACE
 from .diagnostics import Diagnostics
-from .drivers import DriverError
+from .drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
 from .refinements import BASE_CATEGORY
-from .repo_policy import READ_OPS, binding_name, row_key
+from .repo_policy import binding_name, row_key
 from .types import SEMANTIC_TYPES
 
 IDEMPOTENT_OPS = {
@@ -86,6 +86,18 @@ class FakeRepository:
                 raise RunError("repository create conflicts: %s already exists" % entity_id)
             table[key] = {"id": key}
         return {"affected": 1}
+
+    def query(self, entity_id):
+        """Every row for `entity_id`, row_key ascending — never `None`, empty
+        list when the table has none (RFC-0025 §5: an empty RowSet, not an
+        absent one). Sorted rather than `dict.values()`: insertion order and
+        row_key order can differ, and `SqliteRepositoryDriver.query` orders by
+        `ORDER BY row_key`, so this has to sort the same way to agree with it
+        (RFC-0025 §7 — the contract suite's reverse-insertion-order case is
+        what a plain `dict.values()` here would fail).
+        """
+        table = self.rows.get(entity_id, {})
+        return [row for _key, row in sorted(table.items())]
 
     # -- RepositoryDriver contract (drivers.py) ----------------------------
     # This class is the contract's reference implementation, so the three
@@ -218,7 +230,18 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
             inner_ids = node.get("children", [])
             if mode == "when":
                 if not _condition_holds(node.get("condition"), payload, bindings):
-                    result["skipped"].append(_skip_record(nodes, node))
+                    # Issue #83: a second, pure re-evaluation just to collect the
+                    # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
+                    # line above on purpose: that line is a mutation_check.py
+                    # anchor, and re-evaluating here instead of threading a
+                    # collector through the control-flow call leaves it byte-
+                    # identical.
+                    raw_evals = []
+                    _condition_holds(node.get("condition"), payload, bindings,
+                                     collector=raw_evals)
+                    result["skipped"].append(_skip_record(
+                        nodes, node,
+                        evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
                     interp.trace.log("INFO", "guard skipped the guarded item",
                                      guard=node_id, condition=node.get("condition"))
                     continue
@@ -256,7 +279,15 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                     # not run" had two shapes — one observable, one silent. The
                     # two paths are the same fact, so they get the same record.
                     # A loop that ran at least one round skipped nothing.
-                    result["skipped"].append(_skip_record(nodes, node, rounds=0))
+                    # Issue #83: the condition is pure (no side effect on
+                    # payload/bindings), so re-evaluating it here to collect
+                    # evaluations does not change what already decided rounds==0.
+                    raw_evals = []
+                    _condition_holds(node.get("condition"), payload, bindings,
+                                     collector=raw_evals)
+                    result["skipped"].append(_skip_record(
+                        nodes, node, rounds=0,
+                        evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
                     interp.trace.log("INFO", "guard skipped the guarded item",
                                      guard=node_id, condition=node.get("condition"),
                                      rounds=0)
@@ -290,19 +321,29 @@ def _guarded_step_names(nodes, ids):
     return out
 
 
-def _skip_record(nodes, node, rounds=None):
+def _skip_record(nodes, node, rounds=None, evaluations=None):
     """One `result["skipped"]` entry — the record shape issue #44 defines.
 
     `rounds` is None for `when` (it evaluates once) and 0 for an `until` that
     never entered its body. `guard` is mode A's own node id: useful for a
     debugger, and deliberately excluded from the mode A/B comparison, which is
     keyed on the fields both modes can observe.
+
+    `evaluations` (issue #83, RFC-0014 D3-D4 addendum) is additive only — the
+    five keys above are unchanged. It is a list of already-masked
+    `{"ref", "value", "op", "expected", "holds"}` entries, one per
+    Presence/Comparison term the condition evaluated (`_condition_holds`'s
+    `collector`). Like `guard`, it names something mode B cannot produce, so
+    `differential._normalise_skips` — an ALLOW-list of exactly
+    `{mode, condition, step, rounds}` — excludes it the same way it already
+    excludes `guard`, with no change needed there.
     """
     return {"guard": node["id"],
             "mode": node["mode"],
             "condition": node.get("condition"),
             "steps": _guarded_step_names(nodes, node.get("children", [])),
-            "rounds": rounds}
+            "rounds": rounds,
+            "evaluations": evaluations if evaluations is not None else []}
 
 
 def resolve_reference(name, payload, bindings):
@@ -337,7 +378,7 @@ def resolve_reference(name, payload, bindings):
     return row.get(field)
 
 
-def _condition_holds(condition, payload, bindings):
+def _condition_holds(condition, payload, bindings, collector=None):
     """Mode A condition evaluation: Presence + Comparison.
 
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
@@ -348,6 +389,12 @@ def _condition_holds(condition, payload, bindings):
     one on purpose: a call site that forgot it would silently evaluate every
     qualified reference as absent, which is issue #37 reappearing as a false
     negative instead of a crash.
+
+    `collector` (issue #83, optional, default `None`): when a caller passes a
+    list, each Presence/Comparison term evaluated appends one raw (unmasked)
+    `{"ref", "value", "op", "expected", "holds"}` entry to it — the trace guard
+    skips carry as `evaluations`. `None` collects nothing, so every existing
+    call site (`differential.py`, `spec.py`, the tests) is unaffected.
     """
     if condition is None:
         return True
@@ -365,45 +412,61 @@ def _condition_holds(condition, payload, bindings):
         return True
 
     if isinstance(cond, Presence):
-        present = resolve_reference(cond.field, payload, bindings) is not None
-        return present if cond.kind == "exists" else not present
+        raw = resolve_reference(cond.field, payload, bindings)
+        holds = (raw is not None) if cond.kind == "exists" else (raw is None)
+        if collector is not None:
+            collector.append({"ref": cond.field, "value": raw, "op": cond.kind,
+                              "expected": None, "holds": holds})
+        return holds
 
     if isinstance(cond, Comparison):
-        return _comparison_holds(cond, condition, payload, bindings)
+        return _comparison_holds(cond, condition, payload, bindings, collector)
 
     if isinstance(cond, And):
         # Every term is evaluated, not short-circuited: the terms are pure, so
         # the result is the same, and a value fault in a later term must surface
         # in both modes rather than depending on where the run stopped reading.
-        results = [_comparison_holds(term, condition, payload, bindings)
+        results = [_comparison_holds(term, condition, payload, bindings, collector)
                    for term in cond.terms]
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
 
 
-def _comparison_holds(cmp_node, condition, payload, bindings):
-    """One `Comparison` against this scope. Unresolved reference -> False."""
+def _comparison_holds(cmp_node, condition, payload, bindings, collector=None):
+    """One `Comparison` against this scope. Unresolved reference -> False.
+
+    `collector` (issue #83): see `_condition_holds`. `ref` is the left
+    operand's normalized text (`_value_text` — a bare `Ref` renders as its own
+    dotted name), and `value`/`expected` are the left/right operands as
+    evaluated here, unmasked (`_masked_evaluation` in `_flatten_items` masks a
+    sensitive one before it reaches a skip record).
+    """
     left = eval_value(cmp_node.left, condition, payload, bindings)
     right = eval_value(cmp_node.right, condition, payload, bindings)
+    op = cmp_node.op
     if left is None or right is None:
         # A reference that names nothing behaves as it did before RFC-0015:
         # `null < X`, `null == X` and the rest are all false, on either side.
-        return False
-    op = cmp_node.op
-    if op == '<':
-        return left < right
-    if op == '<=':
-        return left <= right
-    if op == '>':
-        return left > right
-    if op == '>=':
-        return left >= right
-    if op == '==':
-        return left == right
-    if op == '!=':
-        return left != right
-    raise RunError(f"Unknown comparator {op!r}")
+        holds = False
+    elif op == '<':
+        holds = left < right
+    elif op == '<=':
+        holds = left <= right
+    elif op == '>':
+        holds = left > right
+    elif op == '>=':
+        holds = left >= right
+    elif op == '==':
+        holds = left == right
+    elif op == '!=':
+        holds = left != right
+    else:
+        raise RunError(f"Unknown comparator {op!r}")
+    if collector is not None:
+        collector.append({"ref": _value_text(cmp_node.left), "value": left,
+                          "op": op, "expected": right, "holds": holds})
+    return holds
 
 
 def eval_value(value, condition, payload, bindings):
@@ -463,6 +526,46 @@ def eval_value(value, condition, payload, bindings):
     raise RunError(f"Unknown value type: {type(value)}")
 
 
+def eval_aggregate(agg, expression, rowsets):
+    """A parsed `Aggregate` -> int, always (RFC-0025 §5).
+
+    An absent or empty RowSet binding sums/counts to 0 — not None, not a
+    fault. That covers two cases identically: this workflow never `list`ed
+    the entity at all (the `aggregation-orphaned-list` warning's case,
+    RFC-0025 §4), and it did, but the store had no rows for it. Both are
+    "nothing to aggregate," and RFC-0025's own decision is that neither is an
+    error — a report with no links is a normal state, not an exception.
+
+    A row that IS present but cannot supply the summed field is different: the
+    field's declared type is checked at compile time (RFC-0025 §3), but a
+    driver can still hand back a row that was never written with it (a plain
+    `create` writes only `id` — `interp.FakeRepository.execute`). That is the
+    same fault an unresolved `Value` reference already is in an assignment
+    (`eval_value` returning None -> `RunError`), so it raises here too rather
+    than silently treating one row as 0 and the rest as data.
+    """
+    binding = agg.ref.namespace or agg.ref.name
+    rows = rowsets.get(binding) or []
+    if agg.func == "count":
+        return len(rows)
+    field = agg.ref.field
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict) or field not in row:
+            raise RunError(
+                "aggregate %r: a row in the %r RowSet has no %r field"
+                % (expression, binding, field))
+        value = row[field]
+        if isinstance(value, bool):
+            value = 1 if value else 0
+        elif not isinstance(value, int):
+            raise RunError(
+                "aggregate %r: cannot sum non-numeric %s=%r"
+                % (expression, field, value))
+        total = _checked(total + value, field, expression)
+    return total
+
+
 def _checked(number, name, condition):
     from .condition import INT64_MAX, INT64_MIN
     if number < INT64_MIN or number > INT64_MAX:
@@ -494,14 +597,37 @@ def mask_payload(payload, entity_node):
     return {k: (MASK if k in masked_names else v) for k, v in payload.items()}
 
 
+def _masked_evaluation(interp, entry):
+    """One collected evaluation entry (issue #83, D3), masked through the same
+    `mask_payload` chokepoint every other outbound channel uses — no second
+    masking rule. `ref` naming a bound entity's sensitive field gets its
+    `value` replaced; a bare reference or an `input.*` one names no entity
+    (RFC-0012 §G12.1) and is returned unchanged, as is a ref this document has
+    no such entity/field for.
+    """
+    ref = entry["ref"]
+    if "." not in ref:
+        return entry
+    binding, _, field = ref.partition(".")
+    if binding == PAYLOAD_NAMESPACE:
+        return entry
+    entity_id = interp._entity_id_for_binding(binding)
+    if entity_id is None:
+        return entry
+    entity_view = interp._entity_view(interp.nodes[entity_id])
+    masked = mask_payload({field: entry["value"]}, entity_view)
+    return dict(entry, value=masked[field])
+
+
 class Interpreter:
     def __init__(self, document, clock=None, repo_rows=None,
-                 correlation_id="cid-0001", *, repository=None, cache=None):
-        """`repository`/`cache` bind the declared capabilities to a real
-        backend (issue #25); with neither, this builds exactly the in-memory
-        pair it always did.
+                 correlation_id="cid-0001", *, repository=None, cache=None,
+                 network=None):
+        """`repository`/`cache`/`network` bind the declared capabilities to a
+        real backend (issue #25, #64); with none given, this builds exactly
+        the in-memory set it always did.
 
-        Both are keyword-only, after a bare `*`. The four positional
+        All three are keyword-only, after a bare `*`. The four positional
         parameters keep their order and meaning, so none of the existing call
         sites changes — and a stale positional call cannot silently bind a
         driver to `correlation_id`, which is the failure a middle insertion
@@ -520,6 +646,9 @@ class Interpreter:
             self.repo = repository
             self.repo.seed(repo_rows or {})
         self.cache = cache if cache is not None else FakeCache(self.clock)
+        # RFC-0027 §1: no stub table by default — every unstubbed target gets
+        # the deterministic (200, {}) FakeNetworkDriver already answers.
+        self.network = network if network is not None else FakeNetworkDriver()
         self._entity_by_binding = None
         self.trace = Trace(correlation_id)
         # Registered event publications. RFC-0003 leaves the *mechanism* open
@@ -648,6 +777,12 @@ class Interpreter:
         # first run's rows into the second — the same aliasing `FakeRepository`
         # copies its seed to avoid (issue #35).
         bindings = {}
+        # RFC-0025 §5: a SEPARATE namespace for RowSet bindings (`list`), so an
+        # entity can carry a single-row binding and a RowSet binding at once
+        # without one overwriting the other. Guard conditions never read this —
+        # `Aggregate` is not a `Value` (RFC-0025 §2) — so only step execution
+        # needs it; `_flatten_items` (guard evaluation) does not.
+        rowsets = {}
         for item_id in _flatten_items(self.nodes, wf.get("children", []), self, result,
                                      root, con, payload, bindings):
             step = self.nodes[item_id]
@@ -658,7 +793,8 @@ class Interpreter:
             while True:
                 attempts += 1
                 try:
-                    self._run_step(step, span, con, payload, deadline, bindings)
+                    self._run_step(step, span, con, payload, deadline, bindings,
+                                   rowsets)
                     last_error = None
                     break
                 except RunError as exc:
@@ -712,7 +848,12 @@ class Interpreter:
                         "reports completed, so a caller reading only the status "
                         "cannot tell this run from one that ran every step"
                         % (record["mode"],
-                           ", ".join(record["steps"]) or "(no step)"))
+                           ", ".join(record["steps"]) or "(no step)"),
+                # RFC-0024 (issue #82 line= migration): same precedent as
+                # `authorization-not-verified` below — the Guard node's own
+                # lowering already recorded a line, so this reads it rather
+                # than re-deriving one.
+                line=self.nodes[record["guard"]].get("line"))
 
         root.end_ms = self.clock.now
         total = root.duration_ms
@@ -728,15 +869,16 @@ class Interpreter:
         self.trace.metric("workflow.duration_ms", {"workflow": wf["name"]}, total)
         return result
 
-    def _run_step(self, step, span, con, payload, deadline, bindings):
+    def _run_step(self, step, span, con, payload, deadline, bindings, rowsets):
         if deadline is not None and self.clock.now >= deadline:
             raise RunError("deadline exhausted before step %r" % step["name"])
         for child_id in step.get("children", []):
             effect = self.nodes[child_id]
-            self._run_effect(effect, span, con, payload, bindings)
+            self._run_effect(effect, span, con, payload, bindings, rowsets, deadline)
         self.clock.advance()
 
-    def _run_effect(self, effect, span, con, payload, bindings):
+    def _run_effect(self, effect, span, con, payload, bindings, rowsets,
+                    deadline=None):
         kind = effect["kind"]
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
@@ -754,9 +896,14 @@ class Interpreter:
                 raise RunError(
                     "assignment target %r names no bound row — %s was never read"
                     % (target, binding))
-            from .condition import parse_value
-            value = eval_value(parse_value(effect["expression"]),
-                               effect["expression"], payload, bindings)
+            from .condition import Aggregate, parse_value_or_aggregate
+            rhs = parse_value_or_aggregate(effect["expression"])
+            if isinstance(rhs, Aggregate):
+                # RFC-0025 §5: sums/counts the RowSet, never a "resolves to
+                # nothing" — an absent or empty RowSet is 0, not a fault.
+                value = eval_aggregate(rhs, effect["expression"], rowsets)
+            else:
+                value = eval_value(rhs, effect["expression"], payload, bindings)
             if value is None:
                 raise RunError(
                     "assignment %r cannot be evaluated: a reference in %r "
@@ -791,6 +938,24 @@ class Interpreter:
                            target=target, value=value)
         elif kind == "Validation":
             self._validate(effect, payload)
+        elif kind == "RepositoryCall" and effect["operation"] == "query":
+            # RFC-0025 §5/§7: a RowSet, not a row. `execute`'s single-key
+            # contract cannot express "every row," so `list` calls the
+            # driver's own `query(entity_id)` instead — a different method,
+            # not a branch of `execute` (which still answers `operation
+            # in ("read", "query")` the old, unused way, for D5's
+            # unchanged-signature reason: RFC-0025 §7 kept `execute` as no
+            # call site had to be enumerated).
+            try:
+                rows = self.repo.query(effect["entity"])
+            except DriverError as exc:
+                raise RunError(str(exc)) from exc
+            child.attrs["row_count"] = len(rows)
+            entity_node = self.nodes.get(effect["entity"])
+            if entity_node is not None:
+                # RFC-0012 §G12.2 (RFC-0025 §5): a SEPARATE namespace from
+                # `bindings` — last write wins, same rule, different scope.
+                rowsets[binding_name(entity_node)] = rows
         elif kind == "RepositoryCall":
             # One of two places a driver fault is translated. A DriverError
             # becomes a RunError with its message and cause intact, so a real
@@ -802,11 +967,13 @@ class Interpreter:
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             child.attrs["found"] = row is not None
-            if effect["operation"] in READ_OPS and isinstance(row, dict):
+            if effect["operation"] == "read" and isinstance(row, dict):
                 # RFC-0012 §G12.2: a completed read binds its row into the
                 # execution scope, last write wins. Only reads bind — create /
                 # update / delete answer with an affected-row count, so there is
-                # no row content to name.
+                # no row content to name. `query` no longer reaches this branch
+                # at all (RFC-0025 §6.1/§6.2 — it binds a RowSet above instead
+                # of a row, so it must not satisfy a single-row reference).
                 entity_node = self.nodes.get(effect["entity"])
                 if entity_node is not None:
                     bindings[binding_name(entity_node)] = row
@@ -841,7 +1008,39 @@ class Interpreter:
                 # node, rather than re-deriving one.
                 line=self.nodes[effect["id"]].get("line"))
         elif kind == "NetworkCall":
+            # RFC-0027 §3: the driver is invoked whether or not the call is
+            # bound — this is what makes NetworkCall a real outbound call
+            # rather than the trace-only simulation it was before this RFC.
+            # `as`-less calls still observe nothing new (§ below), which is
+            # what keeps the unbound path byte-identical to the pre-RFC-0027
+            # no-op (backward compatibility, golden silence).
+            remaining_ms = ((deadline - self.clock.now) if deadline is not None
+                            else DEFAULT_NETWORK_TIMEOUT_MS)
+            try:
+                status, body = self.network.call(effect["target"], payload,
+                                                  remaining_ms)
+            except DriverError as exc:
+                if effect.get("result"):
+                    # RFC-0027 §3, D3: a bound call's transport failure is a
+                    # value the guard can branch on, not a run failure.
+                    status, body = 0, {}
+                else:
+                    # The fifth `DriverError`->`RunError` translation site
+                    # (Assignment's persist, RepositoryCall's query/execute,
+                    # CacheAccess, and this one) — an observation-only step
+                    # must not silently swallow a real failure (RFC-0027 §3).
+                    raise RunError(str(exc)) from exc
             child.attrs["target"] = effect.get("target")
+            if effect.get("result"):
+                child.attrs["status"] = status
+                # RFC-0027 §2/§4: flattened — `status` plus the body's
+                # top-level keys in one dict, since `Reference` (RFC-0012
+                # §G12.1) reads at most two segments (`<name>.<field>`) and
+                # cannot express `<name>.body.<key>`. `status` wins any key
+                # collision with the body.
+                bound = dict(body) if isinstance(body, dict) else {}
+                bound["status"] = status
+                bindings[effect["result"]] = bound
         elif kind == "EventEmit":
             # RFC-0003: the step's synchronous part ends at *registering* the
             # publish. Delivery is at-least-once, so every emission carries a

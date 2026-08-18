@@ -33,6 +33,7 @@ lnpl --version
 | `--json` | 결과와 트레이스를 JSON으로 |
 | `--no-row` | 빈 저장소로 시작한다(재시도 경로를 관측할 때) |
 | `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로) 또는 `sqlite:<path>`(파일에 남는 실제 저장소). 이슈 #25 |
+| `--network` | `NetworkCall` 드라이버. `fake`(기본, 결정적, I/O 없음) 또는 `http`(`http.client`로 실제 요청). RFC-0027, 이슈 #64 |
 | `--strict` | 위와 같다 |
 
 `--workflow`는 선언명이 아니라 노드 id를 받는다(`GetReport`가 아니라
@@ -163,7 +164,8 @@ status completed
 진단은 **stderr로 나가고 종료 코드는 0**이다. `--strict`를 줘야 rc 2로 올라간다.
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
-(`unknown-verb`, `guard-skipped-steps`, `guard-orphaned-steps`), `info`는 고쳐도 사라지지 않는 플랫폼
+(`unknown-verb`, `guard-skipped-steps`, `guard-orphaned-steps`,
+`aggregation-orphaned-list`), `info`는 고쳐도 사라지지 않는 플랫폼
 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`). 등급별 표는
 `references/declarations.md`에 생성되어 있다 — 등급을 정하는 것은 그 표가 아니라
@@ -187,6 +189,9 @@ status completed
 - **`guard-orphaned-steps`는 예외로 `line N`만 갖는다.** 저자가 옮겨야 하는 것이
   그 스텝이라, 노드 id를 되짚게 하는 대신 줄을 바로 가리킨다(RFC-0023 §5,
   RFC-0024가 손대지 않은 범위다).
+- **`aggregation-orphaned-list`도 `line N`만 갖는다** — 같은 이유다: 저자가
+  고쳐야 하는 것은 그 `set` 줄(또는 그 앞에 `list`를 추가하는 것)이라, 줄을
+  바로 가리킨다(RFC-0025 §4).
 
 노드 id에서 선언명을 되짚는 규칙은
 [references/naming.md](references/naming.md)에 있다.

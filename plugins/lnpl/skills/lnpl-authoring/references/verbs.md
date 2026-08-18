@@ -14,6 +14,7 @@
 | `load` | `RepositoryCall` | operation=read |
 | `find` | `RepositoryCall` | operation=read |
 | `read` | `RepositoryCall` | operation=read |
+| `list` | `RepositoryCall` | operation=query |
 | `create` | `RepositoryCall` | operation=create |
 | `insert` | `RepositoryCall` | operation=create |
 | `update` | `RepositoryCall` | operation=update |

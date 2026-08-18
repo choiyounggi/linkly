@@ -24,10 +24,10 @@ from lnpl.lexer import (ARITH_OPS, ASSIGN_KEYWORDS, COMPARATORS,  # noqa: E402
                         SCHEDULE_AT, SCHEDULE_KEYWORD, SCHEDULE_RECURRENCES,
                         SCHEDULE_ZONES)
 from lnpl.lower import (ARGUMENT_MECHANISMS, KIND_PREFIX, KIND_WORD,  # noqa: E402
-                        PERF_METRICS, POLICY_NAMES, SECURITY_MECHANISMS,
-                        VALUELESS_PERF, VERB_LEXICON, derive_id, split_pascal)
+                        PERF_METRICS, POLICY_NAMES, READ_VERBS,
+                        SECURITY_MECHANISMS, VALUELESS_PERF, VERB_LEXICON,
+                        derive_id, split_pascal)
 from lnpl.refinements import BASE_CATEGORY, CATEGORY_FACETS, PRESETS  # noqa: E402
-from lnpl.repo_policy import READ_OPS                                # noqa: E402
 from lnpl.spec import EXPECTATIONS, GIVEN_FORMS                  # noqa: E402
 from lnpl.types import SEMANTIC_TYPES                            # noqa: E402
 
@@ -76,21 +76,33 @@ def render_grammar():
     # `set report.orderCount to …` is rejected, and nothing in the references
     # said why — so the author had to reverse-engineer "read-family only" from
     # a diagnostic that additionally called the step a guard condition.
-    # `READ_OPS` rather than the literal "read": the lowerer builds
-    # `read_entities` from that same tuple, so a future `query` verb moves this
-    # document instead of quietly making it a lie.
-    reads = [v for v, (kind, attrs) in VERB_LEXICON.items()
-             if kind == "RepositoryCall" and attrs.get("operation") in READ_OPS]
+    # `lower.READ_VERBS` rather than a recomputation from `operation`: it is
+    # the SAME tuple `_check_scoped_conditions` builds `read_entities` from
+    # (RFC-0025 §5/§6.1), so a future verb that changes single-row binding
+    # eligibility moves this document instead of quietly making it a lie —
+    # which is exactly what happened here once (`list` reused the `query`
+    # operation this section used to lump in with `read` via `repo_policy
+    # .READ_OPS`, a table this document's own binding rule does not read).
+    reads = list(READ_VERBS)
     writes = [v for v, (kind, attrs) in VERB_LEXICON.items()
-              if kind == "RepositoryCall" and attrs.get("operation") not in READ_OPS]
+             if kind == "RepositoryCall"
+             and attrs.get("operation") in ("create", "update", "delete")]
+    rowset_verbs = [v for v, (kind, attrs) in VERB_LEXICON.items()
+                    if kind == "RepositoryCall" and v not in READ_VERBS
+                    and attrs.get("operation") not in ("create", "update", "delete")]
     lines.append("## 할당(`set`)의 대상\n")
     lines.append("`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽은** 행이다. "
                  "스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), "
                  "`set`은 그렇게 생긴 바인딩에만 쓴다.\n")
     lines.append("읽기 동사: " + " ".join("`%s`" % v for v in reads)
-                 + " — 이 동사들만 바인딩을 만든다.")
+                 + " — 이 동사들만 단일 행 바인딩을 만든다.")
     lines.append("\n바인딩을 만들지 않는 동사: " + " ".join("`%s`" % v for v in writes)
                  + " — 만든 행은 실행 스코프에 들어오지 않는다.\n")
+    if rowset_verbs:
+        lines.append("행 집합(RowSet) 동사: " + " ".join("`%s`" % v for v in rowset_verbs)
+                     + " — 단일 행이 아니라 RowSet을 별개 이름공간에 바인딩한다.")
+        lines.append("\n`set`의 대상이 될 수 없다 — 집계 표현식으로만 "
+                     "소비된다(RFC-0025 §2/§5).\n")
     lines.append("그래서 `create report` 다음의 `set report.total to 1`은 거부된다.\n")
     lines.append("`input.<필드>`는 할당의 **대상이 될 수 없다** — 입력은 이 워크플로가 "
                  "소유한 상태가 아니다. 값 쪽에는 쓸 수 있다"
@@ -498,6 +510,14 @@ RFC_ROUTES = {
              "경고하는지", ()),
     "0024": ("집행 진단이 노드 id에 더해 소스 line을 왜, 어떻게 싣는지 — "
              "`lnpl compile`과 `lnpl run`이 나눠 가진 진단 범위도 함께", ()),
+    "0025": ("`list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — "
+             "RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 "
+             "집계 값을 전혀 계산하지 않는지", ()),
+    "0026": ("`unknown-verb`/`guard-orphaned-steps`가 왜 구조화 `line`을 갖는지, "
+             "did-you-mean 제안이 별칭과 철자 오타를 어떻게 나눠 잡는지", ()),
+    "0027": ("`call`/`request ... as <name>`로 네트워크 응답을 바인딩하고 "
+             "실패를 status 값으로 분기하고 싶다 — `--network`의 fake/http "
+             "선택이 무엇을 고르는지, 접속 실패가 왜 예외가 아니라 값인지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

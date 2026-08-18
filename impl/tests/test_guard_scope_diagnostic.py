@@ -199,6 +199,12 @@ class TheControlPair(unittest.TestCase):
         self.assertIn("when product.stock > 0", found.message)
         self.assertIn("parallel", found.message)
 
+    def test_the_fail_fixture_carries_its_line_as_an_int(self):
+        # RFC-0026 widens RFC-0024's `line` to this code — the same source
+        # line `where` already spells as a string, now also structured.
+        found = diagnose(read_fixture("guard_orphan_fail.lnpl"))[0]
+        self.assertEqual(found.line, 16)
+
     def test_the_pass_fixture_reports_nothing(self):
         self.assertEqual(diagnose(read_fixture("guard_orphan_pass.lnpl")), [])
 

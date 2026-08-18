@@ -31,7 +31,7 @@ class DifferentialError(Exception):
     """Raised when the two modes disagree, or one of them could not run."""
 
 
-def observe_mode_a(document, workflow_id, payload, repo_rows):
+def observe_mode_a(document, workflow_id, payload, repo_rows, network=None):
     """Run the interpreter and reduce its trace to the observable four.
 
     Issue #43: the masking class scans `text`, so `text` must carry every
@@ -39,8 +39,13 @@ def observe_mode_a(document, workflow_id, payload, repo_rows):
     QA probe caught leaking (F-9 — the scan was green while `--json` returned
     the raw secret), so the (already masked) bindings are serialised into the
     scanned surface. Classes 1-3 are structural and unaffected.
+
+    `network` (RFC-0027 §8) lets a caller vary a `NetworkCall`'s stubbed
+    response/failure across comparisons — mode B never reads it (it computes
+    no network values at all), which is exactly what the equivalence proof
+    demonstrates: the response value is not one of RFC-0004's four classes.
     """
-    interp = Interpreter(document, repo_rows=repo_rows)
+    interp = Interpreter(document, repo_rows=repo_rows, network=network)
     result = interp.run_workflow(workflow_id, payload)
     steps = []
     for span in (interp.trace.root.children if interp.trace.root else []):
@@ -88,6 +93,12 @@ def _normalise_skips(records):
 
     `rounds` rides along because RFC-0008 §5 names the `until` round count as
     its own comparison item.
+
+    This is an ALLOW-list, not a deny-list: it names exactly the four keys the
+    projection carries, so `evaluations` (issue #83's per-term measured values,
+    RFC-0014 D3-D4 addendum) is excluded the same way `guard` already is — mode
+    B cannot produce it either — with no change needed here when that key was
+    added.
     """
     return [{"mode": r["mode"], "condition": r["condition"],
              "step": name, "rounds": r["rounds"]}
@@ -267,8 +278,20 @@ def _check_seed_agreement(document, workflow_id, repo_rows, seeded):
     Only entities the workflow actually calls are compared: a row for an entity no
     `RepositoryCall` names is inert to both modes, so requiring agreement about it
     would reject harmless input.
+
+    A `query` call (RFC-0025's `list`) is excluded from `touched` — `seeded` is
+    mode B's boolean "does this entity start with A row" condition, which only
+    matters to mode B's static prediction for `read` (does it find nothing?) and
+    `create` (does it conflict?). A RowSet has no analogous prediction: `list`
+    never fails on an empty result (RFC-0025 §5), and mode B does not model row
+    VALUES at all (RFC-0015 §5's "할당이 만든 값" is an allowed difference), so
+    it has no opinion on whether a `query`-only entity is seeded. Requiring
+    agreement there would refuse the ordinary case — mode A's `repo_rows` seeded
+    with RowSet rows (indexed `given stored` seeds, RFC-0025 §8) while mode B's
+    `seeded` (`repo_policy.seeded_entities`) rightly never mentions it.
     """
-    touched = {entity_id for entity_id, _op in repository_calls(document, workflow_id)}
+    touched = {entity_id for entity_id, op in repository_calls(document, workflow_id)
+              if op != "query"}
     if not touched:
         return
     from_rows = {entity_id for entity_id, table in repo_rows.items() if table}
@@ -338,7 +361,8 @@ def _check_rows_are_reproducible(document, workflow_id, payload, repo_rows, seed
                            reference.get(field)))
 
 
-def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
+def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
+           network=None):
     """Compare the two modes. Returns (ok, report_lines).
 
     RFC-0008: The skip flag for Presence guards is derived from the payload,
@@ -348,6 +372,9 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     `seeded` is issue #35's seed condition — see `observe_mode_b`. `None` resolves
     to the default role-based policy, the same rule `cli._repo_rows` materialises
     for mode A, so the common case cannot disagree by construction.
+
+    `network` (RFC-0027 §8) is mode A's `NetworkDriver` only — see
+    `observe_mode_a`.
     """
     if not backend.toolchain_available():
         raise DifferentialError(
@@ -361,7 +388,7 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None):
     _check_rows_are_reproducible(document, workflow_id, payload, repo_rows,
                                  resolved)
 
-    a = observe_mode_a(document, workflow_id, payload, repo_rows)
+    a = observe_mode_a(document, workflow_id, payload, repo_rows, network=network)
     b = observe_mode_b(document, workflow_id, workdir, payload=payload,
                        seeded=resolved)
     return compare_observations(a, b)

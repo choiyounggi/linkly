@@ -6,6 +6,7 @@
 - Updated-by: RFC-0008 (§Guard)
 - Updated-by: RFC-0012 (§Guard)
 - Updated-by: RFC-0013 (§Policy Enforcement)
+- Updated-by: RFC-0027 (§Reference-level Specification/Execution Model)
 
 ## Motivation
 

@@ -647,13 +647,14 @@ class TestRunJsonDiagnosticsChannel(unittest.TestCase):
                          [line.split(": ", 1)[1].split(" ", 1)[0]
                           for line in reported])
 
-    def test_every_record_carries_the_six_fields(self):
-        # RFC-0024 added `line` (int or null) alongside the original five.
+    def test_every_record_carries_the_seven_fields(self):
+        # RFC-0024 added `line` (int or null); RFC-0026 added `suggestion`
+        # (str or null) alongside the original five.
         _, out, _ = run_cli_split(["run", LOGIN, "--json"])
         for record in json.loads(out)["diagnostics"]:
             self.assertEqual(set(record),
                              {"code", "severity", "where", "subject", "message",
-                              "line"})
+                              "line", "suggestion"})
 
     def test_the_serialised_grade_agrees_with_the_table(self):
         # The serialisation is derived, not restated: if it ever hardcoded a
@@ -815,6 +816,15 @@ class TestGuardSkipIsReported(unittest.TestCase):
         _rc, out, _err = run_cli_split(["run", self.src, "--payload", self.rejected])
         self.assertIn("skipped by `when stock > 0`: create order", out)
 
+    def test_the_evaluations_line_is_printed_under_the_skip_line_by_default(self):
+        # Issue #83 D4: no new flag — the measured value is always shown, one
+        # indented line under the `skipped by` line it belongs to.
+        _rc, out, _err = run_cli_split(["run", self.src, "--payload", self.rejected])
+        lines = out.splitlines()
+        skip_i = next(i for i, l in enumerate(lines)
+                     if "skipped by `when stock > 0`" in l)
+        self.assertIn("stock > 0 (measured=0)", lines[skip_i + 1])
+
     def test_a_diagnostic_reports_the_skip_on_stderr(self):
         _rc, _out, err = run_cli_split(["run", self.src, "--payload", self.rejected])
         self.assertIn("guard-skipped-steps", err)
@@ -829,7 +839,10 @@ class TestGuardSkipIsReported(unittest.TestCase):
         self.assertEqual(result["skipped"],
                          [{"guard": "wf.place.order.guard.1", "mode": "when",
                            "condition": "stock > 0",
-                           "steps": ["create order"], "rounds": None}])
+                           "steps": ["create order"], "rounds": None,
+                           "evaluations": [{"ref": "stock", "value": 0,
+                                           "op": ">", "expected": 0,
+                                           "holds": False}]}])
 
     # ---- the contrast: success is distinguishable --------------------------
     def test_the_accepted_run_says_nothing_about_skips(self):

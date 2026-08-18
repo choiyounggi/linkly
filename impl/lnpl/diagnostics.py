@@ -45,6 +45,7 @@ CODES = (
     "guard-skipped-steps",          # #44  a guard was false, so declared steps did not run
     "guard-orphaned-steps",         # RFC-0023  a guard owns one item; a later step touches the state it protected
     "validation-sample-derived",     # #55  mode B decided Validation from a sample payload
+    "aggregation-orphaned-list",    # RFC-0025  sum/count reads a RowSet no earlier unguarded `list` fills
 )
 
 # code -> grade (#52). One question decides every row:
@@ -73,6 +74,10 @@ SEVERITY_OF = {
     # than from anything the caller can pass — a statement about the channel, not
     # about the source.
     "validation-sample-derived":  "info",
+    # RFC-0025 §4: adding a `list <entity>` before the aggregate removes this —
+    # the program is what needs to change, so `warning` (same test as
+    # `unknown-verb`, `guard-orphaned-steps`).
+    "aggregation-orphaned-list":  "warning",
 }
 
 # How the runtime treats a declaration.
@@ -155,6 +160,11 @@ class Diagnostic:
     node the diagnostic is about carries a line (e.g. it predates RFC-0024's
     lowering coverage), in which case rendering falls back to the pre-RFC-0024
     form.
+
+    `suggestion` (RFC-0026) is a close match a producer found for an unrecognized
+    name — e.g. `unknown-verb`'s nearest `VERB_LEXICON` entry — or `None` when it
+    found none. The key is always present on a record so a consumer can rely on
+    it existing without branching on the producer's code.
     """
 
     code: str        # one of CODES
@@ -162,6 +172,7 @@ class Diagnostic:
     subject: str     # machine-readable subject: "generate" / "security jwt"
     message: str     # one human line; never branched on
     line: int = None  # 1-based source line, or None (RFC-0024)
+    suggestion: str = None  # a close VERB_LEXICON match, or None (RFC-0026)
 
     def __post_init__(self):
         if self.code not in CODES:
@@ -184,7 +195,7 @@ class Diagnostics:
     def __init__(self):
         self._items = []
 
-    def add(self, *, code, where, subject, message, line=None):
+    def add(self, *, code, where, subject, message, line=None, suggestion=None):
         """Record one diagnostic and return it.
 
         Keyword-only: `severity` used to sit second, so a stale positional call
@@ -194,9 +205,13 @@ class Diagnostics:
         `line` (RFC-0024) is optional and defaults to `None` — a producer that
         has no source line for its subject (or predates RFC-0024) does not have
         to invent one.
+
+        `suggestion` (RFC-0026) is optional and defaults to `None` — a producer
+        with no close match to offer (or that predates RFC-0026) does not have
+        to invent one.
         """
-        diagnostic = Diagnostic(code=code, where=where,
-                                subject=subject, message=message, line=line)
+        diagnostic = Diagnostic(code=code, where=where, subject=subject,
+                                message=message, line=line, suggestion=suggestion)
         self._items.append(diagnostic)
         return diagnostic
 
@@ -244,7 +259,8 @@ def to_records(diagnostics):
     exactly what would make this channel useless for a graded CI gate.
     """
     return [{"code": d.code, "severity": d.severity, "where": d.where,
-             "subject": d.subject, "message": d.message, "line": d.line}
+             "subject": d.subject, "message": d.message, "line": d.line,
+             "suggestion": d.suggestion}
             for d in _records(diagnostics)]
 
 

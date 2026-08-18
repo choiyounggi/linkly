@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 2016개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 2167개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 25편 — 24편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
+**RFC 28편 — 27편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -241,8 +241,11 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0022 mode B의 관측 표면](rfcs/0022-mode-b-observation-surface.md) | 네이티브 빌드가 스킵된 스텝과 `--field` 도달을 무엇으로 말해야 하는가 — "돌았다"와 "건너뛰었다"가 구별되도록. *0014 §2.5·§2.6·0021 §코드 갱신* |
 | [0023 가드 밖으로 새어 나간 상태 변경](rfcs/0023-guard-scope-diagnostic.md) | 가드는 다음 항목 하나만 소유하므로 뒤의 스텝이 가드가 지키려던 상태를 바꿀 수 있다. `guard-orphaned-steps`가 그것을 컴파일 타임에 말한다 — 형태가 아니라 결과로 판정한다. *0021 §코드 갱신* |
 | [0024 집행 진단에 소스 line 병기](rfcs/0024-enforcement-diagnostic-line.md) | 집행 진단(`declared-not-enforced`/`declared-measured-only`/`authorization-not-verified`)이 노드 id에 더해 `(line N)`을 갖는다 — 한 절의 선언 둘이 같은 노드 id를 공유해도 더는 위치로 구별 불가능하지 않다. *0023 §5 갱신* |
+| [0025 행 집합(Row Set)과 집계](rfcs/0025-row-sets-and-aggregation.md) | `list`가 엔티티의 전 행을 RowSet — 단일 행 바인딩과 별개의 이름공간 — 으로 읽고, `set`의 `sum`/`count`가 그것을 집계한다. mode B는 집계 값을 계산하지 않지만 `lnpl diff`는 관측 4클래스의 합의를 그대로 증명한다. *0012 §G12.2·0015 §1 갱신* |
+| [0026 unknown-verb의 line과 suggestion](rfcs/0026-unknown-verb-line-and-suggestion.md) | `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps`가 구조화 `line`을 갖고, 어휘 밖 동사는 2단 did-you-mean을 받는다 — 의미 동의어는 수제 별칭 테이블(`persist` → `create`), 철자 오타는 difflib. *0024 §Scope 갱신* |
+| [0027 네트워크 드라이버와 결과 바인딩](rfcs/0027-network-driver-and-result-binding.md) | `call`/`request`가 `NetworkDriver`(`--network fake\|http`) 뒤의 실제 아웃바운드 호출이 되고, `as <이름>`이 응답을 바인딩해 가드가 `status`로 분기한다 — 바인딩된 호출의 접속 실패는 예외가 아니라 값(`status` 0)이다. *0003 §Execution Model·0012 §G12.2·0014 갱신* |
 
-24편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+27편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -299,7 +302,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2016 tests in 62.354s
+Ran 2167 tests in 72.080s
 OK
 ```
 
@@ -416,7 +419,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0023              RFC (0000은 Superseded, 나머지 23편은 Accepted)
+rfcs/0000~0027              RFC (0000은 Superseded, 나머지 27편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR

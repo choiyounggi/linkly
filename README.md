@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**2016 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**2167 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**25 RFCs — 24 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
+**28 RFCs — 27 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -289,8 +289,11 @@ suite is defined against.
 | [0022 Mode B Observation Surface](rfcs/0022-mode-b-observation-surface.md) | What a native build must say about skipped steps and `--field` reach, so "it ran" and "it was skipped" stay distinguishable. *Updates 0014 §2.5·§2.6, 0021 §codes* |
 | [0023 Guard Scope Diagnostic](rfcs/0023-guard-scope-diagnostic.md) | A guard owns only the next item, so a later step can change the very state the guard protected. `guard-orphaned-steps` reports that at compile time — judged by consequence, not by shape. *Updates 0021 §codes* |
 | [0024 Enforcement Diagnostic Line](rfcs/0024-enforcement-diagnostic-line.md) | Enforcement diagnostics (`declared-not-enforced`/`declared-measured-only`/`authorization-not-verified`) now carry `(line N)` alongside the node id, so two declarations sharing one clause's node id are no longer indistinguishable by location. *Updates 0023 §5* |
+| [0025 Row Sets and Aggregation](rfcs/0025-row-sets-and-aggregation.md) | `list` reads an entity's every row into a RowSet — a namespace of its own, apart from single-row bindings — and `sum`/`count` aggregate it in a `set`. Mode B computes no aggregate values; `lnpl diff` still proves the four observable classes agree. *Updates 0012 §G12.2, 0015 §1* |
+| [0026 Unknown-Verb Line and Suggestion](rfcs/0026-unknown-verb-line-and-suggestion.md) | `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps` carry a structured `line`, and an unknown verb gets a two-tier did-you-mean: a curated alias table for semantic near-synonyms (`persist` -> `create`), difflib for spelling typos. *Updates 0024 §Scope* |
+| [0027 Network Driver and Result Binding](rfcs/0027-network-driver-and-result-binding.md) | `call`/`request` become real outbound calls behind a `NetworkDriver` (`--network fake\|http`), and `as <name>` binds the response so a guard can branch on `status` — a transport failure on a bound call is a value (`status` 0), not a run failure. *Updates 0003 §Execution Model, 0012 §G12.2, 0014* |
 
-Twenty-four are `Accepted`; 0000 is superseded by 0007, which was itself formally
+Twenty-seven are `Accepted`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -350,7 +353,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2016 tests in 62.354s
+Ran 2167 tests in 72.080s
 OK
 ```
 

@@ -102,6 +102,51 @@ def tool_kb_route(arguments):
     return {"task": task, "route": base.route(task)}
 
 
+def tool_spec(arguments):
+    """`spec` 블록을 추출해 가짜 백엔드 위에서 실행하고, 케이스별 결과를 돌려준다.
+
+    spec.py는 수정하지 않는다 — 공개 API(`extract`, `run_manifest`)만 쓴다.
+    케이스별 상태는 그 케이스 하나만 담은 매니페스트를 `run_manifest`에 따로
+    넣어 얻는다: `run_manifest`는 케이스가 아니라 expectation 단위로 세므로,
+    케이스 전체를 한 번에 돌리면 실패한 expectation이 어느 케이스 것인지
+    구분할 수 없다.
+    """
+    from lnpl.spec import extract, run_manifest
+    _version, parse, lower, to_records = _lnpl()
+    source, origin = _read_source(arguments)
+    module_name = arguments.get("module") or "mcp"
+    decls = parse(source)
+    module = lower(decls, module_name)
+    document = module.to_document()
+    diagnostics = to_records(module.diagnostics)
+    manifest = extract(decls, module_name)
+    if not manifest["cases"]:
+        return {
+            "spec_present": False,
+            "cases": [],
+            "summary": {"passed": 0, "failed": 0},
+            "diagnostics": diagnostics,
+        }
+    cases = []
+    total_passed = total_failed = 0
+    for case in manifest["cases"]:
+        case_passed, case_failed, lines = run_manifest(
+            {**manifest, "cases": [case]}, document)
+        total_passed += case_passed
+        total_failed += case_failed
+        cases.append({
+            "name": case["name"],
+            "status": "pass" if case_failed == 0 else "fail",
+            "lines": lines,
+        })
+    return {
+        "spec_present": True,
+        "cases": cases,
+        "summary": {"passed": total_passed, "failed": total_failed},
+        "diagnostics": diagnostics,
+    }
+
+
 TOOLS = [
     {
         "name": "lnpl_compile",
@@ -145,11 +190,36 @@ TOOLS = [
             "required": ["task"],
         },
     },
+    {
+        "name": "lnpl_spec",
+        "description": (
+            "Extract `spec` blocks from LNPL source and run them against the "
+            "deterministic fake backend (no real I/O, no side effects — the "
+            "same fake backend `lnpl spec --run` uses). Returns one status "
+            "per case, with the expected-vs-actual detail for any case that "
+            "fails. Source with no `spec` block is not an error: the "
+            "response reports `spec_present: false` with an empty case list."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string",
+                         "description": "LNPL source as text. Use this to check "
+                                        "a draft before writing it to disk."},
+                "path": {"type": "string",
+                         "description": "Path to a .lnpl file. Give either "
+                                        "`text` or `path`, not both."},
+                "module": {"type": "string",
+                           "description": "Module name for the lowered IR "
+                                          "(default: mcp)."},
+            },
+        },
+    },
 ]
 
 HANDLERS = {
     "lnpl_compile": tool_compile,
     "lnpl_kb_route": tool_kb_route,
+    "lnpl_spec": tool_spec,
 }
 
 

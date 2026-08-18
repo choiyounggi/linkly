@@ -711,11 +711,13 @@ class RefactoringAgent(_AgentBase):
         parts = entity["name"].split()
         if not parts or not isinstance(operation, str) or not operation:
             return None
-        # `query` is not in the KB's verb dictionary (authenticate/load/find/read →
-        # read, create/insert, update, delete), and `find` is the entry that maps to
-        # the same operation — so a name built from `query` would not round-trip
-        # through the dictionary that document owns.
-        verb = "find" if operation == "query" else operation
+        # RFC-0025: `list` is the surface verb for `operation == "query"` — the
+        # ONE entry `VERB_LEXICON` maps to it, so it is the only name that
+        # round-trips. Before RFC-0025 this branch built `find` instead, which
+        # was harmless only because no verb ever produced `operation="query"`
+        # to reach it; `list` does now, and `find` would silently rewrite a
+        # RowSet-binding step into a single-row read (RFC-0025 §5).
+        verb = "list" if operation == "query" else operation
         name = "%s %s" % (verb, parts[0].lower())
         n = 1
         while "%s.split.%d" % (owner_id, n) in nodes or \

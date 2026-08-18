@@ -50,8 +50,8 @@ from typing import Optional, Tuple, Union
 # The token tables live in `lexer` because that is what the generated reference
 # (`plugins/lnpl/skills/lnpl-authoring/references/grammar.md`) is rendered from.
 # Spelling them a second time here is how the reference and the parser drift.
-from .lexer import (ARITH_OPS, COMPARATORS, DURATION_UNIT_MS, INT64_MAX,
-                    INT64_MIN, LOGICAL_OPS, PAYLOAD_NAMESPACE,
+from .lexer import (AGG_FUNCS, ARITH_OPS, COMPARATORS, DURATION_UNIT_MS,
+                    INT64_MAX, INT64_MIN, LOGICAL_OPS, PAYLOAD_NAMESPACE,
                     duration_ms_or_none)
 
 LOGICAL_AND = LOGICAL_OPS[0]
@@ -130,6 +130,29 @@ Value = Union[Ref, Lit, Arith]
 
 
 @dataclass(frozen=True)
+class Aggregate:
+    """`sum <ref>` or `count <ref>` (RFC-0025 §2) — an `AssignStep` right-hand
+    side, never a `Value`. It does not combine with arithmetic (`sum x + 1` is
+    not this grammar), so it is a sibling of `Value`, not an `Operand`.
+
+    Whether `func` and `ref`'s shape actually agree (`count` takes one segment,
+    `sum` takes two) is not decided here — this module owns syntax only, and
+    that judgement needs the document (RFC-0025 §3, decided in `lower.py`,
+    the same split RFC-0015's Integer-only check already makes).
+    """
+    func: str
+    ref: Ref
+
+    def __post_init__(self):
+        if self.func not in AGG_FUNCS:
+            raise ValueError(f"invalid aggregate function: {self.func}")
+
+
+# An `AssignStep`'s right-hand side: a `Value` or an `Aggregate` (RFC-0025 §2).
+AssignRHS = Union[Value, Aggregate]
+
+
+@dataclass(frozen=True)
 class Presence:
     """Existence check: `<field> exists` or `<field> missing`."""
     field: str
@@ -196,12 +219,12 @@ def parse_condition(text: Optional[str]) -> Condition:
                      for group in groups))
 
 
-def parse_assignment(text: Optional[str]) -> Tuple[str, Value]:
-    """`set <Reference> to <Value>` -> (target name, value).
+def parse_assignment(text: Optional[str]) -> Tuple[str, AssignRHS]:
+    """`set <Reference> to <Value|Aggregate>` -> (target name, right-hand side).
 
-    Lives here rather than in `lower` so the assignment's right-hand side is the
-    same `Value` a guard compares against, parsed by the same code. A second
-    parser is a second grammar.
+    Lives here rather than in `lower` so the assignment's right-hand side is
+    parsed by the same code a guard's operands are (or, since RFC-0025, the
+    same code an aggregate reference is). A second parser is a second grammar.
     """
     tokens = (text or "").split()
     if not tokens or tokens[0] != "set":
@@ -222,7 +245,7 @@ def parse_assignment(text: Optional[str]) -> Tuple[str, Value]:
             f"assignment target must be camelCase or binding.field: {text!r}")
     if not value_tokens:
         raise ConditionError(f"assignment needs a value after `to`: {text!r}")
-    return target, _parse_value(value_tokens, text)
+    return target, _parse_value_or_aggregate(value_tokens, text)
 
 
 def is_instant_text(raw) -> bool:
@@ -300,11 +323,28 @@ def parse_value(text: Optional[str]) -> Value:
     `Assignment.expression` is stored as its normalized string (the same choice
     `Guard.condition` makes), so every consumer that needs its operands parses it
     back through here rather than keeping a second, structured copy in the node.
+
+    Raises on an `Aggregate` string (`"sum ..."` / `"count ..."`) — a caller that
+    wants either reads `parse_value_or_aggregate` instead. Kept separate so a
+    caller that specifically needs arithmetic (mode B's parameter encoding,
+    which has no constant-folding path for an aggregate) fails loudly on the
+    form it cannot handle rather than silently receiving an `Aggregate`.
     """
     tokens = (text or "").split()
     if not tokens:
         raise ConditionError(f"missing value: {text!r}")
     return _parse_value(tokens, text)
+
+
+def parse_value_or_aggregate(text: Optional[str]) -> AssignRHS:
+    """An `Assignment.expression` re-read from the IR — a `Value` or an
+    `Aggregate` (RFC-0025 §2). The general-purpose reader: use this unless the
+    caller specifically cannot handle an `Aggregate` (see `parse_value`).
+    """
+    tokens = (text or "").split()
+    if not tokens:
+        raise ConditionError(f"missing value: {text!r}")
+    return _parse_value_or_aggregate(tokens, text)
 
 
 def references(cond) -> Tuple[str, ...]:
@@ -331,6 +371,8 @@ def references(cond) -> Tuple[str, ...]:
         return (cond.name,)
     if isinstance(cond, Lit):
         return ()
+    if isinstance(cond, Aggregate):
+        return references(cond.ref)
     raise ValueError(f"unknown condition type: {type(cond)}")
 
 
@@ -354,8 +396,8 @@ def condition_to_string(cond: Condition) -> Optional[str]:
     raise ValueError(f"unknown condition type: {type(cond)}")
 
 
-def value_to_string(value: Value) -> str:
-    """Normalized spelling of one `Value`."""
+def value_to_string(value: AssignRHS) -> str:
+    """Normalized spelling of one `Value` or `Aggregate`."""
     if isinstance(value, Ref):
         return value.name
     if isinstance(value, Lit):
@@ -372,6 +414,8 @@ def value_to_string(value: Value) -> str:
     if isinstance(value, Arith):
         return "%s %s %s" % (value_to_string(value.left), value.op,
                              value_to_string(value.right))
+    if isinstance(value, Aggregate):
+        return "%s %s" % (value.func, value.ref.name)
     raise ValueError(f"unknown value type: {type(value)}")
 
 
@@ -425,6 +469,31 @@ def _parse_term(tokens, text, allow_presence):
     left = _parse_value(tokens[:at], text)
     right = _parse_value(tokens[at + 1:], text)
     return Comparison(left, tokens[at], right)
+
+
+def _parse_value_or_aggregate(tokens, text):
+    """`Value | Aggregate` (RFC-0025 §2) — dispatched on the first token, since
+    `sum`/`count` cannot start a `Value` (they are not valid `Operand`s)."""
+    if tokens and tokens[0] in AGG_FUNCS:
+        return _parse_aggregate(tokens, text)
+    return _parse_value(tokens, text)
+
+
+def _parse_aggregate(tokens, text):
+    """`AggFunc Reference` (RFC-0025 §2). Whether the reference has the right
+    number of segments for its function (`count` takes one, `sum` takes two)
+    is not judged here — that needs the document, and is `lower.py`'s job
+    (RFC-0025 §3), the same split RFC-0015 draws for the Integer-only check.
+    """
+    if len(tokens) != 2:
+        raise ConditionError(
+            f"aggregate needs exactly one reference: {text!r} "
+            "(the form is `sum <ref>` or `count <ref>`)")
+    func, ref_token = tokens
+    if not _is_reference_name(ref_token):
+        raise ConditionError(
+            f"aggregate reference must be camelCase or binding.field: {text!r}")
+    return Aggregate(func, Ref(ref_token))
 
 
 def _parse_value(tokens, text):

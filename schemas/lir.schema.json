@@ -744,6 +744,9 @@
         },
         "operation": {
           "type": "string"
+        },
+        "result": {
+          "type": "string"
         }
       },
       "required": [

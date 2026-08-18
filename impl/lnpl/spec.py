@@ -17,6 +17,9 @@ Manifest shape:
                 "given": [...], "when": [...], "expect": [...]}]}
 """
 
+import re
+
+from .drivers import FakeNetworkDriver
 from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import COMPARATORS
 from .repo_policy import binding_name, default_rows
@@ -298,6 +301,11 @@ EXPECTATIONS = {
 
 _INPUT_PREFIX = "input."
 
+# RFC-0025 §8: `stored <entity>[<i>] ...` — the entity token carries an index in
+# brackets. Matched against the SECOND `stored` token before falling back to the
+# plain `stored <entity> ...` form, so the two never need a second keyword.
+_INDEXED_ENTITY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9]*)\[(\d+)\]$")
+
 # The closed `given` vocabulary. One table, three consumers: the runner
 # (`_payload_from_given`), the manifest-stage check (`_validate_given`), and the
 # generated authoring reference (`scripts/gen_plugin_references.py`). A form a
@@ -321,6 +329,16 @@ GIVEN_FORMS = (
     ("stored", "stored <entity> <field> <value>",
      "사전 저장소 상태 (issue #39). 엔티티는 선언명(`Product`)과 "
      "바인딩명(`product`) 둘 다 받는다"),
+    ("stored-indexed", "stored <entity>[<i>] <field> <value>",
+     "인덱스 다중 행 시드(RFC-0025 §8) — row_key=str(i). 같은 i에 여러 줄을 "
+     "반복해 한 행에 필드를 더한다. 엔티티는 `stored`와 같이 선언명·바인딩명 "
+     "둘 다 받는다. `list <entity>`가 읽는 RowSet을 이렇게 채운다"),
+    ("network-stub", "call <target> returns <status>",
+     "네트워크 응답 스텁(RFC-0027 §7, issue #76). status는 정수. 스텁 없는 "
+     "target은 fake 드라이버 기본값(200/빈 바디)을 결정적으로 받는다"),
+    ("network-stub-body", "call <target> returns <status> body.<key> <value>",
+     "네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 "
+     "행 필드를 쌓는 것과 같은 자리"),
 )
 
 
@@ -376,9 +394,11 @@ def _check_given(phrase, schema, where=""):
         return "valid", ()
     if tokens[0] == "stored":
         if len(tokens) != 4:
-            fail("unsupported given: %r (use `stored <entity> <field> <value>`)"
-                 % phrase)
-        _kw, ent_name, field, value = tokens
+            fail("unsupported given: %r (use `stored <entity> <field> <value>` "
+                 "or `stored <entity>[<i>] <field> <value>`)" % phrase)
+        _kw, ent_token, field, value = tokens
+        indexed = _INDEXED_ENTITY_RE.match(ent_token)
+        ent_name = indexed.group(1) if indexed else ent_token
         # The declared name (`Product`) or the binding name (`product`) — `rows
         # <Entity> <N>` accepts the declared name, and issue #46 measured that
         # accepting only the lowercase form here reported a DECLARED entity as
@@ -392,7 +412,31 @@ def _check_given(phrase, schema, where=""):
         if field not in target[2]:
             fail("given %r names field %r, which entity %s does not declare"
                  % (phrase, field, target[0]))
+        if indexed:
+            return "stored-indexed", (ent_name, indexed.group(2), field, value)
         return "stored", (ent_name, field, value)
+    if tokens[0] == "call":
+        # RFC-0027 §7: `<target>` is a free string (NetworkCall.target is
+        # never checked against a declared registry — §2), so unlike
+        # `stored` there is no entity/field lookup here.
+        if len(tokens) == 4 and tokens[2] == "returns":
+            target, status = tokens[1], tokens[3]
+            if not status.isdigit():
+                fail("given %r needs an integer status, got %r"
+                     % (phrase, status))
+            return "network-stub", (target, status)
+        if len(tokens) == 6 and tokens[2] == "returns" \
+                and tokens[4].startswith("body."):
+            target, status, key = tokens[1], tokens[3], tokens[4][len("body."):]
+            if not status.isdigit():
+                fail("given %r needs an integer status, got %r"
+                     % (phrase, status))
+            if not key:
+                fail("given %r names no body key after 'body.'" % phrase)
+            return "network-stub-body", (target, status, key, tokens[5])
+        fail("unsupported given: %r (use `call <target> returns <status>` "
+             "or `call <target> returns <status> body.<key> <value>`)"
+             % phrase)
     if len(tokens) == 2 and tokens[0].startswith(_INPUT_PREFIX):
         # An unrecognized name is refused rather than absorbed: the input
         # namespace is a closed set, so a miss is a typo (RFC-0015 §G15.2) and
@@ -441,7 +485,8 @@ def _validate_given(given, decls, where):
     schema = _schema_from_decls(decls)
     for phrase in given:
         _check_given(phrase, schema, where)
-    if (any(_check_given(p, schema, where)[0] == "stored" for p in given)
+    if (any(_check_given(p, schema, where)[0] in ("stored", "stored-indexed")
+           for p in given)
             and any(p == "empty repository" for p in given)):
         raise SpecError(
             where + "`empty repository` and `stored ...` contradict each other: "
@@ -531,6 +576,69 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
     return payload, stored
 
 
+def _indexed_seeds_from_given(given, document):
+    """RFC-0025 §8: `stored <entity>[<i>] <field> <value>` lines ->
+    `{entity_id: {index: {field: value}}}`.
+
+    Kept separate from `_payload_from_given`'s `stored` on purpose —
+    `_payload_from_given`'s signature and the meaning of its `stored` return
+    are exactly what D7 keeps unchanged (backward compatibility for the
+    existing single-row `stored <entity> <field> <value>` form, and for the
+    ~15 call sites elsewhere in this test suite that already unpack it as a
+    2-tuple). An indexed seed ADDS a row; it does not override the one
+    default row `stored` overrides, so folding it into the same accumulator
+    would conflate two different operations under one shape.
+    """
+    entities = [n for n in (document or {}).get("nodes", []) if n["kind"] == "Entity"]
+    schema = _schema_from_nodes(entities)
+    by_name = {e.get("name"): e for e in entities}
+    by_binding = {binding_name(e): e for e in entities}
+    seeds = {}
+    for phrase in given:
+        form, parts = _check_given(phrase, schema)
+        if form != "stored-indexed":
+            continue
+        ent_name, index, field, value = parts
+        target = by_name.get(ent_name) or by_binding[ent_name]
+        seeds.setdefault(target["id"], {}).setdefault(index, {})[field] = \
+            _coerce(value)
+    return seeds
+
+
+def _network_stubs_from_given(given):
+    """RFC-0027 §7: `call <target> returns <status>` [`body.<key> <value>`]
+    lines -> `{target: (status, body)}`, for `FakeNetworkDriver`.
+
+    No `schema`/`document` needed (unlike `_indexed_seeds_from_given`):
+    `<target>` is never checked against a declared registry (§7). Repeated
+    lines for the same target merge — a bare status overwrites the status of
+    an existing entry without touching its body, and a body line adds one
+    field, both "last write wins" (RFC-0012 §G12.2) applied to a stub
+    instead of a bound row.
+    """
+    stubs = {}
+    for phrase in given:
+        # Cheap pre-filter before delegating to `_check_given`: an empty
+        # schema is fine for the "call" forms (they never look at it), but
+        # `stored`/`input.*` phrases in the SAME `given` list need the real
+        # one — this function is not their classifier, so it must not run
+        # them through `_check_given` at all.
+        if phrase.split(None, 1)[:1] != ["call"]:
+            continue
+        form, parts = _check_given(phrase, ())
+        if form == "network-stub":
+            target, status = parts
+            _prev_status, body = stubs.get(target, (None, {}))
+            stubs[target] = (int(status), body)
+        elif form == "network-stub-body":
+            target, status, key, value = parts
+            _prev_status, body = stubs.get(target, (None, {}))
+            body = dict(body)
+            body[key] = _coerce(value)
+            stubs[target] = (int(status), body)
+    return stubs
+
+
 def _typed_value(text, type_name, refinements):
     """A `given <field> <value>` token in the declared field's shape.
 
@@ -615,7 +723,20 @@ def run_manifest(manifest, document):
             # case say the STORED value differs from the INPUT (issue #37).
             for row in rows.get(entity_id, {}).values():
                 row.update(overrides)
-        interp = Interpreter(document, repo_rows=rows)
+        # RFC-0025 §8: indexed seeds ADD rows under `row_key=str(i)` — unlike
+        # `stored` above, there is no default row to override here (D5/D9's
+        # `seeded_entities` narrowing to `read` means a `list`-only entity has
+        # no auto-seeded row at all), so this only ever adds.
+        for entity_id, by_index in _indexed_seeds_from_given(
+                case["given"], document).items():
+            table = rows.setdefault(entity_id, {})
+            for index, fields in by_index.items():
+                table.setdefault(index, {}).update(fields)
+        # RFC-0027 §7: a fresh, per-case stub table — a `--network http`
+        # equivalent has no place here (§1): spec's determinism depends on
+        # every NetworkCall answering from `given`, never a real request.
+        network = FakeNetworkDriver(_network_stubs_from_given(case["given"]))
+        interp = Interpreter(document, repo_rows=rows, network=network)
         try:
             result = interp.run_workflow(case["workflow"], payload)
             # `result` expectations resolve bare references against the input, so
