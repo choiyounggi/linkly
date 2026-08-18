@@ -267,8 +267,20 @@ def _check_seed_agreement(document, workflow_id, repo_rows, seeded):
     Only entities the workflow actually calls are compared: a row for an entity no
     `RepositoryCall` names is inert to both modes, so requiring agreement about it
     would reject harmless input.
+
+    A `query` call (RFC-0025's `list`) is excluded from `touched` — `seeded` is
+    mode B's boolean "does this entity start with A row" condition, which only
+    matters to mode B's static prediction for `read` (does it find nothing?) and
+    `create` (does it conflict?). A RowSet has no analogous prediction: `list`
+    never fails on an empty result (RFC-0025 §5), and mode B does not model row
+    VALUES at all (RFC-0015 §5's "할당이 만든 값" is an allowed difference), so
+    it has no opinion on whether a `query`-only entity is seeded. Requiring
+    agreement there would refuse the ordinary case — mode A's `repo_rows` seeded
+    with RowSet rows (indexed `given stored` seeds, RFC-0025 §8) while mode B's
+    `seeded` (`repo_policy.seeded_entities`) rightly never mentions it.
     """
-    touched = {entity_id for entity_id, _op in repository_calls(document, workflow_id)}
+    touched = {entity_id for entity_id, op in repository_calls(document, workflow_id)
+              if op != "query"}
     if not touched:
         return
     from_rows = {entity_id for entity_id, table in repo_rows.items() if table}

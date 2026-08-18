@@ -108,6 +108,18 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    def query(self, entity_id):
+        """Every row for `entity_id`, ordered by row_key ascending.
+
+        Empty list when the entity has no rows — never `None`, and never an
+        error (RFC-0025 §5: an empty RowSet is a valid binding, not an absent
+        one). Row-key order is part of the contract, not an implementation
+        detail: `SqliteRepositoryDriver` orders by `ORDER BY row_key`, and any
+        other implementation must agree with that order for a document to
+        mean the same thing under either `--backend` (RFC-0025 §7).
+        """
+        raise NotImplementedError
+
     def persist(self, entity_id, key, row):
         """Write back a row mutated through an execution-scope binding.
 
@@ -171,6 +183,8 @@ CREATE TABLE IF NOT EXISTS lnpl_rows (
 )
 """
 _SELECT_ROW = "SELECT payload FROM lnpl_rows WHERE entity_id = ? AND row_key = ?"
+_SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
+                    "ORDER BY row_key")
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
                      "VALUES (?, ?, ?)")
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
@@ -255,6 +269,13 @@ class SqliteRepositoryDriver(RepositoryDriver):
             return self._touch(entity_id, operation, key)
         raise DriverError("unsupported repository operation %r (accepted: %s)"
                           % (operation, ", ".join(ACCEPTED_OPS)))
+
+    def query(self, entity_id):
+        try:
+            found = self._conn.execute(_SELECT_ALL_ROWS, (entity_id,)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot query %s: %s" % (entity_id, exc)) from exc
+        return [json.loads(row[0]) for row in found]
 
     def persist(self, entity_id, key, row):
         try:

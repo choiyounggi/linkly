@@ -45,6 +45,7 @@ CODES = (
     "guard-skipped-steps",          # #44  a guard was false, so declared steps did not run
     "guard-orphaned-steps",         # RFC-0023  a guard owns one item; a later step touches the state it protected
     "validation-sample-derived",     # #55  mode B decided Validation from a sample payload
+    "aggregation-orphaned-list",    # RFC-0025  sum/count reads a RowSet no earlier unguarded `list` fills
 )
 
 # code -> grade (#52). One question decides every row:
@@ -73,6 +74,10 @@ SEVERITY_OF = {
     # than from anything the caller can pass — a statement about the channel, not
     # about the source.
     "validation-sample-derived":  "info",
+    # RFC-0025 §4: adding a `list <entity>` before the aggregate removes this —
+    # the program is what needs to change, so `warning` (same test as
+    # `unknown-verb`, `guard-orphaned-steps`).
+    "aggregation-orphaned-list":  "warning",
 }
 
 # How the runtime treats a declaration.

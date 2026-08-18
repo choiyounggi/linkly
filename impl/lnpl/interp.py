@@ -18,7 +18,7 @@ from .condition import PAYLOAD_NAMESPACE
 from .diagnostics import Diagnostics
 from .drivers import DriverError
 from .refinements import BASE_CATEGORY
-from .repo_policy import READ_OPS, binding_name, row_key
+from .repo_policy import binding_name, row_key
 from .types import SEMANTIC_TYPES
 
 IDEMPOTENT_OPS = {
@@ -86,6 +86,18 @@ class FakeRepository:
                 raise RunError("repository create conflicts: %s already exists" % entity_id)
             table[key] = {"id": key}
         return {"affected": 1}
+
+    def query(self, entity_id):
+        """Every row for `entity_id`, row_key ascending — never `None`, empty
+        list when the table has none (RFC-0025 §5: an empty RowSet, not an
+        absent one). Sorted rather than `dict.values()`: insertion order and
+        row_key order can differ, and `SqliteRepositoryDriver.query` orders by
+        `ORDER BY row_key`, so this has to sort the same way to agree with it
+        (RFC-0025 §7 — the contract suite's reverse-insertion-order case is
+        what a plain `dict.values()` here would fail).
+        """
+        table = self.rows.get(entity_id, {})
+        return [row for _key, row in sorted(table.items())]
 
     # -- RepositoryDriver contract (drivers.py) ----------------------------
     # This class is the contract's reference implementation, so the three
@@ -463,6 +475,46 @@ def eval_value(value, condition, payload, bindings):
     raise RunError(f"Unknown value type: {type(value)}")
 
 
+def eval_aggregate(agg, expression, rowsets):
+    """A parsed `Aggregate` -> int, always (RFC-0025 §5).
+
+    An absent or empty RowSet binding sums/counts to 0 — not None, not a
+    fault. That covers two cases identically: this workflow never `list`ed
+    the entity at all (the `aggregation-orphaned-list` warning's case,
+    RFC-0025 §4), and it did, but the store had no rows for it. Both are
+    "nothing to aggregate," and RFC-0025's own decision is that neither is an
+    error — a report with no links is a normal state, not an exception.
+
+    A row that IS present but cannot supply the summed field is different: the
+    field's declared type is checked at compile time (RFC-0025 §3), but a
+    driver can still hand back a row that was never written with it (a plain
+    `create` writes only `id` — `interp.FakeRepository.execute`). That is the
+    same fault an unresolved `Value` reference already is in an assignment
+    (`eval_value` returning None -> `RunError`), so it raises here too rather
+    than silently treating one row as 0 and the rest as data.
+    """
+    binding = agg.ref.namespace or agg.ref.name
+    rows = rowsets.get(binding) or []
+    if agg.func == "count":
+        return len(rows)
+    field = agg.ref.field
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict) or field not in row:
+            raise RunError(
+                "aggregate %r: a row in the %r RowSet has no %r field"
+                % (expression, binding, field))
+        value = row[field]
+        if isinstance(value, bool):
+            value = 1 if value else 0
+        elif not isinstance(value, int):
+            raise RunError(
+                "aggregate %r: cannot sum non-numeric %s=%r"
+                % (expression, field, value))
+        total = _checked(total + value, field, expression)
+    return total
+
+
 def _checked(number, name, condition):
     from .condition import INT64_MAX, INT64_MIN
     if number < INT64_MIN or number > INT64_MAX:
@@ -648,6 +700,12 @@ class Interpreter:
         # first run's rows into the second — the same aliasing `FakeRepository`
         # copies its seed to avoid (issue #35).
         bindings = {}
+        # RFC-0025 §5: a SEPARATE namespace for RowSet bindings (`list`), so an
+        # entity can carry a single-row binding and a RowSet binding at once
+        # without one overwriting the other. Guard conditions never read this —
+        # `Aggregate` is not a `Value` (RFC-0025 §2) — so only step execution
+        # needs it; `_flatten_items` (guard evaluation) does not.
+        rowsets = {}
         for item_id in _flatten_items(self.nodes, wf.get("children", []), self, result,
                                      root, con, payload, bindings):
             step = self.nodes[item_id]
@@ -658,7 +716,8 @@ class Interpreter:
             while True:
                 attempts += 1
                 try:
-                    self._run_step(step, span, con, payload, deadline, bindings)
+                    self._run_step(step, span, con, payload, deadline, bindings,
+                                   rowsets)
                     last_error = None
                     break
                 except RunError as exc:
@@ -728,15 +787,15 @@ class Interpreter:
         self.trace.metric("workflow.duration_ms", {"workflow": wf["name"]}, total)
         return result
 
-    def _run_step(self, step, span, con, payload, deadline, bindings):
+    def _run_step(self, step, span, con, payload, deadline, bindings, rowsets):
         if deadline is not None and self.clock.now >= deadline:
             raise RunError("deadline exhausted before step %r" % step["name"])
         for child_id in step.get("children", []):
             effect = self.nodes[child_id]
-            self._run_effect(effect, span, con, payload, bindings)
+            self._run_effect(effect, span, con, payload, bindings, rowsets)
         self.clock.advance()
 
-    def _run_effect(self, effect, span, con, payload, bindings):
+    def _run_effect(self, effect, span, con, payload, bindings, rowsets):
         kind = effect["kind"]
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
@@ -754,9 +813,14 @@ class Interpreter:
                 raise RunError(
                     "assignment target %r names no bound row — %s was never read"
                     % (target, binding))
-            from .condition import parse_value
-            value = eval_value(parse_value(effect["expression"]),
-                               effect["expression"], payload, bindings)
+            from .condition import Aggregate, parse_value_or_aggregate
+            rhs = parse_value_or_aggregate(effect["expression"])
+            if isinstance(rhs, Aggregate):
+                # RFC-0025 §5: sums/counts the RowSet, never a "resolves to
+                # nothing" — an absent or empty RowSet is 0, not a fault.
+                value = eval_aggregate(rhs, effect["expression"], rowsets)
+            else:
+                value = eval_value(rhs, effect["expression"], payload, bindings)
             if value is None:
                 raise RunError(
                     "assignment %r cannot be evaluated: a reference in %r "
@@ -791,6 +855,24 @@ class Interpreter:
                            target=target, value=value)
         elif kind == "Validation":
             self._validate(effect, payload)
+        elif kind == "RepositoryCall" and effect["operation"] == "query":
+            # RFC-0025 §5/§7: a RowSet, not a row. `execute`'s single-key
+            # contract cannot express "every row," so `list` calls the
+            # driver's own `query(entity_id)` instead — a different method,
+            # not a branch of `execute` (which still answers `operation
+            # in ("read", "query")` the old, unused way, for D5's
+            # unchanged-signature reason: RFC-0025 §7 kept `execute` as no
+            # call site had to be enumerated).
+            try:
+                rows = self.repo.query(effect["entity"])
+            except DriverError as exc:
+                raise RunError(str(exc)) from exc
+            child.attrs["row_count"] = len(rows)
+            entity_node = self.nodes.get(effect["entity"])
+            if entity_node is not None:
+                # RFC-0012 §G12.2 (RFC-0025 §5): a SEPARATE namespace from
+                # `bindings` — last write wins, same rule, different scope.
+                rowsets[binding_name(entity_node)] = rows
         elif kind == "RepositoryCall":
             # One of two places a driver fault is translated. A DriverError
             # becomes a RunError with its message and cause intact, so a real
@@ -802,11 +884,13 @@ class Interpreter:
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             child.attrs["found"] = row is not None
-            if effect["operation"] in READ_OPS and isinstance(row, dict):
+            if effect["operation"] == "read" and isinstance(row, dict):
                 # RFC-0012 §G12.2: a completed read binds its row into the
                 # execution scope, last write wins. Only reads bind — create /
                 # update / delete answer with an affected-row count, so there is
-                # no row content to name.
+                # no row content to name. `query` no longer reaches this branch
+                # at all (RFC-0025 §6.1/§6.2 — it binds a RowSet above instead
+                # of a row, so it must not satisfy a single-row reference).
                 entity_node = self.nodes.get(effect["entity"])
                 if entity_node is not None:
                     bindings[binding_name(entity_node)] = row

@@ -54,6 +54,12 @@ LOGICAL_OPS = ("and",)
 # The assignment step, `set <reference> to <value>`.
 ASSIGN_KEYWORDS = ("set", "to")
 
+# RFC-0025 aggregate functions — a `set`'s right-hand side may be `sum <ref>` or
+# `count <ref>` instead of a `Value`. They do not combine with arithmetic
+# (`sum x + 1` is not a `Value`), so they are their own alternative rather than
+# an `Operand`.
+AGG_FUNCS = ("sum", "count")
+
 # The reserved namespace naming the run's input payload: `input.quantity`.
 PAYLOAD_NAMESPACE = "input"
 

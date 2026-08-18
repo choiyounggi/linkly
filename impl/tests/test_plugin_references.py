@@ -388,6 +388,7 @@ class UndocumentedRuleTest(unittest.TestCase):
     SET_TARGET_HEADING = "## 할당(`set`)의 대상"
     READ_VERBS_PREFIX = "읽기 동사:"
     NO_BINDING_PREFIX = "바인딩을 만들지 않는 동사:"
+    ROWSET_VERBS_PREFIX = "행 집합(RowSet) 동사:"
 
     def _set_target_section(self):
         body = section(self._read("grammar.md"), self.SET_TARGET_HEADING)
@@ -397,20 +398,30 @@ class UndocumentedRuleTest(unittest.TestCase):
         return body
 
     def _repo_verbs(self):
-        """(바인딩을 만드는 동사, 만들지 않는 동사).
+        """(단일 행 바인딩을 만드는 동사, 아무 바인딩도 만들지 않는 동사,
+        RowSet을 바인딩하는 동사).
 
-        `lower._check_workflow_scope`가 `read_entities`를 세우는 데 쓰는
-        `READ_OPS`를 그대로 쓴다 — 문서와 검사가 각각 "read"라고 적어 두면
-        어휘에 `query` 동사가 붙는 날 둘 다 조용히 틀린다.
+        `lower.READ_VERBS`를 그대로 쓴다 — `_check_scoped_conditions`가
+        `read_entities`를 세우는 것과 같은 소스(RFC-0025 §5/§6.1:
+        `operation == "read"`만, `repo_policy.READ_OPS`의 `query`는 빠진다 —
+        `list`는 단일 행이 아니라 RowSet을 별개 이름공간에 바인딩하므로). 이
+        전에는 `repo_policy.READ_OPS`를 다시 계산해 이분법(읽기/쓰기)으로
+        썼는데, `lower.py`가 `read_entities`를 그 테이블에서 떼어 놓은 뒤로
+        그 재계산이 바로 이 검사가 막으려던 조용한 어긋남이 되었다 — 소스를
+        한 곳으로 합치고, RowSet을 세 번째 갈래로 분리한다(둘 다 아니므로).
         """
-        from lnpl.lower import VERB_LEXICON
-        from lnpl.repo_policy import READ_OPS
-        reads, writes = set(), set()
+        from lnpl.lower import READ_VERBS, VERB_LEXICON
+        reads, writes, rowset = set(), set(), set()
         for verb, (kind, attrs) in VERB_LEXICON.items():
             if kind != "RepositoryCall":
                 continue
-            (reads if attrs.get("operation") in READ_OPS else writes).add(verb)
-        return reads, writes
+            if verb in READ_VERBS:
+                reads.add(verb)
+            elif attrs.get("operation") == "query":
+                rowset.add(verb)
+            else:
+                writes.add(verb)
+        return reads, writes, rowset
 
     def test_set_target_binding_rule_is_documented(self):
         body = self._set_target_section()
@@ -420,23 +431,35 @@ class UndocumentedRuleTest(unittest.TestCase):
 
     def test_the_read_verbs_in_the_document_match_the_lexicon(self):
         """전사 드리프트 차단: 어휘가 바뀌면 문서가 따라오거나 붉어진다."""
-        reads, _writes = self._repo_verbs()
+        reads, _writes, _rowset = self._repo_verbs()
         line = line_starting(self._set_target_section(), self.READ_VERBS_PREFIX)
         self.assertIsNotNone(line, "%r 줄이 없다" % self.READ_VERBS_PREFIX)
         self.assertEqual(backticked(line), reads)
 
     def test_the_non_binding_verbs_in_the_document_match_the_lexicon(self):
-        _reads, writes = self._repo_verbs()
+        _reads, writes, _rowset = self._repo_verbs()
         line = line_starting(self._set_target_section(), self.NO_BINDING_PREFIX)
         self.assertIsNotNone(line, "%r 줄이 없다" % self.NO_BINDING_PREFIX)
         self.assertEqual(backticked(line), writes)
 
-    def test_the_two_verb_lines_do_not_overlap(self):
-        """경계: 두 줄이 같은 집합이면 위 두 검사는 통과해도 규칙은 무의미하다."""
-        reads, writes = self._repo_verbs()
+    def test_the_rowset_verbs_in_the_document_match_the_lexicon(self):
+        """RFC-0025 §5: `list`는 단일 행도, "바인딩 없음"도 아닌 세 번째
+        갈래다 — 그 갈래가 문서에도 따로 있어야 한다."""
+        _reads, _writes, rowset = self._repo_verbs()
+        line = line_starting(self._set_target_section(), self.ROWSET_VERBS_PREFIX)
+        self.assertIsNotNone(line, "%r 줄이 없다" % self.ROWSET_VERBS_PREFIX)
+        self.assertEqual(backticked(line), rowset)
+        self.assertIn("list", rowset)
+
+    def test_the_three_verb_lines_do_not_overlap(self):
+        """경계: 세 줄이 서로 겹치면 위 검사들은 통과해도 갈래가 무의미하다."""
+        reads, writes, rowset = self._repo_verbs()
         self.assertEqual(reads & writes, set())
+        self.assertEqual(reads & rowset, set())
+        self.assertEqual(writes & rowset, set())
         self.assertGreater(len(reads), 0)
         self.assertGreater(len(writes), 0)
+        self.assertGreater(len(rowset), 0)
 
     def test_input_is_documented_as_an_illegal_assignment_target(self):
         """에러 케이스: `set input.x to …`가 왜 거부되는지."""
