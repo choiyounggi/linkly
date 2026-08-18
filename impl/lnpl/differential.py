@@ -88,6 +88,12 @@ def _normalise_skips(records):
 
     `rounds` rides along because RFC-0008 §5 names the `until` round count as
     its own comparison item.
+
+    This is an ALLOW-list, not a deny-list: it names exactly the four keys the
+    projection carries, so `evaluations` (issue #83's per-term measured values,
+    RFC-0014 D3-D4 addendum) is excluded the same way `guard` already is — mode
+    B cannot produce it either — with no change needed here when that key was
+    added.
     """
     return [{"mode": r["mode"], "condition": r["condition"],
              "step": name, "rounds": r["rounds"]}
