@@ -8,6 +8,8 @@
   IR 노드는 선택 필드 `line`(1-base 소스 줄, integer)을 가질 수 있다.
   `guard-orphaned-steps` 자신의 판정과 `where` 표기(고아 스텝의 줄)는 이 RFC가
   바꾸지 않는다 — `_WfContext.step_lines`를 그대로 쓴다.
+- Updated-by: RFC-0026 (§Reference-level Specification/3. 집행 진단 3종의
+  `line`), RFC-0026 (§Examples/바뀌지 않는다)
 
 Supersedes는 없다. 코드·등급 체계(RFC-0021)를 바꾸지 않는다 — 새 코드를 신설하지
 않고, 기존 코드의 등급도 그대로다. 진단이 **어디를 가리키는지**를 늘릴 뿐,

@@ -31,6 +31,11 @@ NOISY = ("entity Note\n    field\n        id UUID\n\n"
          "workflow Save\n    validate note\n    return note\n")
 CLEAN = ("entity Note\n    field\n        id UUID\n\n"
          "workflow Save\n    validate note\n    create note\n")
+# RFC-0026: `persist` is a `VERB_ALIASES` entry (tier 1, a semantic near-synonym
+# of `create`) — unlike NOISY's `return`, which is unrelated to every
+# VERB_LEXICON verb and gets no suggestion at all.
+ALIASED = ("entity Note\n    field\n        id UUID\n\n"
+          "workflow Save\n    validate note\n    persist note\n")
 # `steps 99`는 실제 스텝 수(2)와 어긋나도록 고정한 것 — 실패 케이스가
 # 기대/실측을 병기하는지 결정적으로 확인하기 위함.
 BAD_SPEC = ("entity Note\n    field\n        id UUID\n        title Text\n\n"
@@ -145,13 +150,29 @@ class CompileToolTest(unittest.TestCase):
         self.assertEqual(by_code["declared-not-enforced"]["line"], 46)
         self.assertEqual(by_code["declared-measured-only"]["line"], 48)
 
-    def test_an_unknown_verb_record_carries_no_line(self):
-        # unknown-verb is out of RFC-0024's scope — its `where` already spells
-        # `line N`, and the field stays present-but-null rather than absent, so
-        # a caller can rely on the key existing on every record.
+    def test_an_unknown_verb_record_carries_its_line_as_an_int(self):
+        # RFC-0026 widens RFC-0024's `line` coverage to `unknown-verb`: an
+        # agent jumps to the source without regexing `where` a second time.
         record = payload_of(call("lnpl_compile", {"text": NOISY}))["diagnostics"][0]
-        self.assertIn("line", record)
-        self.assertIsNone(record["line"])
+        self.assertIsInstance(record["line"], int)
+        self.assertEqual(record["line"], 7)
+
+    def test_an_unrelated_verb_gets_no_suggestion(self):
+        # `return` is not close to any VERB_LEXICON verb by alias or by
+        # spelling — the key exists but stays null, and the message carries no
+        # suffix (RFC-0026: a wrong suggestion is worse than none).
+        record = payload_of(call("lnpl_compile", {"text": NOISY}))["diagnostics"][0]
+        self.assertIn("suggestion", record)
+        self.assertIsNone(record["suggestion"])
+        self.assertNotIn("did you mean", record["message"])
+
+    def test_a_semantic_alias_suggests_its_lexicon_verb_both_places(self):
+        # RFC-0026 D2: `persist` is a VERB_ALIASES entry for `create` — the
+        # suggestion must show up in both the structured field and the
+        # message suffix, not just one.
+        record = payload_of(call("lnpl_compile", {"text": ALIASED}))["diagnostics"][0]
+        self.assertEqual(record["suggestion"], "create")
+        self.assertIn("did you mean 'create'?", record["message"])
 
     def test_it_compiles_a_committed_example_by_path(self):
         path = os.path.join(REPO, "examples", "checkout.lnpl")

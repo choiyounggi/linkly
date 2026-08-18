@@ -19,6 +19,7 @@ R1 — Effect derivation (A.4-3). A step line's first token is a Verb (the gramm
   now emits an `unknown-verb` diagnostic, and the IR is unchanged.
 """
 
+import difflib
 import re
 
 from .diagnostics import ENFORCED, ENFORCEMENT, Diagnostics
@@ -93,6 +94,28 @@ VERB_LEXICON = {
     "emit": ("EventEmit", {}),
     "publish": ("EventEmit", {}),
     "authorize": ("Authorization", {}),
+}
+
+# RFC-0026: `unknown-verb`'s did-you-mean, tier 1. The closed lexicon's actual
+# failure mode is a semantic near-synonym, not a typo (the 7th audit: a
+# plausible-sounding verb parses and becomes a no-op) — a character-similarity
+# matcher alone cannot catch `persist` for `create` (ratio 0.31, below any
+# usable cutoff). This table is suggestion-only — it does NOT extend
+# VERB_LEXICON, so `gen_plugin_references.py` (which reads VERB_LEXICON only)
+# never surfaces it. Ambiguous candidates spanning two verbs (e.g. `store`,
+# `send`) are deliberately absent — a wrong suggestion is worse than none.
+VERB_ALIASES = {
+    "persist": "create",
+    "save": "create",
+    "fetch": "read",
+    "get": "read",
+    "retrieve": "read",
+    "lookup": "read",
+    "remove": "delete",
+    "erase": "delete",
+    "modify": "update",
+    "change": "update",
+    "notify": "emit",
 }
 
 # What a refusal calls the construct it is about. The guard check and the
@@ -734,12 +757,27 @@ class _WfContext:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
             # the emitted node stays exactly as before.
+            #
+            # RFC-0026: `line=` gives an agent a jump target without regexing
+            # `where`. The suggestion is two-tier — VERB_ALIASES first (the
+            # semantic near-synonym case, e.g. `persist`->`create`), then
+            # difflib for a spelling typo (`craete`->`create`, cutoff 0.6 — a
+            # wrong suggestion is worse than none) — offered both in the
+            # message and as a structured `suggestion` so a caller can act on
+            # it without parsing prose.
+            suggestion = VERB_ALIASES.get(verb)
+            if suggestion is None:
+                close = difflib.get_close_matches(verb, VERB_LEXICON, n=1,
+                                                   cutoff=0.6)
+                suggestion = close[0] if close else None
+            suffix = " — did you mean '%s'?" % suggestion if suggestion else ""
             self.diagnostics.add(
                 code="unknown-verb",
-                where="line %d" % line.lineno, subject=verb,
+                where="line %d" % line.lineno, subject=verb, line=line.lineno,
+                suggestion=suggestion,
                 message="`%s` is outside VERB_LEXICON: this step derives no "
-                        "Effect and runs as a descriptive no-op"
-                        % " ".join(line.tokens))
+                        "Effect and runs as a descriptive no-op%s"
+                        % (" ".join(line.tokens), suffix))
         self.emitted.append(_node("WorkflowStep", step_id,
                                   name=" ".join(line.tokens),
                                   children=[derived["id"]] if derived else None,
@@ -897,7 +935,7 @@ def _check_guard_scope(emitted, top_ids, step_lines, registry, diagnostics,
                 diagnostics.add(
                     code="guard-orphaned-steps",
                     where=("line %d" % where) if where else workflow_name,
-                    subject=step["name"],
+                    subject=step["name"], line=where,
                     message="`%s %s` owns only the next item, so `%s` runs "
                             "whether or not that condition held. %s"
                             % (guard.get("mode", "when"), text, step["name"],

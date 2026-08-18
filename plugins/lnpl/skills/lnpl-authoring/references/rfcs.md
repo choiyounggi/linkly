@@ -36,5 +36,6 @@
 | RFC-0023 가드 밖으로 새어 나간 상태 변경의 컴파일 타임 진단 | 가드 뒤의 스텝이 왜 가드 밖인지, 그리고 컴파일러가 그걸 언제 경고하는지 | `rfcs/0023-guard-scope-diagnostic.md` |
 | RFC-0024 집행 진단에 소스 line 병기 | 집행 진단이 노드 id에 더해 소스 line을 왜, 어떻게 싣는지 — `lnpl compile`과 `lnpl run`이 나눠 가진 진단 범위도 함께 | `rfcs/0024-enforcement-diagnostic-line.md` |
 | RFC-0025 행 집합(Row Set)과 집계 | `list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 집계 값을 전혀 계산하지 않는지 | `rfcs/0025-row-sets-and-aggregation.md` |
+| RFC-0026 `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps`의 `line`과 `suggestion` | `unknown-verb`/`guard-orphaned-steps`가 왜 구조화 `line`을 갖는지, did-you-mean 제안이 별칭과 철자 오타를 어떻게 나눠 잡는지 | `rfcs/0026-unknown-verb-line-and-suggestion.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.
