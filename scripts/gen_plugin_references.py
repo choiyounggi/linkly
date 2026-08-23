@@ -434,12 +434,34 @@ def render_naming():
     lines.append("| `validate %s` | **해석된다** — 소문자 연결형 |" % obj)
     lines.append("| `validate %s` | 거부 — camelCase는 이 규칙이 아니다 |"
                  % (entity[0].lower() + entity[1:]))
-    lines.append("| `validate %s` | 거부 — 선언과 같은 표기여도 안 된다 |" % entity)
+    lines.append("| `validate %s` | 거부 (엔티티를 둘 이상 선언했을 때) — 선언과 같은 "
+                 "표기여도 안 된다; 하나뿐이면 대신 `unknown-entity` 경고로 컴파일된다 "
+                 "(아래 참조) |" % entity)
     lines.append("| `validate %ss` | 거부 — 복수형을 단수로 되돌리지 않는다 |" % obj)
     lines.append("| `validate order` | 해석된다 — `entity Order`의 소문자 연결형 |")
     lines.append("\n두 가지 예외가 있다:\n")
     lines.append("- 모듈이 엔티티를 **정확히 하나** 선언하면 객체를 생략할 수 있다.")
     lines.append("- 객체가 어떤 엔티티의 **필드명**과 같으면 그 엔티티로 해석된다.\n")
+
+    lines.append("## 선언되지 않은 명사를 쓰면 — `unknown-entity`\n")
+    lines.append("스텝 객체가 위 표의 어느 형태로도 매칭되지 않을 때, 모듈이 엔티티를 "
+                 "**정확히 하나** 선언했으면 컴파일은 계속된다 — `_resolve_entity`가 "
+                 "그 하나를 그대로 쓴다(런타임 동작은 바뀌지 않는다, 이슈 #91 §4). "
+                 "대신 `unknown-verb`(#36→#82)와 대칭인 `unknown-entity` "
+                 "**warning** 진단이 하나 실린다:\n")
+    lines.append("```")
+    lines.append("warning: unknown-entity [line 8] find user — 'user' names no "
+                 "declared entity; declared: customer — did you mean 'customer'?")
+    lines.append("```")
+    lines.append("\n형식은 `unknown-verb`가 확정한 구조 그대로다 — 구조화 `line`, "
+                 "did-you-mean 제안(RFC-0026). 엔티티가 **하나뿐이면** 제안은 늘 "
+                 "그 하나다. `--strict=warning`으로 게이트할 수 있다(RFC-0021). "
+                 "엔티티를 둘 이상 선언한 모듈에서 객체가 매칭에 실패하면 이 진단이 "
+                 "아니라 바로 아래의 모호성 에러가 난다 — 그 경로는 이미 조용하지 "
+                 "않으므로 이슈 #91의 범위가 아니다. `<명사>.<필드>` Reference의 "
+                 "명사부(가드·`set` 대상)는 이 진단의 범위가 아니다 — 선언되지 않은 "
+                 "바인딩을 쓰면 이미 컴파일 에러이므로(#45), 무진단으로 통과하는 "
+                 "구멍이 없다.\n")
 
     lines.append("## 이 에러가 나면\n")
     lines.append("```")

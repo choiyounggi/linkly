@@ -753,7 +753,9 @@ class _WfContext:
             derived = _derive_assignment(step_id, line, self.registry)
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
-                                     line.lineno, line.tokens[2:])
+                                     line.lineno, line.tokens[2:],
+                                     diagnostics=self.diagnostics,
+                                     step_text=" ".join(line.tokens))
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -1386,12 +1388,17 @@ class _Scope:
             % (self.workflow_name, text, name, declared))
 
 
-def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
+def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
+                   diagnostics=None, step_text=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
     verb but `NetworkCall` ignores it; only `call`/`request` read an `as
     <name>` trailing clause there (RFC-0027 §2).
+
+    `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
+    `unknown-entity` warning for a step object that names no declared entity,
+    without changing which entity it falls back to resolving.
     """
     entry = VERB_LEXICON.get(verb)
     if entry is None:
@@ -1400,7 +1407,13 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
     eid = "%s.%s" % (step_id, EFFECT_SLUG[kind])
 
     if kind == "Validation":
-        ent = _resolve_entity(registry, obj, verb, lineno)
+        from .condition import PAYLOAD_NAMESPACE
+        # `input` (RFC-0015 §D6) is the reserved payload keyword, not an
+        # entity noun — the loop below would never match it against a
+        # declared entity, and it is not #91's "unknown entity" failure mode.
+        validation_diagnostics = None if obj == PAYLOAD_NAMESPACE else diagnostics
+        ent = _resolve_entity(registry, obj, verb, lineno,
+                              diagnostics=validation_diagnostics, step_text=step_text)
         field_names = [f["name"] for f in ent["fields"]]
         if obj and obj in field_names:
             ftype = next(f["type"] for f in ent["fields"] if f["name"] == obj)
@@ -1412,7 +1425,8 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
                     line=lineno)
 
     if kind == "RepositoryCall":
-        ent = _resolve_entity(registry, obj, verb, lineno)
+        ent = _resolve_entity(registry, obj, verb, lineno,
+                              diagnostics=diagnostics, step_text=step_text)
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 
@@ -1524,12 +1538,20 @@ def _derive_assignment(step_id, line, registry):
                  line=line.lineno)
 
 
-def _resolve_entity(registry, obj, verb, lineno):
+def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=None):
     """Pick the entity a step operates on.
 
     The object names it when there is a choice; with exactly one entity declared
     the object may be omitted. Ambiguity is an error that lists the candidates —
     picking one would make the program's meaning depend on declaration order.
+
+    Issue #91: when the object *is* given, matches no declared entity's
+    lowercase-concatenated name and no field name, and exactly one entity is
+    declared, the single-entity fallback below still resolves it — unchanged,
+    per issue #91 §4 — but a `diagnostics` accumulator now records an
+    `unknown-entity` warning first, symmetric to `unknown-verb` (#36/#82). An
+    object that is ambiguous across >1 declared entity keeps raising, as
+    before: that case is not a silent pass and is out of #91's scope.
     """
     if not registry:
         raise LowerError("line %d: `%s` needs an entity in scope, and the module "
@@ -1541,6 +1563,22 @@ def _resolve_entity(registry, obj, verb, lineno):
                 return ent
             if obj in [f["name"] for f in ent["fields"]]:
                 return ent
+        if len(registry) == 1:
+            ent = next(iter(registry.values()))
+            if diagnostics is not None:
+                # D3: with exactly one entity declared, it is unconditionally
+                # the suggestion — the same lowercase-concatenated form the
+                # match above just failed against.
+                suggestion = "".join(split_pascal(ent["name"]))
+                text = step_text or ("%s %s" % (verb, obj))
+                diagnostics.add(
+                    code="unknown-entity",
+                    where="line %d" % lineno, subject=obj, line=lineno,
+                    suggestion=suggestion,
+                    message="%s — '%s' names no declared entity; declared: %s"
+                            " — did you mean '%s'?"
+                            % (text, obj, suggestion, suggestion))
+            return ent
     if len(registry) == 1:
         return next(iter(registry.values()))
     raise LowerError(

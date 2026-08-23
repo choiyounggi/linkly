@@ -164,7 +164,7 @@ status completed
 진단은 **stderr로 나가고 종료 코드는 0**이다. `--strict`를 줘야 rc 2로 올라간다.
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
-(`unknown-verb`, `guard-skipped-steps`, `guard-orphaned-steps`,
+(`unknown-verb`, `unknown-entity`, `guard-skipped-steps`, `guard-orphaned-steps`,
 `aggregation-orphaned-list`), `info`는 고쳐도 사라지지 않는 플랫폼
 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`). 등급별 표는
@@ -174,8 +174,9 @@ status completed
 
 위치 정보는 네 종류다:
 
-- **파싱·lowering 에러**와 **`unknown-verb`**는 `line N`만 갖는다 — 소스 줄을
-  바로 가리킨다.
+- **파싱·lowering 에러**와 **`unknown-verb`/`unknown-entity`**는 `line N`만
+  갖는다 — 소스 줄을 바로 가리킨다(`unknown-entity`는 이슈 #91, 형식은
+  `unknown-verb`와 동일).
 - **집행 진단** 3종(`declared-not-enforced`, `declared-measured-only`,
   `authorization-not-verified`)은 **노드 id와 `(line N)` 둘 다** 갖는다
   (`[security.shorten] (line 46)`, RFC-0024). `line`은 IR 노드의 선택 필드라

@@ -49,7 +49,7 @@ entity Report
 event DailyRollup on schedule daily at 00:00 UTC
 
 workflow GetReport
-    read Report
+    read report
 """
 
 # The contrast: `frobnicate` is outside VERB_LEXICON, so the step derives no
@@ -60,8 +60,8 @@ entity Report
         id UUID
 
 workflow GetReport
-    read Report
-    frobnicate Report
+    read report
+    frobnicate report
 """
 
 # Both grades in one module, so a threshold has something to separate.
@@ -75,8 +75,8 @@ entity Report
 event DailyRollup on schedule daily at 00:00 UTC
 
 workflow GetReport
-    read Report
-    frobnicate Report
+    read report
+    frobnicate report
 """
 
 # The same schedule declaration with a spec block, so `spec --run` reaches the
@@ -91,7 +91,7 @@ entity Report
 event DailyRollup on schedule daily at 00:00 UTC
 
 workflow GetReport
-    read Report
+    read report
     spec
         given
             valid report

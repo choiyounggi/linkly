@@ -40,6 +40,7 @@
 | 코드 | 등급 |
 |------|------|
 | `unknown-verb` | **warning** |
+| `unknown-entity` | **warning** |
 | `declared-not-enforced` | **info** |
 | `declared-measured-only` | **info** |
 | `authorization-not-verified` | **info** |

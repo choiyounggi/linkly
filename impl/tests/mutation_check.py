@@ -426,7 +426,7 @@ NOOP_CONTROL = ("CONTROL (must survive): reword a docstring",
 # the baseline gate, which exits rc=1 in ~35s having measured nothing at all.
 # That is outwardly indistinguishable from "a mutant survived" except by how
 # fast it finished, so anything a test reads belongs in this tuple.
-TREE_CONTENTS = ("impl", "examples", "schemas", "scripts", "kb", "rfcs", "docs",
+TREE_CONTENTS = ("impl", "examples", "qa", "schemas", "scripts", "kb", "rfcs", "docs",
                  "plans", "mlir", "CHARTER.md", ".venv",
                  "plugins", ".claude-plugin", "AGENTS.md", "CLAUDE.md",
                  "pyproject.toml", "README.md", "README.ko.md")

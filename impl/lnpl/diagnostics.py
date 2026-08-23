@@ -39,6 +39,7 @@ SEVERITIES = ("info", "warning", "error")
 # or renaming one as a breaking change.
 CODES = (
     "unknown-verb",                 # #36  verb outside VERB_LEXICON -> no Effect
+    "unknown-entity",               # #91  step object outside the declared entities
     "declared-not-enforced",        # #38  declared, and the runtime does nothing with it
     "declared-measured-only",       # #38  observed and reported, never blocks
     "authorization-not-verified",   # #38  Authorization Effect records, never checks
@@ -64,6 +65,7 @@ CODES = (
 # twice, differently, for the same fact.
 SEVERITY_OF = {
     "unknown-verb":               "warning",
+    "unknown-entity":             "warning",
     "declared-not-enforced":      "info",
     "declared-measured-only":     "info",
     "authorization-not-verified": "info",
