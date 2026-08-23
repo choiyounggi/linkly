@@ -538,6 +538,16 @@ class HttpNetworkDriver(NetworkDriver):
         import urllib.parse
 
         parts = urllib.parse.urlsplit(target)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            # A logical name (RFC-0027 examples' `call PaymentGateway as p`)
+            # or a non-http(s) scheme has no host `urlsplit` can hand to
+            # `http.client` — left unchecked, `HTTPConnection(None, ...)`
+            # raises a raw AttributeError the exception clause below does not
+            # catch (issue #90). Reject before opening a connection, not after.
+            raise DriverError(
+                "network target %r is not a resolvable URL (the http driver "
+                "needs `http(s)://host[:port]/path`; a logical name has no "
+                "address here)" % target)
         body = json.dumps(payload).encode("utf-8")
         path = urllib.parse.urlunsplit(("", "", parts.path or "/",
                                         parts.query, "")) or "/"

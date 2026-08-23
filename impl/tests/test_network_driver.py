@@ -180,6 +180,32 @@ class HttpNetworkDriverTest(_ServerTestCase):
         with self.assertRaises(DriverError):
             driver.call(url, {}, timeout_ms=50)
 
+    def test_a_logical_name_target_raises_driver_error_not_attribute_error(self):
+        """Issue #90: `urlsplit("PaymentGateway")` yields `hostname=None`, and
+        without entry-point validation `http.client.HTTPConnection(None, ...)`
+        raises a raw `AttributeError` the module's exception clause does not
+        catch — the ONE ERROR TYPE OUT contract breaks. The message carries
+        the original target verbatim (docs/backends.md path-value convention)."""
+        driver = HttpNetworkDriver()
+        self.addCleanup(driver.close)
+
+        with self.assertRaises(DriverError) as caught:
+            driver.call("PaymentGateway", {}, 1000)
+
+        self.assertIn("PaymentGateway", str(caught.exception))
+
+    def test_a_non_http_scheme_target_raises_driver_error(self):
+        """Boundary: a well-formed URL whose scheme is not http/https (RFC-0027
+        §1 — this driver speaks http.client only) is rejected the same way as
+        a logical name, not attempted as a connection."""
+        driver = HttpNetworkDriver()
+        self.addCleanup(driver.close)
+
+        with self.assertRaises(DriverError) as caught:
+            driver.call("ftp://host/path", {}, 1000)
+
+        self.assertIn("ftp://host/path", str(caught.exception))
+
     def test_close_does_not_raise(self):
         HttpNetworkDriver().close()
 
