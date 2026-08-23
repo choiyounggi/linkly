@@ -38,6 +38,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
@@ -86,16 +87,27 @@ class BackendError(Exception):
 
 
 def tool(name):
-    """Locate an LLVM/MLIR tool, preferring a keg-only homebrew install."""
-    candidate = os.path.join(BREW_LLVM_BIN, name)
-    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-        return candidate
+    """Locate an LLVM/MLIR tool.
+
+    Resolution order (issue #104): `LNPL_LLVM_BIN` (a directory), if set to a
+    non-empty value, is tried first — an unset or empty value is treated as
+    "not overridden", not as a literal empty search path. This mirrors the
+    diagnostic hooks' `$LNPL_BIN` discovery order: a decisive tool owns an
+    explicit, environment-overridable resolution order rather than guessing.
+    The homebrew keg-only path is the fallback, then `$PATH`.
+    """
+    override = os.environ.get("LNPL_LLVM_BIN", "")
+    for llvm_bin in (d for d in (override, BREW_LLVM_BIN) if d):
+        candidate = os.path.join(llvm_bin, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
     found = shutil.which(name)
     if found:
         return found
     raise BackendError(
         "%s not found. Mode B needs MLIR/LLVM tools — install them with "
-        "`brew install llvm` (they land in %s)." % (name, BREW_LLVM_BIN))
+        "`brew install llvm` (they land in %s), or point LNPL_LLVM_BIN at "
+        "your install directory." % (name, override or BREW_LLVM_BIN))
 
 
 def pinned_llvm_version():
@@ -113,6 +125,49 @@ def pinned_llvm_version():
         raise BackendError(
             "mlir/llvm.pin must be one line `llvm <version>`, got %r" % line)
     return parts[1]
+
+
+def _isysroot_flags():
+    """`-isysroot <sdk>` clang args for S7, computed via `xcrun` (issue #104).
+
+    Homebrew's clang bottle bakes in the CommandLineTools SDK path present at
+    *bottle build time* as its default sysroot; on a machine whose SDK differs
+    (or lacks that exact version), header lookup fails outright. A command-line
+    `-isysroot` overrides that baked-in default (Homebrew/homebrew-core#197277),
+    so this computes the path fresh with `xcrun --sdk macosx --show-sdk-path`
+    rather than trusting `$SDKROOT` — upstream LLVM clang does not honor it
+    (llvm/llvm-project#137352), unlike Apple clang. Non-darwin platforms need no
+    sysroot flag at all.
+    """
+    if sys.platform != "darwin":
+        return []
+    try:
+        proc = subprocess.run(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                              capture_output=True, text=True)
+    except OSError as exc:
+        raise BackendError(
+            "could not run `xcrun --sdk macosx --show-sdk-path` to locate the "
+            "macOS SDK for S7 (clang): %s\n"
+            "Fix: install the Command Line Tools (`xcode-select --install`), "
+            "run `xcrun --sdk macosx --show-sdk-path` yourself to confirm it "
+            "works, or set LNPL_LLVM_BIN to an LLVM/clang install that "
+            "resolves its own sysroot." % exc)
+    sdk_path = proc.stdout.strip()
+    if proc.returncode != 0 or not sdk_path:
+        raise BackendError(
+            "`xcrun --sdk macosx --show-sdk-path` failed (exit %d): %s\n"
+            "Fix: run it yourself to see the underlying error, reinstall the "
+            "Command Line Tools (`xcode-select --install`), or set "
+            "LNPL_LLVM_BIN to an LLVM/clang install that resolves its own "
+            "sysroot." % (proc.returncode, (proc.stderr or "").strip()))
+    if not os.path.isdir(sdk_path):
+        raise BackendError(
+            "xcrun reported a macOS SDK at %r, but that path does not exist.\n"
+            "Fix: run `xcrun --sdk macosx --show-sdk-path` yourself to "
+            "confirm, reinstall the Command Line Tools "
+            "(`xcode-select --install`), or set LNPL_LLVM_BIN to an "
+            "LLVM/clang install that resolves its own sysroot." % sdk_path)
+    return ["-isysroot", sdk_path]
 
 
 def toolchain_available():
@@ -1291,7 +1346,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
           "-o", llvm_dialect], "S5-S6 (mlir-opt: standard dialects -> LLVM dialect)")
     _run([tool(MLIR_TRANSLATE), "--mlir-to-llvmir", llvm_dialect, "-o", ll_path],
          "S6 (mlir-translate: LLVM dialect -> LLVM IR)")
-    _run([tool("clang"), ll_path, c_path, "-o", bin_path],
+    _run([tool("clang")] + _isysroot_flags() + [ll_path, c_path, "-o", bin_path],
          "S7 (clang: LLVM IR + runtime -> native binary)")
 
     if not keep_intermediate:
