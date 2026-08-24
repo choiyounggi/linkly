@@ -554,6 +554,113 @@ class TestVersionPin(unittest.TestCase):
         self.assertIn(version, out)
 
 
+class _FakeProc:
+    """Stand-in for `subprocess.CompletedProcess`, for monkeypatching
+    `backend.subprocess.run` without shelling out to a real `xcrun`."""
+
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class TestLlvmBinOverride(unittest.TestCase):
+    """`LNPL_LLVM_BIN` (issue #104): a directory override `tool()` must prefer
+    over the hardcoded `BREW_LLVM_BIN` keg-only path — same discovery-order
+    contract as the diagnostic hooks' `$LNPL_BIN`.
+    """
+
+    def setUp(self):
+        tmp_root = os.path.join(REPO, ".claude", "tmp")
+        self.override_dir = tempfile.mkdtemp(prefix="lnpl-llvmbin-", dir=tmp_root)
+        self.brew_dir = tempfile.mkdtemp(prefix="lnpl-brewbin-", dir=tmp_root)
+        self._original_brew_bin = backend.BREW_LLVM_BIN
+        backend.BREW_LLVM_BIN = self.brew_dir
+        self._write_executable(self.override_dir, "toolx")
+        self._write_executable(self.brew_dir, "toolx")
+
+    def tearDown(self):
+        backend.BREW_LLVM_BIN = self._original_brew_bin
+        shutil.rmtree(self.override_dir, ignore_errors=True)
+        shutil.rmtree(self.brew_dir, ignore_errors=True)
+        os.environ.pop("LNPL_LLVM_BIN", None)
+
+    def _write_executable(self, dirpath, name):
+        path = os.path.join(dirpath, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_lnpl_llvm_bin_override_wins_over_the_homebrew_fallback(self):
+        os.environ["LNPL_LLVM_BIN"] = self.override_dir
+        found = backend.tool("toolx")
+        self.assertEqual(found, os.path.join(self.override_dir, "toolx"))
+
+    def test_empty_lnpl_llvm_bin_is_treated_as_unset(self):
+        os.environ["LNPL_LLVM_BIN"] = ""
+        found = backend.tool("toolx")
+        self.assertEqual(found, os.path.join(self.brew_dir, "toolx"))
+
+    def test_missing_tool_error_names_the_llvm_bin_override(self):
+        os.environ["LNPL_LLVM_BIN"] = self.override_dir
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.tool("no-such-tool-xyz")
+        self.assertIn("LNPL_LLVM_BIN", str(ctx.exception))
+
+
+class TestIsysrootFlags(unittest.TestCase):
+    """S7 (issue #104): `-isysroot`, computed via `xcrun`, is what lets the S7
+    clang invocation survive a machine whose CommandLineTools SDK differs from
+    the one baked into the homebrew clang bottle at build time (the exact
+    failure this machine reproduces without the fix). `xcrun` is monkeypatched
+    here so these cases run without shelling out; the real end-to-end
+    `lnpl build --run` on this machine is the separate integration check.
+    """
+
+    def setUp(self):
+        self._original_platform = backend.sys.platform
+        self._original_run = backend.subprocess.run
+
+    def tearDown(self):
+        backend.sys.platform = self._original_platform
+        backend.subprocess.run = self._original_run
+
+    def test_darwin_adds_isysroot_from_xcrun(self):
+        backend.sys.platform = "darwin"
+        sdk_dir = tempfile.mkdtemp(prefix="lnpl-sdk-",
+                                   dir=os.path.join(REPO, ".claude", "tmp"))
+        try:
+            backend.subprocess.run = lambda *a, **k: _FakeProc(0, sdk_dir + "\n")
+            self.assertEqual(backend._isysroot_flags(), ["-isysroot", sdk_dir])
+        finally:
+            shutil.rmtree(sdk_dir, ignore_errors=True)
+
+    def test_non_darwin_adds_no_isysroot(self):
+        backend.sys.platform = "linux"
+        self.assertEqual(backend._isysroot_flags(), [])
+
+    def test_xcrun_failure_raises_backend_error_with_hints(self):
+        backend.sys.platform = "darwin"
+        backend.subprocess.run = lambda *a, **k: _FakeProc(
+            1, "", "xcrun: error: SDK \"macosx\" cannot be located")
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend._isysroot_flags()
+        message = str(ctx.exception)
+        self.assertIn("xcrun", message)
+        self.assertIn("LNPL_LLVM_BIN", message)
+
+    def test_xcrun_reports_a_sdk_path_that_does_not_exist(self):
+        backend.sys.platform = "darwin"
+        backend.subprocess.run = lambda *a, **k: _FakeProc(
+            0, "/nonexistent/sdk/path\n")
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend._isysroot_flags()
+        message = str(ctx.exception)
+        self.assertIn("xcrun", message)
+        self.assertIn("LNPL_LLVM_BIN", message)
+
+
 class TestDiffCliWiring(unittest.TestCase):
     """`cmd_diff` wires argparse into `differential.verify`. The suite otherwise
     calls `verify` directly, so a signature drift between the CLI and the function
