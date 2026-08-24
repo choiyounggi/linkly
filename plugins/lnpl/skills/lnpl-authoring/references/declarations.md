@@ -48,3 +48,5 @@
 | `guard-orphaned-steps` | **warning** |
 | `validation-sample-derived` | **info** |
 | `aggregation-orphaned-list` | **warning** |
+| `event-source-mismatch` | **warning** |
+| `event-source-orphaned` | **info** |

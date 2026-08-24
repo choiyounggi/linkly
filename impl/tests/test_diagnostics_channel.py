@@ -40,7 +40,7 @@ class TestSeverityLadder(unittest.TestCase):
         # Neither direction may drift: a code with no grade cannot be built,
         # and a grade for a retired code is a row nothing reaches.
         self.assertEqual(set(SEVERITY_OF), set(CODES))
-        self.assertEqual(len(SEVERITY_OF), 9)
+        self.assertEqual(len(SEVERITY_OF), 11)
 
     def test_each_code_carries_its_assigned_grade(self):
         # Spelled out one by one rather than looped: this table *is* the
@@ -49,10 +49,12 @@ class TestSeverityLadder(unittest.TestCase):
         self.assertEqual(SEVERITY_OF["unknown-entity"], "warning")
         self.assertEqual(SEVERITY_OF["guard-skipped-steps"], "warning")
         self.assertEqual(SEVERITY_OF["guard-orphaned-steps"], "warning")
+        self.assertEqual(SEVERITY_OF["event-source-mismatch"], "warning")
         self.assertEqual(SEVERITY_OF["declared-not-enforced"], "info")
         self.assertEqual(SEVERITY_OF["declared-measured-only"], "info")
         self.assertEqual(SEVERITY_OF["authorization-not-verified"], "info")
         self.assertEqual(SEVERITY_OF["validation-sample-derived"], "info")
+        self.assertEqual(SEVERITY_OF["event-source-orphaned"], "info")
 
     def test_every_grade_is_a_rung_of_the_ladder(self):
         for code, severity in SEVERITY_OF.items():
@@ -105,7 +107,7 @@ class TestDiagnosticRecord(unittest.TestCase):
     def test_every_declared_code_is_constructible_and_graded(self):
         # The closed set is the contract; a code in CODES that the record
         # rejects would be a contract nobody can honour.
-        self.assertEqual(len(CODES), 9)
+        self.assertEqual(len(CODES), 11)
         for code in CODES:
             self.assertEqual(_diag(code=code).code, code)
             self.assertEqual(_diag(code=code).severity, SEVERITY_OF[code])

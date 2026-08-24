@@ -165,9 +165,10 @@ status completed
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
 (`unknown-verb`, `unknown-entity`, `guard-skipped-steps`, `guard-orphaned-steps`,
-`aggregation-orphaned-list`), `info`는 고쳐도 사라지지 않는 플랫폼
-상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
-`authorization-not-verified`, `validation-sample-derived`). 등급별 표는
+`aggregation-orphaned-list`, `event-source-mismatch`), `info`는 고쳐도 사라지지 않는
+플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
+`authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`).
+등급별 표는
 `references/declarations.md`에 생성되어 있다 — 등급을 정하는 것은 그 표가 아니라
 `diagnostics.SEVERITY_OF`이고, 문서는 그것의 사본이다. CI에서 의도한 선언을
 통과시키려면 `--strict=warning`을 쓴다.
@@ -193,6 +194,8 @@ status completed
 - **`aggregation-orphaned-list`도 `line N`만 갖는다** — 같은 이유다: 저자가
   고쳐야 하는 것은 그 `set` 줄(또는 그 앞에 `list`를 추가하는 것)이라, 줄을
   바로 가리킨다(RFC-0025 §4).
+- **`event-source-mismatch`/`event-source-orphaned`도 `line N`만 갖는다** — 저자가
+  보거나 옮겨야 하는 것은 그 `emit` 줄이라, 줄을 바로 가리킨다(issue #98).
 
 노드 id에서 선언명을 되짚는 규칙은
 [references/naming.md](references/naming.md)에 있다.

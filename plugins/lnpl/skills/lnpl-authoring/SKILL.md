@@ -54,10 +54,16 @@ lnpl compile <파일>
 `--strict`가 없다). 즉 보지 않으면 사라진다. `unknown-verb`, `unknown-entity`,
 `declared-not-enforced`, `declared-measured-only`, `authorization-not-verified`,
 `guard-skipped-steps`, `guard-orphaned-steps`, `validation-sample-derived`,
-`aggregation-orphaned-list` 중 하나라도 나오면, 그게 의도한 것인지 사용자에게
-확인하고 넘어간다. 조용히 무시하지 않는다.
+`aggregation-orphaned-list`, `event-source-mismatch`, `event-source-orphaned` 중
+하나라도 나오면, 그게 의도한 것인지 사용자에게 확인하고 넘어간다. 조용히
+무시하지 않는다.
 
 `guard-orphaned-steps`는 특히 조용히 넘기지 마라 — 가드는 **다음 항목 하나**만
 소유하므로, 그 진단이 가리키는 스텝은 조건이 거짓이어도 실행된다(RFC-0023).
+
+`event-source-mismatch`도 같은 함정이다 — `event <E> on <Entity> <op>`를
+선언했다고 `emit <E>`가 그 `<op> <entity>` 스텝과 묶여 실행되는 것은 아니다.
+같은 가드 스코프에 두거나(가드 줄 반복 / `parallel` 블록) 진단이 사라지는지
+확인한다(issue #98).
 
 `lnpl`이 없다는 오류가 나면 `lnpl-doctor` 스킬을 쓴다.

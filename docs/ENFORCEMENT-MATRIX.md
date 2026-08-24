@@ -107,14 +107,16 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | guard-orphaned-steps | warning | 가드 조건이 참조한 엔티티를, 그 가드 뒤의 비가드 스텝이 읽거나 쓸 때 (RFC-0023) | 컴파일 타임 — lowering |
 | validation-sample-derived | info | mode B 빌드가 Validation 결과를 파생 sample payload로 확정했을 때 | 컴파일 타임 — mode B 빌드 |
 | aggregation-orphaned-list | warning | `sum`/`count`가 참조하는 RowSet을, 이 워크플로의 어떤 `list`도(가드 밖에서) 앞서 채우지 않을 때 (RFC-0025) | 컴파일 타임 — lowering |
+| event-source-mismatch | warning | `event <E> on <Entity> <op>` 소스가 선언돼 있고 워크플로에 `emit <E>`가 있는데, 같은 워크플로의 `<op> <entity>` 스텝이 emit과 같은 가드 스코프에 있지 않을 때 (issue #98) | 컴파일 타임 — lowering |
+| event-source-orphaned | info | `on`-소스 이벤트를 `emit`하는 워크플로에 그 소스가 지목하는 `<op> <entity>` 스텝이 아예 없을 때 (issue #98) | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
 `impl/tests/test_enforcement_matrix.py`가 둘이 어긋나면 실패한다. 등급을 가르는
 질문은 하나다(RFC-0021): **프로그램을 고치면 이 진단이 사라지는가.** 사라지면
 `warning`(`unknown-verb` · `unknown-entity` · `guard-skipped-steps` ·
-`guard-orphaned-steps` · `aggregation-orphaned-list`), 사라지지 않으면
-`info`(나머지 네 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
+`guard-orphaned-steps` · `aggregation-orphaned-list` · `event-source-mismatch`),
+사라지지 않으면 `info`(나머지 다섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만
 rc 0이 rc 2로 승격되고, `--strict=<level>`이 어느 등급부터 승격할지 고른다(이슈
