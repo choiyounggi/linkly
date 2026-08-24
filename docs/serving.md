@@ -19,6 +19,21 @@ D2). 커서는 정렬키+row_key를 인코딩한 불투명 토큰이며(D3), 목
 `{"items": [...], "next": <다음 커서 또는 null>}`이다. 인가는 워크플로 경로와
 같은 판정을 그대로 재사용한다(M3/M3a, D5) — 조회 전용의 새 401 판정은 없다.
 
+이슈 #103: 실시간 표면도 opt-in 선언에서 유도된다 — ws 문법을 언어에 넣는
+대신, 이벤트 선언의 `subscribe` 한 낱말(AppSync형 명시 opt-in)이
+`GET /<service-slug>/events/<event-slug>`(`Accept: text/event-stream`)를
+연다. 이 경로는 그 이벤트를 실제로 `emit`하는 워크플로가 속한 서비스에만
+붙는다(get-single이 엔티티 소유를 유도하는 것과 같은 구조적 규칙 — 새 선언
+없이 IR 그래프에서 유도, `subscribe` 없는 이벤트는 표면이 없어 404). 서버는
+`lnpl_outbox`(#102)를 그 이벤트로 필터링해 폴링-tail하고, 새 행마다
+`id: <seq>`/`data: <마스킹된 payload>` SSE 프레임을 쓴다. `id:`는 t102의
+`seq`(단조 저장소 커서)이지 `emission_id`가 아니다 — `emission_id`는 실행
+1회의 트레이스 식별자라 재실행마다 재사용될 수 있어 재접속 커서로 쓸 수
+없다. 재접속은 `Last-Event-ID` 헤더(SSE 표준 재전송 기제)로 그 seq 초과분만
+이어받아 유실이 없다. 인가는 워크플로/조회 경로와 같은 M3/M3a를 그대로
+재사용한다. payload는 `EventEmit` 시점에 이미 마스킹된 값이라(#43 계약)
+구독 경로가 별도로 마스킹하지 않는다.
+
 ```bash
 lnpl serve examples/shorten.lnpl &
 curl -s http://127.0.0.1:8080/shorten-service/shorten \
@@ -50,6 +65,8 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M12 | GET 목록: `after` 커서가 해독 불가 또는 이 필드 타입과 안 맞음(위조) | 400 | `cursor-invalid` |
 | M13 | GET 목록: `limit`이 정수가 아니거나 `[1, 200]` 밖 | 400 | `limit-invalid` |
 | M14 | GET(단건·목록) 리포지토리 드라이버 오류 | 500 | `read-failed` |
+| M15 | SSE 구독: `subscribe` 없는 이벤트(경로가 라우팅 테이블에 없음) | 404 | `not-found` |
+| M16 | SSE 구독: `Last-Event-ID`가 음이 아닌 정수가 아님(위조) | 400 | `cursor-invalid` |
 
 - **가드 거부는 200이다.** RFC-0014가 skipped를 status와 직교하는 신호로 정의한다
   — 가드가 제 역할을 한 실행은 CLI에서 rc 0이고, HTTP만 4xx를 주면 같은 실행이
@@ -86,6 +103,12 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   correlation id와 함께 서버 stderr로 나간다. 토큰은 `lnpl token`이 발급한다.
 - 스케줄 트리거(#49, `x-lnpl-schedules`)는 서빙되지 않는다. 모드 B(네이티브)
   서빙도 없다.
+- **WebSocket은 이 이슈(#103)에서 명시 보류한다.** SSE는 단방향 HTTP 스트림이라
+  stdlib(`ThreadingHTTPServer`)로 구현 가능하지만, WebSocket은 프로토콜
+  업그레이드·프레이밍에 외부 의존이 필요해 stdlib-only 원칙과 맞지 않는다.
+  클라이언트→서버 양방향 수요가 실제 이슈로 잡히면, 언어에 ws 문법을 넣기
+  전에 외부 게이트웨이 패턴(AWS Step Functions형: API Gateway WebSocket +
+  task token 콜백으로 위임)을 먼저 검토한다.
 - 요청 `Content-Type` 헤더는 검사하지 않는다 — body 파싱 성공 여부가 판정한다.
 
 ## 운영 성질
@@ -98,4 +121,9 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   받은 시점에 서버가 아직 정리 중일 수 있다.
 - 종료: SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. 워커 스레드는 데몬이라 진행 중 요청을
   기다리지 않는다.
+- SSE 구독(#103)은 스레드-퍼-요청 모델에서 특히 무겁다 — 연결이 열려 있는 한
+  그 스레드를 계속 점유한다. `serve.SSE_POLL_INTERVAL_S`(기본 0.2s)로
+  `lnpl_outbox`를 폴링하고, `serve.SSE_IDLE_TIMEOUT_S`(기본 30s) 동안 새 행이
+  없으면 연결을 스스로 닫는다 — 느리거나 죽은 구독자가 워커 스레드를 무한정
+  묶어 두지 못하게 하는 상한이다(WSGI/graceful shutdown은 #80 별도 이슈).
 - 요청별 진단(가드 스킵 등)은 CLI와 같은 채널인 stderr로 나간다.

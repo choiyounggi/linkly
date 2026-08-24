@@ -90,6 +90,39 @@ def repository_calls(document, workflow_id):
     return calls
 
 
+def event_emissions(document, workflow_id):
+    """Every event id an `emit`/`publish` step inside `workflow_id` names, in
+    declared order (issue #103). Same reachability walk `repository_calls`
+    already runs for `RepositoryCall` — an `EventEmit` sits under a
+    `WorkflowStep` the exact same way, so `serve.build_routes` can derive
+    "which service owns this event" from what a service's workflows actually
+    emit, the same structural-not-declared rule D1 in `build_routes`'s own
+    docstring already uses for get-single entity ownership.
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    workflow = nodes.get(workflow_id)
+    if workflow is None or workflow["kind"] != "Workflow":
+        return []
+
+    events = []
+
+    def walk(ids):
+        for node_id in ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            if node["kind"] == "WorkflowStep":
+                for child_id in node.get("children", []):
+                    child = nodes.get(child_id)
+                    if child is not None and child["kind"] == "EventEmit":
+                        events.append(child["event"])
+            else:
+                walk(node.get("children", []))
+
+    walk(workflow.get("children", []))
+    return events
+
+
 def seeded_entities(document, workflow_id):
     """The entity ids the default seed populates — those the workflow `read`s.
 

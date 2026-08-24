@@ -156,6 +156,20 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    def read_outbox(self, event, after_seq=0):
+        """Every `event` emission with `seq > after_seq`, ascending (issue
+        #103): the SSE subscribe surface's tail read. Independent of
+        `delivered_at` — a live SSE subscriber and the drain/ack consumer
+        (issue #102) read this same table for two unrelated purposes, and
+        neither's cursor moves the other's. Same empty-list-never-None
+        contract as `query`/`drain_outbox`.
+
+        Reference implementation: `interp.FakeRepository`, a no-op — it has
+        no store that outlives the run, so there is nothing here to tail (the
+        same asymmetry `record_emission`'s docstring states for the Fake).
+        """
+        raise NotImplementedError
+
     def close(self):
         """Release resources. Safe to call more than once."""
         raise NotImplementedError
@@ -311,6 +325,10 @@ _SELECT_OUTBOX_SEQ = "SELECT 1 FROM lnpl_outbox WHERE seq = ?"
 _SELECT_UNDELIVERED = ("SELECT seq, emission_id, event, payload, created_at "
                        "FROM lnpl_outbox WHERE delivered_at IS NULL ORDER BY seq")
 _SELECT_UNDELIVERED_LIMIT = _SELECT_UNDELIVERED + " LIMIT ?"
+# issue #103: the SSE tail's read — scoped to one event, `delivered_at`
+# ignored entirely (that column is the drain/ack consumer's alone).
+_SELECT_OUTBOX_SINCE = ("SELECT seq, emission_id, event, payload, created_at "
+                        "FROM lnpl_outbox WHERE event = ? AND seq > ? ORDER BY seq")
 # The `delivered_at IS NULL` guard is what makes a re-ack idempotent without a
 # second read: acking an already-delivered seq matches zero rows and reports
 # no error, its `delivered_at` left exactly as the first ack set it.
@@ -489,6 +507,23 @@ class SqliteRepositoryDriver(RepositoryDriver):
                     _SELECT_UNDELIVERED_LIMIT, (limit,)).fetchall()
         except sqlite3.Error as exc:
             raise DriverError("cannot drain outbox: %s" % exc) from exc
+        return [{"seq": row[0], "emission_id": row[1], "event": row[2],
+                "payload": json.loads(row[3]), "created_at": row[4]}
+               for row in found]
+
+    def read_outbox(self, event, after_seq=0):
+        """Every emission of `event` with `seq > after_seq`, ascending (issue
+        #103): the SSE subscribe surface's tail read, unaffected by
+        `delivered_at` (see the schema comment above `_CREATE_OUTBOX_TABLE`
+        and the `RepositoryDriver.read_outbox` contract docstring). Empty
+        list, never `None`, matching `drain_outbox`'s own contract.
+        """
+        try:
+            found = self._conn.execute(
+                _SELECT_OUTBOX_SINCE, (event, after_seq)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot read outbox for %s: %s"
+                              % (event, exc)) from exc
         return [{"seq": row[0], "emission_id": row[1], "event": row[2],
                 "payload": json.loads(row[3]), "created_at": row[4]}
                for row in found]

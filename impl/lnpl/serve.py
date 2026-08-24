@@ -17,6 +17,7 @@ import base64
 import binascii
 import json
 import sys
+import time
 import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +26,7 @@ from .diagnostics import format_lines
 from .drivers import DriverError, TokenError, audience_for_path
 from .interp import Interpreter, mask_payload, refinement_index
 from .openapi import generate, _slug
-from .repo_policy import default_rows, repository_calls, row_key
+from .repo_policy import default_rows, event_emissions, repository_calls, row_key
 
 # M4: refuse to buffer more than this before reading a byte. The Fake-backend
 # dev server has no streaming consumer, so anything past 1 MiB is a mistake.
@@ -37,6 +38,15 @@ MAX_BODY_BYTES = 1 << 20
 # expected.
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+
+# issue #103, D5: constants an SSE handler thread owns itself — a
+# thread-per-connection server (`_Server`) has no separate reactor to bound
+# an idle stream from outside, so the handler's own poll loop is what stops
+# a slow/dead subscriber from pinning a worker thread forever. Module-level
+# (not class constants) so a test can shrink them for a fast, deterministic
+# idle-timeout check without waiting out the production value.
+SSE_POLL_INTERVAL_S = 0.2
+SSE_IDLE_TIMEOUT_S = 30.0
 
 
 class CursorError(Exception):
@@ -127,9 +137,10 @@ def build_routes(document):
     Three kinds (issue #99 adds the last two to the original workflow-only
     table):
 
-      "workflow"   POST /<svc>/<workflow-slug>            {"workflow": id}
-      "get-single" GET  /<svc>/<entity-slug>/{id}          {"entity": id}
-      "get-list"   GET  /<svc>/<entity-slug>               {"entity", "field"}
+      "workflow"     POST /<svc>/<workflow-slug>            {"workflow": id}
+      "get-single"   GET  /<svc>/<entity-slug>/{id}          {"entity": id}
+      "get-list"     GET  /<svc>/<entity-slug>               {"entity", "field"}
+      "sse-subscribe" GET  /<svc>/events/<event-slug>         {"event": id}
 
     "get-single" is automatic for every entity a service's workflows touch
     (D1 — "entities bound to the service", derived the same way
@@ -137,6 +148,12 @@ def build_routes(document):
     reads": from the RepositoryCall effects the document's own graph
     already carries, not a new declaration). "get-list" exists only where
     `expose list <Entity> by <field>` declared it (D2 — default un-exposed).
+    "sse-subscribe" (issue #103) follows the SAME structural rule as
+    "get-single": a service owns the events its own workflows actually
+    `emit` (`repo_policy.event_emissions`, the `EventEmit` twin of
+    `repository_calls`) — and among those, only the ones the event
+    declaration itself opted into via `subscribe` (default un-exposed, same
+    posture as D2).
 
     The loop mirrors `openapi.generate` (same `_slug`, same per-kind walk),
     and the assertion at the end makes the mirror a guarantee: a path set
@@ -155,12 +172,14 @@ def build_routes(document):
                 auth = "jwt" in node.get("mechanisms", [])
         svc_slug = _slug(service["name"])
         entity_ids = set()
+        event_ids = set()
         for cid in service.get("children", []):
             child = nodes[cid]
             if child["kind"] == "Workflow":
                 path = "/%s/%s" % (svc_slug, _slug(child["name"]))
                 routes[path] = {"kind": "workflow", "workflow": cid, "auth": auth}
                 entity_ids.update(eid for eid, _op in repository_calls(document, cid))
+                event_ids.update(event_emissions(document, cid))
             elif child["kind"] == "Expose":
                 entity = nodes[child["entity"]]
                 list_path = "/%s/%s" % (svc_slug, _slug(entity["name"]))
@@ -170,6 +189,12 @@ def build_routes(document):
             entity = nodes[eid]
             single_path = "/%s/%s/{id}" % (svc_slug, _slug(entity["name"]))
             routes[single_path] = {"kind": "get-single", "entity": eid, "auth": auth}
+        for eid in event_ids:
+            event = nodes[eid]
+            if not event.get("subscribe"):
+                continue
+            events_path = "/%s/events/%s" % (svc_slug, _slug(event["name"]))
+            routes[events_path] = {"kind": "sse-subscribe", "event": eid, "auth": auth}
     contract = set(generate(document)["paths"])
     if set(routes) != contract:
         raise ServeError("served paths %r do not match the OpenAPI contract %r"
@@ -355,6 +380,16 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 self._get_single(route, segments[3])
                 return
+            # issue #103: `/<svc>/events/<slug>` is ALSO a 4-segment path
+            # (`["", svc, "events", slug]`), so it reaches here whenever no
+            # single-row template matched — the single-row attempt above is
+            # tried first and unchanged, this is a fallback, not a rewrite.
+            events_route = self.server.routes.get(path_only)
+            if events_route is not None and events_route.get("kind") == "sse-subscribe":
+                if not self._check_auth(events_route):
+                    return
+                self._subscribe(events_route)
+                return
             self._send(404, problem(404, "not-found",             # M1
                                     "no OpenAPI path %r" % self.path))
             return
@@ -442,6 +477,74 @@ class _Handler(BaseHTTPRequestHandler):
         items = [mask_payload(r, view) for r in page]
         self._send(200, {"items": items, "next": next_cursor},
                   content_type="application/json")
+
+    def _last_event_id(self):
+        """`Last-Event-ID` header -> the outbox seq to resume after (issue
+        #103, D3). Absent -> 0 (from the start). A forged/non-integer value
+        sends 400 and returns `None` — the same "위조 커서 400" judgment
+        `decode_cursor`/`paginate` already make for `after` (D3's own basis:
+        pagination-contract.md), reusing `cursor-invalid` rather than
+        inventing a second error code for what is the same shape of mistake.
+        """
+        header = self.headers.get("Last-Event-ID")
+        if header is None:
+            return 0
+        if not header.isdigit():
+            self._send(400, problem(400, "cursor-invalid",
+                                    "Last-Event-ID must be a non-negative "
+                                    "integer outbox seq"))
+            return None
+        return int(header)
+
+    def _subscribe(self, route):
+        """issue #103: tail `lnpl_outbox` for one event as SSE frames —
+        `id:` is the outbox seq (t102's monotonic delivery cursor, not
+        `emission_id`), `data:` is the payload exactly as EventEmit already
+        masked it (D4 — no second masking path). Polls `read_outbox` at
+        `SSE_POLL_INTERVAL_S`; a connection idle past `SSE_IDLE_TIMEOUT_S`
+        (no rows AND no client read to service) closes on its own (D5) — the
+        thread this handler owns is otherwise pinned for as long as the
+        client stays connected.
+        """
+        after_seq = self._last_event_id()
+        if after_seq is None:
+            return                                                # 400 already sent
+        event_id = route["event"]
+        factory = self.server.repository_factory
+        repository = factory() if factory is not None else None
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            idle_s = 0.0
+            while idle_s < SSE_IDLE_TIMEOUT_S:
+                # `lnpl_outbox.event` is `EventEmit.event` verbatim — the
+                # derived node id (`_event_ref`), not the declared name — so
+                # this reads by `event_id`, matching what `record_emission`
+                # actually wrote (interp.py: `emission["event"] = event_ref`).
+                rows = (repository.read_outbox(event_id, after_seq)
+                        if repository is not None else [])
+                if not rows:
+                    time.sleep(SSE_POLL_INTERVAL_S)
+                    idle_s += SSE_POLL_INTERVAL_S
+                    continue
+                idle_s = 0.0
+                for row in rows:
+                    frame = "id: %d\ndata: %s\n\n" % (
+                        row["seq"],
+                        json.dumps(row["payload"], ensure_ascii=False))
+                    self.wfile.write(frame.encode("utf-8"))
+                    after_seq = row["seq"]
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, DriverError):
+            # A client that walked away, or a store fault mid-stream: this
+            # connection has nothing left to serve either way — no `_send`,
+            # the response line is already on the wire.
+            pass
+        finally:
+            if repository is not None:
+                repository.close()
 
     def _token_accepted(self, header):
         """True when the bearer token passes; otherwise sends 401 and False.

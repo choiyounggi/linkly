@@ -196,6 +196,12 @@ class FakeRepository:
         contract, the same asymmetry `persist`'s own docstring states)."""
         return None
 
+    def read_outbox(self, event, after_seq=0):
+        """Nothing to tail — same asymmetry `record_emission` states: with
+        no persisted emission, there is nothing an SSE subscriber (issue
+        #103) could ever be shown."""
+        return []
+
     def close(self):
         return None
 

@@ -343,6 +343,29 @@ def _parse_http_capability(d):
     return {"method": method, "auth": auth}
 
 
+def _parse_event_subscribe(d):
+    """`event ... subscribe` body lines -> `True`, or a refusal.
+
+    issue #103, D1: a bare flag, one word, at most once — the same shape
+    `_parse_perf_line`'s `VALUELESS_PERF` branch already gives a flag metric.
+    Structural validation only; `subscribe` reaching the IR at all is what
+    `serve.py` reads to derive the SSE route (D2) — this function does not
+    know about routes or auth.
+    """
+    subscribed = False
+    for line in d.items:
+        if line.tokens != ["subscribe"]:
+            raise LowerError(
+                "line %d: event %s takes only a bare `subscribe` line, got %r"
+                % (line.lineno, d.name, " ".join(line.tokens)))
+        if subscribed:
+            raise LowerError(
+                "line %d: event %s declares `subscribe` twice"
+                % (line.lineno, d.name))
+        subscribed = True
+    return subscribed
+
+
 def _parse_policy_line(tokens, lineno):
     head = tokens[0]
     if head not in POLICY_NAMES:
@@ -868,7 +891,9 @@ def lower(decls, module_name):
             # `performance batch`, which parses into silence (t3 F-2).
             _declaration_diagnostics(mod.diagnostics, "event",
                                      [("schedule", d.lineno)], where=eid)
-        mod.add(_node("Event", eid, name=d.name, source=source, line=d.lineno))
+        subscribe = _parse_event_subscribe(d)
+        mod.add(_node("Event", eid, name=d.name, source=source,
+                      subscribe=subscribe or None, line=d.lineno))
 
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:

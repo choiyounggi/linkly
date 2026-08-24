@@ -434,6 +434,35 @@ def schedule_negatives():
     ]
 
 
+SUBSCRIBE_EVENT_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "orders",
+    "nodes": [
+        {
+            "kind": "Event",
+            "id": "event.order.placed",
+            "name": "OrderPlaced",
+            "source": {"ref": "entity.order", "on": "create"},
+            "subscribe": True,
+        },
+    ],
+}
+
+
+def subscribe_negatives():
+    """issue #103 — `Event.subscribe` is a single boolean field, unlike
+    `capability http`'s `method`/`auth` (an enum plus a nested object): the
+    only structural way to violate it is the field's own type, per
+    `network_negatives`'s template for a single-scalar addition.
+    """
+    n1 = copy.deepcopy(SUBSCRIBE_EVENT_FIXTURE)
+    n1["nodes"][0]["subscribe"] = "yes"            # type 불일치 — boolean 아님
+
+    return [
+        ("subscribe is not a boolean: 'yes'", n1),
+    ]
+
+
 ALT_GUARD_FIXTURE = {
     "lir_version": "0.1",
     "module": "alt_guard",
@@ -708,6 +737,8 @@ def self_test():
         ("EXPOSE_FIXTURE (issue #99 Expose)", EXPOSE_FIXTURE),
         ("CAPABILITY_HTTP_FIXTURE (issue #101 Capability.method/auth)",
          CAPABILITY_HTTP_FIXTURE),
+        ("SUBSCRIBE_EVENT_FIXTURE (issue #103 Event.subscribe)",
+         SUBSCRIBE_EVENT_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -747,7 +778,7 @@ def self_test():
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
       + respond_negatives() + create_negatives() + expose_negatives() \
-      + capability_http_negatives()
+      + capability_http_negatives() + subscribe_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

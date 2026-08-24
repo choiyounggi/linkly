@@ -363,6 +363,14 @@ def parse(source):
             cur.items.append(line)
             continue
 
+        if cur.kind == "event" and cur_clause is None:
+            # `subscribe` (issue #103, D1): the same content-line shape
+            # `capability http`'s `method`/`auth` lines use just above — no
+            # clause keyword opens it, `lower` parses/validates the one
+            # allowed word when it builds the Event node.
+            cur.items.append(line)
+            continue
+
         if cur_clause is None:
             # Exhaustive listing (issue #63), matching the compiler's existing
             # closed-set diagnostics (type errors, workflow id errors, spec

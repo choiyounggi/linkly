@@ -21,12 +21,16 @@ Mapping (each row cites the IR that produces it):
                            <entity-slug>/{id} path, auto, no declaration needed
     Expose(expose list) -> one GET /<service-slug>/<entity-slug> path (issue #99,
                            D2 — opt-in only, no `expose` clause means no path)
+    Event.subscribe     -> one GET /<service-slug>/events/<event-slug> path,
+                           text/event-stream (issue #103 — opt-in only, and
+                           only for a service whose own workflow `emit`s it,
+                           same "reachable, not declared" rule D1 already uses)
 """
 
 from .diagnostics import ENFORCEMENT
 from .interp import _duration_ms
 from .refinements import BASE_CATEGORY, facets_for_base
-from .repo_policy import binding_name, repository_calls
+from .repo_policy import binding_name, event_emissions, repository_calls
 from .types import SEMANTIC_TYPES
 
 # Semantic type -> OpenAPI schema, projected from the one type registry
@@ -203,6 +207,7 @@ def generate(document, version="0.1.0"):
         uses_bearer = uses_bearer or "jwt" in con["mechanisms"]
         svc_slug = _slug(service["name"])
         entity_ids = set()
+        event_ids = set()
         for child_id in service.get("children", []):
             child = nodes[child_id]
             if child["kind"] == "Workflow":
@@ -211,6 +216,7 @@ def generate(document, version="0.1.0"):
                                                   entities, refined)}
                 entity_ids.update(eid for eid, _op
                                   in repository_calls(document, child_id))
+                event_ids.update(event_emissions(document, child_id))
             elif child["kind"] == "Expose":
                 entity = nodes[child["entity"]]
                 list_path = "/%s/%s" % (svc_slug, _slug(entity["name"]))
@@ -221,6 +227,13 @@ def generate(document, version="0.1.0"):
             single_path = "/%s/%s/{id}" % (svc_slug, _slug(entity["name"]))
             paths.setdefault(single_path, {})["get"] = _get_single_operation(
                 service, entity, con)
+        for eid in sorted(event_ids):
+            event = nodes[eid]
+            if not event.get("subscribe"):
+                continue
+            events_path = "/%s/events/%s" % (svc_slug, _slug(event["name"]))
+            paths.setdefault(events_path, {})["get"] = _events_operation(
+                service, event, con)
 
     spec = {
         "openapi": "3.1.0",
@@ -486,6 +499,34 @@ def _get_list_operation(service, entity, field, con):
                         "additionalProperties": False,
                     }}}},
             "400": {"description": "malformed `after` cursor or `limit`"},
+        },
+    }
+    if "jwt" in con["mechanisms"]:
+        op["security"] = [{"bearerAuth": []}]
+        op["responses"]["401"] = {"description": "authentication failed"}
+    return op
+
+
+def _events_operation(service, event, con):
+    """issue #103, D2/D3/D4: the opt-in SSE subscribe surface. The body is an
+    open-ended sequence of `id:`/`data:` frames, not one JSON document, so
+    `text/event-stream` replaces `_get_list_operation`'s JSON schema — there
+    is no OpenAPI/JSON-Schema vocabulary for an SSE frame sequence.
+    """
+    op = {
+        "operationId": "%s_subscribe_%s" % (_slug(service["name"]).replace("-", "_"),
+                                            _slug(event["name"]).replace("-", "_")),
+        "summary": "subscribe to %s" % event["name"],
+        "parameters": [
+            {"name": "Last-Event-ID", "in": "header", "required": False,
+             "schema": {"type": "string"},
+             "description": "resume after this outbox seq, no loss (D3)"},
+        ],
+        "responses": {
+            "200": {"description": "an SSE stream of masked emissions, "
+                                   "id: is the outbox seq",
+                    "content": {"text/event-stream": {"schema": {"type": "string"}}}},
+            "400": {"description": "Last-Event-ID is not a valid seq"},
         },
     }
     if "jwt" in con["mechanisms"]:
