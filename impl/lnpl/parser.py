@@ -212,6 +212,22 @@ def parse(source):
         head = line.head
 
         if head in KEYWORDS_TOP:
+            if head == "capability" and len(line.tokens) > 1 and line.tokens[1] == "http":
+                # `capability http <Name>` (issue #101 / RFC-0027): `http` is a
+                # fixed kind marker, not the capability's name — unlike
+                # `capability <name> [<version>]` below, which reads token[1]
+                # as the name. Its body (`method`/`auth` lines) is grammar-free
+                # content, like `refine`'s facet lines: `lower` parses and
+                # validates it, this module only shapes the block.
+                if len(line.tokens) != 3:
+                    raise ParseError(
+                        "line %d: `capability http` takes exactly one name — "
+                        "`capability http <Name>`" % line.lineno)
+                cur = Decl(head, line.tokens[2], line.lineno)
+                cur.extra["capability_kind"] = "http"
+                cur_clause = None
+                decls.append(cur)
+                continue
             name = _require_name(line)
             cur = Decl(head, name, line.lineno)
             cur_clause = None
@@ -332,6 +348,18 @@ def parse(source):
             # FacetLine+ sits directly under the declaration: `refine` has no
             # clause keyword (RFC-0002 §Full grammar). Values are checked when
             # lowering, where the base decides which facets apply.
+            cur.items.append(line)
+            continue
+
+        if (cur.kind == "capability" and cur.extra.get("capability_kind") == "http"
+                and cur_clause is None):
+            # `method <get|post>` / `auth bearer|apikey ...` (issue #101):
+            # each line carries its keyword and value together, unlike a
+            # SERVICE_CLAUSES block (a bare opener, then content lines) — so
+            # it is shaped the same as `refine`'s facet lines just above, and
+            # `lower` parses/validates the two allowed keywords when it builds
+            # the Capability node. Every other capability kind still falls
+            # through to the generic "takes no clause lines" rejection below.
             cur.items.append(line)
             continue
 

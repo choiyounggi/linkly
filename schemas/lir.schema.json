@@ -423,12 +423,43 @@
         },
         "version": {
           "type": "string"
+        },
+        "method": {
+          "enum": [
+            "get",
+            "post"
+          ]
+        },
+        "auth": {
+          "$ref": "#/$defs/httpCapabilityAuth"
         }
       },
       "required": [
         "kind",
         "id",
         "name"
+      ],
+      "additionalProperties": false
+    },
+    "httpCapabilityAuth": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "bearer",
+            "apikey"
+          ]
+        },
+        "env": {
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "env"
       ],
       "additionalProperties": false
     },

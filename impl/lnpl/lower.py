@@ -175,6 +175,12 @@ PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
 ARGUMENT_MECHANISMS = ("role", "encrypt")
 
+# `capability http <Name>` (issue #101 / RFC-0027): the outbound HTTP method
+# and auth-scheme vocabularies. Closed sets, widened only on demand (issue
+# text) — the same "add a table row, not a branch" shape as POLICY_NAMES etc.
+HTTP_METHODS = ("get", "post")
+HTTP_AUTH_KINDS = ("bearer", "apikey")
+
 # issue #99, D2: `expose` opt-in list surface. `list` is the only verb — a
 # closed set of one, widened only if a later issue asks for more (RFC-0016
 # §Open Questions precedent). The sort field's base type is restricted to
@@ -265,6 +271,76 @@ def _node(kind, nid, **fields):
     node = {"kind": kind, "id": nid}
     node.update({k: v for k, v in fields.items() if v is not None})
     return node
+
+
+def _looks_like_url(target):
+    """Advisory only (declared-not-bound, issue #101): a bare logical name vs.
+    a URL literal. `drivers.HttpNetworkDriver` is the authority that actually
+    rejects a malformed URL at the resolved target (RFC-0027, unchanged by
+    #101) — this just decides whether `call <target>` needed a capability."""
+    return target.startswith("http://") or target.startswith("https://")
+
+
+def _parse_http_auth(line):
+    """One `auth ...` line -> {"kind", "env"} or {"kind", "header", "env"}.
+
+    RFC-0027 secrets principle (`--jwt-secret-env` precedent): only the
+    environment variable's NAME is ever recorded — never a value.
+    """
+    tokens = line.tokens
+    if len(tokens) < 2 or tokens[1] not in HTTP_AUTH_KINDS:
+        raise LowerError(
+            "line %d: `auth` takes one of %s"
+            % (line.lineno, "/".join(HTTP_AUTH_KINDS)))
+    kind = tokens[1]
+    if kind == "bearer":
+        if len(tokens) != 4 or tokens[2] != "from":
+            raise LowerError(
+                "line %d: `auth bearer` needs `from <ENV_NAME>`" % line.lineno)
+        return {"kind": "bearer", "env": tokens[3]}
+    if len(tokens) != 5 or tokens[3] != "from":
+        raise LowerError(
+            "line %d: `auth apikey` needs `<HEADER_NAME> from <ENV_NAME>`"
+            % line.lineno)
+    return {"kind": "apikey", "header": tokens[2], "env": tokens[4]}
+
+
+def _parse_http_capability(d):
+    """`capability http <Name>` body lines -> {"method": ..., "auth": ...|None}.
+
+    `method` is required (no silent POST default — issue #101's whole point is
+    that method/auth are declared, not guessed); `auth` is optional. Each
+    keyword may appear at most once.
+    """
+    method = None
+    auth = None
+    for line in d.items:
+        head = line.tokens[0]
+        if head == "method":
+            if method is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `method` twice"
+                    % (line.lineno, d.name))
+            if len(line.tokens) != 2 or line.tokens[1] not in HTTP_METHODS:
+                raise LowerError(
+                    "line %d: `method` takes one of %s"
+                    % (line.lineno, "/".join(HTTP_METHODS)))
+            method = line.tokens[1]
+        elif head == "auth":
+            if auth is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `auth` twice"
+                    % (line.lineno, d.name))
+            auth = _parse_http_auth(line)
+        else:
+            raise LowerError(
+                "line %d: capability http takes `method`/`auth`, got %r"
+                % (line.lineno, head))
+    if method is None:
+        raise LowerError(
+            "line %d: capability http %s declares no `method` — one of %s "
+            "is required" % (d.lineno, d.name, "/".join(HTTP_METHODS)))
+    return {"method": method, "auth": auth}
 
 
 def _parse_policy_line(tokens, lineno):
@@ -635,6 +711,11 @@ def lower(decls, module_name):
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
     cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
+    # issue #101: which declared capabilities carry outbound HTTP metadata —
+    # `_derive_effect`'s NetworkCall branch uses only the name set, to flag a
+    # `call <target>` whose target names no `capability http` declaration.
+    http_cap_names = {d.name for d in by_kind["capability"]
+                      if d.extra.get("capability_kind") == "http"}
 
     # ---- workflow ownership: nearest preceding service (RFC-0002 A.2 R2) ----
     owner_of = {}
@@ -792,7 +873,7 @@ def lower(decls, module_name):
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, registry, mod.diagnostics)
+        ctx = _WfContext(wid, registry, mod.diagnostics, http_cap_names)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
                       line=d.lineno))
@@ -812,9 +893,11 @@ def lower(decls, module_name):
         mod.add(n)
 
     for d in by_kind["capability"]:
+        http_fields = (_parse_http_capability(d)
+                      if d.extra.get("capability_kind") == "http" else {})
         mod.add(_node("Capability", derive_id(d.name, "Capability"),
                       name=d.name, version=d.extra.get("version"),
-                      line=d.lineno))
+                      line=d.lineno, **http_fields))
 
     return mod
 
@@ -822,10 +905,11 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, registry, diagnostics):
+    def __init__(self, wid, registry, diagnostics, http_cap_names=frozenset()):
         self.wid = wid
         self.registry = registry
         self.diagnostics = diagnostics
+        self.http_cap_names = http_cap_names
         self.emitted = []
         self._step_n = 0
         self._guard_n = 0
@@ -899,7 +983,8 @@ class _WfContext:
             derived = _derive_effect(step_id, verb, obj, self.registry,
                                      line.lineno, line.tokens[2:],
                                      diagnostics=self.diagnostics,
-                                     step_text=" ".join(line.tokens))
+                                     step_text=" ".join(line.tokens),
+                                     http_cap_names=self.http_cap_names)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -1871,7 +1956,7 @@ class _Scope:
 
 
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
-                   diagnostics=None, step_text=None):
+                   diagnostics=None, step_text=None, http_cap_names=frozenset()):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
@@ -1883,6 +1968,11 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
     `unknown-entity` warning for a step object that names no declared entity,
     without changing which entity it falls back to resolving.
+
+    `http_cap_names` (issue #101) is the declared `capability http` name set,
+    used only by the `NetworkCall` branch to flag a target with no matching
+    declaration — it runs with method POST and no auth either way, so this is
+    informational, not a rejection.
     """
     entry = VERB_LEXICON.get(verb)
     if entry is None:
@@ -1950,6 +2040,14 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
 
     if kind == "NetworkCall":
         target = obj or "unspecified"
+        if (diagnostics is not None and not _looks_like_url(target)
+                and target not in http_cap_names):
+            diagnostics.add(
+                code="declared-not-bound", where=eid,
+                subject="call %s" % target,
+                message="%r has no `capability http` declaration — it runs "
+                        "with method POST and no auth" % target,
+                line=lineno)
         if not rest:
             # RFC-0027 §3: the unbound, backward-compatible form — no
             # `result` field, byte-identical to the pre-RFC-0027 no-op.

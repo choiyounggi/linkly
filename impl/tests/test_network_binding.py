@@ -58,8 +58,12 @@ class TestUnboundCallUnchanged(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["target"], "PaymentGateway")
         self.assertNotIn("result", calls[0])
-        self.assertEqual(mod.diagnostics.all(), [],
-                         "an unbound call must not diagnose anything")
+        # RFC-0027's own diagnostics (the `as`-binding feature this file
+        # covers) still emit none; issue #101 adds one `declared-not-bound`
+        # for `PaymentGateway` naming no `capability http` in this fixture —
+        # a later, separate feature, not a regression of this one.
+        codes = [d.code for d in mod.diagnostics.all()]
+        self.assertEqual(codes, ["declared-not-bound"])
 
     def test_request_with_no_trailing_tokens_carries_no_result_field(self):
         mod = compile_doc(call_source("    request PaymentGateway\n"))
@@ -78,7 +82,11 @@ class TestAsBinding(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["target"], "PaymentGateway")
         self.assertEqual(calls[0]["result"], "paymentResult")
-        self.assertEqual(mod.diagnostics.all(), [])
+        # issue #101: `PaymentGateway` names no `capability http` in this
+        # fixture, so `declared-not-bound` is the one expected diagnostic —
+        # see the no-trailing-tokens case above for the full rationale.
+        codes = [d.code for d in mod.diagnostics.all()]
+        self.assertEqual(codes, ["declared-not-bound"])
 
     def test_request_as_binds_the_result_field_too(self):
         """`call`/`request` share one `VERB_LEXICON` entry (`NetworkCall`,

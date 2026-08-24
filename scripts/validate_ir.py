@@ -335,6 +335,55 @@ def create_negatives():
     ]
 
 
+CAPABILITY_HTTP_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "capability_http",
+    "nodes": [
+        {
+            "kind": "Capability",
+            "id": "cap.payment.gateway",
+            "name": "PaymentGateway",
+            "method": "post",
+            "auth": {"kind": "bearer", "env": "PAYMENT_TOKEN"},
+        },
+    ],
+}
+
+
+def capability_http_negatives():
+    """issue #101 — `capability http`'s two new Capability fields, `method`
+    (enum) and `auth` (a nested object with its own `kind` enum + required
+    `env`). The golden example's Capability nodes carry neither field, so a
+    mutant of it never reaches this branch — one negative per keyword each
+    field turns on, per `network_negatives`'s template.
+    """
+    n1 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    n1["nodes"][0]["method"] = "put"                      # method 밖 — 폐집합 get/post
+
+    n2 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    n2["nodes"][0]["auth"]["kind"] = "basic"               # auth.kind 밖 — 폐집합 bearer/apikey
+
+    n3 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    del n3["nodes"][0]["auth"]["env"]                      # auth.env 필수 누락
+
+    n4 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    n4["nodes"][0]["auth"]["token"] = "sk-live-abc"        # 미선언 속성 — 값이 실릴 자리가
+                                                            # 애초에 없다는 것의 증거
+                                                            # (RFC-0027 시크릿 원칙)
+
+    n5 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    del n5["nodes"][0]["name"]                             # required 누락 —
+                                                            # method/auth가 있어도 여전히 걸린다
+
+    return [
+        ("method outside the enum: 'put'", n1),
+        ("auth.kind outside the enum: 'basic'", n2),
+        ("auth is missing its required env", n3),
+        ("undeclared property on auth: token (a secret VALUE, not an env name)", n4),
+        ("required field removed: Capability.name (method/auth present)", n5),
+    ]
+
+
 SCHEDULE_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "rollup",
@@ -657,6 +706,8 @@ def self_test():
         ("RESPOND_FIXTURE (issue #96 Response.refs)", RESPOND_FIXTURE),
         ("CREATE_FIXTURE (issue #97 RepositoryCall.result)", CREATE_FIXTURE),
         ("EXPOSE_FIXTURE (issue #99 Expose)", EXPOSE_FIXTURE),
+        ("CAPABILITY_HTTP_FIXTURE (issue #101 Capability.method/auth)",
+         CAPABILITY_HTTP_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -695,7 +746,8 @@ def self_test():
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
-      + respond_negatives() + create_negatives() + expose_negatives()
+      + respond_negatives() + create_negatives() + expose_negatives() \
+      + capability_http_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

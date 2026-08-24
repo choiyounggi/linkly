@@ -609,38 +609,88 @@ class FakeNetworkDriver(NetworkDriver):
         pass
 
 
+def _is_url_literal(target):
+    """True when `target` is already `http(s)://host[:port]/path` — the
+    resolvable-URL shape `HttpNetworkDriver.call`'s entry check requires.
+    Shared by the resolution step below so a literal is classified exactly
+    once, the same way, in both places.
+    """
+    import urllib.parse
+    parts = urllib.parse.urlsplit(target)
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
 class HttpNetworkDriver(NetworkDriver):
     """`http.client` only — standard library, zero dependencies (RFC-0027
-    §1). `target` is read as a URL; the method is fixed `POST` (RFC-0027
-    §Open Questions 4).
+    §1). `target` is read as a URL, or resolved from `endpoints`/`capabilities`
+    when it is a logical name (issue #101) — either way the resolved URL goes
+    through the same entry validation before a connection opens.
+
+    `endpoints`: {logical name -> URL}. `capabilities`: {logical name ->
+    {"method": "GET"/"POST", "headers": {...}}}, already resolved (secret
+    values substituted) by the caller — this class never reads the
+    environment or a capability declaration itself (issue #101's secrets
+    principle: the driver only ever sees a header VALUE, never an ENV name).
+    A target with no entry in `capabilities` defaults to POST/no extra
+    headers — the pre-#101 behaviour for a mapped-but-undeclared name.
     """
+
+    def __init__(self, endpoints=None, capabilities=None):
+        self._endpoints = dict(endpoints or {})
+        self._capabilities = dict(capabilities or {})
+
+    def _resolve(self, target):
+        """target -> (url, method, headers). Raises DriverError for a
+        logical name with no `endpoints` entry — the CLI's startup check
+        (issue #101 D3) is meant to catch this before a run ever starts;
+        this is the defense-in-depth path for a driver used directly.
+        """
+        if _is_url_literal(target):
+            return target, "POST", {}
+        url = self._endpoints.get(target)
+        if url is None:
+            raise DriverError(
+                "network target %r has no --endpoint mapping or "
+                "LNPL_ENDPOINT_%s environment variable (a logical name needs "
+                "one or the other under --network http)"
+                % (target, target.upper()))
+        cap = self._capabilities.get(target)
+        method = cap["method"] if cap else "POST"
+        headers = dict(cap["headers"]) if cap else {}
+        return url, method, headers
 
     def call(self, target, payload, timeout_ms):
         import http.client
         import urllib.parse
 
-        parts = urllib.parse.urlsplit(target)
+        url, method, headers = self._resolve(target)
+        parts = urllib.parse.urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             # A logical name (RFC-0027 examples' `call PaymentGateway as p`)
             # or a non-http(s) scheme has no host `urlsplit` can hand to
             # `http.client` — left unchecked, `HTTPConnection(None, ...)`
             # raises a raw AttributeError the exception clause below does not
-            # catch (issue #90). Reject before opening a connection, not after.
+            # catch (issue #90). Reject before opening a connection, not
+            # after — now checked against the RESOLVED url (issue #101),
+            # since `target` itself may be a logical name `_resolve` already
+            # mapped; this check's own logic is unchanged.
             raise DriverError(
                 "network target %r is not a resolvable URL (the http driver "
                 "needs `http(s)://host[:port]/path`; a logical name has no "
-                "address here)" % target)
-        body = json.dumps(payload).encode("utf-8")
+                "address here)" % url)
         path = urllib.parse.urlunsplit(("", "", parts.path or "/",
                                         parts.query, "")) or "/"
+        body = None
+        if method != "GET":
+            body = json.dumps(payload).encode("utf-8")
+            headers = dict(headers, **{"Content-Type": "application/json"})
         try:
             conn = http.client.HTTPSConnection(
                 parts.hostname, parts.port, timeout=timeout_ms / 1000
             ) if parts.scheme == "https" else http.client.HTTPConnection(
                 parts.hostname, parts.port, timeout=timeout_ms / 1000)
             try:
-                conn.request("POST", path, body=body,
-                             headers={"Content-Type": "application/json"})
+                conn.request(method, path, body=body, headers=headers)
                 response = conn.getresponse()
                 raw = response.read()
             finally:
@@ -683,16 +733,20 @@ def open_repository(spec):
                      % (spec, ", ".join(BACKENDS)))
 
 
-def open_network(spec):
+def open_network(spec, endpoints=None, capabilities=None):
     """`--network`'s value -> a NetworkDriver, or None for the default
     (RFC-0027 §1, the `open_repository` selector mirrored).
 
     `None` means "the Interpreter builds its own FakeNetworkDriver". The
     lookup is a closed table with a defined miss, same as `open_repository`.
+
+    `endpoints`/`capabilities` (issue #101) are ignored for `fake` — the fake
+    driver has no notion of either — and passed through to `HttpNetworkDriver`
+    for `http`.
     """
     if spec == "fake":
         return None
     if spec == "http":
-        return HttpNetworkDriver()
+        return HttpNetworkDriver(endpoints=endpoints, capabilities=capabilities)
     raise ValueError("unknown network %r (accepted: %s)"
                      % (spec, ", ".join(NETWORKS)))

@@ -50,6 +50,7 @@ CODES = (
     "event-source-mismatch",        # #98  `emit` and its declared `on <Entity> <op>` step are not in the same guard scope
     "event-source-orphaned",        # #98  `emit` fires, but its declared `on <Entity> <op>` step never runs in this workflow
     "derived-never-assigned",       # #95  a `derived` field is `create`d, but no `set`/`format` in the workflow ever fills it
+    "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
 )
 
 # code -> grade (#52). One question decides every row:
@@ -94,6 +95,13 @@ SEVERITY_OF = {
     # #95: adding the missing `set`/`format` step removes this — same test as
     # `unknown-verb`, `aggregation-orphaned-list`.
     "derived-never-assigned":     "warning",
+    # #101: a `capability http` declaration is optional — an undeclared
+    # target still runs (method POST, no auth), so the program is correct as
+    # written. Adding the declaration is a legitimate edit that removes this,
+    # but it changes intent (opting into method/auth), not fixing a bug — the
+    # same "the program is correct, the platform is stating what it does
+    # with it" case `declared-not-enforced` already covers.
+    "declared-not-bound":         "info",
 }
 
 # How the runtime treats a declaration.

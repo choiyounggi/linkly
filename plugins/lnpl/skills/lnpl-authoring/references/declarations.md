@@ -51,3 +51,4 @@
 | `event-source-mismatch` | **warning** |
 | `event-source-orphaned` | **info** |
 | `derived-never-assigned` | **warning** |
+| `declared-not-bound` | **info** |

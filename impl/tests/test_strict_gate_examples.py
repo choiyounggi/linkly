@@ -52,9 +52,8 @@ def run_cli_split(argv):
 class TestGoldenExamplesPassTheStrictGate(unittest.TestCase):
     """(1) shorten/checkout/guarded compile clean under the new default gate.
 
-    Each carries only `info`-grade `declared-*` diagnostics (or, for guarded,
-    none at all) — `--strict=warning` gates warning-and-above, so none of
-    these block.
+    Each carries only `info`-grade `declared-*` diagnostics — `--strict=warning`
+    gates warning-and-above, so none of these block.
     """
 
     def test_shorten_passes_strict_warning(self):
@@ -120,12 +119,17 @@ class TestIssue62ReproProbeStopsAtTheGate(unittest.TestCase):
 
 
 class TestGuardedBoundaryHasNoDiagnostics(unittest.TestCase):
-    """(4) The boundary: `guarded.lnpl` reports nothing at all, and still rc=0."""
+    """(4) The boundary: `guarded.lnpl` reports nothing above `info`, and
+    still rc=0. Issue #101 adds one `info`-grade `declared-not-bound` for
+    `call token` — the fixture's `token` names no `capability http` — which
+    does not gate `--strict=warning` either, the same as the other examples'
+    `declared-*` diagnostics this module's docstring already describes."""
 
     def test_guarded_has_zero_diagnostics(self):
         rc, _, err = run_cli_split(["compile", GUARDED_LNPL, "--strict=warning"])
         self.assertEqual(rc, 0)
-        self.assertEqual(err, "")
+        self.assertIn("declared-not-bound", err)
+        self.assertNotIn("warning:", err)
 
 
 if __name__ == "__main__":

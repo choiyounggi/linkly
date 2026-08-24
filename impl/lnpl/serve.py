@@ -233,7 +233,7 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, document, routes, repository_factory=None,
-                 token_provider=None):
+                 token_provider=None, network=None):
         super().__init__(address, _Handler)
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
@@ -243,6 +243,12 @@ class _Server(ThreadingHTTPServer):
         # the opposite — one immutable object, safe to read from every thread.
         self.repository_factory = repository_factory
         self.token_provider = token_provider
+        # issue #101: `HttpNetworkDriver` opens/closes its own connection per
+        # `call()`, so one instance is safe to share across every request's
+        # Interpreter, the same as `token_provider`. `None` means "the
+        # Interpreter builds its own FakeNetworkDriver" (RFC-0027 §1
+        # default) — serve had no outbound network path before this.
+        self.network = network
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -480,7 +486,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _respond(self, doc, workflow_id, payload, correlation_id, repository):
         interp = Interpreter(doc, repo_rows=default_rows(doc, workflow_id, payload),
-                             correlation_id=correlation_id, repository=repository)
+                             correlation_id=correlation_id, repository=repository,
+                             network=self.server.network)
         try:
             result = interp.run_workflow(workflow_id, payload)
         except Exception:
@@ -508,7 +515,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
-          token_provider=None):
+          token_provider=None, network=None):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -518,7 +525,9 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     store; omitted, each request gets the in-memory one. `token_provider`
     turns the M3 presence check into real verification (M3a); omitted, the
     header is only checked for presence, which is what shipped with #26.
+    `network` (issue #101) is a `NetworkDriver` every request's Interpreter
+    shares; omitted, each request gets its own FakeNetworkDriver.
     """
     return _Server((host, port), document, build_routes(document),
                    repository_factory=repository_factory,
-                   token_provider=token_provider)
+                   token_provider=token_provider, network=network)
