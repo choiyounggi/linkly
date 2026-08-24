@@ -55,6 +55,9 @@
             "$ref": "#/$defs/nodeAssignment"
           },
           {
+            "$ref": "#/$defs/nodeResponse"
+          },
+          {
             "$ref": "#/$defs/nodeNetworkCall"
           },
           {
@@ -670,6 +673,38 @@
         "target",
         "expression",
         "entity"
+      ],
+      "additionalProperties": false
+    },
+    "nodeResponse": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Response"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "refs"
       ],
       "additionalProperties": false
     },

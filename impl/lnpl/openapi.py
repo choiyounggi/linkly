@@ -16,11 +16,13 @@ Mapping (each row cites the IR that produces it):
     Performance response-> `x-response-slo-ms` on the operation
     Policy retry/timeout-> `x-retry` / `x-timeout-ms` on the operation
     Guard when          -> `x-conditional-steps` (the steps that may be skipped)
+    Response(respond)   -> the 200 response's `content` schema, grouped by binding
 """
 
 from .diagnostics import ENFORCEMENT
 from .interp import _duration_ms
 from .refinements import BASE_CATEGORY, facets_for_base
+from .repo_policy import binding_name
 from .types import SEMANTIC_TYPES
 
 # Semantic type -> OpenAPI schema, projected from the one type registry
@@ -200,7 +202,8 @@ def generate(document, version="0.1.0"):
             if wf["kind"] != "Workflow":
                 continue
             path = "/%s/%s" % (_slug(service["name"]), _slug(wf["name"]))
-            paths[path] = {"post": _operation(wf, service, con, nodes, entities)}
+            paths[path] = {"post": _operation(wf, service, con, nodes, entities,
+                                              refined)}
 
     spec = {
         "openapi": "3.1.0",
@@ -314,7 +317,52 @@ def _walk_steps(nodes, ids, conditional=None):
                 yield inner
 
 
-def _operation(wf, service, con, nodes, entities):
+def _response_schema(steps, nodes, entities, refined):
+    """issue #96, D6: the `respond`-declared FieldMask -> a 200 response
+    schema, grouped by binding the same way `interp`'s `result["response"]`
+    groups its values (`{"<binding>": {"<field>": ...}}`) — the two shapes
+    must agree, or the OpenAPI contract would describe a body the server
+    never sends. Returns None when the workflow declares no `respond`, so a
+    document without one generates byte-identical output (D4).
+    """
+    refs = None
+    for step in steps:
+        for child_id in step.get("children", []):
+            effect = nodes[child_id]
+            if effect["kind"] == "Response":
+                refs = effect["refs"]
+    if refs is None:
+        return None
+
+    by_binding = {binding_name(e): e for e in entities}
+    grouped, order = {}, []
+    for ref in refs:
+        binding, _, field_name = ref.partition(".")
+        entity = by_binding[binding]
+        field = next(f for f in entity["fields"] if f["name"] == field_name)
+        tname = field["type"]
+        if tname in refined:
+            field_schema = {"$ref": "#/components/schemas/%s" % tname}
+        else:
+            field_schema = dict(TYPE_SCHEMA[tname])
+        if field.get("derived"):
+            # issue #95: server-computed — the response schema marks it
+            # read-only the same way `_entity_schema` already does.
+            field_schema["readOnly"] = True
+        if binding not in grouped:
+            grouped[binding] = {}
+            order.append(binding)
+        grouped[binding][field_name] = field_schema
+
+    properties = {binding: {"type": "object", "properties": grouped[binding],
+                            "required": list(grouped[binding]),
+                            "additionalProperties": False}
+                 for binding in order}
+    return {"type": "object", "properties": properties, "required": order,
+           "additionalProperties": False}
+
+
+def _operation(wf, service, con, nodes, entities, refined):
     conditional = []
     steps = list(_walk_steps(nodes, wf.get("children", []), conditional))
 
@@ -327,6 +375,8 @@ def _operation(wf, service, con, nodes, entities):
                 entity_id = ".".join(target.split(".")[:2])
                 request_entity = next((e for e in entities if e["id"] == entity_id), None)
 
+    response_schema = _response_schema(steps, nodes, entities, refined)
+
     op = {
         "operationId": "%s_%s" % (_slug(service["name"]).replace("-", "_"),
                                   _slug(wf["name"]).replace("-", "_")),
@@ -338,6 +388,9 @@ def _operation(wf, service, con, nodes, entities):
             "504": {"description": "the workflow deadline was exceeded"},
         },
     }
+    if response_schema is not None:
+        op["responses"]["200"]["content"] = {
+            "application/json": {"schema": response_schema}}
     if request_entity is not None:
         op["requestBody"] = {
             "required": True,

@@ -385,6 +385,58 @@ def alt_guard_negatives():
     ]
 
 
+RESPOND_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "respond",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.approve",
+            "name": "Approve",
+            "children": ["wf.approve.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.approve.step.1",
+            "name": "respond order.id order.status",
+            "children": ["wf.approve.step.1.respond"],
+        },
+        {
+            "kind": "Response",
+            "id": "wf.approve.step.1.respond",
+            "refs": ["order.id", "order.status"],
+        },
+    ],
+}
+
+
+def respond_negatives():
+    """issue #96, D5 — `Response.refs`, a new node kind. One negative per
+    keyword it turns on (`type` of the field itself, `type` of an item, the
+    `minItems: 1` floor), plus one proving `additionalProperties` still
+    applies once `refs` is present — the same "still independent" shape
+    `alt_guard_negatives` pins for `Guard.alternatives`.
+    """
+    n1 = copy.deepcopy(RESPOND_FIXTURE)
+    n1["nodes"][2]["refs"] = "order.id"     # type 위반 — 배열 아님
+
+    n2 = copy.deepcopy(RESPOND_FIXTURE)
+    n2["nodes"][2]["refs"] = [1]             # item type 위반
+
+    n3 = copy.deepcopy(RESPOND_FIXTURE)
+    n3["nodes"][2]["refs"] = []              # minItems 위반 — 빈 배열
+
+    n4 = copy.deepcopy(RESPOND_FIXTURE)
+    n4["nodes"][2]["mask"] = "typo"          # 미선언 속성(오타 대역)
+
+    return [
+        ("refs is not an array: 'order.id'", n1),
+        ("refs item is not a string: 1", n2),
+        ("refs is an empty array", n3),
+        ("undeclared property on a Response: mask", n4),
+    ]
+
+
 def load_json(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -492,6 +544,7 @@ def self_test():
         ("ROWSET_FIXTURE (RFC-0025 query RepositoryCall)", ROWSET_FIXTURE),
         ("NETWORK_FIXTURE (RFC-0027 NetworkCall.result)", NETWORK_FIXTURE),
         ("ALT_GUARD_FIXTURE (RFC-0028 Guard.alternatives)", ALT_GUARD_FIXTURE),
+        ("RESPOND_FIXTURE (issue #96 Response.refs)", RESPOND_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -529,7 +582,8 @@ def self_test():
         ("line below minimum: wf.login.line = 0", mutated_line_zero),
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
-      + rowset_negatives() + network_negatives() + alt_guard_negatives()
+      + rowset_negatives() + network_negatives() + alt_guard_negatives() \
+      + respond_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

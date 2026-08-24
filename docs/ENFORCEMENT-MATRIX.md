@@ -35,6 +35,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | emit | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 |
 | publish | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 |
 | authorize | Authorization | requirement를 **기록만** 한다 — §B의 `security` 항목과 같은 간극 |
+| respond | Response | 목적어가 엔티티명이 아니라 `<binding>.<field>` Reference 목록이다(`respond order.id order.status`). 다른 Effect와 달리 상태를 바꾸지 않는다 — 워크플로가 성공적으로 끝난 시점에 바인딩값을 읽어 `response` 절로 조립할 뿐이다. Password 계열 참조는 컴파일 에러 — 마스킹 chokepoint(#43)를 respond로 우회하는 경로를 막는다. OpenAPI 200 스키마가 이 목록에서 유도된다 — issue #96 |
 
 ### 사전 밖 동사
 

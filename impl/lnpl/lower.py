@@ -64,6 +64,7 @@ EFFECT_SLUG = {
     "Authorization": "authz",
     "EventEmit": "emit",
     "BusinessRule": "rule",
+    "Response": "respond",
 }
 
 # The one verb whose object is a value expression rather than an entity name
@@ -77,6 +78,15 @@ ASSIGN_VERB = "set"
 # `_derive_effect`, because its object is a template + reference list, not an
 # entity name.
 FORMAT_VERB = "format"
+
+# issue #96: `respond <ref> [<ref>...]` — a flat FieldMask over References,
+# declaring the workflow's response body. Routed the same way `FORMAT_VERB`
+# is: its object is a list of References, not a single entity name, so
+# `_WfContext._step` sends it to its own derivation (`_derive_respond`)
+# rather than `_derive_effect`. Unlike `format`/`set` it derives no
+# Assignment — nothing is written — so it gets its own IR node kind,
+# `Response`.
+RESPOND_VERB = "respond"
 
 # R1: the closed step-verb lexicon. verb -> (Effect kind, fixed fields)
 VERB_LEXICON = {
@@ -108,6 +118,10 @@ VERB_LEXICON = {
     # of its right-hand side is what `_derive_format` and `condition.FormatCall`
     # differ on.
     "format": ("Assignment", {}),
+    # issue #96: declares the workflow's response body — a FieldMask, not an
+    # Effect that changes state, so it gets its own kind rather than reusing
+    # one of the nine Effect kinds above.
+    "respond": ("Response", {}),
 }
 
 # RFC-0026: `unknown-verb`'s did-you-mean, tier 1. The closed lexicon's actual
@@ -139,6 +153,7 @@ VERB_ALIASES = {
 # call instead.
 GUARD_SUBJECT = "guard condition"
 ASSIGN_SUBJECT = "assignment"
+RESPOND_SUBJECT = "response"
 
 # The verbs that put a SINGLE-ROW binding in the execution scope, computed from
 # the same test the lowerer uses to build `read_entities`. A refusal that names
@@ -784,6 +799,8 @@ class _WfContext:
             derived = _derive_assignment(step_id, line, self.registry)
         elif verb == FORMAT_VERB:
             derived = _derive_format(step_id, line, self.registry)
+        elif verb == RESPOND_VERB:
+            derived = _derive_respond(step_id, line, self.registry)
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
                                      line.lineno, line.tokens[2:],
@@ -1241,6 +1258,10 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         if not guarded and child.get("operation") == "query":
                             listed.add(child["entity"])
                         continue
+                    if child["kind"] == "Response":
+                        text = "respond %s" % " ".join(child["refs"])
+                        _check_respond(child["refs"], scope, text, base_of or {})
+                        continue
                     if child["kind"] != "Assignment":
                         continue
                     rhs = parse_value_or_aggregate(child["expression"])
@@ -1380,6 +1401,39 @@ def _check_format(target, rhs, scope, text, base_of):
                 "chokepoint: a masked field's value must never leave "
                 "through an unmasked one)"
                 % (scope.workflow_name, ref.name, arg_declared))
+
+
+def _check_respond(refs, scope, text, base_of):
+    """issue #96, D3: `respond`'s own reference rule.
+
+    Reuses `_Scope.resolve_field` (issue #45's existing Reference check) for
+    "does this reference name a bound row's declared field, and was that
+    entity actually read" — no new lookup invented. `resolve_field` returning
+    None means a bare or network-result reference, neither of which has a
+    declared field type for the OpenAPI 200 schema to derive (D6), so that is
+    refused here the same way `_check_format`'s target check refuses one.
+    Then, the Password rule: `format`'s argument check forbids assembling a
+    masked field into an unmasked one (issue #43's masking chokepoint);
+    `respond` extends that same chokepoint to the response surface itself.
+    """
+    for ref in refs:
+        field = scope.resolve_field(ref, text, RESPOND_SUBJECT)
+        if field is None:
+            raise LowerError(
+                "workflow %s: respond reference %r must name a bound row's "
+                "field (`<binding>.<field>`), not a bare or network-result "
+                "reference — a response field needs a declared type"
+                % (scope.workflow_name, ref))
+        declared = field.get("type")
+        base = base_of.get(declared, declared)
+        if base == "Password":
+            raise LowerError(
+                "workflow %s: respond reference %r has declared type %s, "
+                "whose base is Password — respond must not surface a "
+                "Password field in the response (issue #43's masking "
+                "chokepoint: a masked field's value must never leave "
+                "through an unmasked one)"
+                % (scope.workflow_name, ref, declared))
 
 
 def _check_literal_zero_divisor(value, where):
@@ -1893,6 +1947,55 @@ def _derive_format(step_id, line, registry):
     return _node("Assignment", eid, target=target,
                  expression=value_to_string(value), entity=entity["id"],
                  line=line.lineno)
+
+
+def _derive_respond(step_id, line, registry):
+    """`respond <ref> [<ref>...]` -> a Response node (issue #96, D1).
+
+    A flat FieldMask over References — no nesting, no aliases, no conditions,
+    no wildcards, so unlike `format`/`set` there is no sub-grammar to parse:
+    each token after the verb IS a Reference, verbatim. Same two-phase split
+    those two verbs use: this function checks each reference's OWN shape — a
+    real dot, a declared entity, a declared field — the same immediate check
+    `_derive_assignment`/`_derive_format` already apply to their one target.
+    Whether the entity was actually READ (so a binding exists at runtime) and
+    whether a referenced field is Password-typed (issue #43's masking
+    chokepoint) both need the whole step list and stay
+    `_check_scoped_conditions`'s job, via `_check_respond` — the same split
+    `format`'s Password check uses.
+    """
+    from .repo_policy import binding_name
+
+    refs = line.tokens[1:]
+    if not refs:
+        raise LowerError(
+            "line %d: `respond` names no references — list at least one "
+            "`<binding>.<field>`" % line.lineno)
+
+    for ref in refs:
+        binding, _, field = ref.partition(".")
+        if not field:
+            raise LowerError(
+                "line %d: respond reference %r must name a bound row's "
+                "field (`<binding>.<field>`), not a bare name"
+                % (line.lineno, ref))
+        entity = None
+        for ent in registry.values():
+            if binding_name(ent) == binding:
+                entity = ent
+                break
+        if entity is None:
+            raise LowerError(
+                "line %d: respond reference %r names %r, which is not a "
+                "declared entity" % (line.lineno, ref, binding))
+        if field not in {f["name"] for f in entity["fields"]}:
+            raise LowerError(
+                "line %d: respond reference %r names field %r, which entity "
+                "%s does not declare"
+                % (line.lineno, ref, field, entity["name"]))
+
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Response"])
+    return _node("Response", eid, refs=list(refs), line=line.lineno)
 
 
 def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=None):

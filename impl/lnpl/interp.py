@@ -912,6 +912,12 @@ class Interpreter:
         # `Aggregate` is not a `Value` (RFC-0025 §2) — so only step execution
         # needs it; `_flatten_items` (guard evaluation) does not.
         rowsets = {}
+        # issue #96: refs from every `Response` node a step that actually ran
+        # (not one a guard skipped, not one that failed) owns, in program
+        # order. Collected here rather than by a second walk of the document
+        # after the fact, so a guard that never fired contributes nothing —
+        # the same rule every other Effect gets from this loop.
+        response_refs = []
         for item_id in _flatten_items(self.nodes, wf.get("children", []), self, result,
                                      root, con, payload, bindings):
             step = self.nodes[item_id]
@@ -942,6 +948,10 @@ class Interpreter:
                                     "duration_ms": span.duration_ms,
                                     "effects": [self.nodes[c]["kind"]
                                                 for c in step.get("children", [])]})
+            if last_error is None:
+                for child_id in step.get("children", []):
+                    if self.nodes[child_id]["kind"] == "Response":
+                        response_refs.extend(self.nodes[child_id]["refs"])
             if last_error is not None:
                 result["status"] = "failed"
                 result["failed_step"] = step["name"]
@@ -987,6 +997,18 @@ class Interpreter:
         root.end_ms = self.clock.now
         total = root.duration_ms
         result["bindings"] = self._masked_bindings(bindings)
+        # issue #96, D3/D4: additive and non-destructive — a workflow with no
+        # `respond` (no refs collected) gets no `response` key at all, so its
+        # `result` is unchanged from before this feature existed. Built from
+        # `result["bindings"]`, i.e. AFTER the masking chokepoint, per RFC-0003
+        # §Observability — no second masking rule for this channel either.
+        if result["status"] == "completed" and response_refs:
+            response = {}
+            for ref in response_refs:
+                binding, _, field = ref.partition(".")
+                response.setdefault(binding, {})[field] = \
+                    result["bindings"][binding][field]
+            result["response"] = response
         result["duration_ms"] = total
         result["correlation_id"] = self.trace.correlation_id
         if con["response_slo_ms"] is not None:
@@ -1191,6 +1213,13 @@ class Interpreter:
             child.attrs["emission_id"] = emission["emission_id"]
             self.trace.log("INFO", "event publish registered",
                            event=event_ref, emission_id=emission["emission_id"])
+        elif kind == "Response":
+            # issue #96: declarative — `run_workflow` reads `effect["refs"]`
+            # off this step and assembles `result["response"]` from
+            # `bindings` after the run completes. Nothing to evaluate here;
+            # this branch exists only so the step's effect walk does not
+            # treat an unrecognized kind as unimplemented (the `else` below).
+            pass
         else:
             raise RunError("Phase 1 interpreter does not execute %s" % kind)
 
