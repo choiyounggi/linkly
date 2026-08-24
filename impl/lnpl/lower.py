@@ -71,6 +71,13 @@ EFFECT_SLUG = {
 # "which verbs exist"; `_WfContext._step` routes it to its own derivation.
 ASSIGN_VERB = "set"
 
+# The second Assignment-deriving verb (issue #94): `format <target> from
+# "<template>" [with <ref>...]`. Routed the same way `ASSIGN_VERB` is —
+# `_WfContext._step` sends it to its own derivation rather than
+# `_derive_effect`, because its object is a template + reference list, not an
+# entity name.
+FORMAT_VERB = "format"
+
 # R1: the closed step-verb lexicon. verb -> (Effect kind, fixed fields)
 VERB_LEXICON = {
     "set": ("Assignment", {}),
@@ -95,6 +102,12 @@ VERB_LEXICON = {
     "emit": ("EventEmit", {}),
     "publish": ("EventEmit", {}),
     "authorize": ("Authorization", {}),
+    # issue #94: States.Format-style string assembly, absorbed as a verb
+    # rather than an expression extension (RFC-0028's design rule, first
+    # applied). Shares `set`'s Assignment kind and binding rule; the shape
+    # of its right-hand side is what `_derive_format` and `condition.FormatCall`
+    # differ on.
+    "format": ("Assignment", {}),
 }
 
 # RFC-0026: `unknown-verb`'s did-you-mean, tier 1. The closed lexicon's actual
@@ -758,6 +771,8 @@ class _WfContext:
         obj = line.tokens[1] if len(line.tokens) > 1 else None
         if verb == ASSIGN_VERB:
             derived = _derive_assignment(step_id, line, self.registry)
+        elif verb == FORMAT_VERB:
+            derived = _derive_format(step_id, line, self.registry)
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
                                      line.lineno, line.tokens[2:],
@@ -1115,8 +1130,9 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     and `when token missing` asks about the request rather than about a row. That
     is also why `input.` is the spelling worth preferring — it is checked.
     """
-    from .condition import (Aggregate, ConditionError, Lit, PAYLOAD_NAMESPACE,
-                            parse_condition, parse_value_or_aggregate, references)
+    from .condition import (Aggregate, ConditionError, FormatCall, Lit,
+                            PAYLOAD_NAMESPACE, parse_condition,
+                            parse_value_or_aggregate, references)
     from .repo_policy import binding_name
 
     by_binding = {binding_name(ent): ent for ent in registry.values()}
@@ -1175,35 +1191,48 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         continue
                     if child["kind"] != "Assignment":
                         continue
-                    # The target and the expression's operands are references
-                    # like any other, so the same judgements apply — including
-                    # "is it an Integer".
-                    text = "set %s to %s" % (child["target"], child["expression"])
-                    scope.check_reference(child["target"], text,
-                                          ASSIGN_SUBJECT, is_target=True)
                     rhs = parse_value_or_aggregate(child["expression"])
-                    if isinstance(rhs, Aggregate):
-                        entity_id = _check_aggregate(rhs, by_binding, base_of or {},
-                                                     workflow_name, text)
-                        if entity_id not in listed and diagnostics is not None:
-                            line = child.get("line")
-                            diagnostics.add(
-                                code="aggregation-orphaned-list",
-                                where=("line %d" % line) if line else workflow_name,
-                                subject=text,
-                                message="`%s` reads a RowSet no earlier "
-                                        "unguarded `list` fills in this "
-                                        "workflow, so it is always empty and "
-                                        "this always evaluates to 0"
-                                        % text,
-                                line=line)
+                    if isinstance(rhs, FormatCall):
+                        # issue #94: format's own type rule, not the numeric/
+                        # instant one `check_reference` enforces below — a
+                        # Text-family target and reference arguments of any
+                        # type (Password excluded) are exactly what `set`'s
+                        # rule would refuse.
+                        text = "format %s from %r%s" % (
+                            child["target"], rhs.template,
+                            (" with " + " ".join(a.name for a in rhs.args))
+                            if rhs.args else "")
+                        _check_format(child["target"], rhs, scope, text,
+                                     base_of or {})
                     else:
-                        for name in references(rhs):
-                            scope.check_reference(name, text, ASSIGN_SUBJECT)
-                        # The expression is a `Value` like any other, so
-                        # `instant + instant` is as meaningless here as in a
-                        # guard.
-                        _value_dimension(rhs, scope, text, ASSIGN_SUBJECT)
+                        # The target and the expression's operands are
+                        # references like any other, so the same judgements
+                        # apply — including "is it an Integer".
+                        text = "set %s to %s" % (child["target"], child["expression"])
+                        scope.check_reference(child["target"], text,
+                                              ASSIGN_SUBJECT, is_target=True)
+                        if isinstance(rhs, Aggregate):
+                            entity_id = _check_aggregate(rhs, by_binding, base_of or {},
+                                                         workflow_name, text)
+                            if entity_id not in listed and diagnostics is not None:
+                                line = child.get("line")
+                                diagnostics.add(
+                                    code="aggregation-orphaned-list",
+                                    where=("line %d" % line) if line else workflow_name,
+                                    subject=text,
+                                    message="`%s` reads a RowSet no earlier "
+                                            "unguarded `list` fills in this "
+                                            "workflow, so it is always empty and "
+                                            "this always evaluates to 0"
+                                            % text,
+                                    line=line)
+                        else:
+                            for name in references(rhs):
+                                scope.check_reference(name, text, ASSIGN_SUBJECT)
+                            # The expression is a `Value` like any other, so
+                            # `instant + instant` is as meaningless here as in a
+                            # guard.
+                            _value_dimension(rhs, scope, text, ASSIGN_SUBJECT)
                     assigned.add(child["target"])
             else:
                 visit(node.get("children") or [], guarded=guarded)
@@ -1256,6 +1285,49 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
             "Money, Decimal, or the other composite types)"
             % (workflow_name, text, binding, field, declared))
     return entity["id"]
+
+
+def _check_format(target, rhs, scope, text, base_of):
+    """issue #94, D3(b)/(c): `format`'s own type rule.
+
+    Neither side goes through `_dimension_of` (RFC-0016's Integer/DateTime
+    check) — that rule is for arithmetic and comparison, and `format` does
+    neither. Its target must be Text-family (the one field type arithmetic
+    and comparisons never accept, which is exactly why the language had no
+    way to write one before this verb); its arguments may be any type
+    EXCEPT Password — the masking chokepoint (issue #43) that this verb
+    would otherwise let an author route around by assembling a masked
+    field's value into an unmasked one.
+    """
+    target_field = scope.resolve_field(target, text, ASSIGN_SUBJECT, is_target=True)
+    if target_field is None:
+        raise LowerError(
+            "workflow %s: format target %r must name a bound row's field "
+            "(`<binding>.<field>`), not a bare or input reference"
+            % (scope.workflow_name, text))
+    declared = target_field.get("type")
+    base = base_of.get(declared, declared)
+    if base != "Text":
+        raise LowerError(
+            "workflow %s: format target %r has declared type %s, whose base "
+            "is %s — format writes only to a Text-family field (RFC-0016 "
+            "gives Text no numeric/instant dimension, so no other verb could "
+            "ever write one; format is the one verb that assembles strings)"
+            % (scope.workflow_name, text, declared, base))
+    for ref in rhs.args:
+        arg_field = scope.resolve_field(ref.name, text, ASSIGN_SUBJECT)
+        if arg_field is None:
+            continue                      # bare/network reference — unchecked
+        arg_declared = arg_field.get("type")
+        arg_base = base_of.get(arg_declared, arg_declared)
+        if arg_base == "Password":
+            raise LowerError(
+                "workflow %s: format argument %r has declared type %s, "
+                "whose base is Password — format must not assemble a "
+                "Password field into a string (issue #43's masking "
+                "chokepoint: a masked field's value must never leave "
+                "through an unmasked one)"
+                % (scope.workflow_name, ref.name, arg_declared))
 
 
 def _check_literal_zero_divisor(value, where):
@@ -1448,6 +1520,31 @@ class _Scope:
         names a payload field the document never describes, so its dimension is
         decided at runtime, exactly as its value is.
         """
+        field_node = self.resolve_field(name, text, subject, is_target)
+        if field_node is None:
+            return None
+        return self._dimension_of(field_node, name, text)
+
+    def resolve_field(self, name, text, subject=GUARD_SUBJECT,
+                      is_target=False):
+        """One `Reference`, resolved to its field's declaration — every
+        judgement `check_reference` makes EXCEPT the final numeric/instant
+        dimension (`_dimension_of`).
+
+        Returns the field's declaration dict, or None when the document does
+        not structurally describe it (a bare reference, or a network-result
+        binding whose response shape is not declared — RFC-0027 §2/§4).
+        Raises `LowerError` for every reference that IS structurally
+        checkable but fails: unknown binding, undeclared field, or a binding
+        this workflow never reads.
+
+        A caller that also needs the numeric/instant dimension calls
+        `check_reference`, which applies `_dimension_of` on top of this. A
+        caller with its OWN type rule — `format`'s Text-only target,
+        Password-forbidden argument (issue #94) — calls this directly, since
+        `_dimension_of` would refuse every Text-family field `format` exists
+        to write.
+        """
         from .condition import PAYLOAD_NAMESPACE
         if "." not in name:
             return None                   # bare reference — a payload field
@@ -1460,7 +1557,7 @@ class _Scope:
                     "declares (declared fields: %s)"
                     % (self.workflow_name, text, field,
                        ", ".join(sorted(self.declared_fields)) or "none"))
-            return self._dimension_of(self.declared_fields[field], name, text)
+            return self.declared_fields[field]
 
         if binding in self.network_bindings:
             # RFC-0027 §2/§4: a network result binding's shape is not
@@ -1510,7 +1607,7 @@ class _Scope:
                 "be false forever (to check the run's input instead, write "
                 "`input.%s`)"
                 % (self.workflow_name, subject, text, entity["id"], field))
-        return self._dimension_of(fields[field], name, text)
+        return fields[field]
 
     def _dimension_of(self, field_node, name, text):
         """The operand's dimension, or a refusal (RFC-0015 §D6, RFC-0016).
@@ -1683,6 +1780,61 @@ def _derive_assignment(step_id, line, registry):
     if field not in {f["name"] for f in entity["fields"]}:
         raise LowerError(
             "line %d: assignment target %r names field %r, which entity %s does "
+            "not declare" % (line.lineno, target, field, entity["name"]))
+
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Assignment"])
+    return _node("Assignment", eid, target=target,
+                 expression=value_to_string(value), entity=entity["id"],
+                 line=line.lineno)
+
+
+def _derive_format(step_id, line, registry):
+    """`format <binding>.<field> from "<template>" [with <ref>...]` -> an
+    Assignment Effect node (issue #94). Structurally the same shape
+    `_derive_assignment` builds — same binding rule, same node fields — just
+    parsed by `condition.parse_format` instead of `parse_assignment`. The
+    template's `{}`-vs-argument-count check already happened inside
+    `parse_format`; what THIS function still owns is what `_derive_assignment`
+    owns too: does the target name a declared entity this document has, and
+    does that entity declare the field. Whether the target was actually READ
+    (so a binding exists at runtime) needs the whole step list and is
+    `_check_scoped_conditions`'s job, same as for `set` — this function alone
+    cannot see the steps around it.
+    """
+    from .condition import ConditionError, PAYLOAD_NAMESPACE, parse_format
+    from .condition import value_to_string
+    from .repo_policy import binding_name
+
+    text = " ".join(line.tokens)
+    try:
+        target, value = parse_format(text)
+    except ConditionError as exc:
+        raise LowerError("line %d: %s" % (line.lineno, exc))
+
+    binding, _, field = target.partition(".")
+    if not field:
+        raise LowerError(
+            "line %d: format target %r must name a bound row's field "
+            "(`<binding>.<field>`) — a bare name is an input field, and the "
+            "input is not state this workflow owns" % (line.lineno, target))
+    if binding == PAYLOAD_NAMESPACE:
+        raise LowerError(
+            "line %d: %r formats into the run's input, which is not state — "
+            "format into a row this workflow read (`<binding>.%s`)"
+            % (line.lineno, text, field))
+
+    entity = None
+    for ent in registry.values():
+        if binding_name(ent) == binding:
+            entity = ent
+            break
+    if entity is None:
+        raise LowerError(
+            "line %d: format target %r names %r, which is not a declared "
+            "entity" % (line.lineno, target, binding))
+    if field not in {f["name"] for f in entity["fields"]}:
+        raise LowerError(
+            "line %d: format target %r names field %r, which entity %s does "
             "not declare" % (line.lineno, target, field, entity["name"]))
 
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Assignment"])

@@ -616,6 +616,29 @@ def eval_aggregate(agg, expression, rowsets):
     return total
 
 
+def eval_format(fmt, payload, bindings):
+    """A parsed `FormatCall` -> str, or None when an argument reference
+    resolves to nothing (issue #94) — the same "unresolved reference"
+    contract `eval_value` uses for a `Value`, so the caller's existing
+    None -> RunError translation covers this RHS kind too.
+
+    Substitution is a plain, sequential `{}` replace — not `str.format`,
+    which would also interpret `{name}`/`{0}` and accept a template wider
+    than the positional-only grammar `condition.parse_format` already
+    enforces (issue #94, D1: no named fields, no padding, no precision).
+    """
+    parts = []
+    for ref in fmt.args:
+        raw = resolve_reference(ref.name, payload, bindings)
+        if raw is None:
+            return None
+        parts.append(str(raw))
+    out = fmt.template
+    for part in parts:
+        out = out.replace("{}", part, 1)
+    return out
+
+
 def _checked(number, name, condition):
     from .condition import INT64_MAX, INT64_MIN
     if number < INT64_MIN or number > INT64_MAX:
@@ -946,12 +969,14 @@ class Interpreter:
                 raise RunError(
                     "assignment target %r names no bound row — %s was never read"
                     % (target, binding))
-            from .condition import Aggregate, parse_value_or_aggregate
+            from .condition import Aggregate, FormatCall, parse_value_or_aggregate
             rhs = parse_value_or_aggregate(effect["expression"])
             if isinstance(rhs, Aggregate):
                 # RFC-0025 §5: sums/counts the RowSet, never a "resolves to
                 # nothing" — an absent or empty RowSet is 0, not a fault.
                 value = eval_aggregate(rhs, effect["expression"], rowsets)
+            elif isinstance(rhs, FormatCall):
+                value = eval_format(rhs, payload, bindings)
             else:
                 value = eval_value(rhs, effect["expression"], payload, bindings)
             if value is None:

@@ -17,6 +17,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | verb | effect kind | 비고 |
 |------|-------------|------|
 | set | Assignment | 목적어가 엔티티명이 아니라 값 표현식이다(`set product.stock to product.stock - input.quantity`). 바인딩된 행의 필드를 갱신하고 그 사실을 effect로 남긴다 — RFC-0015 |
+| format | Assignment | 형식 문자열의 위치 `{}` 개수만큼 Reference 인자를 받아 조립한 문자열을 대상 필드(Text 계열)에 쓴다(`format order.label from "ORD-{}-{}" with product.name input.quantity`). `{}` 개수와 인자 개수 불일치, Password 계열 인자, Text가 아닌 대상은 모두 컴파일 에러 — 마스킹 chokepoint(#43)를 문자열 조립으로 우회하는 경로를 막는다. RFC-0028이 정한 "표현식으로 안 되는 계산은 동사로 흡수" 규칙의 첫 적용 — issue #94 |
 | validate | Validation | 대상이 필드면 그 필드의 규칙, `input`이면 엔티티 전체를 시맨틱 타입 규칙으로 검사 |
 | authenticate | RepositoryCall | operation `read` |
 | load | RepositoryCall | operation `read` |

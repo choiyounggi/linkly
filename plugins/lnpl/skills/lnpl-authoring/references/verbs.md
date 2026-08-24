@@ -26,6 +26,7 @@
 | `emit` | `EventEmit` | — |
 | `publish` | `EventEmit` | — |
 | `authorize` | `Authorization` | — |
+| `format` | `Assignment` | — |
 
 `return`, `log`, `send`, `notify`, `verify` 같은 낱말은 이 표에 **없다**. 자연스러워 보여도 아무 효과가 없다.
 
