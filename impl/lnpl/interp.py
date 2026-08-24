@@ -168,9 +168,17 @@ class FakeRepository:
                 target.setdefault(key, dict(row) if isinstance(row, dict) else row)
 
     def persist(self, entity_id, key, row):
-        """Nothing to do: a read binds the dict this table holds, so a write
-        through the binding has already landed."""
-        return None
+        """Write `row` into the table under `key`.
+
+        For the read-then-`set` path this is a no-op in effect: `row` IS the
+        dict `self.rows[entity_id][key]` already holds (a read binds that
+        exact object), so reassigning the same reference changes nothing.
+        For `create`'s payload-seeding (issue #97 / RFC-0012 Updates), `row`
+        is a freshly built dict never yet in the table — a genuine write is
+        what makes the Fake agree with `SqliteRepositoryDriver.persist`
+        (drivers.py), which always writes what it is given.
+        """
+        self.rows.setdefault(entity_id, {})[key] = row
 
     def close(self):
         return None
@@ -259,6 +267,22 @@ class Trace:
                 "span": self.root.to_dict() if self.root else None,
                 "metrics": [{"name": n, "labels": l, "value": v} for n, l, v in self.metrics],
                 "logs": self.logs}
+
+
+class _CreatedRow(dict):
+    """A row from `create <Entity> as <name>` (issue #97 / RFC-0012 Updates).
+
+    `bindings` keys it under the author's chosen `as` name, not the entity's
+    default binding name, so `Interpreter._entity_id_for_binding` (built
+    from `repo_policy.binding_name`) cannot resolve it there — the entity id
+    rides on the row itself instead, the same way `drivers._VersionedRow`
+    carries `observed_version` invisibly to every user-facing surface
+    (payload, response, wire).
+    """
+
+    def __init__(self, data, entity_id):
+        super().__init__(data)
+        self.entity_id = entity_id
 
 
 def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
@@ -879,8 +903,22 @@ class Interpreter:
         """
         views = {binding_name(n): self._entity_view(n)
                  for n in self.doc["nodes"] if n["kind"] == "Entity"}
-        return {name: mask_payload(row, views.get(name))
-                for name, row in bindings.items()}
+        masked = {}
+        for name, row in bindings.items():
+            view = views.get(name)
+            if view is None:
+                # issue #97 / RFC-0012 Updates: `name` may be a `create ...
+                # as <name>` binding — its row DOES have a declared Entity
+                # shape (unlike a NetworkCall result), just not under this
+                # entity's own binding name, so `views.get(name)` misses it.
+                # Without this, a Password field seeded from the payload
+                # would leave this chokepoint unmasked.
+                entity_id = getattr(row, "entity_id", None)
+                entity_node = self.nodes.get(entity_id) if entity_id else None
+                if entity_node is not None:
+                    view = self._entity_view(entity_node)
+            masked[name] = mask_payload(row, view)
+        return masked
 
     # ---- execution ---------------------------------------------------------
     def run_workflow(self, workflow_id, payload=None):
@@ -1078,6 +1116,13 @@ class Interpreter:
             # for.
             entity_id = self._entity_id_for_binding(binding)
             if entity_id is None:
+                # issue #97 / RFC-0012 Updates: `binding` may be a `create
+                # ... as <name>` result — a namespace `_entity_id_for_binding`
+                # cannot see (it is built from entities' OWN binding names,
+                # not from author-chosen `as` names) — so the entity id rides
+                # on the row itself instead (`_CreatedRow.entity_id`).
+                entity_id = getattr(row, "entity_id", None)
+            if entity_id is None:
                 raise RunError(
                     "assignment target %r names no declared entity, so the "
                     "write has no row to address" % target)
@@ -1134,6 +1179,30 @@ class Interpreter:
                 self.clock.advance(1)
                 child.end_ms = self.clock.now
                 raise RunError("repository read found no row for %s" % effect["entity"])
+            if effect["operation"] == "create":
+                # issue #97 / RFC-0012 Updates: payload seeding — same-named,
+                # non-derived fields copy into the row created above,
+                # regardless of `as` ("뼈대 행" fix, issue #97 §3). `as`
+                # additionally binds the seeded row into `bindings` so a
+                # later `set`/`format`/`respond` can address it, the same
+                # scope a `read` binding gets (RFC-0027 §2 notation reused).
+                created_key = row_key(effect["entity"], payload)
+                entity_node = self.nodes.get(effect["entity"])
+                seeded = {"id": created_key}
+                if entity_node is not None:
+                    for field in entity_node.get("fields", []):
+                        if field.get("derived"):
+                            continue
+                        fname = field["name"]
+                        if fname in payload:
+                            seeded[fname] = payload[fname]
+                if len(seeded) > 1:
+                    try:
+                        self.repo.persist(effect["entity"], created_key, seeded)
+                    except DriverError as exc:
+                        raise RunError(str(exc)) from exc
+                if effect.get("result"):
+                    bindings[effect["result"]] = _CreatedRow(seeded, effect["entity"])
         elif kind == "CacheAccess":
             key = effect["key"].replace("{id}", str(payload.get("id", "-")))
             try:

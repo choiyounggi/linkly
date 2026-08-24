@@ -848,6 +848,9 @@
         },
         "query": {
           "type": "string"
+        },
+        "result": {
+          "type": "string"
         }
       },
       "required": [

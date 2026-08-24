@@ -48,21 +48,25 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 ## 할당(`set`)의 대상
 
-`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽은** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.
+`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽었거나 만든** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.
 
-읽기 동사: `authenticate` `load` `find` `read` — 이 동사들만 단일 행 바인딩을 만든다.
+읽기 동사: `authenticate` `load` `find` `read` — 이 동사들이 단일 행 바인딩을 만든다.
 
-바인딩을 만들지 않는 동사: `create` `insert` `update` `delete` — 만든 행은 실행 스코프에 들어오지 않는다.
+결과를 바인딩하는 동사: `create` `insert` — 뒤에 as절을 붙이면 단일 행 바인딩을 만든다.
+
+`create <명사> as <이름>` — 만든 행이 `<이름>`으로 실행 스코프에 바인딩된다(RFC-0027 §2 표기 재사용, RFC-0012 Updates, issue #97). as절 없이 쓰면 이전과 바이트 동일하다 — 바인딩되지 않는다.
+
+바인딩을 만들지 않는 동사: `update` `delete` — 만든 행은 실행 스코프에 들어오지 않는다.
 
 행 집합(RowSet) 동사: `list` — 단일 행이 아니라 RowSet을 별개 이름공간에 바인딩한다.
 
 `set`의 대상이 될 수 없다 — 집계 표현식으로만 소비된다(RFC-0025 §2/§5).
 
-그래서 `create report` 다음의 `set report.total to 1`은 거부된다.
+그래서 `create report` 다음의 `set report.total to 1`은 거부된다 — `create report as r` 다음의 `set r.total to 1`은 허용된다.
 
 `input.<필드>`는 할당의 **대상이 될 수 없다** — 입력은 이 워크플로가 소유한 상태가 아니다. 값 쪽에는 쓸 수 있다(`set product.stock to product.stock - input.quantity`).
 
-고치는 법: 쓰기 전에 그 엔티티를 `authenticate` / `load` / `find` / `read` 중 하나로 먼저 읽는다. 읽을 수 없는 엔티티라면 그 값은 이 워크플로가 바꿀 수 있는 상태가 아니다.
+고치는 법: 쓰기 전에 그 엔티티를 `authenticate` / `load` / `find` / `read` 중 하나로 먼저 읽는다. 이 스텝이 만드는 행이라면 `create <명사> as <이름>`으로 만들면서 이름을 붙인다. 그 외의 엔티티라면 이 워크플로가 바꿀 수 있는 상태가 아니다.
 
 ## 가드의 스코프
 

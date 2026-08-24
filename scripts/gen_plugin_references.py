@@ -92,32 +92,41 @@ def render_grammar():
     # operation this section used to lump in with `read` via `repo_policy
     # .READ_OPS`, a table this document's own binding rule does not read).
     reads = list(READ_VERBS)
+    create_verbs = [v for v, (kind, attrs) in VERB_LEXICON.items()
+                    if kind == "RepositoryCall" and attrs.get("operation") == "create"]
     writes = [v for v, (kind, attrs) in VERB_LEXICON.items()
              if kind == "RepositoryCall"
-             and attrs.get("operation") in ("create", "update", "delete")]
+             and attrs.get("operation") in ("update", "delete")]
     rowset_verbs = [v for v, (kind, attrs) in VERB_LEXICON.items()
                     if kind == "RepositoryCall" and v not in READ_VERBS
                     and attrs.get("operation") not in ("create", "update", "delete")]
     lines.append("## 할당(`set`)의 대상\n")
-    lines.append("`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽은** 행이다. "
-                 "스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), "
-                 "`set`은 그렇게 생긴 바인딩에만 쓴다.\n")
+    lines.append("`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽었거나 "
+                 "만든** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 "
+                 "바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.\n")
     lines.append("읽기 동사: " + " ".join("`%s`" % v for v in reads)
-                 + " — 이 동사들만 단일 행 바인딩을 만든다.")
-    lines.append("\n바인딩을 만들지 않는 동사: " + " ".join("`%s`" % v for v in writes)
+                 + " — 이 동사들이 단일 행 바인딩을 만든다.")
+    lines.append("\n결과를 바인딩하는 동사: " + " ".join("`%s`" % v for v in create_verbs)
+                 + " — 뒤에 as절을 붙이면 단일 행 바인딩을 만든다.")
+    lines.append("\n`create <명사> as <이름>` — 만든 행이 `<이름>`으로 실행 스코프에 "
+                 "바인딩된다(RFC-0027 §2 표기 재사용, RFC-0012 Updates, issue #97). "
+                 "as절 없이 쓰면 이전과 바이트 동일하다 — 바인딩되지 않는다.\n")
+    lines.append("바인딩을 만들지 않는 동사: " + " ".join("`%s`" % v for v in writes)
                  + " — 만든 행은 실행 스코프에 들어오지 않는다.\n")
     if rowset_verbs:
         lines.append("행 집합(RowSet) 동사: " + " ".join("`%s`" % v for v in rowset_verbs)
                      + " — 단일 행이 아니라 RowSet을 별개 이름공간에 바인딩한다.")
         lines.append("\n`set`의 대상이 될 수 없다 — 집계 표현식으로만 "
                      "소비된다(RFC-0025 §2/§5).\n")
-    lines.append("그래서 `create report` 다음의 `set report.total to 1`은 거부된다.\n")
+    lines.append("그래서 `create report` 다음의 `set report.total to 1`은 거부된다 — "
+                 "`create report as r` 다음의 `set r.total to 1`은 허용된다.\n")
     lines.append("`input.<필드>`는 할당의 **대상이 될 수 없다** — 입력은 이 워크플로가 "
                  "소유한 상태가 아니다. 값 쪽에는 쓸 수 있다"
                  "(`set product.stock to product.stock - input.quantity`).\n")
     lines.append("고치는 법: 쓰기 전에 그 엔티티를 " + " / ".join("`%s`" % v for v in reads)
-                 + " 중 하나로 먼저 읽는다. 읽을 수 없는 엔티티라면 그 값은 이 "
-                   "워크플로가 바꿀 수 있는 상태가 아니다.\n")
+                 + " 중 하나로 먼저 읽는다. 이 스텝이 만드는 행이라면 "
+                   "`create <명사> as <이름>`으로 만들면서 이름을 붙인다. 그 "
+                   "외의 엔티티라면 이 워크플로가 바꿀 수 있는 상태가 아니다.\n")
     lines.append("## 가드의 스코프\n")
     lines.append("가드는 **바로 다음 항목 하나**를 소유한다. 그 항목은 스텝 한 줄이거나 "
                  "`parallel`/`pipeline` 블록 하나다. 뒤따르는 블록 전체를 감싸지 "
@@ -554,6 +563,10 @@ RFC_ROUTES = {
     "0029": ("`CacheAccess` TTL을 벽시계 경과에 묶고 싶다 — `--clock real`이 "
              "무엇을 바꾸고 무엇을 바꾸지 않는지, `diff`/`spec`이 왜 이 "
              "선택자를 받지 않는지", ()),
+    "0030": ("`create <명사> as <이름>`로 생성 직후 그 행에 `set`/`format`/"
+             "`respond`를 쓰고 싶다 — payload 동명 필드가 `derived` 제외하고 "
+             "왜 `as` 유무와 무관하게 시드되는지, `as` 없는 `create`는 "
+             "정확히 무엇이 바이트 동일한지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

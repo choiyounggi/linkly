@@ -790,17 +790,50 @@ class _WfContext:
         self._step_n += 1
         return "%s.step.%d" % (self.wid, self._step_n)
 
+    def _registry_with_create_bindings(self):
+        """`set`/`format`/`respond` resolve `<binding>.<field>` through
+        `_derive_assignment`/`_derive_format`/`_derive_respond`'s own
+        `registry`-keyed lookup, immediately — before `_check_scoped_conditions`
+        ever runs. issue #97 / RFC-0012 Updates: a `create <Entity> as <name>`
+        binding needs to satisfy that SAME lookup, with zero change to those
+        three functions — `repo_policy.binding_name` is idempotent on an
+        already-camelCase string (`name[:1].lower() + name[1:]`), so a
+        synthetic entry whose `name` IS the `as` name resolves through the
+        exact loop those functions already run (`for ent in registry.values():
+        if binding_name(ent) == binding`), keeping its real `id`/`fields` so
+        the derived node still names the real entity.
+
+        Scoped to `self` (per-workflow, rebuilt from `self.emitted` so far) —
+        unlike `self.registry` (document-global), two workflows reusing the
+        same `as` name for different entities never collide.
+        """
+        extra = {}
+        for node in self.emitted:
+            if (node["kind"] == "RepositoryCall"
+                    and node.get("operation") == "create" and node.get("result")):
+                entity = self.registry[node["entity"]]
+                extra["__create_as__.%s" % node["result"]] = dict(
+                    entity, name=node["result"])
+        if not extra:
+            return self.registry
+        merged = dict(self.registry)
+        merged.update(extra)
+        return merged
+
     def _step(self, line):
         step_id = self._next_step_id()
         self.step_lines[step_id] = line.lineno
         verb = line.tokens[0]
         obj = line.tokens[1] if len(line.tokens) > 1 else None
         if verb == ASSIGN_VERB:
-            derived = _derive_assignment(step_id, line, self.registry)
+            derived = _derive_assignment(
+                step_id, line, self._registry_with_create_bindings())
         elif verb == FORMAT_VERB:
-            derived = _derive_format(step_id, line, self.registry)
+            derived = _derive_format(
+                step_id, line, self._registry_with_create_bindings())
         elif verb == RESPOND_VERB:
-            derived = _derive_respond(step_id, line, self.registry)
+            derived = _derive_respond(
+                step_id, line, self._registry_with_create_bindings())
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
                                      line.lineno, line.tokens[2:],
@@ -1222,8 +1255,18 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     # (RFC-0012 §G12.4).
     network_bindings = {node["result"] for node in emitted
                         if node["kind"] == "NetworkCall" and node.get("result")}
+    # issue #97 / RFC-0012 Updates: `create <Entity> as <name>` binds the
+    # created row's own Entity shape under `<name>` — a separate namespace
+    # from `by_binding` (the entity's default binding name), since the two
+    # are guaranteed disjoint by the collision check `_derive_effect` runs
+    # at emission time.
+    create_bindings = {node["result"]: registry[node["entity"]]
+                       for node in emitted
+                       if node["kind"] == "RepositoryCall"
+                       and node.get("operation") == "create"
+                       and node.get("result")}
     scope = _Scope(workflow_name, by_binding, read_entities, declared_fields,
-                   base_of or {}, network_bindings)
+                   base_of or {}, network_bindings, create_bindings)
     by_id = {node["id"]: node for node in emitted}
 
     # Source order, not emission order: `_WfContext._guard` emits its guarded step
@@ -1606,7 +1649,7 @@ class _Scope:
     """
 
     def __init__(self, workflow_name, by_binding, read_entities, declared_fields,
-                 base_of, network_bindings=frozenset()):
+                 base_of, network_bindings=frozenset(), create_bindings=None):
         self.workflow_name = workflow_name
         self.by_binding = by_binding
         self.read_entities = read_entities
@@ -1615,6 +1658,14 @@ class _Scope:
         # Entity behind them, so `check_reference` skips the field-existence
         # check for these (a response body has no declared shape).
         self.network_bindings = network_bindings
+        # issue #97 / RFC-0012 Updates: names bound by `create ... as
+        # <name>` — UNLIKE a network result, this row DOES have a declared
+        # Entity shape (the noun `create` names), so it gets the same
+        # field-checked treatment a `read` binding gets, not the "any field
+        # name accepted" treatment `network_bindings` gets. `binding ->
+        # entity node`, keyed by the `as` name, not the entity's own binding
+        # name.
+        self.create_bindings = create_bindings or {}
         self.base_of = base_of
 
     def check_reference(self, name, text, subject=GUARD_SUBJECT,
@@ -1672,6 +1723,21 @@ class _Scope:
             # runtime" treatment `input.*` gets, one level down.
             return None
 
+        if binding in self.create_bindings:
+            # issue #97 / RFC-0012 Updates: a `create ... as <name>` binding
+            # is live the instant the row is created — no "this workflow
+            # never reads it" gate applies here, unlike a plain entity
+            # binding (RFC-0012 §G12.2/§G12.5), since the row was just made
+            # by this same step.
+            entity = self.create_bindings[binding]
+            fields = {f["name"]: f for f in entity["fields"]}
+            if field not in fields:
+                raise LowerError(
+                    "workflow %s: %s %r names field %r, which entity %s "
+                    "does not declare"
+                    % (self.workflow_name, subject, text, field, entity["name"]))
+            return fields[field]
+
         entity = self.by_binding.get(binding)
         if entity is None:
             raise LowerError(
@@ -1696,8 +1762,9 @@ class _Scope:
                 raise LowerError(
                     "workflow %s: %s %r assigns to %s, but this workflow never "
                     "reads it — no binding can ever exist, so there is nothing "
-                    "to assign to (read it first with one of %s; `set` writes "
-                    "only to a row this workflow read)"
+                    "to assign to (read it first with one of %s, or create it "
+                    "with `as` if this step creates it; `set` writes only to "
+                    "a row this workflow read or created)"
                     % (self.workflow_name, subject, text, entity["id"],
                        " / ".join("`%s`" % v for v in READ_VERBS)))
             if subject != GUARD_SUBJECT:
@@ -1747,8 +1814,10 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
-    verb but `NetworkCall` ignores it; only `call`/`request` read an `as
-    <name>` trailing clause there (RFC-0027 §2).
+    verb but `NetworkCall` and `create`/`insert` ignores it; those read an
+    `as <name>` trailing clause there (RFC-0027 §2, extended to `create` by
+    issue #97 / RFC-0012 Updates — `update`/`delete` still ignore `rest`,
+    since they answer an affected-row count, not a row).
 
     `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
     `unknown-entity` warning for a step object that names no declared entity,
@@ -1781,6 +1850,32 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     if kind == "RepositoryCall":
         ent = _resolve_entity(registry, obj, verb, lineno,
                               diagnostics=diagnostics, step_text=step_text)
+        if fixed["operation"] == "create" and rest:
+            # issue #97 / RFC-0012 Updates: `create <noun> as <name>` reuses
+            # RFC-0027 §2's result-binding notation and its two static checks
+            # verbatim (camelCase shape, collision with an entity's
+            # single-row binding name) — `update`/`delete` are untouched,
+            # since they answer an affected-row count, not a row to bind.
+            if len(rest) == 2 and rest[0] == "as":
+                name = rest[1]
+                if not re.match(r"^[a-z][a-zA-Z0-9]*$", name):
+                    raise LowerError(
+                        "line %d: `as %s` is not a valid binding name — it "
+                        "must be camelCase, like every other binding name "
+                        "(RFC-0012 §G12.1)" % (lineno, name))
+                for e in registry.values():
+                    if name == binding_name(e):
+                        raise LowerError(
+                            "line %d: `as %s` collides with entity %s's "
+                            "single-row binding name — a result binding "
+                            "cannot share a name with it "
+                            "(RFC-0027 §2)" % (lineno, name, e["name"]))
+                return _node(kind, eid, entity=ent["id"],
+                            operation=fixed["operation"], result=name,
+                            line=lineno)
+            raise LowerError(
+                "line %d: create accepts either no trailing words or "
+                "'as <name>', got %r" % (lineno, tuple(rest)))
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 

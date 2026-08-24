@@ -486,8 +486,18 @@ class AssignmentFlushTargetTest(ContractTestCase):
                              repository=repository).run_workflow(target, payload)
 
         self.assertEqual(result["status"], "completed")
+        # issue #97 / RFC-0012 Updates (RFC-0030): `create order` (no `as`)
+        # now ALSO flushes once, seeding its non-derived payload-matching
+        # fields — this fires before the `set product.stock` flush below,
+        # since VALUE_INVENTORY's `create order` step runs first. The row
+        # content, not just the flush address, is what issue #97 actually
+        # changes, so this asserts the seeded value rather than only the
+        # (entity_id, key) pair.
         self.assertEqual(repository.persisted,
-                         [("entity.product", "entity.product#p-1")])
+                         [("entity.order", "entity.order#p-1"),
+                          ("entity.product", "entity.product#p-1")])
+        self.assertEqual(repository.rows["entity.order"]["entity.order#p-1"],
+                         {"id": "p-1", "quantity": 4})
 
     def test_a_binding_with_no_entity_behind_it_fails_the_run(self):
         """The compiler cannot emit this — it refuses `set input.x` and an
@@ -518,7 +528,16 @@ class AssignmentFlushTargetTest(ContractTestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("names no declared entity", result["failure_reason"])
-        self.assertEqual(repository.persisted, [])
+        # issue #97 / RFC-0012 Updates (RFC-0030): `create order` (no `as`)
+        # runs and legitimately flushes its own payload-seeded row BEFORE
+        # the demoted-entity failure below it — that flush is not the bug
+        # this test is about, so it is asserted rather than hidden. The
+        # POINT of this test — the broken assignment's flush is refused, not
+        # silently dropped on the Fake — is that no SECOND flush follows it.
+        self.assertEqual(repository.persisted,
+                         [("entity.order", "entity.order#p-1")])
+        self.assertEqual(repository.rows["entity.order"]["entity.order#p-1"],
+                         {"id": "p-1", "quantity": 4})
 
 
 class DefaultPathTest(ContractTestCase):

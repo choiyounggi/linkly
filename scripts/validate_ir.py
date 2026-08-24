@@ -278,6 +278,63 @@ def network_negatives():
     ]
 
 
+CREATE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "create",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.place.order",
+            "name": "PlaceOrder",
+            "children": ["wf.place.order.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.place.order.step.1",
+            "name": "create order as newOrder",
+            "children": ["wf.place.order.step.1.repo"],
+        },
+        {
+            "kind": "RepositoryCall",
+            "id": "wf.place.order.step.1.repo",
+            "entity": "entity.order",
+            "operation": "create",
+            "result": "newOrder",
+        },
+    ],
+}
+
+
+def create_negatives():
+    """issue #97 / RFC-0012 Updates — `RepositoryCall.result`, a new optional
+    string field on the `create` branch. Same shape `network_negatives`
+    pins for `NetworkCall.result`: one negative per keyword the field turns
+    on (`type`), plus one proving the pre-existing `required`/`enum`/
+    `additionalProperties` checks still apply unchanged once `result` is
+    present.
+    """
+    n1 = copy.deepcopy(CREATE_FIXTURE)
+    del n1["nodes"][2]["entity"]                          # required 누락 —
+                                                            # result가 있어도 여전히 걸린다
+
+    n2 = copy.deepcopy(CREATE_FIXTURE)
+    n2["nodes"][2]["result"] = 42                          # type 위반 — string이 아님
+
+    n3 = copy.deepcopy(CREATE_FIXTURE)
+    del n3["nodes"][2]["operation"]                        # required 누락(다른 필드) —
+                                                            # result가 있어도 여전히 걸린다
+
+    n4 = copy.deepcopy(CREATE_FIXTURE)
+    n4["nodes"][2]["binding"] = "newOrder"                 # 미선언 속성(오타 대역)
+
+    return [
+        ("required field removed: RepositoryCall.entity (result field present)", n1),
+        ("result is not a string: RepositoryCall.result = 42", n2),
+        ("required field removed: RepositoryCall.operation (result field present)", n3),
+        ("undeclared property on a RepositoryCall: binding (typo for result)", n4),
+    ]
+
+
 SCHEDULE_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "rollup",
@@ -545,6 +602,7 @@ def self_test():
         ("NETWORK_FIXTURE (RFC-0027 NetworkCall.result)", NETWORK_FIXTURE),
         ("ALT_GUARD_FIXTURE (RFC-0028 Guard.alternatives)", ALT_GUARD_FIXTURE),
         ("RESPOND_FIXTURE (issue #96 Response.refs)", RESPOND_FIXTURE),
+        ("CREATE_FIXTURE (issue #97 RepositoryCall.result)", CREATE_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -583,7 +641,7 @@ def self_test():
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
-      + respond_negatives()
+      + respond_negatives() + create_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):
