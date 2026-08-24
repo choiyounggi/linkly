@@ -75,10 +75,21 @@ def tool_compile(arguments):
 
     `unknown-verb`가 하나라도 있으면 그 스텝은 **아무 효과도 내지 않는다.**
     종료 코드는 그 사실을 담지 않으므로, 여기서는 개수를 요약에 함께 싣는다.
+
+    `path`가 디렉터리면 RFC-0031의 단일 정본 로더(`load_sources`)로 그 안의
+    `*.lnpl`을 병합한다(issue #77) — `text`/`path` 파일 하나는 오늘과
+    바이트 동일(`_read_source`가 그대로 처리한다).
     """
     _version, parse, lower, to_records = _lnpl()
-    source, origin = _read_source(arguments)
-    module = lower(parse(source), arguments.get("module") or "mcp")
+    path = arguments.get("path")
+    if path is not None and arguments.get("text") is None and os.path.isdir(path):
+        from lnpl.lower import load_sources
+        decls = load_sources([path])
+        origin = path
+    else:
+        source, origin = _read_source(arguments)
+        decls = parse(source)
+    module = lower(decls, arguments.get("module") or "mcp")
     records = to_records(module.diagnostics)
     by_code = {}
     for rec in records:
@@ -163,8 +174,11 @@ TOOLS = [
                          "description": "LNPL source as text. Use this to check "
                                         "a draft before writing it to disk."},
                 "path": {"type": "string",
-                         "description": "Path to a .lnpl file. Give either "
-                                        "`text` or `path`, not both."},
+                         "description": "Path to a .lnpl file, or to a "
+                                        "directory (its *.lnpl are merged in "
+                                        "filename-sorted order — RFC-0031, "
+                                        "issue #77). Give either `text` or "
+                                        "`path`, not both."},
                 "module": {"type": "string",
                            "description": "Module name for the lowered IR "
                                           "(default: mcp)."},

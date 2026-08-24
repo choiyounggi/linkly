@@ -20,11 +20,13 @@ R1 — Effect derivation (A.4-3). A step line's first token is a Verb (the gramm
 """
 
 import difflib
+import os
 import re
 
 from .diagnostics import ENFORCED, ENFORCEMENT, Diagnostics
 from .lexer import (COMPARATORS, SCHEDULE_RECURRENCES, SCHEDULE_ZONES,
                     is_duration)
+from .parser import parse
 from .refinements import (BASE_CATEGORY, FACET_NAMES, PRESETS, facets_for_base,
                           preset)
 from .repo_policy import binding_name
@@ -195,6 +197,80 @@ EXPOSE_SORT_BASES = ("Integer", "DateTime")
 
 class LowerError(Exception):
     """Raised when a declaration cannot be lowered to IR."""
+
+
+class LoaderError(LowerError):
+    """Raised by `load_sources` for a multi-file input it cannot merge.
+
+    A subclass of `LowerError` so every existing consumer that already
+    catches `LowerError` (cli.py's `main()`, mcp_server.py's generic
+    `except Exception`) handles this without new wiring (RFC-0031).
+    """
+
+
+def load_sources(paths):
+    """The single loader every LNPL consumer shares (RFC-0031, issue #77).
+
+    `paths` — a sequence of file paths, or a single directory path. A lone
+    directory has its `*.lnpl` files collected in filename-sorted order;
+    anything else is treated as an explicit file list, merged in the given
+    order. Returns `list[Decl]` — exactly what `parser.parse()` already
+    returns for one file, concatenated in merge order — so `lower()` and
+    every other decls consumer needs no change.
+
+    A name declared in two different files is rejected: `LoaderError` names
+    both `<file>:<line>` locations. A name repeated within the *same* file is
+    not this function's concern — that is whatever `lower()` already did
+    with it (e.g. the entity/refine namespace check, RFC-0011 A.7(e)); this
+    check only fires across a file boundary, so a single-file call can never
+    trigger it (RFC-0031 D7: one source argument stays byte-identical).
+
+    A bare `str` is accepted as shorthand for `[str]` (one path) — a plain
+    string is itself a sequence of characters, and every pre-RFC-0031 caller
+    of `cli.compile_source`/`cli._compile` passes one path this way; without
+    this, `paths` would silently iterate character-by-character.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    paths = list(paths)
+    if not paths:
+        raise LoaderError("no source given")
+
+    if len(paths) == 1 and os.path.isdir(paths[0]):
+        directory = paths[0]
+        names = sorted(name for name in os.listdir(directory)
+                       if name.endswith(".lnpl"))
+        if not names:
+            raise LoaderError("directory %r has no .lnpl files" % directory)
+        files = [os.path.join(directory, name) for name in names]
+    else:
+        # An explicit list mixing in a directory is not "a single directory"
+        # (the branch above) and not a file list either — reject it with a
+        # LoaderError naming the offender, instead of letting `open()` raise
+        # a bare IsADirectoryError past this function's contract.
+        for path in paths:
+            if os.path.isdir(path):
+                raise LoaderError(
+                    "%r is a directory — give a directory alone, or list "
+                    ".lnpl files explicitly, not both" % path)
+        files = paths
+
+    merged = []
+    declared_in = {}  # decl name -> (file, lineno) of its first-seen file
+    for path in files:
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        file_decls = parse(source)
+        for decl in file_decls:
+            prior = declared_in.get(decl.name)
+            if prior is not None and prior[0] != path:
+                raise LoaderError(
+                    "duplicate declaration %r: first declared at %s:%d, "
+                    "again at %s:%d"
+                    % (decl.name, prior[0], prior[1], path, decl.lineno))
+            declared_in.setdefault(decl.name, (path, decl.lineno))
+        merged.extend(file_decls)
+    return merged
 
 
 def split_pascal(name):

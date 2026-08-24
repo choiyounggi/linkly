@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**2467 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**2482 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**31 RFCs — 30 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
+**32 RFCs — 31 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -295,6 +295,7 @@ suite is defined against.
 | [0028 Arithmetic and Alternative Guards](rfcs/0028-arithmetic-and-alternative-guards.md) | `*`/`/` join `+`/`-` (integer, truncating; 0 divisor is a `RunError`, not a compile error unless it is the literal `0`), and `when A` / `or B` promotes two guard lines into an alternative guard — a structure, not a `Condition`-grammar operator. *Updates 0001 §Node catalogue/Guard, 0014 §2, 0015 §1 §4* |
 | [0029 Clock Contract and `--clock real` Binding](rfcs/0029-clock-contract-and-real-binding.md) | Names the shared time source `timeout`/`retry`/`CacheAccess` already read as a Clock contract, and adds a second binding: `--clock real` ties `CacheAccess` TTL to actual wall-clock time. The default virtual binding — and `diff`/`spec`, which never see `--clock` — are unchanged. *Updates 0003 §Execution Model* |
 | [0030 `create` Result Binding and Payload Seed](rfcs/0030-create-result-binding-and-payload-seed.md) | `create <noun> as <name>` extends RFC-0027's result-binding notation so the created row can be addressed by `set`/`format`/`respond`; separately, and regardless of `as`, the created row is seeded from same-named non-`derived` payload fields — the fix for the "skeleton row" gap. `as`-less `create` is unchanged at the compile surface (no `result` field, no new scope entry). *Updates 0012 §G12.2, §G12.5* |
+| [0031 Multi-File Compilation Unit](rfcs/0031-multi-file-compilation-unit.md) | A compilation unit becomes a set of files: `lnpl <cmd> <src...>` merges explicit files in argument order, `lnpl <cmd> <dir>` collects its `*.lnpl` filename-sorted. Declared names stay globally unique — a name repeated across files is rejected, naming both `<file>:<line>` locations. Grammar and the lexer are unchanged, and one source argument stays byte-identical. *Updates 0004 §Reference-level Specification (pipeline table, S1 row)* |
 
 Twenty-seven are `Accepted`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
@@ -356,7 +357,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2467 tests in 86.226s
+Ran 2482 tests in 71.918s
 OK
 ```
 

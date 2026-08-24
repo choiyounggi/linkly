@@ -1,6 +1,7 @@
 """`python3 -m lnpl` — compile and run LNPL sources.
 
-    lnpl compile <src.lnpl> [-o out.lir.json]   parse + lower, emit IR
+    lnpl compile <src.lnpl>... [-o out.lir.json]   parse + lower, emit IR
+    lnpl compile <dir>                             *.lnpl in the dir, filename order (#77)
     lnpl run <src.lnpl> [--payload file.json]   compile then execute (mode A)
     lnpl run <src.lnpl> --backend sqlite:s.db   ... against a real store (#25)
     lnpl token <src.lnpl> --path /s/w ...       issue a bearer token (#25)
@@ -19,8 +20,8 @@ from .drivers import (DriverError, HmacTokenProvider, TokenError,
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, sample_payload)
 from .lexer import LexError
-from .lower import LowerError, lower
-from .parser import ParseError, parse
+from .lower import LowerError, load_sources, lower
+from .parser import ParseError
 from .repo_policy import default_rows
 from .backend import (BackendError, build as build_native, condition_field_names,
                       ran_step_indices, restore_skips, run_binary,
@@ -52,16 +53,38 @@ def _entities(doc):
     return [n for n in doc["nodes"] if n["kind"] == "Entity"]
 
 
-def compile_source(path):
-    return _compile(path)[0]
+def compile_source(paths):
+    return _compile(paths)[0]
 
 
-def _compile(path):
-    """Returns (ir_document, decls, module_name, diagnostics)."""
-    with open(path, encoding="utf-8") as fh:
-        source = fh.read()
-    module_name = os.path.splitext(os.path.basename(path))[0]
-    decls = parse(source)
+def _module_name(paths):
+    """RFC-0031: one file -> its basename (byte-identical to before this RFC);
+    one directory -> the directory's basename; several explicit files -> the
+    first one's basename (merge order is already deterministic, so its first
+    element names the module)."""
+    if len(paths) == 1 and os.path.isdir(paths[0]):
+        return os.path.basename(os.path.normpath(paths[0]))
+    return os.path.splitext(os.path.basename(paths[0]))[0]
+
+
+def _source_display(paths):
+    """One path as-is; several joined for a message (`--workflow` errors, the
+    `serve` announce line) — nothing before this RFC ever saw a list here."""
+    return paths[0] if len(paths) == 1 else ", ".join(paths)
+
+
+def _compile(paths):
+    """paths: [str], or (shorthand) a bare str for one path — file paths, or
+    a single directory (RFC-0031). Every pre-RFC-0031 caller of this and
+    `compile_source` passes a bare str; normalized once, here, so
+    `_module_name` and `load_sources` both see a list.
+
+    Returns (ir_document, decls, module_name, diagnostics).
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    decls = load_sources(paths)
+    module_name = _module_name(paths)
     module = lower(decls, module_name)
     return module.to_document(), decls, module_name, module.diagnostics
 
@@ -186,7 +209,7 @@ def cmd_run(args):
         # declaration is unenforced either way, so the report still goes out.
         _emit_diagnostics(diagnostics)
         return 1
-    target = _select_workflow(args.workflow, args.source, workflows)
+    target = _select_workflow(args.workflow, _source_display(args.source), workflows)
 
     rows = _repo_rows(doc, payload, target, empty=args.no_row)
     repository = _open_backend(getattr(args, "backend", "fake"))
@@ -286,7 +309,8 @@ def cmd_spec(args):
     _emit_diagnostics(diagnostics)
     manifest = extract(decls, module_name)
     if not manifest["cases"]:
-        print("no `spec` block found in %s" % args.source, file=sys.stderr)
+        print("no `spec` block found in %s" % _source_display(args.source),
+             file=sys.stderr)
         return 1
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
@@ -362,7 +386,7 @@ def cmd_serve(args):
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
     print("serving %s on http://%s:%d (mode A, backend=%s, jwt=%s)"
-          % (args.source, host, port,
+          % (_source_display(args.source), host, port,
              "fake" if backend == "fake" else backend.split(":", 1)[0],
              "verified" if token_provider is not None else "presence-checked"),
           flush=True)
@@ -630,7 +654,7 @@ def cmd_build(args):
     if not workflows:
         print("no workflow to build", file=sys.stderr)
         return 1
-    target = _select_workflow(args.workflow, args.source, workflows)
+    target = _select_workflow(args.workflow, _source_display(args.source), workflows)
     # Issue #55 (r1 N-3): say where this build's Validation outcome came from,
     # BEFORE the `--field` check below can end the command with rc 2. That is the
     # exact path the misreading took — `--field slug=1` on a refinement-bearing
@@ -719,7 +743,7 @@ def cmd_diff(args):
     if not workflows:
         print("no workflow to compare", file=sys.stderr)
         return 1
-    target = _select_workflow(args.workflow, args.source, workflows)
+    target = _select_workflow(args.workflow, _source_display(args.source), workflows)
     if args.payload:
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -801,14 +825,20 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("compile", help="parse and lower to Semantic IR")
-    c.add_argument("source")
+    c.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     c.add_argument("-o", "--output")
     c.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     c.set_defaults(func=cmd_compile)
 
     r = sub.add_parser("run", help="compile then execute (interpreter mode A)")
-    r.add_argument("source")
+    r.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     r.add_argument("--payload", help="JSON file with the workflow input")
     r.add_argument("--workflow", help="workflow node id (default: the first one)")
     r.add_argument("--json", action="store_true", help="emit result and trace as JSON")
@@ -824,7 +854,10 @@ def main(argv=None):
     r.set_defaults(func=cmd_run)
 
     sp = sub.add_parser("spec", help="extract `spec` blocks as a test manifest")
-    sp.add_argument("source")
+    sp.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     sp.add_argument("-o", "--output", help="write the manifest to this path")
     sp.add_argument("--run", action="store_true", help="execute the manifest")
     sp.add_argument("--strict", nargs="?", const="info", default=None,
@@ -832,14 +865,20 @@ def main(argv=None):
     sp.set_defaults(func=cmd_spec)
 
     oa = sub.add_parser("openapi", help="generate an OpenAPI 3.1 document from the IR")
-    oa.add_argument("source")
+    oa.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     oa.add_argument("-o", "--output")
     oa.set_defaults(func=cmd_openapi)
 
     sv = sub.add_parser("serve",
                         help="serve workflows over HTTP at the OpenAPI paths "
                              "(interpreter mode A, fake backend)")
-    sv.add_argument("source")
+    sv.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     sv.add_argument("--host", default="127.0.0.1",
                     help="bind address (default: 127.0.0.1 — loopback only)")
     sv.add_argument("--port", type=int, default=8080,
@@ -858,7 +897,10 @@ def main(argv=None):
 
     tk = sub.add_parser("token",
                         help="issue a bearer token for one served path (#25)")
-    tk.add_argument("source")
+    tk.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     tk.add_argument("--path", required=True, metavar="PATH",
                     help="the served path the token is for, e.g. /shop/checkout")
     tk.add_argument("--subject", required=True,
@@ -896,7 +938,10 @@ def main(argv=None):
     oba.set_defaults(func=cmd_outbox_ack)
 
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
-    bd.add_argument("source")
+    bd.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     bd.add_argument("--workflow")
     bd.add_argument("--workdir", default=".claude/tmp/lnpl-build")
     bd.add_argument("--run", action="store_true")
@@ -917,7 +962,10 @@ def main(argv=None):
     bd.set_defaults(func=cmd_build)
 
     df = sub.add_parser("diff", help="differential check: mode A vs mode B")
-    df.add_argument("source")
+    df.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     df.add_argument("--workflow")
     df.add_argument("--workdir", default=".claude/tmp/lnpl-diff")
     df.add_argument("--payload", help="JSON file with the workflow input")
@@ -932,7 +980,10 @@ def main(argv=None):
     kbp.set_defaults(func=cmd_kb)
 
     ag = sub.add_parser("agents", help="run the RFC-0006 agent cycle over a source")
-    ag.add_argument("source")
+    ag.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     ag.add_argument("--root", default=None, help="KB root")
     ag.add_argument("-o", "--output", help="write the resulting IR here")
     ag.set_defaults(func=cmd_agents)
