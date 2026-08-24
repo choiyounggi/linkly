@@ -54,7 +54,8 @@ class _Server(socketserver.ThreadingMixIn, WSGIServer):
 
 
 def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
-          token_provider=None, network=None, clock=None):
+          token_provider=None, network=None, clock=None, log_format="text",
+          exporter=None):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -68,10 +69,14 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     shares; omitted, each request gets its own FakeNetworkDriver. `clock`
     (issue #80) is a `Clock` every request's Interpreter shares; omitted,
     each request gets its own virtual `Clock()` — the pre-#80 default.
+    `log_format` (issue #78) is "text" (default, silent — the pre-#78
+    behavior) or "json" (one JSON Line per request to stderr). `exporter`
+    (issue #78) is a `TraceExporter` every completed workflow run's Trace is
+    handed to; omitted, nothing is exported — independent of `log_format`.
     """
     app = make_wsgi_app(document, repository_factory=repository_factory,
                         token_provider=token_provider, network=network,
-                        clock=clock)
+                        clock=clock, log_format=log_format, exporter=exporter)
     server = _Server((host, port), _WSGIRequestHandler)
     server.set_app(app)
     return server

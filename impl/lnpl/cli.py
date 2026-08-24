@@ -46,6 +46,7 @@ from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, generate as generate_openapi
 from .serve import ServeError, build_routes, serve
+from .wsgi import ExporterError, open_exporter, open_log_format
 from .spec import SpecError, extract, run_manifest
 
 
@@ -378,10 +379,17 @@ def cmd_serve(args):
                             capabilities=capabilities)
     if network is _REJECTED:
         return 2
+    log_format = _open_log_format(getattr(args, "log_format", "text"))
+    if log_format is _REJECTED:
+        return 2
+    exporter = _open_trace_exporter(getattr(args, "trace_exporter", None))
+    if exporter is _REJECTED:
+        return 2
 
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     server = serve(doc, args.host, args.port, repository_factory=factory,
-                   token_provider=token_provider, network=network)
+                   token_provider=token_provider, network=network,
+                   log_format=log_format, exporter=exporter)
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -615,6 +623,26 @@ def _open_clock(spec):
     try:
         return open_clock(spec)
     except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _open_log_format(spec):
+    """`--log-format`'s value -> itself validated, `_REJECTED` on a bad
+    selector (issue #78 — the `_open_clock` selector shape mirrored)."""
+    try:
+        return open_log_format(spec)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _open_trace_exporter(spec):
+    """`--trace-exporter`'s value -> a TraceExporter, None for unset,
+    `_REJECTED` on a bad selector or a load failure (issue #78)."""
+    try:
+        return open_exporter(spec)
+    except (ValueError, ExporterError) as exc:
         print("error: %s" % exc, file=sys.stderr)
         return _REJECTED
 
@@ -932,6 +960,16 @@ def main(argv=None):
                          "the bearer token; omitted, the header is only checked "
                          "for presence. The value is never read from the "
                          "command line.")
+    sv.add_argument("--log-format", default="text",
+                    help="access-log line shape: `text` (default, silent — no "
+                         "access log) or `json` (one JSON Line per request to "
+                         "stderr: correlation_id/method/path/workflow/status/"
+                         "duration_ms/skipped/diagnostics)")
+    sv.add_argument("--trace-exporter", default=None, metavar="NAME",
+                    help="export each completed request's Trace: built-in "
+                         "`stderr-json`, or a name registered under the "
+                         "`lnpl.exporters` entry-points group; omitted, "
+                         "nothing is exported (independent of --log-format)")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",

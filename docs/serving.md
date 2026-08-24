@@ -144,6 +144,96 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   테스트에서 값을 줄이려면 `wsgi.SSE_POLL_INTERVAL_S`를 패치해야 한다.)
 - 요청별 진단(가드 스킵 등)은 CLI와 같은 채널인 stderr로 나간다.
 
+## 관측 — `--log-format` / `TraceExporter` (이슈 #78)
+
+사람용 stderr 텍스트만 있으면 수집기가 `correlation_id`를 필드로 뽑을 수
+없다(`format_lines`가 만드는 텍스트 진단은 grep 대상이지 파싱 대상이 아니다).
+이 절은 그 통로를 연다 — 기본 `text` 출력의 바이트는 그대로 두고.
+
+### 접속 로그 — `--log-format`
+
+- `text`(기본): 접속 로그 없음. 이슈 #78 이전과 바이트 단위로 동일 — 가드
+  스킵 등 요청별 진단은 여전히 `format_lines`를 통해 stderr로 나간다(위
+  "운영 성질" 절, 변경 없음).
+- `json`: 요청 1건마다 stderr에 JSON 1행(`json.dumps(..., ensure_ascii=False)`).
+  필드:
+
+  | 필드 | 뜻 |
+  |------|-----|
+  | `correlation_id` | 워크플로가 실행된 요청은 응답 본문과 **같은** id(외부에서 새로 채번하지 않는다); 실행 전 거절(404/405/401/413/400)은 이 요청 전용으로 채번한 id |
+  | `method` / `path` | `REQUEST_METHOD` / `PATH_INFO` |
+  | `workflow` | POST 워크플로 요청이면 워크플로 노드 id, 아니면 `null`(GET 단건/목록/SSE/거절) |
+  | `status` | 응답으로 나간 HTTP 상태 — 위 매핑표(M1–M16)와 같은 값 |
+  | `duration_ms` | 요청 처리 전체 걸린 시간(반올림 3자리) |
+  | `skipped` | `result["skipped"]` 그대로(워크플로 요청이 아니면 `[]`) |
+  | `diagnostics` | `diagnostics.to_records(interp.diagnostics)`(기존 진단 레코드 재사용 — 새 직렬화를 발명하지 않는다; 워크플로 요청이 아니면 `[]`) |
+
+  SSE 구독은 스트림이라 `duration_ms`가 연결이 열려 있던 시간 전체를
+  가리켜야 하므로, 접속 시점이 아니라 **스트림이 끝날 때**(정상 소진,
+  idle timeout, 또는 클라이언트 연결 종료로 인한 `GeneratorExit`) 1행이
+  나간다.
+- payload/필드 값이 로그 줄에 실릴 일이 있는 채널은 전부 기존
+  `mask_payload` 체크포인트를 이미 통과한 값만 받는다 — 두 번째 마스킹
+  규칙을 새로 만들지 않는다(위 항목들 자체는 correlation_id/상태/시간처럼
+  민감하지 않은 메타데이터이고, `skipped[].evaluations`는 `interp.py`가
+  이미 마스킹한 값만 담는다).
+
+### `TraceExporter` — 완료된 요청의 Trace 내보내기
+
+`--trace-exporter`는 `--log-format`과 **독립**이다 — 접속 로그를 켜지 않고도
+Trace만 내보낼 수 있다. 워크플로가 완료(성공이든 실패든)될 때마다
+`interp.Trace.to_dict()`(`{"correlation_id", "span", "metrics", "logs"}`,
+스텝 span 트리는 이미 존재하던 것)를 딱 하나의 훅으로 넘긴다:
+
+```python
+class TraceExporter:
+    def export(self, trace_dict):
+        raise NotImplementedError
+```
+
+내장 구현은 `stderr-json` 하나 — `export()`가 받은 그대로 `json.dumps`해
+stderr에 한 줄 쓴다. GET 단건/목록/SSE 요청은 `Interpreter`/`Trace`를 아예
+만들지 않으므로 exporter는 워크플로 요청에만 반응한다.
+
+#### 등록
+
+built-in 밖의 이름은 `lnpl.exporters` entry-points 그룹에서 찾는다 —
+`lnpl.drivers`(이슈 #75, `docs/backends.md` §8)와 같은 모양:
+
+```toml
+# 외부 패키지 자신의 pyproject.toml
+[project.entry-points."lnpl.exporters"]
+otlp = "my_otlp_exporter:OtlpExporter"
+```
+
+`OtlpExporter`는 인자 없이 호출되는 팩토리(클래스면 생성자가 인자를 받지
+않는다)여야 하고, 반환값은 `TraceExporter`를 상속해 `export(trace_dict)`를
+구현해야 한다.
+
+#### 내장 스킴은 절대 가려지지 않는다
+
+`stderr-json`은 entry-points 조회보다 먼저 문자열 비교로 매칭된다 —
+외부 패키지가 같은 이름을 등록해도 절대 실행되지 않는다(`open_repository`가
+`fake`/`sqlite`를 지키는 것과 같은 순서).
+
+#### 미등록 이름의 진단
+
+`--trace-exporter otlp`인데 아무 패키지도 그 이름을 등록하지 않았으면
+`ValueError`가 받은 값과 내장/등록된 이름 전체를 담아 나가고, CLI 경로는
+이를 rc 2로 번역한다(`cli._open_trace_exporter`).
+
+#### entry-point 로드 실패
+
+등록은 됐는데 `entry_point.load()`가 실패하면(모듈 없음, import 에러 등)
+`lnpl.wsgi.ExporterError` 하나로 번역되어 나간다 — 원인 예외는 `__cause__`로
+붙어 있다(드라이버 경로의 `DriverError`와 같은 "에러는 한 종류로 나간다"
+원칙).
+
+### 환경 변수 (`build_app()` 경유)
+
+아래 "운영 배치" 절 표에 두 행이 더 있다: `LNPL_LOG_FORMAT`,
+`LNPL_TRACE_EXPORTER`.
+
 ## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
 
 `lnpl serve`의 dev 서버는 TLS도, graceful shutdown도, 다중 프로세스 워커
@@ -171,6 +261,8 @@ env-var 대응:
 | `LNPL_JWT_SECRET_ENV` | `--jwt-secret-env` | (미설정 — presence-checked, not verified) |
 | `LNPL_CLOCK` | `--clock` | `virtual` |
 | `LNPL_ENDPOINT_<NAME>` | `--endpoint NAME=URL` | (이슈 #101 계약 그대로 재사용 — `build_app()`이 새로 발명하지 않는다) |
+| `LNPL_LOG_FORMAT` | `--log-format` | `text` (이슈 #78) |
+| `LNPL_TRACE_EXPORTER` | `--trace-exporter` | (미설정 — 아무것도 내보내지 않음, 이슈 #78) |
 
 해석 실패(존재하지 않는 소스, 알 수 없는 backend/clock 선택자, 미설정
 JWT secret, 매핑되지 않은 network target)는 `lnpl.wsgi.WsgiConfigError`를

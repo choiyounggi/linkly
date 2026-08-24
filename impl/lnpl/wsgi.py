@@ -28,11 +28,12 @@ import sys
 import time
 import urllib.parse
 import uuid
+from importlib import metadata as importlib_metadata
 
 from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
                       TokenError, _is_url_literal, audience_for_path,
                       open_repository)
-from .diagnostics import format_lines
+from .diagnostics import format_lines, to_records
 from .interp import Interpreter, mask_payload, open_clock, refinement_index
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
@@ -61,6 +62,92 @@ MAX_LIMIT = 200
 # actually reads from.
 SSE_POLL_INTERVAL_S = 0.2
 SSE_IDLE_TIMEOUT_S = 30.0
+
+# issue #78: the closed table `--log-format` accepts. "text" (default) is the
+# pre-existing silent behavior — no access log at all (D2, byte-identical).
+# "json" emits one JSON Line per request to stderr, the same operational
+# channel every other line here already uses.
+LOG_FORMATS = ("text", "json")
+
+
+def open_log_format(spec):
+    """`--log-format`'s value -> itself, validated; `ValueError` on a bad
+    selector, naming the accepted set (mirrors `interp.open_clock`)."""
+    if spec in LOG_FORMATS:
+        return spec
+    raise ValueError("unknown log format %r (accepted: %s)"
+                     % (spec, ", ".join(LOG_FORMATS)))
+
+
+class ExporterError(Exception):
+    """The one error type a `TraceExporter` registration/load failure
+    translates into (mirrors `DriverError`, drivers.py)."""
+
+
+class TraceExporter:
+    """issue #78: the adapter contract for exporting one completed request's
+    Trace. `export(trace_dict)` receives exactly `interp.Trace.to_dict()`'s
+    shape — `{"correlation_id", "span", "metrics", "logs"}` — already having
+    passed through `mask_payload` wherever a value came from an entity field
+    (no second masking rule, same as every other output channel here).
+    """
+
+    def export(self, trace_dict):
+        raise NotImplementedError
+
+
+class StderrJsonExporter(TraceExporter):
+    """Built-in: one JSON line per exported trace, written to stderr."""
+
+    def export(self, trace_dict):
+        print(json.dumps(trace_dict, ensure_ascii=False), file=sys.stderr)
+
+
+# issue #78: the entry-points group an external package registers a
+# TraceExporter factory under — `_driver_entry_points()`'s shape (t75,
+# drivers.py) mirrored for exporters. Built-in `stderr-json` is matched
+# before this group is ever consulted, so a registered entry-point can never
+# shadow it.
+EXPORTERS = ("stderr-json",)
+EXPORTERS_ENTRY_POINT_GROUP = "lnpl.exporters"
+
+
+def _exporter_entry_points():
+    try:
+        return importlib_metadata.entry_points(group=EXPORTERS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            EXPORTERS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_exporter_names():
+    return sorted(ep.name for ep in _exporter_entry_points())
+
+
+def open_exporter(spec):
+    """`--trace-exporter`'s value -> a `TraceExporter`, or `None` for the
+    default (no exporting). Beyond the built-in `stderr-json`, `spec` is
+    looked up in the `lnpl.exporters` entry-points group (issue #78, mirrors
+    `open_repository`'s `lnpl.drivers` lookup, issue #75) — an external
+    package registers `name = "module:factory"`.
+    """
+    if spec is None:
+        return None
+    if spec == "stderr-json":
+        return StderrJsonExporter()
+    for entry_point in _exporter_entry_points():
+        if entry_point.name == spec:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise ExporterError(
+                    "trace exporter %r registered via entry-point %r failed "
+                    "to load: %s" % (spec, entry_point.value, exc)) from exc
+            return factory()
+    raise ValueError(
+        "unknown trace exporter %r (built-in: %s; registered entry-points: %s)"
+        % (spec, ", ".join(EXPORTERS),
+           ", ".join(_registered_exporter_names()) or "none"))
 
 
 class CursorError(Exception):
@@ -295,7 +382,8 @@ class LnplWsgiApp:
     """
 
     def __init__(self, document, routes, repository_factory=None,
-                 token_provider=None, network=None, clock=None):
+                 token_provider=None, network=None, clock=None,
+                 log_format="text", exporter=None):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
@@ -314,17 +402,86 @@ class LnplWsgiApp:
         # builds its own virtual `Clock()` — byte-identical to before this
         # issue for every caller that does not pass one.
         self.clock = clock
+        # issue #78: "text" (default) is the pre-existing silent behavior —
+        # `__call__` takes the exact original code path, unchanged.
+        self.log_format = log_format
+        # issue #78: `None` (default) means no TraceExporter configured —
+        # independent of `log_format`, so a caller can export traces while
+        # staying on the default text access-log (or vice versa).
+        self.exporter = exporter
 
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
         path_info = environ.get("PATH_INFO", "")
         query = environ.get("QUERY_STRING", "")
         raw_path = path_info + ("?" + query if query else "")
+        if self.log_format == "json":
+            return self._call_with_json_log(environ, start_response, method,
+                                            path_info, query, raw_path)
         if method == "POST":
             return self._do_post(environ, start_response, path_info, raw_path)
         if method == "GET":
             return self._do_get(environ, start_response, path_info, query, raw_path)
         return self._reject_non_post(start_response, path_info, raw_path)
+
+    def _call_with_json_log(self, environ, start_response, method, path_info,
+                            query, raw_path):
+        """issue #78, D1: one JSON Line per request to stderr. `log_sink` is an
+        out-parameter `_respond` fills in for a POST/workflow run (the only
+        request kind with a `correlation_id`/diagnostics/skipped[] to report);
+        every other request kind logs with those fields at their defaults.
+        SSE is a generator, not a materialized body — its line is emitted at
+        stream end (`_log_sse_then`), not at connection open, so `duration_ms`
+        reflects the stream's actual lifetime.
+        """
+        start_t = time.monotonic()
+        correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        log_sink = {}
+        captured = {}
+
+        def capture_start_response(status_line, headers, exc_info=None):
+            captured["status"] = int(status_line.split(" ", 1)[0])
+            return start_response(status_line, headers, exc_info)
+
+        if method == "POST":
+            body = self._do_post(environ, capture_start_response, path_info,
+                                 raw_path, log_sink=log_sink)
+        elif method == "GET":
+            body = self._do_get(environ, capture_start_response, path_info,
+                               query, raw_path)
+        else:
+            body = self._reject_non_post(capture_start_response, path_info, raw_path)
+
+        if not isinstance(body, list):
+            # The SSE generator: log once the stream actually ends.
+            return self._log_sse_then(body, method, path_info, correlation_id,
+                                      start_t, captured)
+        self._emit_request_log(method, path_info, correlation_id, start_t,
+                               captured, log_sink)
+        return body
+
+    def _emit_request_log(self, method, path, correlation_id, start_t,
+                          captured, log_sink):
+        line = {
+            "correlation_id": log_sink.get("correlation_id") or correlation_id,
+            "method": method,
+            "path": path,
+            "workflow": log_sink.get("workflow"),
+            "status": captured.get("status"),
+            "duration_ms": round((time.monotonic() - start_t) * 1000, 3),
+            "skipped": log_sink.get("skipped", []),
+            "diagnostics": log_sink.get("diagnostics", []),
+        }
+        print(json.dumps(line, ensure_ascii=False), file=sys.stderr)
+
+    def _log_sse_then(self, generator, method, path, correlation_id, start_t,
+                      captured):
+        try:
+            for chunk in generator:
+                yield chunk
+        finally:
+            self._emit_request_log(method, path, correlation_id, start_t,
+                                   captured, {})
 
     def _reject_non_post(self, start_response, path_info, raw_path):
         if raw_path in self.routes:                                # M2
@@ -381,7 +538,8 @@ class LnplWsgiApp:
                                      "the bearer token was not accepted",
                                      correlation_id=correlation_id))
 
-    def _do_post(self, environ, start_response, path_info, raw_path):
+    def _do_post(self, environ, start_response, path_info, raw_path,
+                log_sink=None):
         route = self.routes.get(raw_path)                            # M1
         if route is None:
             return _json_response(start_response, 404,
@@ -420,7 +578,8 @@ class LnplWsgiApp:
             # No special case for an empty body: it runs as {} and a workflow
             # with a Validation effect rejects it through M7.
             payload = {}
-        return self._run(start_response, route["workflow"], payload)
+        return self._run(start_response, route["workflow"], payload,
+                         log_sink=log_sink)
 
     def _do_get(self, environ, start_response, path_info, query, raw_path):
         """issue #99: single-row GET (auto, D1) and list GET (opt-in via
@@ -614,14 +773,14 @@ class LnplWsgiApp:
             if repository is not None:
                 repository.close()
 
-    def _run(self, start_response, workflow_id, payload):
+    def _run(self, start_response, workflow_id, payload, log_sink=None):
         doc = self.document
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         factory = self.repository_factory
         repository = factory() if factory is not None else None
         try:
             return self._respond(start_response, doc, workflow_id, payload,
-                                 correlation_id, repository)
+                                 correlation_id, repository, log_sink=log_sink)
         finally:
             # A request that fails must still release its store, or the leak
             # is one connection per failed request.
@@ -629,7 +788,7 @@ class LnplWsgiApp:
                 repository.close()
 
     def _respond(self, start_response, doc, workflow_id, payload, correlation_id,
-                repository):
+                repository, log_sink=None):
         interp = Interpreter(doc, clock=self.clock,
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
@@ -644,6 +803,11 @@ class LnplWsgiApp:
             print("serve: internal error (correlation_id=%s)" % correlation_id,
                   file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
+            if log_sink is not None:                                 # issue #78
+                log_sink.update(correlation_id=correlation_id, workflow=workflow_id,
+                                skipped=[], diagnostics=to_records(interp.diagnostics))
+            if self.exporter is not None:                            # issue #78, D3
+                self.exporter.export(interp.trace.to_dict())
             return _json_response(start_response, 500,
                                   problem(500, "workflow-failed",
                                          "internal server error",
@@ -651,6 +815,12 @@ class LnplWsgiApp:
         for line in format_lines(interp.diagnostics):
             print(line, file=sys.stderr)
         status, code = map_result(result)
+        if log_sink is not None:                                     # issue #78
+            log_sink.update(correlation_id=result["correlation_id"],
+                            workflow=workflow_id, skipped=result["skipped"],
+                            diagnostics=to_records(interp.diagnostics))
+        if self.exporter is not None:                                 # issue #78, D3
+            self.exporter.export(interp.trace.to_dict())
         if status == 200:                                            # M9
             return _json_response(start_response, 200, result,
                                   content_type="application/json")
@@ -662,7 +832,7 @@ class LnplWsgiApp:
 
 
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
-                  network=None, clock=None):
+                  network=None, clock=None, log_format="text", exporter=None):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -673,7 +843,7 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     return LnplWsgiApp(document, build_routes(document),
                        repository_factory=repository_factory,
                        token_provider=token_provider, network=network,
-                       clock=clock)
+                       clock=clock, log_format=log_format, exporter=exporter)
 
 
 # --------------------------------------------------------------------------
@@ -768,7 +938,7 @@ def _resolve_network(document, endpoints):
 
 
 def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
-              endpoints=None):
+              endpoints=None, log_format=None, trace_exporter=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
 
@@ -783,10 +953,16 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
       clock          LNPL_CLOCK           "virtual" (default) or "real"
       endpoints      (no single env var — each `NetworkCall` target reads
                      `LNPL_ENDPOINT_<NAME>`, t101's existing contract)
+      log_format     LNPL_LOG_FORMAT      "text" (default, silent) or "json"
+                                           (issue #78)
+      trace_exporter LNPL_TRACE_EXPORTER  built-in `stderr-json`, an
+                                           `lnpl.exporters` entry-point name,
+                                           or unset (default: no exporting)
 
-    A `sources`/`backend`/`jwt_secret_env`/`clock`/network target that cannot
-    be resolved raises `WsgiConfigError` before any request is served — a
-    failed launch, not a failed first request.
+    A `sources`/`backend`/`jwt_secret_env`/`clock`/`log_format`/
+    `trace_exporter`/network target that cannot be resolved raises
+    `WsgiConfigError` before any request is served — a failed launch, not a
+    failed first request.
     """
     if sources is None:
         raw = os.environ.get("LNPL_SOURCE")
@@ -837,6 +1013,21 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
 
     network = _resolve_network(document, endpoints)
 
+    log_format = log_format if log_format is not None else os.environ.get(
+        "LNPL_LOG_FORMAT", "text")
+    try:
+        log_format = open_log_format(log_format)
+    except ValueError as exc:
+        raise WsgiConfigError(str(exc)) from exc
+
+    trace_exporter = trace_exporter if trace_exporter is not None else \
+        os.environ.get("LNPL_TRACE_EXPORTER")
+    try:
+        exporter = open_exporter(trace_exporter)
+    except (ValueError, ExporterError) as exc:
+        raise WsgiConfigError(str(exc)) from exc
+
     return make_wsgi_app(document, repository_factory=repository_factory,
                          token_provider=token_provider, network=network,
-                         clock=clock_obj)
+                         clock=clock_obj, log_format=log_format,
+                         exporter=exporter)
