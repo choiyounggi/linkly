@@ -63,6 +63,37 @@
         },
         "x-retry": 3
       }
+    },
+    "/link-hub-service/bookmark/{id}": {
+      "get": {
+        "operationId": "link_hub_service_get_bookmark",
+        "summary": "get one Bookmark",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bookmark"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
     }
   },
   "components": {

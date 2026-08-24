@@ -149,6 +149,16 @@ class FakeRepository:
         table = self.rows.get(entity_id, {})
         return [row for _key, row in sorted(table.items())]
 
+    def query_sorted(self, entity_id, field):
+        """Every row for `entity_id`, ordered by `field` ascending, row_key
+        the tiebreaker (issue #99, D7 — `SqliteRepositoryDriver.query_sorted`
+        pushed to SQL via `json_extract`; the Fake sorts in memory, over the
+        same `(field value, row_key)` pair, so the two backends agree).
+        """
+        table = self.rows.get(entity_id, {})
+        return [row for _key, row in
+               sorted(table.items(), key=lambda kv: (kv[1].get(field), kv[0]))]
+
     # -- RepositoryDriver contract (drivers.py) ----------------------------
     # This class is the contract's reference implementation, so the three
     # methods below exist to make that explicit rather than to add behaviour:

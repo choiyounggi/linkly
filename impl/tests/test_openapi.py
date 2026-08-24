@@ -99,7 +99,12 @@ class TestStructure(unittest.TestCase):
         self.spec = spec_for()
 
     def test_path_comes_from_the_service_and_workflow_names(self):
-        self.assertEqual(list(self.spec["paths"]), ["/login-service/login"])
+        # issue #99, D1: `authenticate user`/`cache user` touch `User`, so the
+        # generated document also carries an automatic GET single-row path —
+        # this test's own concern is the POST path's derivation, not that it
+        # is the ONLY path (that exclusivity is TestStructure's neighbor's job
+        # to cover, not this one's).
+        self.assertIn("/login-service/login", self.spec["paths"])
 
     def test_operation_lists_the_declared_steps(self):
         desc = self.spec["paths"]["/login-service/login"]["post"]["description"]
@@ -870,7 +875,11 @@ class TestRefResolution(unittest.TestCase):
             V.check_schema(schema)
 
     def test_a_document_without_refinements_has_only_the_entity_ref(self):
-        self.assertEqual(_all_refs(spec_for()), ["#/components/schemas/User"])
+        # issue #99, D1: the new automatic GET path also `$ref`s `User`, so
+        # the same target now appears more than once — the property this
+        # test guards is ref DIVERSITY (nothing but `User` is ever
+        # referenced), not ref COUNT, hence the set rather than the list.
+        self.assertEqual(set(_all_refs(spec_for())), {"#/components/schemas/User"})
 
 
 class TestNameCollision(unittest.TestCase):
@@ -1015,6 +1024,83 @@ class TestSlug(unittest.TestCase):
                     golden = fh.read()
                 emitted = json.dumps(generate(doc), indent=2, ensure_ascii=False)
                 self.assertEqual(emitted.strip(), golden.strip())
+
+
+QUERY_SURFACE_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        placedAt DateTime
+
+service Orders
+    policy
+        retry 0
+    expose
+        list Order by placedAt
+
+workflow SaveOrder
+    validate order
+    find order
+"""
+
+
+def query_surface_spec(src=QUERY_SURFACE_SRC, module="qs"):
+    return generate(lower(parse(src), module).to_document())
+
+
+class TestQuerySurface(unittest.TestCase):
+    """issue #99, D6/D8 (OpenAPI DoD item): GET paths trace to the IR the
+    same way every other row in the module docstring's mapping table does —
+    an entity a workflow touches -> an automatic single-row GET (D1); an
+    `expose list` declaration -> an opt-in list GET (D2), never emitted
+    without one.
+    """
+
+    def setUp(self):
+        self.spec = query_surface_spec()
+
+    def test_single_row_get_path_is_present(self):
+        self.assertIn("/orders/order/{id}", self.spec["paths"])
+        op = self.spec["paths"]["/orders/order/{id}"]["get"]
+        self.assertEqual(
+            {"$ref": "#/components/schemas/Order"},
+            op["responses"]["200"]["content"]["application/json"]["schema"])
+        self.assertEqual([{"name": "id", "in": "path", "required": True,
+                          "schema": {"type": "string"}}], op["parameters"])
+        self.assertIn("404", op["responses"])
+
+    def test_list_get_path_is_present_with_cursor_parameters(self):
+        self.assertIn("/orders/order", self.spec["paths"])
+        op = self.spec["paths"]["/orders/order"]["get"]
+        param_names = {p["name"] for p in op["parameters"]}
+        self.assertEqual({"after", "limit"}, param_names)
+        schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(["items", "next"], schema["required"])
+        self.assertEqual(
+            {"$ref": "#/components/schemas/Order"},
+            schema["properties"]["items"]["items"])
+
+    def test_no_expose_clause_means_no_list_path(self):
+        src = QUERY_SURFACE_SRC.replace(
+            "    expose\n        list Order by placedAt\n", "")
+        spec = query_surface_spec(src, "qs2")
+        # The single-row path stays (D1, automatic) — only the opt-in list
+        # path disappears, and with it the entire path entry (D2's "no
+        # expose clause -> no route" reaches all the way to the contract).
+        self.assertIn("/orders/order/{id}", spec["paths"])
+        self.assertNotIn("/orders/order", spec["paths"])
+
+    def test_jwt_service_marks_both_new_paths_401_and_secured(self):
+        src = QUERY_SURFACE_SRC.replace(
+            "    policy\n        retry 0\n",
+            "    policy\n        retry 0\n    security\n        jwt\n")
+        spec = query_surface_spec(src, "qs3")
+        for path, method in (("/orders/order/{id}", "get"), ("/orders/order", "get")):
+            op = spec["paths"][path][method]
+            with self.subTest(path=path):
+                self.assertEqual([{"bearerAuth": []}], op["security"])
+                self.assertIn("401", op["responses"])
 
 
 if __name__ == "__main__":

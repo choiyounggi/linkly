@@ -132,6 +132,18 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    def query_sorted(self, entity_id, field):
+        """Every row for `entity_id`, ordered by `field` ascending, `row_key`
+        (`repo_policy.row_key`) the tiebreaker for equal values (issue #99,
+        D3/D7 — the `expose list` GET surface).
+
+        Same empty-list-never-None contract as `query`. `field` names a
+        top-level key of the JSON `payload` — never SQL text: the statement
+        text stays constant, `field` rides in as a bound `json_extract` path
+        parameter (STATEMENT TEXT IS CONSTANT, this module's docstring).
+        """
+        raise NotImplementedError
+
     def close(self):
         """Release resources. Safe to call more than once."""
         raise NotImplementedError
@@ -225,6 +237,13 @@ _SELECT_ROW = ("SELECT payload, _version FROM lnpl_rows "
               "WHERE entity_id = ? AND row_key = ?")
 _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
                     "ORDER BY row_key")
+# issue #99, D7: the sort field name never touches the statement text — it
+# rides as `json_extract`'s second argument, a bound parameter like every
+# other varying value here (STATEMENT TEXT IS CONSTANT, module docstring).
+# `payload` carries no per-field column (D7: the existing schema is
+# unchanged), so the sort key is extracted from the JSON blob at read time.
+_SELECT_SORTED = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
+                  "ORDER BY json_extract(payload, ?), row_key")
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
                      "VALUES (?, ?, ?)")
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
@@ -341,6 +360,15 @@ class SqliteRepositoryDriver(RepositoryDriver):
             found = self._conn.execute(_SELECT_ALL_ROWS, (entity_id,)).fetchall()
         except sqlite3.Error as exc:
             raise DriverError("cannot query %s: %s" % (entity_id, exc)) from exc
+        return [json.loads(row[0]) for row in found]
+
+    def query_sorted(self, entity_id, field):
+        try:
+            found = self._conn.execute(
+                _SELECT_SORTED, (entity_id, "$." + field)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot query %s sorted by %s: %s"
+                              % (entity_id, field, exc)) from exc
         return [json.loads(row[0]) for row in found]
 
     def persist(self, entity_id, key, row):

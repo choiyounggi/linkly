@@ -9,7 +9,8 @@ from .lexer import (GUARD_ALT_KEYWORD, KEYWORDS_CLAUSE, KEYWORDS_TOP,
                     SCHEDULE_AT, SCHEDULE_KEYWORD, tokenize)
 from .condition import parse_condition, ConditionError
 
-SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database")
+SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database",
+                   "expose")
 ENTITY_CLAUSES = ("field",)
 
 # The sections of a `spec` block, and the full set a `workflow` accepts.

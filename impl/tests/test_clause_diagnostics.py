@@ -17,7 +17,7 @@ from lnpl.parser import SERVICE_CLAUSES, ENTITY_CLAUSES, ParseError, parse
 class TestServiceContextListsItsClauses(unittest.TestCase):
     """issue #63 repro: a mistyped clause keyword under `service`."""
 
-    def test_typo_lists_all_five_service_clauses(self):
+    def test_typo_lists_all_service_clauses(self):
         with self.assertRaises(ParseError) as ctx:
             parse("service S\n    polices\n        timeout 2s\n")
         message = str(ctx.exception)

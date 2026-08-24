@@ -13,20 +13,108 @@ server it has always been; with both, requests read a store that outlives them
 and bearer tokens are actually verified.
 """
 
+import base64
+import binascii
 import json
 import sys
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .diagnostics import format_lines
-from .drivers import TokenError, audience_for_path
-from .interp import Interpreter
+from .drivers import DriverError, TokenError, audience_for_path
+from .interp import Interpreter, mask_payload, refinement_index
 from .openapi import generate, _slug
-from .repo_policy import default_rows
+from .repo_policy import default_rows, repository_calls, row_key
 
 # M4: refuse to buffer more than this before reading a byte. The Fake-backend
 # dev server has no streaming consumer, so anything past 1 MiB is a mistake.
 MAX_BODY_BYTES = 1 << 20
+
+# issue #99, D3: the cursor page-size ceiling. `limit` outside [1, MAX_LIMIT]
+# is a 400 (`limit-invalid`), not a silent clamp — a client that asked for
+# 1,000,000 rows gets a refusal that names the ceiling, not a page it never
+# expected.
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 200
+
+
+class CursorError(Exception):
+    """An `after` cursor could not be decoded, or does not fit this field."""
+
+
+def _entity_view(document, entity_node):
+    """`entity_node` as the masking chokepoint's observability view — each
+    field carries its resolved 18-type `base`, so a `Password` refinement is
+    still masked (mirrors `Interpreter._entity_view`; GET has no Interpreter
+    instance to borrow one from, since it never runs a workflow — issue #99).
+    """
+    refinements = refinement_index(document)
+    fields = [dict(f, base=refinements.get(f.get("type"), {})
+                   .get("base", f.get("type")))
+             for f in entity_node.get("fields", [])]
+    return dict(entity_node, fields=fields)
+
+
+def encode_cursor(value, key):
+    """(sort value, row_key) -> an opaque cursor token (issue #99, D3)."""
+    raw = json.dumps({"v": value, "k": key}, ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def decode_cursor(token):
+    """cursor token -> (sort value, row_key). Raises `CursorError` on
+    anything undecodable — bad base64, bad JSON, the wrong shape. A cursor
+    that decodes cleanly but names a since-deleted row is NOT an error here:
+    keyset comparison (`paginate`) resumes "as of that point" without ever
+    needing the row to still exist (D3)."""
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        data = json.loads(raw)
+    except (ValueError, binascii.Error, UnicodeDecodeError) as exc:
+        raise CursorError("cursor is not valid base64/JSON") from exc
+    if not isinstance(data, dict) or "v" not in data or "k" not in data:
+        raise CursorError("cursor is missing the expected v/k shape")
+    return data["v"], data["k"]
+
+
+def paginate(rows, field, entity_id, after, limit):
+    """`rows` already ordered by `(field, row_key)` ascending (the exact
+    contract `RepositoryDriver.query_sorted` promises) -> `(page, next)`.
+
+    `after` is a decoded `(value, row_key)` pair, or `None` for the first
+    page. Raises `CursorError` when `after`'s value cannot be compared
+    against this field (a forged cross-type cursor — D3's "위조 커서 400").
+    `next` is `None` on the last page, an opaque cursor token otherwise.
+    """
+    if after is not None:
+        try:
+            rows = [r for r in rows
+                   if (r.get(field), row_key(entity_id, r)) > after]
+        except TypeError as exc:
+            raise CursorError(
+                "cursor does not match this field's type") from exc
+    page = rows[:limit]
+    next_cursor = None
+    if len(rows) > limit:
+        last = page[-1]
+        next_cursor = encode_cursor(last.get(field), row_key(entity_id, last))
+    return page, next_cursor
+
+
+def _parse_limit(raw):
+    """query string `limit` -> a page size in `[1, MAX_LIMIT]`.
+
+    `None` (the param was absent) -> `DEFAULT_LIMIT`. Raises `ValueError` for
+    anything else outside the closed range — never a silent clamp (D3).
+    """
+    if raw is None:
+        return DEFAULT_LIMIT
+    if not raw.isdigit() or not (1 <= int(raw) <= MAX_LIMIT):
+        raise ValueError(
+            "limit must be an integer between 1 and %d" % MAX_LIMIT)
+    return int(raw)
 
 
 class ServeError(Exception):
@@ -34,11 +122,25 @@ class ServeError(Exception):
 
 
 def build_routes(document):
-    """{path: {"workflow": node id, "auth": bool}} for every served workflow.
+    """{path: {"kind": ..., "auth": bool, ...}} for every served path.
 
-    The loop mirrors `openapi.generate` (service -> workflow children, same
-    `_slug`), and the assertion at the end makes the mirror a guarantee: a path
-    set that drifts from the published contract refuses to serve at startup
+    Three kinds (issue #99 adds the last two to the original workflow-only
+    table):
+
+      "workflow"   POST /<svc>/<workflow-slug>            {"workflow": id}
+      "get-single" GET  /<svc>/<entity-slug>/{id}          {"entity": id}
+      "get-list"   GET  /<svc>/<entity-slug>               {"entity", "field"}
+
+    "get-single" is automatic for every entity a service's workflows touch
+    (D1 — "entities bound to the service", derived the same way
+    `repo_policy.seeded_entities` already derives "entities this workflow
+    reads": from the RepositoryCall effects the document's own graph
+    already carries, not a new declaration). "get-list" exists only where
+    `expose list <Entity> by <field>` declared it (D2 — default un-exposed).
+
+    The loop mirrors `openapi.generate` (same `_slug`, same per-kind walk),
+    and the assertion at the end makes the mirror a guarantee: a path set
+    that drifts from the published contract refuses to serve at startup
     rather than 404-ing at request time.
     """
     nodes = {n["id"]: n for n in document["nodes"]}
@@ -51,12 +153,23 @@ def build_routes(document):
             node = nodes.get(cid)
             if node is not None and node["kind"] == "Security":
                 auth = "jwt" in node.get("mechanisms", [])
-        for wf_id in service.get("children", []):
-            wf = nodes[wf_id]
-            if wf["kind"] != "Workflow":
-                continue
-            path = "/%s/%s" % (_slug(service["name"]), _slug(wf["name"]))
-            routes[path] = {"workflow": wf_id, "auth": auth}
+        svc_slug = _slug(service["name"])
+        entity_ids = set()
+        for cid in service.get("children", []):
+            child = nodes[cid]
+            if child["kind"] == "Workflow":
+                path = "/%s/%s" % (svc_slug, _slug(child["name"]))
+                routes[path] = {"kind": "workflow", "workflow": cid, "auth": auth}
+                entity_ids.update(eid for eid, _op in repository_calls(document, cid))
+            elif child["kind"] == "Expose":
+                entity = nodes[child["entity"]]
+                list_path = "/%s/%s" % (svc_slug, _slug(entity["name"]))
+                routes[list_path] = {"kind": "get-list", "entity": child["entity"],
+                                     "field": child["field"], "auth": auth}
+        for eid in entity_ids:
+            entity = nodes[eid]
+            single_path = "/%s/%s/{id}" % (svc_slug, _slug(entity["name"]))
+            routes[single_path] = {"kind": "get-single", "entity": eid, "auth": auth}
     contract = set(generate(document)["paths"])
     if set(routes) != contract:
         raise ServeError("served paths %r do not match the OpenAPI contract %r"
@@ -93,6 +206,9 @@ _TITLES = {
     "deadline-exceeded": "workflow deadline exceeded",
     "validation-failed": "payload validation failed",
     "workflow-failed": "workflow execution failed",
+    "cursor-invalid": "the `after` cursor could not be used",
+    "limit-invalid": "the `limit` query parameter is out of range",
+    "read-failed": "repository read failed",
 }
 
 
@@ -120,6 +236,7 @@ class _Server(ThreadingHTTPServer):
                  token_provider=None):
         super().__init__(address, _Handler)
         self.document = document
+        self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
         # A factory, not a driver: each request opens its own store and closes
         # it, so a connection is never shared across threads. The provider is
@@ -155,7 +272,24 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, problem(404, "not-found",
                                     "no OpenAPI path %r" % self.path))
 
-    do_GET = do_PUT = do_DELETE = do_PATCH = do_HEAD = _reject_non_post
+    do_PUT = do_DELETE = do_PATCH = do_HEAD = _reject_non_post
+
+    def _check_auth(self, route):
+        """True when this route's auth requirement is satisfied; otherwise
+        sends 401 (M3/M3a) and returns False. issue #99, D5: GET reuses this
+        SAME check a POST workflow route already used — no new judgment
+        invented for the read surface."""
+        if not route["auth"]:
+            return True
+        header = self.headers.get("Authorization")
+        if header is None:                                         # M3
+            self._send(401, problem(401, "auth-missing",
+                                    "the service declares `security jwt`; "
+                                    "send an Authorization header"))
+            return False
+        if self.server.token_provider is not None:                 # M3a
+            return self._token_accepted(header)
+        return True
 
     def do_POST(self):
         route = self.server.routes.get(self.path)
@@ -163,16 +297,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, problem(404, "not-found",
                                     "no OpenAPI path %r" % self.path))
             return
-        if route["auth"]:
-            header = self.headers.get("Authorization")
-            if header is None:                                     # M3
-                self._send(401, problem(401, "auth-missing",
-                                        "the service declares `security jwt`; "
-                                        "send an Authorization header"))
-                return
-            if self.server.token_provider is not None:             # M3a
-                if not self._token_accepted(header):
-                    return
+        if route.get("kind") != "workflow":                        # M2
+            self._send(405, problem(405, "method-not-allowed",
+                                    "only GET is served at %s" % self.path),
+                       headers=(("Allow", "GET"),))
+            return
+        if not self._check_auth(route):
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -199,6 +330,112 @@ class _Handler(BaseHTTPRequestHandler):
             # with a Validation effect rejects it through M7.
             payload = {}
         self._run(route["workflow"], payload)
+
+    def do_GET(self):
+        """issue #99: single-row GET (auto, D1) and list GET (opt-in via
+        `expose`, D2). A 3-segment path with a non-empty last segment is
+        tried as a single-row template first (`/<svc>/<entity>/{id}`); a
+        2-segment path is looked up directly (workflow POST-only paths and
+        list GET paths share that shape, `build_routes`' "kind" tells them
+        apart, same as `do_POST` already does for its own paths).
+        """
+        path_only, _, query = self.path.partition("?")
+        segments = path_only.split("/")
+        if len(segments) == 4 and segments[3]:
+            template = "/%s/%s/{id}" % (segments[1], segments[2])
+            route = self.server.routes.get(template)
+            if route is not None and route.get("kind") == "get-single":
+                if not self._check_auth(route):
+                    return
+                self._get_single(route, segments[3])
+                return
+            self._send(404, problem(404, "not-found",             # M1
+                                    "no OpenAPI path %r" % self.path))
+            return
+        route = self.server.routes.get(path_only)
+        if route is not None and route.get("kind") == "get-list":
+            if not self._check_auth(route):
+                return
+            self._get_list(route, query)
+            return
+        if route is not None:                                    # M2
+            self._send(405, problem(405, "method-not-allowed",
+                                    "only POST is served at %s" % self.path),
+                       headers=(("Allow", "POST"),))
+            return
+        self._send(404, problem(404, "not-found",                 # M1
+                                "no OpenAPI path %r" % self.path))
+
+    def _get_single(self, route, id_value):
+        entity_id = route["entity"]
+        factory = self.server.repository_factory
+        repository = factory() if factory is not None else None
+        if repository is None:
+            # No backend configured: nothing has ever been persisted, so
+            # every id is legitimately absent (module docstring: "the
+            # in-memory, presence-checked server it has always been").
+            self._send(404, problem(404, "not-found", "no such row"))
+            return
+        correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        try:
+            row = repository.execute(entity_id, "read",
+                                     row_key(entity_id, {"id": id_value}))
+        except DriverError as exc:
+            print("serve: internal error (correlation_id=%s): %s"
+                  % (correlation_id, exc), file=sys.stderr)
+            self._send(500, problem(500, "read-failed", "internal server error",
+                                    correlation_id=correlation_id))
+            return
+        finally:
+            repository.close()
+        if row is None:
+            self._send(404, problem(404, "not-found", "no such row"))
+            return
+        entity_node = self.server.nodes[entity_id]
+        masked = mask_payload(row, _entity_view(self.server.document, entity_node))
+        self._send(200, masked, content_type="application/json")
+
+    def _get_list(self, route, query):
+        entity_id, field = route["entity"], route["field"]
+        params = urllib.parse.parse_qs(query, keep_blank_values=True)
+        try:
+            limit = _parse_limit(params.get("limit", [None])[0])
+        except ValueError as exc:
+            self._send(400, problem(400, "limit-invalid", str(exc)))
+            return
+        after = None
+        after_raw = params.get("after", [None])[0]
+        if after_raw is not None:
+            try:
+                after = decode_cursor(after_raw)
+            except CursorError as exc:
+                self._send(400, problem(400, "cursor-invalid", str(exc)))
+                return
+        factory = self.server.repository_factory
+        rows = []
+        if factory is not None:
+            repository = factory()
+            correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+            try:
+                rows = repository.query_sorted(entity_id, field)
+            except DriverError as exc:
+                print("serve: internal error (correlation_id=%s): %s"
+                      % (correlation_id, exc), file=sys.stderr)
+                self._send(500, problem(500, "read-failed", "internal server error",
+                                        correlation_id=correlation_id))
+                return
+            finally:
+                repository.close()
+        try:
+            page, next_cursor = paginate(rows, field, entity_id, after, limit)
+        except CursorError as exc:
+            self._send(400, problem(400, "cursor-invalid", str(exc)))
+            return
+        entity_node = self.server.nodes[entity_id]
+        view = _entity_view(self.server.document, entity_node)
+        items = [mask_payload(r, view) for r in page]
+        self._send(200, {"items": items, "next": next_cursor},
+                  content_type="application/json")
 
     def _token_accepted(self, header):
         """True when the bearer token passes; otherwise sends 401 and False.

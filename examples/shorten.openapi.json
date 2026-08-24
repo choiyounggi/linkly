@@ -43,6 +43,45 @@
         "x-response-slo-ms": 40,
         "x-timeout-ms": 2000
       }
+    },
+    "/shorten-service/link/{id}": {
+      "get": {
+        "operationId": "shorten_service_get_link",
+        "summary": "get one Link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Link"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          },
+          "401": {
+            "description": "authentication failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {

@@ -12,7 +12,7 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 ## 절(clause)
 
-`field` `goal` `policy` `security` `performance` `database` `spec` `given` `when` `expect`
+`field` `goal` `policy` `security` `performance` `database` `expose` `spec` `given` `when` `expect`
 
 ## 제어 어휘
 

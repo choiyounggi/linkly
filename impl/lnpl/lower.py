@@ -175,6 +175,17 @@ PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
 ARGUMENT_MECHANISMS = ("role", "encrypt")
 
+# issue #99, D2: `expose` opt-in list surface. `list` is the only verb — a
+# closed set of one, widened only if a later issue asks for more (RFC-0016
+# §Open Questions precedent). The sort field's base type is restricted to
+# Integer|DateTime because both compare with a plain `<`/`>` and serialize to
+# a JSON value `json_extract` and Python's own `<` agree on ordering for
+# (RFC-0025's `list` keyword already means something else — a RowSet bound
+# inside a workflow body; this is a different grammar position, `service ...
+# expose ...`, not a workflow step, so the two do not collide).
+EXPOSE_VERBS = ("list",)
+EXPOSE_SORT_BASES = ("Integer", "DateTime")
+
 
 class LowerError(Exception):
     """Raised when a declaration cannot be lowered to IR."""
@@ -372,6 +383,42 @@ def _parse_security_line(tokens, lineno):
     if len(tokens) != 1:
         raise LowerError("line %d: `%s` takes no argument" % (lineno, head))
     return head
+
+
+def _parse_expose_line(tokens, lineno, registry, base_of):
+    """issue #99, D2: `list <Entity> by <field>` -> `{entity, field}`.
+
+    Unlike `_parse_security_line`/`_parse_policy_line` this is not a closed
+    keyword lookup alone: `<Entity>` and `<field>` are live references, so a
+    typo here is a dangling reference (RFC-0001 structure rule 6), same as an
+    undeclared capability in a `database` line — not a guess at what was
+    meant.
+    """
+    verb = tokens[0]
+    if verb not in EXPOSE_VERBS:
+        raise LowerError("line %d: unknown expose verb %r (allowed: %s)"
+                         % (lineno, verb, ", ".join(EXPOSE_VERBS)))
+    if len(tokens) != 4 or tokens[2] != "by":
+        raise LowerError(
+            "line %d: `expose %s` needs `%s <Entity> by <field>`"
+            % (lineno, verb, verb))
+    entity_name, field_name = tokens[1], tokens[3]
+    entity = next((e for e in registry.values() if e["name"] == entity_name), None)
+    if entity is None:
+        raise LowerError(
+            "line %d: %r is not a declared entity (dangling reference — "
+            "RFC-0001 structure rule 6)" % (lineno, entity_name))
+    field = next((f for f in entity["fields"] if f["name"] == field_name), None)
+    if field is None:
+        raise LowerError("line %d: entity %s has no field %r"
+                         % (lineno, entity_name, field_name))
+    base = base_of.get(field["type"], field["type"])
+    if base not in EXPOSE_SORT_BASES:
+        raise LowerError(
+            "line %d: expose list sort field must be Integer or DateTime "
+            "(allowed: %s), but %s.%s is base %r"
+            % (lineno, ", ".join(EXPOSE_SORT_BASES), entity_name, field_name, base))
+    return {"entity": entity["id"], "field": field_name}
 
 
 def _number(tok):
@@ -633,6 +680,18 @@ def lower(decls, module_name):
                 mod.diagnostics, "performance",
                 [(b["metric"], l.lineno)
                  for b, l in zip(budgets, d.clauses["performance"])], perfid)
+        # issue #99, D2: `expose list <Entity> by <field>` -> one Expose node
+        # per line, ids scoped under the service the same way `goal` lines
+        # become numbered BusinessRule nodes below. Expose nodes ride in
+        # `children` (not `constraints`): like a Workflow, and unlike
+        # Security/Policy/Performance, an Expose node synthesizes a servable
+        # route rather than constraining one.
+        expose_nodes = []
+        for n, line in enumerate(d.clauses.get("expose", []), start=1):
+            parsed = _parse_expose_line(line.tokens, line.lineno, registry, base_of)
+            expose_nodes.append(_node(
+                "Expose", "%s.expose.%d" % (sid, n),
+                entity=parsed["entity"], field=parsed["field"], line=line.lineno))
         # Capability attribution (formerly the provisional R3). A service takes the
         # capabilities its own `database` clause names; with no such clause, a
         # single-service module attributes all of them, and a multi-service module
@@ -676,6 +735,7 @@ def lower(decls, module_name):
         children = [g["id"] for g in goal_nodes]
         children += [derive_id(w.name, "Workflow")
                      for w in by_kind["workflow"] if owner_of.get(id(w)) is d]
+        children += [e["id"] for e in expose_nodes]
         service_nodes.append(_node(
             "Service", sid, name=d.name,
             requires=requires or None,
@@ -683,6 +743,7 @@ def lower(decls, module_name):
             children=children or None,
             line=d.lineno))
         service_nodes.extend(goal_nodes)
+        service_nodes.extend(expose_nodes)
 
     # A.6.4 emit-on-use: a preset a field named rides into this document as a
     # node, built by the same function a declaration uses. An unused preset is

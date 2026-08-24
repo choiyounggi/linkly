@@ -133,8 +133,8 @@ SHORTEN_PATH = "/shorten-service/shorten"
 class ServerTestCase(unittest.TestCase):
     """Boots one server per test on an ephemeral port; teardown always runs."""
 
-    def start(self, doc):
-        server = serve(doc, port=0)
+    def start(self, doc, **kwargs):
+        server = serve(doc, port=0, **kwargs)
         thread = threading.Thread(
             target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()

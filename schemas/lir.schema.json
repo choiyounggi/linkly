@@ -83,6 +83,9 @@
           },
           {
             "$ref": "#/$defs/nodePerformance"
+          },
+          {
+            "$ref": "#/$defs/nodeExpose"
           }
         ]
       }
@@ -1114,6 +1117,38 @@
         "kind",
         "id",
         "budgets"
+      ],
+      "additionalProperties": false
+    },
+    "nodeExpose": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Expose"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
+        "entity": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "field": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "entity",
+        "field"
       ],
       "additionalProperties": false
     }

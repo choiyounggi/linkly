@@ -11,6 +11,14 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 각 워크플로는 `POST /<service-slug>/<workflow-slug>`에 붙는다 — `lnpl openapi`가
 생성하는 경로와 기동 시 대조되며, 어긋나면 서버는 뜨지 않는다(rc 2).
 
+이슈 #99: 조회 표면도 같은 대조를 받는다. 워크플로가 건드리는 엔티티마다
+`GET /<service-slug>/<entity-slug>/{id}`가 자동으로 붙고(선언 불필요, D1),
+`service ... expose / list <Entity> by <field>` 절을 쓴 엔티티만
+`GET /<service-slug>/<entity-slug>?after=<cursor>&limit=N` 목록도 붙는다(opt-in,
+D2). 커서는 정렬키+row_key를 인코딩한 불투명 토큰이며(D3), 목록의 200 본문은
+`{"items": [...], "next": <다음 커서 또는 null>}`이다. 인가는 워크플로 경로와
+같은 판정을 그대로 재사용한다(M3/M3a, D5) — 조회 전용의 새 401 판정은 없다.
+
 ```bash
 lnpl serve examples/shorten.lnpl &
 curl -s http://127.0.0.1:8080/shorten-service/shorten \
@@ -37,6 +45,11 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M7 | 실행 실패 ∧ 실패 스텝의 효과에 `Validation` 포함 | 400 | `validation-failed` |
 | M8 | 실행 실패 (그 외 전부) | 500 | `workflow-failed` |
 | M9 | `status == completed` — 가드 거부 포함 | 200 | — |
+| M10 | GET 단건: 경로는 있으나 행이 없음(부재 또는 백엔드 미설정) | 404 | `not-found` |
+| M11 | GET 목록: `expose` 없는 엔티티(2세그먼트 경로가 라우팅 테이블에 없음) | 404 | `not-found` |
+| M12 | GET 목록: `after` 커서가 해독 불가 또는 이 필드 타입과 안 맞음(위조) | 400 | `cursor-invalid` |
+| M13 | GET 목록: `limit`이 정수가 아니거나 `[1, 200]` 밖 | 400 | `limit-invalid` |
+| M14 | GET(단건·목록) 리포지토리 드라이버 오류 | 500 | `read-failed` |
 
 - **가드 거부는 200이다.** RFC-0014가 skipped를 status와 직교하는 신호로 정의한다
   — 가드가 제 역할을 한 실행은 CLI에서 rc 0이고, HTTP만 4xx를 주면 같은 실행이

@@ -494,6 +494,59 @@ def respond_negatives():
     ]
 
 
+EXPOSE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "expose",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.order",
+            "name": "Order",
+            "fields": [{"name": "placedAt", "type": "DateTime"}],
+        },
+        {
+            "kind": "Service",
+            "id": "svc.orders",
+            "name": "Orders",
+            "children": ["svc.orders.expose.1"],
+        },
+        {
+            "kind": "Expose",
+            "id": "svc.orders.expose.1",
+            "entity": "entity.order",
+            "field": "placedAt",
+        },
+    ],
+}
+
+
+def expose_negatives():
+    """issue #99, D2/D9 — `Expose`, a new node kind. One negative per keyword
+    it turns on (`type` of `entity`, `type` of `field`, both required fields
+    missing), plus one proving `additionalProperties` still applies once the
+    kind exists — the same "still independent" shape `respond_negatives`
+    pins for `Response.refs`.
+    """
+    n1 = copy.deepcopy(EXPOSE_FIXTURE)
+    n1["nodes"][2]["entity"] = 1                # type 위반 — nodeId 아님
+
+    n2 = copy.deepcopy(EXPOSE_FIXTURE)
+    n2["nodes"][2]["field"] = 1                  # type 위반 — string 아님
+
+    n3 = copy.deepcopy(EXPOSE_FIXTURE)
+    del n3["nodes"][2]["entity"]                 # 필수 필드 누락
+
+    n4 = copy.deepcopy(EXPOSE_FIXTURE)
+    n4["nodes"][2]["by"] = "placedAt"            # 미선언 속성(오타 대역)
+
+    return [
+        ("entity is not a nodeId: 1", n1),
+        ("field is not a string: 1", n2),
+        ("required field removed: Expose.entity", n3),
+        ("undeclared property on an Expose: by", n4),
+    ]
+
+
 def load_json(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -603,6 +656,7 @@ def self_test():
         ("ALT_GUARD_FIXTURE (RFC-0028 Guard.alternatives)", ALT_GUARD_FIXTURE),
         ("RESPOND_FIXTURE (issue #96 Response.refs)", RESPOND_FIXTURE),
         ("CREATE_FIXTURE (issue #97 RepositoryCall.result)", CREATE_FIXTURE),
+        ("EXPOSE_FIXTURE (issue #99 Expose)", EXPOSE_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -641,7 +695,7 @@ def self_test():
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
-      + respond_negatives() + create_negatives()
+      + respond_negatives() + create_negatives() + expose_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

@@ -8,7 +8,7 @@ RFC-0002 §Lexical / §Block structure:
 
 KEYWORDS_TOP = ("entity", "service", "workflow", "event", "capability", "refine")
 KEYWORDS_CLAUSE = ("field", "goal", "policy", "security", "performance",
-                   "database", "spec", "given", "when", "expect")
+                   "database", "expose", "spec", "given", "when", "expect")
 KEYWORDS_CONTROL = ("when", "repeat", "parallel", "until", "pipeline", "merge")
 RESERVED = ("if", "for", "while", "switch")
 

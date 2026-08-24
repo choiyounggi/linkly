@@ -17,12 +17,16 @@ Mapping (each row cites the IR that produces it):
     Policy retry/timeout-> `x-retry` / `x-timeout-ms` on the operation
     Guard when          -> `x-conditional-steps` (the steps that may be skipped)
     Response(respond)   -> the 200 response's `content` schema, grouped by binding
+    entity a workflow touches (issue #99, D1) -> one GET /<service-slug>/
+                           <entity-slug>/{id} path, auto, no declaration needed
+    Expose(expose list) -> one GET /<service-slug>/<entity-slug> path (issue #99,
+                           D2 — opt-in only, no `expose` clause means no path)
 """
 
 from .diagnostics import ENFORCEMENT
 from .interp import _duration_ms
 from .refinements import BASE_CATEGORY, facets_for_base
-from .repo_policy import binding_name
+from .repo_policy import binding_name, repository_calls
 from .types import SEMANTIC_TYPES
 
 # Semantic type -> OpenAPI schema, projected from the one type registry
@@ -197,13 +201,26 @@ def generate(document, version="0.1.0"):
     for service in services:
         con = _constraints(service, nodes)
         uses_bearer = uses_bearer or "jwt" in con["mechanisms"]
-        for wf_id in service.get("children", []):
-            wf = nodes[wf_id]
-            if wf["kind"] != "Workflow":
-                continue
-            path = "/%s/%s" % (_slug(service["name"]), _slug(wf["name"]))
-            paths[path] = {"post": _operation(wf, service, con, nodes, entities,
-                                              refined)}
+        svc_slug = _slug(service["name"])
+        entity_ids = set()
+        for child_id in service.get("children", []):
+            child = nodes[child_id]
+            if child["kind"] == "Workflow":
+                path = "/%s/%s" % (svc_slug, _slug(child["name"]))
+                paths[path] = {"post": _operation(child, service, con, nodes,
+                                                  entities, refined)}
+                entity_ids.update(eid for eid, _op
+                                  in repository_calls(document, child_id))
+            elif child["kind"] == "Expose":
+                entity = nodes[child["entity"]]
+                list_path = "/%s/%s" % (svc_slug, _slug(entity["name"]))
+                paths.setdefault(list_path, {})["get"] = _get_list_operation(
+                    service, entity, child["field"], con)
+        for eid in sorted(entity_ids):
+            entity = nodes[eid]
+            single_path = "/%s/%s/{id}" % (svc_slug, _slug(entity["name"]))
+            paths.setdefault(single_path, {})["get"] = _get_single_operation(
+                service, entity, con)
 
     spec = {
         "openapi": "3.1.0",
@@ -408,4 +425,70 @@ def _operation(wf, service, con, nodes, entities, refined):
         op["x-timeout-ms"] = con["timeout_ms"]
     if conditional:
         op["x-conditional-steps"] = conditional
+    return op
+
+
+def _get_single_operation(service, entity, con):
+    """issue #99, D1/D6: single-row GET, auto for any entity a service's
+    workflows touch. The 200 body IS the entity schema — already `readOnly`-
+    correct via `_entity_schema` (issue #95) — so no field-by-field builder
+    is needed the way `_response_schema` needed one for `respond`'s partial
+    FieldMask.
+    """
+    op = {
+        "operationId": "%s_get_%s" % (_slug(service["name"]).replace("-", "_"),
+                                      _slug(entity["name"]).replace("-", "_")),
+        "summary": "get one %s" % entity["name"],
+        "parameters": [{"name": "id", "in": "path", "required": True,
+                        "schema": {"type": "string"}}],
+        "responses": {
+            "200": {"description": "the row, masked",
+                    "content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/%s"
+                                          % entity["name"]}}}},
+            "404": {"description": "no such row"},
+        },
+    }
+    if "jwt" in con["mechanisms"]:
+        op["security"] = [{"bearerAuth": []}]
+        op["responses"]["401"] = {"description": "authentication failed"}
+    return op
+
+
+def _get_list_operation(service, entity, field, con):
+    """issue #99, D2/D3/D6: the opt-in cursor-paginated list GET. The 200
+    envelope (`items`/`next`) mirrors exactly what `serve.py`'s `_get_list`
+    sends — same discipline `_response_schema` follows for `respond`: the
+    OpenAPI contract must describe the body the server actually returns.
+    """
+    op = {
+        "operationId": "%s_list_%s" % (_slug(service["name"]).replace("-", "_"),
+                                       _slug(entity["name"]).replace("-", "_")),
+        "summary": "list %s by %s" % (entity["name"], field),
+        "parameters": [
+            {"name": "after", "in": "query", "required": False,
+             "schema": {"type": "string"},
+             "description": "opaque cursor from a previous page's `next`"},
+            {"name": "limit", "in": "query", "required": False,
+             "schema": {"type": "integer"}},
+        ],
+        "responses": {
+            "200": {"description": "a page, ordered by %s ascending" % field,
+                    "content": {"application/json": {"schema": {
+                        "type": "object",
+                        "properties": {
+                            "items": {"type": "array",
+                                     "items": {"$ref": "#/components/schemas/%s"
+                                               % entity["name"]}},
+                            "next": {"type": ["string", "null"]},
+                        },
+                        "required": ["items", "next"],
+                        "additionalProperties": False,
+                    }}}},
+            "400": {"description": "malformed `after` cursor or `limit`"},
+        },
+    }
+    if "jwt" in con["mechanisms"]:
+        op["security"] = [{"bearerAuth": []}]
+        op["responses"]["401"] = {"description": "authentication failed"}
     return op
