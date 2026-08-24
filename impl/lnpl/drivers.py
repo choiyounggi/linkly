@@ -141,11 +141,23 @@ class CacheDriver:
     """The `redis` capability's adapter contract.
 
     Reference implementation: `interp.FakeCache`. No persistent implementation
-    ships here, and that is a decision rather than an omission: RFC-0003
-    denominates a cache TTL in the run's injected clock, which starts at 0 in
-    every process. A persisted entry would be compared against a fresh clock
-    and read as live forever, so "a persistent cache" would be a store whose
-    expiry contract is untrue. `docs/backends.md` records the gap.
+    ships here — that remains #75's job (external SPI). `docs/backends.md` §5
+    records the still-open gap (no shipped server/library on this machine).
+
+    **TTL may be store-delegated.** `set`'s `ttl_ms` is a deadline, not a
+    mandate on how it is judged (RFC-0003 §Execution Model/Clock, RFC-0029,
+    issue #100). A driver may satisfy the contract either way:
+
+      - Compare `ttl_ms` against a clock reading, the way `FakeCache` compares
+        against whichever `Clock`/`RealClock` it was constructed with.
+      - **Delegate to the store's own native expiry** (e.g. Redis `SETEX`/
+        `EXPIRE`, handed `ttl_ms` untouched) and never read a clock at all.
+        This is the recommended path for a persistent driver: the store's own
+        clock survives process restarts that an injected one does not, and it
+        is one fewer clock to keep synchronized with the store's.
+
+    Either way `get`/`invalidate` need no clock — expiry already happened (or
+    didn't) by the time they run.
     """
 
     def get(self, key):

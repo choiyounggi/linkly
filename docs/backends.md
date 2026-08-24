@@ -20,6 +20,9 @@ class RepositoryDriver:      # capability postgres
 class CacheDriver:           # capability redis
     def get(self, key); def set(self, key, value, ttl_ms)
     def invalidate(self, key); def close(self)
+    # `set`의 ttl_ms는 클록 비교(FakeCache가 하는 것)와 스토어 네이티브 만료
+    # (예: Redis SETEX) 위임 둘 중 어느 쪽으로 판정해도 계약을 만족한다 —
+    # 드라이버가 고른다. RFC-0003 §Execution Model/Clock(RFC-0029), 이슈 #100
 
 class TokenProvider:         # security jwt
     def issue(self, subject, audience, ttl_ms=None)   # -> compact JWS
@@ -185,7 +188,7 @@ failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프
 
 | 하지 않는 것 | 왜 |
 |--------------|-----|
-| **`redis` 실제 바인딩** | RFC-0003의 cache TTL이 주입된 **가상 시계**(스텝당 5ms) 단위다. 프로세스를 넘으면 새 시계가 0에서 시작하므로 영속된 항목은 언제나 신선해 보인다 — 만료 계약이 거짓인 저장소가 된다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 |
+| **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). 남은 이유는 다음 행뿐이다: 서버·드라이버 라이브러리가 이 계획을 세운 머신에 없다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — 실드라이버 자체는 #75(SPI 외부 공급)가 소유한다 |
 | **워크플로 단위 트랜잭션 경계** | 드라이버는 **연산마다 커밋**한다. 경계만 만들고 보상 로직이 없으면 `policy rollback`이 집행되는 것처럼 읽히면서, 실패한 실행이 앞선 쓰기를 남긴다 |
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
 | **postgres / redis 서버 바인딩** | 이 계획을 세운 머신에 서버도 드라이버도 없었다(`psql`·`redis-server` 없음, `psycopg2`·`redis` 미설치). 통합 테스트로 뒷받침할 수 없는 바인딩은 주장일 뿐이다 |
@@ -201,6 +204,9 @@ fake 백엔드에서의 `EQUIVALENT`는 계속 성립한다. 다만 그 판정�
   입력에서의 판정은 **따로** 읽어야 한다.
 - **sqlite 경로는 차동 검증 대상이 아니다.** 모드 B가 저장소를 모델링하지 않으므로
   그 차원에 대해 어떤 판정도 낼 수 없다 — 이것은 "일치"가 아니라 **미검증**이다.
+- **`--clock real`도 차동 검증 대상이 아니다** — 비결정적이므로 반복 가능한
+  비교를 낼 수 없다. `diff`/`spec` 서브커맨드에는 `--clock` 선택자 자체가
+  없다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100).
 
 ## 7. mode B의 관측 표면 (이슈 #55)
 

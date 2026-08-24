@@ -14,6 +14,8 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
+import time
+
 from .condition import PAYLOAD_NAMESPACE, guard_condition_text
 from .diagnostics import Diagnostics
 from .drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
@@ -42,7 +44,14 @@ class RunError(Exception):
 
 
 class Clock:
-    """Injected monotonic clock in milliseconds — deterministic in tests."""
+    """Injected monotonic clock in milliseconds — deterministic in tests.
+
+    The **virtual** binding (RFC-0003 §Execution Model/Clock, RFC-0029
+    Updates): process-local, starts at 0, advances only via `advance()`. This
+    is the default for every execution path (`run`, `spec`, `diff`) and its
+    values/ordering are a regression boundary — `lnpl diff` and the spec
+    goldens are only valid on this binding. See `RealClock` for the other.
+    """
 
     def __init__(self, step_cost_ms=5):
         self.now = 0
@@ -51,6 +60,47 @@ class Clock:
     def advance(self, ms=None):
         self.now += self.step_cost_ms if ms is None else ms
         return self.now
+
+
+class RealClock:
+    """The **real** binding (`--clock real`, RFC-0003 §Execution Model/Clock,
+    RFC-0029 Updates): `now` reads a monotonic wall-clock, so it advances on
+    its own between calls. `advance()` is a no-op — nothing to fast-forward.
+
+    First consumer: `CacheAccess` TTL (issue #100) — binding a cache entry's
+    expiry to actual elapsed time is what a persistent cache driver needs
+    (`docs/backends.md` §5, `CacheDriver`'s docstring). Never used by `spec`/
+    `diff`: both stay on the virtual binding, since a non-deterministic clock
+    cannot produce a repeatable comparison.
+    """
+
+    @property
+    def now(self):
+        return time.monotonic_ns() // 1_000_000
+
+    def advance(self, ms=None):
+        return self.now
+
+
+# The closed table of clock selectors `--clock` accepts.
+CLOCKS = ("virtual", "real")
+
+
+def open_clock(spec):
+    """`--clock`'s value -> a Clock instance, or None for the default virtual
+    binding.
+
+    `None` means "the Interpreter builds its own virtual `Clock()`", which
+    keeps the untouched path byte-identical to what it was before this issue
+    — the same shape as `drivers.open_repository`/`open_network`. The lookup
+    is a closed table with a defined miss.
+    """
+    if spec == "virtual":
+        return None
+    if spec == "real":
+        return RealClock()
+    raise ValueError("unknown clock %r (accepted: %s)"
+                     % (spec, ", ".join(CLOCKS)))
 
 
 class FakeRepository:
@@ -127,7 +177,13 @@ class FakeRepository:
 
 
 class FakeCache:
-    """Stands in for a `redis` capability. TTL is the Performance budget."""
+    """Stands in for a `redis` capability. TTL is the Performance budget.
+
+    TTL is judged entirely through whichever `Clock` this is constructed
+    with — `get`/`set` never read a wall clock directly. A store-backed
+    `CacheDriver` may follow the same clock-comparison shape, or delegate TTL
+    to the store's own native expiry instead (`CacheDriver`'s docstring).
+    """
 
     def __init__(self, clock):
         self.clock = clock

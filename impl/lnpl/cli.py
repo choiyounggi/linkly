@@ -15,8 +15,8 @@ from . import __version__
 from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
 from .drivers import (DriverError, HmacTokenProvider, TokenError,
                       audience_for_path, open_network, open_repository)
-from .interp import (Interpreter, RunError, _duration_ms, refinement_index,
-                     sample_payload)
+from .interp import (Interpreter, RunError, _duration_ms, open_clock,
+                     refinement_index, sample_payload)
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
@@ -194,9 +194,12 @@ def cmd_run(args):
     network = _open_network(getattr(args, "network", "fake"))
     if network is _REJECTED:
         return 2
+    clock = _open_clock(getattr(args, "clock", "virtual"))
+    if clock is _REJECTED:
+        return 2
     try:
         interp = Interpreter(doc, repo_rows=rows, repository=repository,
-                             network=network)
+                             network=network, clock=clock)
         result = interp.run_workflow(target, payload)
         # Compile-time and run-time findings are one report, not two.
         diagnostics.extend(interp.diagnostics)
@@ -383,6 +386,18 @@ def _open_network(spec):
     """
     try:
         return open_network(spec)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _open_clock(spec):
+    """`--clock`'s value -> a Clock instance, None for the default virtual
+    binding, `_REJECTED` on a bad selector — the `_open_backend`/
+    `_open_network` selectors mirrored (RFC-0029 §Execution Model/Clock).
+    """
+    try:
+        return open_clock(spec)
     except ValueError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return _REJECTED
@@ -648,6 +663,7 @@ def main(argv=None):
                    help="start with an empty repository (exercises retry)")
     r.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
     r.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    r.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
     r.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)

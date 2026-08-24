@@ -34,6 +34,7 @@ lnpl --version
 | `--no-row` | 빈 저장소로 시작한다(재시도 경로를 관측할 때) |
 | `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로) 또는 `sqlite:<path>`(파일에 남는 실제 저장소). 이슈 #25 |
 | `--network` | `NetworkCall` 드라이버. `fake`(기본, 결정적, I/O 없음) 또는 `http`(`http.client`로 실제 요청). RFC-0027, 이슈 #64 |
+| `--clock` | 시간 바인딩. `virtual`(기본, 결정적, 프로세스 로컬) 또는 `real`(단조 벽시계 — `CacheAccess` TTL을 실제 경과 시간에 묶는다). `spec`/`diff`에는 없다. RFC-0029, 이슈 #100 |
 | `--strict` | 위와 같다 |
 
 `--workflow`는 선언명이 아니라 노드 id를 받는다(`GetReport`가 아니라

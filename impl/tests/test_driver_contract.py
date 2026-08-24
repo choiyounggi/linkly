@@ -19,7 +19,7 @@ import unittest
 
 from lnpl.drivers import DriverError, SqliteRepositoryDriver
 from lnpl.interp import (MASK, Clock, FakeCache, FakeRepository,
-                        Interpreter)
+                        Interpreter, RunError)
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows
@@ -244,6 +244,37 @@ class SharedContractTest(ContractTestCase):
                 self.assertNotIn(secret, logged)
                 self.assertIn("primary", logged)          # control present
                 self.assertIn(MASK, logged)
+
+
+class CacheDriverContractTest(unittest.TestCase):
+    """TCK for `CacheDriver` (issue #100, RFC-0003 §Execution Model/Clock):
+    the expiry scenario any conformant implementation — `FakeCache` today, a
+    real store-delegated driver tomorrow — must satisfy. `set` without a TTL
+    is refused, a live key hits, an expired key misses and is gone from the
+    store (`CacheDriver`'s docstring, "TTL may be store-delegated")."""
+
+    def test_a_set_without_ttl_is_refused(self):
+        cache = FakeCache(Clock())
+        with self.assertRaises(RunError):
+            cache.set("k", "v", ttl_ms=None)
+
+    def test_a_live_key_hits_and_an_expired_key_misses(self):
+        clock = Clock(step_cost_ms=0)
+        cache = FakeCache(clock)
+        cache.set("k", "v", ttl_ms=10)
+
+        self.assertEqual(cache.get("k"), "v")
+        self.assertEqual(cache.hits, 1)
+
+        clock.now = 10
+        self.assertIsNone(cache.get("k"))
+        self.assertEqual(cache.misses, 1)
+
+    def test_invalidate_removes_a_live_key(self):
+        cache = FakeCache(Clock())
+        cache.set("k", "v", ttl_ms=1000)
+        cache.invalidate("k")
+        self.assertIsNone(cache.get("k"))
 
 
 class DriverSwapEquivalenceTest(ContractTestCase):

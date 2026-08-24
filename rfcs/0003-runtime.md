@@ -7,6 +7,7 @@
 - Updated-by: RFC-0012 (§Guard)
 - Updated-by: RFC-0013 (§Policy Enforcement)
 - Updated-by: RFC-0027 (§Reference-level Specification/Execution Model)
+- Updated-by: RFC-0029 (§Execution Model)
 
 ## Motivation
 
@@ -98,6 +99,31 @@ await 지점이므로, 실행 타임라인은 IR에서 정적으로 읽힌다.
 | Transaction | 원자적 스코프 노드: children 전부 성공 시 커밋, 하나라도 실패 시 abort — 부분 쓰기는 관측되지 않는다. `isolation` 서술은 힌트이며 집행 수준은 해당 capability가 결정한다. Policy `rollback`의 보상 경계가 이 노드다(§Policy Enforcement) |
 | Authorization | 소유 step의 다른 Effect보다 먼저 평가되는 게이트. **거부(deny)는 비재시도 실패다** — 같은 요청은 다시 보내도 같은 결과이므로 재시도 대상이 아니다. 검사 서비스 불가용(전송 실패)과 거부는 구분되며, 전자만 재시도 판정 대상이다 |
 | EventEmit | 비동기 발행 — step의 동기 구간은 발행 요청 등록까지다. Transaction의 children으로 소유된 EventEmit은 **커밋 성공 후에만** 발행된다(롤백된 트랜잭션의 이벤트 유출 금지). 전달 보장은 at-least-once이며, 소비자가 event id로 dedupe할 수 있도록 발행마다 유일한 event id를 부여한다(발행 메커니즘의 구현은 §Open Questions ③) |
+
+**Clock.** 런타임의 모든 경과 시간 판정 — `Policy.timeout` 데드라인 기산과
+잔여 시간 전파, `Policy.retry`의 backoff 대기, `CacheAccess`의 TTL 판정, trace
+span의 시각 — 은 단일 **Clock 계약**을 통해서만 읽힌다: `now`(현재 시각의
+판독값, 밀리초 정수)와 `advance(ms=None)`(시각을 전진시키는 연산; 인자를
+생략하면 구현이 정한 기본 단위만큼 전진한다). 이 계약에는 두 바인딩이 있고,
+선택은 폐쇄 표다:
+
+| 바인딩 | 선택자 | 시간원 | `advance()` | 결정성 |
+|--------|--------|--------|--------------|--------|
+| **virtual**(기본) | 생략 또는 `--clock virtual` | 프로세스 로컬 카운터. `0`에서 시작하며 벽시계와 무관하다 | 카운터를 전진시킨다 — step 경계마다 고정 단위(참조 구현: 5ms)만큼 자동 호출된다 | 완전 결정적: 동일 입력은 항상 동일 시각열을 낸다 |
+| **real** | `--clock real` | 단조 증가하는 실제 벽시계(`time.monotonic_ns`) | 무의미하다 — 벽시계는 호출과 무관하게 전진하므로 no-op | 비결정적: 벽시계 경과에 좌우된다 |
+
+`--clock`을 생략한 모든 기존 실행 경로(`run`의 기본값, `spec`, `diff`)는
+virtual 바인딩을 그대로 쓴다 — 관측 가능한 시각열·순서·판정은 바뀌지 않는다.
+`lnpl diff`의 mode A/mode B 동등성 검증과 spec 골든 산출물은 virtual 바인딩
+위에서만 유효하다 — `--clock` 선택자는 `diff`/`spec` 서브커맨드에 존재하지
+않는다.
+
+> **Clock 계약은 2026-08-24 개정(RFC-0029)으로 신설됐다**(이슈 #100). 그
+> 전까지 이 절은 경과 시간의 소스를 한 번도 이름 붙이지 않고 암묵적으로
+> 전제했다 — `docs/backends.md` §5가 그 공백을 `redis` 실바인딩을 하지 않는
+> 이유로 기록해 두었다. `Clock`이 RFC-0004의 Heap 행에 대응하는 것과 같은
+> 모양으로, Clock 계약은 이 절의 세 소비처(`timeout`/`retry`/`CacheAccess`)가
+> 이미 공유하던 암묵적 전제에 이름을 붙인다.
 
 ### Guard
 
