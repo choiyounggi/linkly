@@ -10,7 +10,8 @@ later tasks' files.
 
 import unittest
 
-from lnpl.drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
+from lnpl.drivers import (DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
+                          FakeNetworkDriver, HttpNetworkDriver)
 from lnpl.interp import Interpreter, RunError
 from lnpl.lower import lower
 from lnpl.parser import parse
@@ -148,6 +149,26 @@ class BoundCallBindingTest(unittest.TestCase):
         self.assertEqual(result["bindings"]["paymentResult"], {"status": 0})
         self.assertEqual(len(result["skipped"]), 1)
 
+    def test_a_logical_name_target_with_the_real_http_driver_binds_status_zero(self):
+        """Issue #90 reproduction: `call PaymentGateway as p` under
+        `--network http` used to crash with a raw `AttributeError` before
+        reaching this translation site at all. With the real `HttpNetworkDriver`
+        (not the synthetic `_FailingNetworkDriver`), the run must still
+        complete with status 0 bound — no traceback."""
+        doc = compile_doc(BOUND_SOURCE)
+        target = workflow_id(doc)
+        payload = {"id": "o-1"}
+        driver = HttpNetworkDriver()
+        self.addCleanup(driver.close)
+        interp = Interpreter(doc, repo_rows=default_rows(doc, target, payload),
+                             network=driver)
+
+        result = interp.run_workflow(target, payload)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["bindings"]["paymentResult"], {"status": 0})
+        self.assertEqual(len(result["skipped"]), 1)
+
 
 class UnboundCallTest(unittest.TestCase):
 
@@ -192,6 +213,24 @@ class UnboundCallTest(unittest.TestCase):
             interp.run_workflow(target, payload)
         except DriverError:
             self.fail("DriverError escaped instead of becoming a RunError/result")
+
+    def test_a_logical_name_target_with_the_real_http_driver_becomes_a_failed_run(self):
+        """Issue #90 reproduction, unbound leg: with the real `HttpNetworkDriver`
+        and no `as`, the run must fail cleanly (status failed, which the CLI
+        maps to rc 1) instead of the AttributeError traceback the bug report
+        showed."""
+        doc = compile_doc(UNBOUND_SOURCE)
+        target = workflow_id(doc)
+        payload = {"id": "o-1"}
+        driver = HttpNetworkDriver()
+        self.addCleanup(driver.close)
+        interp = Interpreter(doc, repo_rows=default_rows(doc, target, payload),
+                             network=driver)
+
+        result = interp.run_workflow(target, payload)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("PaymentGateway", result["failure_reason"])
 
 
 class DefaultNetworkDriverTest(unittest.TestCase):
