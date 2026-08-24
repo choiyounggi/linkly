@@ -33,6 +33,7 @@ import os
 import sqlite3
 import time
 import uuid
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 from .repo_policy import READ_OPS
@@ -44,6 +45,13 @@ ACCEPTED_OPS = tuple(READ_OPS) + WRITE_OPS
 
 # The closed table of backend selectors `--backend` accepts.
 BACKENDS = ("fake", "sqlite")
+
+# issue #75: the entry-points group an external package registers a
+# RepositoryDriver factory under (`[project.entry-points."lnpl.drivers"]`
+# in its own pyproject.toml — `docs/backends.md` §8 has the example). Built-in
+# schemes (`BACKENDS`, above) are matched before this group is ever consulted,
+# so a registered entry-point can never shadow `fake`/`sqlite`.
+DRIVERS_ENTRY_POINT_GROUP = "lnpl.drivers"
 
 # The closed table of network selectors `--network` accepts (RFC-0027 §1).
 NETWORKS = ("fake", "http")
@@ -991,6 +999,23 @@ class HttpNetworkDriver(NetworkDriver):
 # selection
 # --------------------------------------------------------------------------
 
+def _driver_entry_points():
+    """Every entry-point registered under `lnpl.drivers`, across the stdlib
+    API's version split: 3.10+ takes `group=` as a select filter; 3.9's
+    `entry_points()` takes no arguments and returns a `{group: [EntryPoint,
+    ...]}` mapping instead (`pyproject.toml`'s declared floor is 3.9).
+    """
+    try:
+        return importlib_metadata.entry_points(group=DRIVERS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            DRIVERS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_scheme_names():
+    return sorted(ep.name for ep in _driver_entry_points())
+
+
 def open_repository(spec):
     """`--backend`'s value -> a RepositoryDriver, or None for the default.
 
@@ -999,13 +1024,32 @@ def open_repository(spec):
     lookup is a closed table with a defined miss: an unrecognized selector
     names itself and the accepted set rather than resolving to something
     plausible.
+
+    Beyond the two built-in schemes, `<scheme>:<arg>` is looked up in the
+    `lnpl.drivers` entry-points group (issue #75) — an external package
+    registers `scheme = "module:factory"`, and a matching selector loads that
+    factory and calls it with `arg`. Built-ins are matched first and always
+    win: `fake`/`sqlite` are checked above before any entry-point lookup
+    runs, so a package cannot register `sqlite` and shadow the real one.
     """
     if spec == "fake":
         return None
     if spec.startswith("sqlite:"):
         return SqliteRepositoryDriver(spec[len("sqlite:"):])
-    raise ValueError("unknown backend %r (accepted: %s)"
-                     % (spec, ", ".join(BACKENDS)))
+    scheme, _, arg = spec.partition(":")
+    for entry_point in _driver_entry_points():
+        if entry_point.name == scheme:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "backend %r registered via entry-point %r failed to "
+                    "load: %s" % (spec, entry_point.value, exc)) from exc
+            return factory(arg)
+    raise ValueError(
+        "unknown backend %r (built-in: %s; registered entry-points: %s)"
+        % (spec, ", ".join(BACKENDS),
+           ", ".join(_registered_scheme_names()) or "none"))
 
 
 def open_network(spec, endpoints=None, capabilities=None):

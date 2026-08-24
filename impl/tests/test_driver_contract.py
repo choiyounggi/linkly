@@ -23,6 +23,7 @@ from lnpl.interp import (MASK, Clock, FakeCache, FakeRepository,
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows
+from lnpl.testing import RepositoryDriverTCK
 
 from tests.fixtures import GUARDED, SECRET_ACCOUNT, VALUE_INVENTORY
 
@@ -112,47 +113,15 @@ class ContractTestCase(unittest.TestCase):
 class QueryContractTest(ContractTestCase):
     """RFC-0025 §7: `RepositoryDriver.query(entity_id) -> list[dict]`, ordered
     by row_key ascending, identical on both backends. No surface verb reaches
-    this path yet (RFC-0025 §Motivation — `list` lands in a later task), so
-    these cases call the driver directly, the same way
-    `test_an_assignment_is_visible_after_the_run` above reaches `repo.execute`
-    directly to check a fact `run_workflow` alone would not isolate.
+    this path yet (RFC-0025 §Motivation — `list` lands in a later task).
+
+    The single-driver query cases this class used to hold (empty table,
+    single row, reverse-insertion-order sort) now live in
+    `lnpl.testing.RepositoryDriverTCK` (issue #75) — moved, not duplicated,
+    onto `SqliteDriverTCKTest` below. What is left here is the one case that
+    is not a single-driver contract fact: the cross-backend equivalence claim
+    a TCK, by construction, cannot make (it runs one driver at a time).
     """
-
-    def test_an_empty_table_returns_an_empty_list(self):
-        for backend in BACKENDS:
-            with self.subTest(backend=backend):
-                repository = self._repository(backend)
-
-                self.assertEqual(repository.query("entity.link"), [])
-
-    def test_a_single_row_returns_a_list_of_one(self):
-        for backend in BACKENDS:
-            with self.subTest(backend=backend):
-                repository = self._repository(backend)
-                repository.seed({"entity.link":
-                                 {"entity.link#1": {"id": "1", "clicks": 5}}})
-
-                self.assertEqual(repository.query("entity.link"),
-                                 [{"id": "1", "clicks": 5}])
-
-    def test_reverse_insertion_order_still_sorts_by_row_key(self):
-        """The forcing case: seeding out of key order is what actually tells
-        insertion-order iteration and row_key-ordered iteration apart. A fake
-        that just returned `dict.values()` would pass every other case here
-        and still disagree with sqlite on this one."""
-        for backend in BACKENDS:
-            with self.subTest(backend=backend):
-                repository = self._repository(backend)
-                # Inserted 2, 0, 1 — row_key ascending is "0", "1", "2".
-                repository.seed({"entity.link": {
-                    "2": {"id": "2", "clicks": 9},
-                    "0": {"id": "0", "clicks": 5},
-                    "1": {"id": "1", "clicks": 3},
-                }})
-
-                rows = repository.query("entity.link")
-
-                self.assertEqual([row["id"] for row in rows], ["0", "1", "2"])
 
     def test_fake_and_sqlite_agree_on_order(self):
         """`DriverSwapEquivalenceTest`'s sharper claim, for `query` alone:
@@ -171,6 +140,30 @@ class QueryContractTest(ContractTestCase):
 
         self.assertEqual(seen["fake"], seen["sqlite"])
         self.assertEqual([row["id"] for row in seen["fake"]], ["0", "1", "2"])
+
+
+class SqliteDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
+    """`SqliteRepositoryDriver` validated by the published TCK (issue #75) —
+    including the transaction-boundary (issue #79) and optimistic-version
+    (issue #92) scenarios `RepositoryDriverTCK` carries.
+
+    `make_driver()` is called more than once within the conflict test (see
+    `lnpl.testing`'s module docstring): every call here reuses `self._path`,
+    set once in `setUp` before the TCK's own `setUp` calls `make_driver()`
+    for the first time, so every driver this test spawns opens the same
+    on-disk store rather than each starting from an empty one.
+    """
+
+    def setUp(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        self._path = os.path.join(box.name, "tck-store.db")
+        super().setUp()
+
+    def make_driver(self):
+        driver = SqliteRepositoryDriver(self._path)
+        self.addCleanup(driver.close)
+        return driver
 
 
 class SharedContractTest(ContractTestCase):
