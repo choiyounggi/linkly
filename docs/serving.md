@@ -212,6 +212,10 @@ $ kill -TERM 13187   # gunicorn's own graceful shutdown, not this project's code
 갖고, gunicorn은 이 WSGI callable을 서빙하는 역할만 한다 — 둘 다 이 저장소
 바깥의 배치 관심사다.
 
+컨테이너로 이 절차를 그대로 실행하는 참조 Dockerfile과 실측 빌드/기동
+로그는 [examples/deploy/README.md](../examples/deploy/README.md)에 있다
+(issue #87).
+
 ## 공유 계약
 
 내장 dev 서버(소켓)와 `build_app()`/`make_wsgi_app()`이 만드는 WSGI callable은
