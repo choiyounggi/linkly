@@ -47,6 +47,8 @@ CODES = (
     "guard-orphaned-steps",         # RFC-0023  a guard owns one item; a later step touches the state it protected
     "validation-sample-derived",     # #55  mode B decided Validation from a sample payload
     "aggregation-orphaned-list",    # RFC-0025  sum/count reads a RowSet no earlier unguarded `list` fills
+    "event-source-mismatch",        # #98  `emit` and its declared `on <Entity> <op>` step are not in the same guard scope
+    "event-source-orphaned",        # #98  `emit` fires, but its declared `on <Entity> <op>` step never runs in this workflow
 )
 
 # code -> grade (#52). One question decides every row:
@@ -80,6 +82,14 @@ SEVERITY_OF = {
     # the program is what needs to change, so `warning` (same test as
     # `unknown-verb`, `guard-orphaned-steps`).
     "aggregation-orphaned-list":  "warning",
+    # #98: moving the `emit` under the same guard scope as the `<op> <entity>`
+    # step its source declares removes this — same test as `guard-orphaned-steps`.
+    "event-source-mismatch":      "warning",
+    # #98: no edit to the program removes this one short of adding the
+    # `<op> <entity>` step or dropping the source/emit — a statement about the
+    # source declaration being descriptive only, same logic as
+    # `declared-not-enforced`.
+    "event-source-orphaned":      "info",
 }
 
 # How the runtime treats a declaration.

@@ -665,6 +665,10 @@ def lower(decls, module_name):
                       line=ent["decl"].lineno))
 
     declared_event_ids = set()
+    # eid -> (entity id, create|update|delete) for `on`-sourced events only —
+    # issue #98's mismatch/orphaned checks apply to this coupling and nowhere
+    # else (a schedule-sourced or bare `event X` has no step to check against).
+    event_sources = {}
     for d in by_kind["event"]:
         eid = derive_id(d.name, "Event")
         declared_event_ids.add(eid)
@@ -677,6 +681,7 @@ def lower(decls, module_name):
                                  "(dangling reference — RFC-0001 structure rule 6)"
                                  % (d.lineno, ent_name))
             source = {"ref": ref, "on": trigger}
+            event_sources[eid] = (ref, trigger)
         elif "schedule" in d.extra:
             source = _schedule_source(d.extra["schedule"], d.lineno)
             # RFC-0016: the declaration reaches the IR and the OpenAPI schedule
@@ -700,6 +705,8 @@ def lower(decls, module_name):
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
         _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
                            mod.diagnostics, d.name)
+        _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
+                                     d.name, mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -974,6 +981,111 @@ def _check_event_refs(emitted, declared_event_ids, workflow_name):
             % (workflow_name, ref,
                ", ".join(sorted(declared_event_ids)) if declared_event_ids
                else "none declared"))
+
+
+def _guard_owner_map(top_ids, by_id):
+    """node id -> the `Guard` node that owns it, or `None` at the top level.
+
+    Same tree RFC-0023's `_steps_outside_guards` already walks (top-level
+    order, a `Guard`'s single child, a block's several), generalised to record
+    *which* guard owns a node instead of filtering guarded ones out. Every
+    node reachable from `top_ids` gets an entry, including a `WorkflowStep`'s
+    own Effect children — an `EventEmit`/`RepositoryCall` id needs the same
+    owner its parent step has.
+    """
+    owner = {}
+
+    def walk(node_id, guard):
+        node = by_id.get(node_id)
+        if node is None:
+            return
+        owner[node_id] = guard
+        if node["kind"] == "Guard":
+            children = node.get("children") or []
+            if children:
+                walk(children[0], node)
+            return
+        for child_id in node.get("children") or []:
+            walk(child_id, guard)
+
+    for nid in top_ids or []:
+        walk(nid, None)
+    return owner
+
+
+def _guard_key(guard):
+    """A guard's protection identity for scope comparison (issue #98).
+
+    Two *physically distinct* `Guard` nodes with the same mode+condition (the
+    "repeat the guard line" remedy) count as the same scope — node identity
+    would wrongly flag that remedy as still broken. `None` (top level, no
+    guard) is its own key: unconditional steps always run together.
+    """
+    if guard is None:
+        return None
+    if guard.get("mode") == "repeat":
+        return ("repeat", guard.get("count"))
+    return (guard.get("mode"), guard.get("condition"))
+
+
+def _check_event_source_mismatch(emitted, top_ids, event_sources, workflow_name,
+                                 diagnostics):
+    """`event-source-mismatch` (warning) / `event-source-orphaned` (info) — #98.
+
+    `event <E> on <Entity> <op>` claims E is the event for `<op> <entity>`, but
+    nothing checked `emit E` against that claim. A guard that skips `create
+    order` still lets an unguarded `emit orderPlaced` beside it fire — the
+    declaration becomes a lie at runtime with no compile-time signal.
+
+    For each `on`-sourced event this workflow `emit`s:
+      * no `<op> <entity>` `RepositoryCall` runs here at all -> the source is
+        descriptive only for this workflow -> `event-source-orphaned` (info,
+        same grading logic as `declared-not-enforced`: no local edit removes
+        it short of restructuring the workflow or dropping the source/emit);
+      * one runs, but none share the emit's guard scope (`_guard_key`) ->
+        `event-source-mismatch` (warning: moving the emit under that scope, or
+        that scope's condition under the emit, removes it — `ORPHAN_HINT`
+        names both remedies, same wording RFC-0023 already uses);
+      * one runs and shares the emit's guard scope -> silent.
+
+    A schedule-sourced or source-less event (`event X` alone) never appears in
+    `event_sources`, so its `emit` is untouched (issue #98 §3).
+    """
+    by_id = {node["id"]: node for node in emitted}
+    owner = _guard_owner_map(top_ids, by_id)
+
+    for step in emitted:
+        if step["kind"] != "EventEmit":
+            continue
+        eid = step.get("event")
+        source = event_sources.get(eid)
+        if source is None:
+            continue
+        entity_ref, op = source
+        op_steps = [n for n in emitted
+                    if n["kind"] == "RepositoryCall"
+                    and n.get("entity") == entity_ref
+                    and n.get("operation") == op]
+        where = step.get("line")
+        where_str = ("line %d" % where) if where else workflow_name
+        if not op_steps:
+            diagnostics.add(
+                code="event-source-orphaned",
+                where=where_str, subject=eid, line=where,
+                message="`emit %s` fires, but workflow %s never runs `%s` on "
+                        "the entity its `on` source declares — the source "
+                        "declaration is descriptive only here"
+                        % (eid, workflow_name, op))
+            continue
+        emit_scope = _guard_key(owner.get(step["id"]))
+        if any(_guard_key(owner.get(rs["id"])) == emit_scope for rs in op_steps):
+            continue
+        diagnostics.add(
+            code="event-source-mismatch",
+            where=where_str, subject=eid, line=where,
+            message="`emit %s` is not in the same guard scope as the `%s` "
+                    "step its `on` source declares, so it can fire whether "
+                    "or not that step ran. %s" % (eid, op, ORPHAN_HINT))
 
 
 def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
