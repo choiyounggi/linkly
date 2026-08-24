@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS lnpl_rows (
     entity_id TEXT NOT NULL,
     row_key   TEXT NOT NULL,
     payload   TEXT NOT NULL,
+    _version  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_id, row_key)
 )
 ```
@@ -92,13 +93,59 @@ CREATE TABLE IF NOT EXISTS lnpl_rows (
 만들면 문서에서 온 이름이 SQL **문장 텍스트**에 들어가고, 그것이 인젝션이 필요로
 하는 모양이다. 여기서는 문장이 전부 상수이고 변하는 값은 전부 바인드 파라미터다.
 
+`_version`은 아래 "쓰기 충돌" 절 전용 내부 컬럼이다. 어떤 `.lnpl` 문서·payload·
+응답도 이 이름을 알지 못한다 — 닫힌 어휘에 낱말이 하나도 늘지 않는다(이슈 #92).
+기존 DB에 이 컬럼이 없다면 배포 시 한 번만 실행한다:
+
+```sql
+ALTER TABLE lnpl_rows ADD COLUMN _version INTEGER NOT NULL DEFAULT 0;
+```
+
+새로 만든 파일은 `CREATE TABLE IF NOT EXISTS`가 이미 이 컬럼을 포함해 만드므로
+이 ALTER가 필요 없다 — 이 이슈 이전에 만들어진 파일에만 한 번 해당한다.
+
 ### 동시성
+
+읽기끼리는 WAL이 처리하고, 쓰기끼리는 `_version`이 처리한다 — 서로 다른 문제다.
 
 - 파일을 **만들 때 한 번**: `journal_mode=WAL`, `synchronous=NORMAL` (파일에 영속)
 - **모든 연결**: `busy_timeout=5000` — 잠금을 만나면 즉시 에러 대신 기다린다
 - **요청(=Interpreter)마다 새 연결**을 열고 `finally`에서 닫는다. 연결 열기는
   ~0.05ms라 풀이 사줄 것이 없고, 연결이 스레드를 넘지 않는 것이 `ThreadingHTTPServer`
   아래에서 락 없이 안전한 이유다.
+
+#### 쓰기 충돌 — `_version`
+
+동시 read-modify-write(예: `read x` 다음 `set x.n to x.n + 1`)는 WAL만으로는
+풀리지 않는다: 두 실행이 같은 값을 읽고, 각자 계산하고, 나중에 쓰는 쪽이 먼저 쓴
+값을 흔적 없이 덮어쓴다 — 측정치로 동시 31회 increment 중 12건이 이렇게 사라졌다.
+
+`SqliteRepositoryDriver._read`가 반환하는 행은 그 순간의 `_version`을 함께
+기억한다(payload에는 나타나지 않는, 반환된 dict의 내부 속성일 뿐이다).
+`persist()`는 그 값을 안 UPDATE 문에 조건으로 건다:
+
+```sql
+UPDATE lnpl_rows
+   SET payload = ?, _version = _version + 1
+ WHERE entity_id = ? AND row_key = ? AND _version = ?
+```
+
+영향받은 행이 0이면 읽은 뒤 누군가 먼저 썼다는 뜻이다 — 조용히 덮어쓰는 대신
+`DriverError("write conflict: row changed since read ...")`를 내고, 이는 다른
+드라이버 오류와 같은 경로로 `RunError`가 되어 평범한 실패 실행이 된다(`status:
+failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프로세스
+인메모리라 이 충돌이 존재할 수 없으므로 `persist()`가 그대로 no-op이다.
+
+**충돌이 났을 때 누가 재시도하는가.** 한 `WorkflowStep`은 소스 한 줄이라
+(`lower.py`의 `_step`), `read`와 그 뒤의 `set`은 항상 서로 다른 스텝이다. 실패한
+`set` 스텝만 재시도하면 같은(다시 읽지 않은) 바인딩을 그대로 다시 쓰므로 절대
+복구되지 않는다 — 복구하는 것은 **워크플로 전체를 다시 부르는 새 호출**이며, 이는
+처음부터 다시 읽는다. `policy retry`가 이미 이 효과들을 멱등으로 선언하므로
+(RFC-0003 §Policy Enforcement) 그 호출을 다시 하는 것은 안전하다 — 아무것도
+반영되지 않았으니 중복이 아니고, 선언된 재시도 예산이 몇 번까지 안전한지도 이미
+정해져 있다. 새 개념이 아니라 기존 계약을 그대로 다시 쓰는 것이다. 서빙 표면에서
+409로 매핑하는 것은 이 이슈의 범위 밖이며 `serve.py`는 손대지 않는다 — 후속
+이슈의 몫이다.
 
 ### 시드와 flush
 

@@ -315,6 +315,30 @@ class _FailingCache(FakeCache):
         raise DriverError("the cache is unreachable")
 
 
+class _StealingSqliteDriver(SqliteRepositoryDriver):
+    """Lands one competing write on the first `read` this instance serves --
+    deterministic proof that a real sqlite version conflict (issue #92)
+    translates through the same site as every other `DriverError`, without
+    depending on real thread scheduling to produce one."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self._stolen = False
+
+    def execute(self, entity_id, operation, key):
+        row = super().execute(entity_id, operation, key)
+        if operation == "read" and not self._stolen and row is not None:
+            self._stolen = True
+            thief = SqliteRepositoryDriver(self.path)
+            try:
+                thief_row = thief.execute(entity_id, operation, key)
+                thief_row["stock"] = thief_row["stock"] - 1
+                thief.persist(entity_id, key, thief_row)
+            finally:
+                thief.close()
+        return row
+
+
 class DriverFaultTranslationTest(ContractTestCase):
     """A driver fault must arrive as an ordinary failed run.
 
@@ -363,6 +387,26 @@ class DriverFaultTranslationTest(ContractTestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("the cache is unreachable", result["failure_reason"])
+
+    def test_a_persist_conflict_becomes_a_failed_run_naming_it(self):
+        """The one translation site this issue adds: `rows_affected == 0` on
+        the versioned UPDATE is a `DriverError` like any other, so it reaches
+        the caller the same way -- an ordinary failed run naming the
+        conflict, not a silent overwrite and not a traceback (issue #92)."""
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        driver = _StealingSqliteDriver(os.path.join(box.name, "store.db"))
+        self.addCleanup(driver.close)
+        doc = compile_source(VALUE_INVENTORY)
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        payload = {"id": "p-1", "stock": 9, "quantity": 4}
+        interp = Interpreter(doc, repo_rows=default_rows(doc, target, payload),
+                             repository=driver)
+
+        result = interp.run_workflow(target, payload)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("conflict", result["failure_reason"])
 
     def test_a_driver_error_never_escapes_the_run(self):
         """The guarantee stated directly: whatever the driver raises, the

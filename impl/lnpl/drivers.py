@@ -205,21 +205,49 @@ CREATE TABLE IF NOT EXISTS lnpl_rows (
     entity_id TEXT NOT NULL,
     row_key   TEXT NOT NULL,
     payload   TEXT NOT NULL,
+    _version  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_id, row_key)
 )
 """
-_SELECT_ROW = "SELECT payload FROM lnpl_rows WHERE entity_id = ? AND row_key = ?"
+_SELECT_ROW = ("SELECT payload, _version FROM lnpl_rows "
+              "WHERE entity_id = ? AND row_key = ?")
 _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
                     "ORDER BY row_key")
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
                      "VALUES (?, ?, ?)")
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
-_UPDATE_ROW = "UPDATE lnpl_rows SET payload = ? WHERE entity_id = ? AND row_key = ?"
+# Every successful write bumps `_version`, whether or not this call checks it
+# against a prior read (`_touch`'s bare update never reads-then-mutates
+# through a binding, so it has no observed version to check — issue #92 scopes
+# the guard to `persist()`, the read-modify-write path that loses updates).
+_UPDATE_ROW = ("UPDATE lnpl_rows SET payload = ?, _version = _version + 1 "
+              "WHERE entity_id = ? AND row_key = ?")
+# `persist()`'s conditional form: the write only lands if `_version` still
+# matches what the read that produced this row observed. 0 rows affected
+# means someone else's write landed first — a lost-update guard, not a
+# real fault, so it becomes `DriverError` and the interpreter's existing
+# retry/failure_reason path (RFC-0003) surfaces it without a new concept.
+_UPDATE_ROW_VERSIONED = ("UPDATE lnpl_rows SET payload = ?, _version = _version + 1 "
+                         "WHERE entity_id = ? AND row_key = ? AND _version = ?")
 _DELETE_ROW = "DELETE FROM lnpl_rows WHERE entity_id = ? AND row_key = ?"
 
 
 def _encode(row):
     return json.dumps(row, ensure_ascii=False, sort_keys=True)
+
+
+class _VersionedRow(dict):
+    """A row as `_read` found it, carrying the `_version` sqlite observed at
+    that read. Equality, iteration, and `json.dumps` (via `_encode`) see only
+    the dict's own items — `observed_version` is a plain instance attribute,
+    invisible to every user-facing surface (payload, response, wire) and
+    read only by `persist()` to gate the write against a change since this
+    read landed (issue #92; no vocabulary added, nothing exposed).
+    """
+
+    def __init__(self, data, version):
+        super().__init__(data)
+        self.observed_version = version
 
 
 class SqliteRepositoryDriver(RepositoryDriver):
@@ -304,8 +332,19 @@ class SqliteRepositoryDriver(RepositoryDriver):
         return [json.loads(row[0]) for row in found]
 
     def persist(self, entity_id, key, row):
+        version = getattr(row, "observed_version", None)
         try:
-            self._conn.execute(_UPDATE_ROW, (_encode(row), entity_id, key))
+            if version is None:
+                self._conn.execute(_UPDATE_ROW, (_encode(row), entity_id, key))
+                self._conn.commit()
+                return
+            cursor = self._conn.execute(
+                _UPDATE_ROW_VERSIONED, (_encode(row), entity_id, key, version))
+            if cursor.rowcount == 0:
+                self._conn.rollback()
+                raise DriverError(
+                    "write conflict: row changed since read (%s %s)"
+                    % (entity_id, key))
             self._conn.commit()
         except sqlite3.Error as exc:
             raise DriverError("cannot persist %s: %s" % (entity_id, exc)) from exc
@@ -322,7 +361,10 @@ class SqliteRepositoryDriver(RepositoryDriver):
             found = self._conn.execute(_SELECT_ROW, (entity_id, key)).fetchone()
         except sqlite3.Error as exc:
             raise DriverError("cannot read %s: %s" % (entity_id, exc)) from exc
-        return None if found is None else json.loads(found[0])
+        if found is None:
+            return None
+        payload, version = found
+        return _VersionedRow(json.loads(payload), version)
 
     def _create(self, entity_id, key):
         try:
