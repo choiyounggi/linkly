@@ -1,8 +1,16 @@
-# 서빙 — `lnpl serve` (이슈 #26)
+# 서빙 — `lnpl serve` / WSGI (이슈 #26, #80)
 
 `lnpl serve`는 컴파일된 모듈의 워크플로를 OpenAPI가 규정한 경로에 바인딩하고,
 요청마다 인터프리터(모드 A)를 한 번 실행한다: request body → payload 검증
 (워크플로 자신의 `validate` 스텝, #48 계약) → 실행 → 아래 매핑표에 따른 상태코드.
+
+이 요청 처리 코어는 `impl/lnpl/wsgi.py`에 표준 WSGI callable(PEP 3333,
+`environ`/`start_response`)로 산다(이슈 #80). `lnpl serve`는 그 callable을
+`wsgiref.simple_server` + `ThreadingMixIn`으로 감싼 dev 서버이고, 운영 배치는
+그 SAME callable을 진짜 WSGI 호스트(gunicorn)에 넘긴다 — 두 경로가 실행하는
+코드는 하나뿐이라 서로 어긋날 수 없다(아래 "공유 계약" 절). TLS 종단·graceful
+shutdown·워커 관리는 이 모듈이 아니라 그 호스트(+ nginx 같은 리버스 프록시)의
+책임이다 — `lnpl serve`/`wsgi.py` 어느 쪽도 시그널 핸들러를 두지 않는다.
 
 ```
 lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
@@ -104,8 +112,9 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 - 스케줄 트리거(#49, `x-lnpl-schedules`)는 서빙되지 않는다. 모드 B(네이티브)
   서빙도 없다.
 - **WebSocket은 이 이슈(#103)에서 명시 보류한다.** SSE는 단방향 HTTP 스트림이라
-  stdlib(`ThreadingHTTPServer`)로 구현 가능하지만, WebSocket은 프로토콜
-  업그레이드·프레이밍에 외부 의존이 필요해 stdlib-only 원칙과 맞지 않는다.
+  stdlib(WSGI 이터레이터 — dev 서버는 `wsgiref`, 운영은 gunicorn 등 아무 WSGI
+  호스트나)로 구현 가능하지만, WebSocket은 프로토콜 업그레이드·프레이밍에
+  외부 의존이 필요해 stdlib-only 원칙과 맞지 않는다.
   클라이언트→서버 양방향 수요가 실제 이슈로 잡히면, 언어에 ws 문법을 넣기
   전에 외부 게이트웨이 패턴(AWS Step Functions형: API Gateway WebSocket +
   task token 콜백으로 위임)을 먼저 검토한다.
@@ -113,17 +122,107 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 
 ## 운영 성질
 
-- 동시성: 스레드-퍼-요청(`ThreadingHTTPServer`). 요청마다 인터프리터와 저장소
-  rows를 새로 만들므로 락 없이 격리된다. 공유 상태는 컴파일된 문서와 라우팅
-  테이블, 그리고 토큰 프로바이더뿐이며 전부 읽기 전용이다.
+- 동시성(dev 서버): 스레드-퍼-요청(`wsgiref.simple_server` + `ThreadingMixIn`,
+  `http.server.ThreadingHTTPServer`와 같은 조합을 `HTTPServer` 자리에
+  `WSGIServer`를 넣어 그대로 미러링). 요청마다 인터프리터와 저장소 rows를
+  새로 만들므로 락 없이 격리된다. 공유 상태는 컴파일된 문서와 라우팅 테이블,
+  그리고 토큰 프로바이더뿐이며 전부 읽기 전용이다 — 이 성질은 이슈 #80 이전과
+  바이트 단위로 동일하다(재구성이지 재설계가 아니다).
 - 실제 백엔드를 쓸 때: 요청마다 **자기 연결**을 열고(`sqlite3` 연결은 만든 스레드에
   묶인다) `finally`에서 닫는다 — 응답을 쓴 **다음에** 닫으므로, 클라이언트가 응답을
   받은 시점에 서버가 아직 정리 중일 수 있다.
-- 종료: SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. 워커 스레드는 데몬이라 진행 중 요청을
-  기다리지 않는다.
-- SSE 구독(#103)은 스레드-퍼-요청 모델에서 특히 무겁다 — 연결이 열려 있는 한
-  그 스레드를 계속 점유한다. `serve.SSE_POLL_INTERVAL_S`(기본 0.2s)로
-  `lnpl_outbox`를 폴링하고, `serve.SSE_IDLE_TIMEOUT_S`(기본 30s) 동안 새 행이
-  없으면 연결을 스스로 닫는다 — 느리거나 죽은 구독자가 워커 스레드를 무한정
-  묶어 두지 못하게 하는 상한이다(WSGI/graceful shutdown은 #80 별도 이슈).
+- 종료(dev 서버): SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. 워커 스레드는 데몬이라
+  진행 중 요청을 기다리지 않는다. **graceful shutdown·TLS 종단·워커 풀
+  관리는 dev 서버의 책임이 아니다** — 아래 "운영 배치" 절의 WSGI 호스트가
+  가진다(D4).
+- SSE 구독(#103)은 스레드-퍼-요청/워커 모델에서 특히 무겁다 — 연결이 열려
+  있는 한 그 워커를 계속 점유한다. `wsgi.SSE_POLL_INTERVAL_S`(기본 0.2s)로
+  `lnpl_outbox`를 폴링하고, `wsgi.SSE_IDLE_TIMEOUT_S`(기본 30s) 동안 새 행이
+  없으면 그 WSGI 이터레이터를 스스로 끝낸다(`StopIteration`) — 느리거나 죽은
+  구독자가 워커를 무한정 묶어 두지 못하게 하는 상한이다. (`lnpl.serve`도 같은
+  이름을 재수출하지만, 실제로 루프가 읽는 모듈 전역은 `lnpl.wsgi`의 것이다 —
+  테스트에서 값을 줄이려면 `wsgi.SSE_POLL_INTERVAL_S`를 패치해야 한다.)
 - 요청별 진단(가드 스킵 등)은 CLI와 같은 채널인 stderr로 나간다.
+
+## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
+
+`lnpl serve`의 dev 서버는 TLS도, graceful shutdown도, 다중 프로세스 워커
+풀도 없다(D4 — 일부러 만들지 않았다). 운영에서는 요청 처리 코어를 노출하는
+`impl/lnpl/wsgi.py`의 `build_app()` 팩토리를 표준 WSGI 호스트에 넘긴다 —
+여기서는 stdlib 밖 도구인 gunicorn을 예로 쓴다(프로젝트 의존성으로 추가하지
+않는다; stdlib-only 원칙은 `impl/lnpl` 자체에 대한 것이지, 그것을 호스팅하는
+별도 프로세스에 대한 것이 아니다).
+
+```bash
+pip install gunicorn   # 이 저장소의 의존성이 아니다 — 배치 환경에서 설치
+
+LNPL_SOURCE=examples/shorten.lnpl \
+  gunicorn "lnpl.wsgi:build_app()" --bind 0.0.0.0:8000
+```
+
+`build_app()`은 인자를 하나도 받지 않는 팩토리로 호출되므로(그것이 gunicorn이
+factory 문자열을 호출하는 방식), 모든 설정은 환경 변수로 온다 — CLI 플래그의
+env-var 대응:
+
+| 환경 변수 | CLI 대응 | 기본값 |
+|-----------|----------|--------|
+| `LNPL_SOURCE` | `lnpl serve <src>` | (필수) — 파일들(`os.pathsep` 구분) 또는 디렉터리 1개, t77 `load_sources` 그대로 소비 |
+| `LNPL_BACKEND` | `--backend` | `fake` |
+| `LNPL_JWT_SECRET_ENV` | `--jwt-secret-env` | (미설정 — presence-checked, not verified) |
+| `LNPL_CLOCK` | `--clock` | `virtual` |
+| `LNPL_ENDPOINT_<NAME>` | `--endpoint NAME=URL` | (이슈 #101 계약 그대로 재사용 — `build_app()`이 새로 발명하지 않는다) |
+
+해석 실패(존재하지 않는 소스, 알 수 없는 backend/clock 선택자, 미설정
+JWT secret, 매핑되지 않은 network target)는 `lnpl.wsgi.WsgiConfigError`를
+내며 **요청이 아니라 기동이 실패한다** — `cli.cmd_serve`가 이미 CLI 경로에서
+세운 것과 같은 원칙(첫 요청에서야 발견되는 게 아니라 뜨지 않는다).
+
+이 머신에는 gunicorn이 설치되어 있지 않을 수 있다 — 그 경우를 위해 D5는
+`wsgiref.validate`로 대체 증거를 요구한다: `impl/tests/test_wsgi.py`의
+`test_boundary_wsgiref_validate_accepts_the_built_callable`가 `build_app()`이
+내놓는 callable을 PEP 3333 검증 래퍼(`wsgiref.validate.validator`)에 태워
+매 스위트 실행마다 확인한다. 아래는 이 저장소를 검증하는 동안 로컬에 gunicorn
+을 설치해 실측한 기동·요청·SIGTERM 종료 로그다(재현: `pip install gunicorn`
+후 위 커맨드, 다른 터미널에서 curl):
+
+```
+$ LNPL_SOURCE=examples/shorten.lnpl gunicorn "lnpl.wsgi:build_app()" --bind 127.0.0.1:8099 --workers 1
+[INFO] Starting gunicorn 26.1.0
+[INFO] Listening at: http://127.0.0.1:8099 (13187)
+[INFO] Using worker: sync
+[INFO] Booting worker with pid: 13189
+
+$ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8099/shorten-service/shorten \
+    -H "Authorization: Bearer any" -d '{"id":"3f2504e0-...","slug":"abc-123", ...}'
+200
+
+$ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8099/no/such/path
+404
+
+$ kill -TERM 13187   # gunicorn's own graceful shutdown, not this project's code
+[INFO] Handling signal: term
+[INFO] Worker exiting (pid: 13189)
+[INFO] Shutting down: Master
+```
+
+두 상태코드(200/404)는 위 매핑표의 M9/M1과 같다 — gunicorn 아래에서도
+`impl/tests/test_wsgi_contract.py`의 공유 계약 테스트가 socket 경로(내장
+`lnpl serve`)와 직접 구동한 WSGI callable 양쪽에 대해 이미 고정한 것과
+동일한 판정이다. nginx를 앞에 두는 경우 TLS 종단·정적 헤더 정책은 nginx가
+갖고, gunicorn은 이 WSGI callable을 서빙하는 역할만 한다 — 둘 다 이 저장소
+바깥의 배치 관심사다.
+
+## 공유 계약
+
+내장 dev 서버(소켓)와 `build_app()`/`make_wsgi_app()`이 만드는 WSGI callable은
+**같은 코드**를 실행한다(`impl/lnpl/wsgi.py`의 `LnplWsgiApp`) — `lnpl.serve`는
+그 위에 `wsgiref.simple_server`를 씌우는 얇은 래퍼일 뿐, 두 번째 구현이
+아니다. `impl/tests/test_wsgi_contract.py`가 이것을 코드를 읽어서가 아니라
+실행해서 증명한다: POST 워크플로 완료, GET 단건/목록, 401(인가 누락), 404
+(미등록 경로)를 소켓 경로와 WSGI callable 직접 호출 양쪽에 똑같이 돌려
+(`correlation_id`처럼 요청마다 무작위인 필드만 제외하고) 응답이 바이트
+단위로 같음을 단언한다. SSE는 별도로 — 소켓 위에서의 실시간 도착·재접속·
+유휴 종료는 `test_serve_sse.py`가 이미 고정하므로, `test_wsgi_contract.py`는
+그 위에 없던 것 하나만 더 본다: SSE가 소켓 전혀 없이 **순수 WSGI 이터레이터**
+로 동작한다는 것 — `next()`를 반복 호출해 프레임을 받고, idle 타임아웃에서
+이터레이터가 스스로 끝난다(`StopIteration`).

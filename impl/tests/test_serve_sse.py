@@ -29,7 +29,7 @@ from lnpl.openapi import generate
 from lnpl.parser import ParseError, parse
 from lnpl.serve import build_routes
 from tests.test_serve import ServerTestCase
-import lnpl.serve as serve_mod
+import lnpl.wsgi as wsgi_mod
 
 
 def compile_src(source, module="mod"):
@@ -140,15 +140,20 @@ class SseSubscribeHttpTest(ServerTestCase):
         self.doc = compile_src(TWO_EVENT_SRC)
         self.port = self.start(
             self.doc, repository_factory=lambda: SqliteRepositoryDriver(self.db))
-        self._orig_poll = serve_mod.SSE_POLL_INTERVAL_S
-        self._orig_idle = serve_mod.SSE_IDLE_TIMEOUT_S
-        serve_mod.SSE_POLL_INTERVAL_S = 0.02
-        serve_mod.SSE_IDLE_TIMEOUT_S = 0.5
+        # issue #80: the SSE poll loop moved into `lnpl.wsgi` (the WSGI
+        # callable both the embedded dev server and a production host serve),
+        # so that is the module whose constants a test must shrink — patching
+        # the `lnpl.serve` re-export would rebind a separate name and leave
+        # the generator's own module-global untouched.
+        self._orig_poll = wsgi_mod.SSE_POLL_INTERVAL_S
+        self._orig_idle = wsgi_mod.SSE_IDLE_TIMEOUT_S
+        wsgi_mod.SSE_POLL_INTERVAL_S = 0.02
+        wsgi_mod.SSE_IDLE_TIMEOUT_S = 0.5
         self.addCleanup(self._restore_timing)
 
     def _restore_timing(self):
-        serve_mod.SSE_POLL_INTERVAL_S = self._orig_poll
-        serve_mod.SSE_IDLE_TIMEOUT_S = self._orig_idle
+        wsgi_mod.SSE_POLL_INTERVAL_S = self._orig_poll
+        wsgi_mod.SSE_IDLE_TIMEOUT_S = self._orig_idle
 
     def _place_order(self, order_id):
         resp, body = self.post_json(
