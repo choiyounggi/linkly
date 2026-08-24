@@ -1240,6 +1240,25 @@ class Interpreter:
                 entity_node = self.nodes.get(effect["entity"])
                 if entity_node is not None:
                     bindings[binding_name(entity_node)] = row
+                    # issue #85: a schema change that ran ahead of a
+                    # backfill is otherwise silent — the row simply reads
+                    # back wrong-shaped. Warn (never block: RFC-0021's
+                    # "does editing the program remove it" says warning
+                    # here means "editing the *data* removes it").
+                    for mismatch in row_shape_mismatches(
+                            entity_node, row, self.refinements):
+                        self.diagnostics.add(
+                            code="stored-row-shape-mismatch",
+                            where=effect["id"], subject=entity_node["name"],
+                            message=(
+                                "stored row is missing declared field %r "
+                                "(expected %s)"
+                                % (mismatch["field"], mismatch["expected_type"])
+                                if mismatch["kind"] == "missing" else
+                                "stored row field %r does not match its "
+                                "declared type %s"
+                                % (mismatch["field"], mismatch["expected_type"])),
+                            line=self.nodes[effect["id"]].get("line"))
             if effect["operation"] == "read" and row is None:
                 self.clock.advance(1)
                 child.end_ms = self.clock.now
@@ -1562,6 +1581,38 @@ def check_semantic_type(type_name, value, field_name, refinements=None):
     elif rule[0] == "nonempty":
         if not str(value):
             raise RunError("field %r is empty" % field_name)
+
+
+def row_shape_mismatches(entity_node, row, refinements):
+    """`entity_node`'s declared fields vs. a stored `row` (issue #85).
+
+    Reuses `check_semantic_type` — the same judgement `validate_effect`
+    already applies to a payload — rather than a second type rule. A
+    `derived` field is skipped: it is never persisted (issue #95's `create`
+    branch does not seed one, and `derived-never-assigned` forbids a
+    workflow from ever `set`ting one), so its absence from a stored row is
+    the normal shape, not a mismatch.
+
+    Returns a list of `{"field", "expected_type", "kind"}` dicts, `kind` one
+    of `"missing"` / `"type"` — never the stored value itself (D2): a caller
+    building a diagnostic or a JSON report from this list cannot leak one by
+    accident, because there is nothing here to leak.
+    """
+    mismatches = []
+    for field in entity_node.get("fields", []):
+        if field.get("derived"):
+            continue
+        name = field["name"]
+        if name not in row:
+            mismatches.append({"field": name, "expected_type": field["type"],
+                               "kind": "missing"})
+            continue
+        try:
+            check_semantic_type(field["type"], row[name], name, refinements)
+        except RunError:
+            mismatches.append({"field": name, "expected_type": field["type"],
+                               "kind": "type"})
+    return mismatches
 
 
 # The default-fixture sample per semantic type, projected from the one registry

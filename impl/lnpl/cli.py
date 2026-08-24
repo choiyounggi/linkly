@@ -18,11 +18,11 @@ from .drivers import (DriverError, HmacTokenProvider, TokenError,
                       audience_for_path, open_network, open_repository,
                       _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
-                     refinement_index, sample_payload)
+                     refinement_index, row_shape_mismatches, sample_payload)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .parser import ParseError
-from .repo_policy import default_rows
+from .repo_policy import default_rows, row_key
 from .backend import (BackendError, build as build_native, condition_field_names,
                       ran_step_indices, restore_skips, run_binary,
                       validation_effect_steps)
@@ -450,6 +450,45 @@ def cmd_outbox_ack(args):
         return 1
     finally:
         repository.close()
+
+
+def cmd_db_check(args):
+    """`lnpl db check <source...> --backend sqlite:...` — every stored row of
+    every declared entity, checked against its declaration (issue #85).
+    JSON on stdout — `[]` and rc 0 when every row matches, the mismatched
+    rows (never a value, D2) and rc 1 when at least one does not — for an
+    external backfill tool to consume and re-run this against, rather than
+    this reading the DB one `run` at a time.
+    """
+    doc = compile_source(args.source)
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: db check needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no rows to check",
+              file=sys.stderr)
+        return 2
+    refinements = refinement_index(doc)
+    findings = []
+    try:
+        for entity_node in _entities(doc):
+            try:
+                rows = repository.query(entity_node["id"])
+            except DriverError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 1
+            for row in rows:
+                for mismatch in row_shape_mismatches(entity_node, row, refinements):
+                    findings.append({"entity": entity_node["name"],
+                                     "row_key": row_key(entity_node["id"], row),
+                                     "field": mismatch["field"],
+                                     "expected_type": mismatch["expected_type"],
+                                     "kind": mismatch["kind"]})
+    finally:
+        repository.close()
+    sys.stdout.write(json.dumps(findings, indent=2, ensure_ascii=False) + "\n")
+    return 1 if findings else 0
 
 
 # Distinguishes "the operator asked for the default in-memory store" (None,
@@ -936,6 +975,24 @@ def main(argv=None):
                           "output) to mark delivered — a repeated or "
                           "already-delivered seq is a no-op success")
     oba.set_defaults(func=cmd_outbox_ack)
+
+    db = sub.add_parser("db",
+                        help="inspect a persistent store against the "
+                             "declared schema (issue #85)")
+    db_sub = db.add_subparsers(dest="db_cmd", required=True)
+
+    dbc = db_sub.add_parser("check",
+                            help="scan every stored row against the "
+                                 "declared entities; print mismatches as "
+                                 "JSON, rc 1 iff any (rc 0 clean)")
+    dbc.add_argument("source", nargs="+",
+                     help="one or more .lnpl files (merged in the given "
+                          "order), or a single directory (its *.lnpl, "
+                          "filename-sorted — RFC-0031, issue #77)")
+    dbc.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="a persistent capability backend, e.g. "
+                          "sqlite:./store.db (`fake` has no rows to check)")
+    dbc.set_defaults(func=cmd_db_check)
 
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
     bd.add_argument("source", nargs="+",

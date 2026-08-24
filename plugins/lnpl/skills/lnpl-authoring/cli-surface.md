@@ -128,6 +128,32 @@ JSON Lines로 stdout에 찍는다. 한 줄이 `{"seq", "emission_id", "event", "
 스키마·drain/ack 의미론의 정본과 외부 릴레이(cron/systemd/k8s CronJob이
 drain→publish→ack 루프를 소유) 위임 구도는 `docs/backends.md`.
 
+### `db check` — 저장된 행을 선언과 대조 (이슈 #85)
+
+```
+lnpl db check <source...> --backend sqlite:<path>
+```
+
+일반 JSON blob 테이블은 스키마를 검증하지 않는다 — entity 선언이 필드를
+추가하거나 타입을 바꾼 뒤에도 그 전에 쓰인 행은 조용히 옛 모양 그대로
+읽힌다. `db check`는 선언된 모든 entity의 저장된 모든 행을 훑어 그 정합을
+확인한다: 선언 필드가 행에 없으면(missing) 또는 있어도 타입이 안 맞으면
+(type), stdout에 JSON 배열로 나열한다. 값은 절대 싣지 않는다 — 항목마다
+`entity`/`row_key`/`field`/`expected_type`/`kind`뿐이다.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--backend` | 필수. `sqlite:<path>`만 유효 — `fake`는 영속 저장소가 없어 거부(rc 2) |
+
+정합한 DB는 `[]`와 rc 0. 불일치가 하나라도 있으면 rc 1. 백필 자체는 이
+커맨드의 일이 아니다 — 이 JSON을 소비해 실제로 고치는 것은 외부 도구고,
+고침이 끝났는지는 `db check`를 다시 돌려 확인한다.
+
+`read`/`find`가 돌려주는 행에도 같은 판단이 실시간으로 걸린다 —
+`stored-row-shape-mismatch`(warning), 아래 "진단은 어디를 가리키나" 참고.
+`db check`는 그 실시간 진단과 같은 판단 로직(`interp.row_shape_mismatches`,
+`check_semantic_type` 재사용)을 전체 저장소에 훑어 적용한 것뿐이다.
+
 ### `build` — 네이티브 바이너리로 컴파일 (모드 B)
 
 | 플래그 | 뜻 |
@@ -203,7 +229,9 @@ status completed
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
 (`unknown-verb`, `unknown-entity`, `guard-skipped-steps`, `guard-orphaned-steps`,
-`aggregation-orphaned-list`, `event-source-mismatch`, `derived-never-assigned`), `info`는 고쳐도 사라지지 않는
+`aggregation-orphaned-list`, `event-source-mismatch`, `derived-never-assigned`,
+`stored-row-shape-mismatch`(이 하나는 프로그램이 아니라 데이터를 고치면
+사라진다 — 이슈 #85)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`).
@@ -224,6 +252,10 @@ status completed
   런타임(`interp.py`) 진단이라 `lnpl compile`에는 나오지 않고 `lnpl run`(또는
   인터프리터를 직접 돈 경로)에서만 관측된다 — `compile`이 인터프리터를 돌리지
   않는 것은 RFC-0024가 바꾸지 않았다.
+- `stored-row-shape-mismatch`도 같은 모양(노드 id + `(line N)`)이지만 노드
+  id가 선언이 아니라 그 `RepositoryCall` Effect의 id다 — `authorization-not-
+  verified`와 마찬가지로 런타임 진단이라 `lnpl run`에서만 관측되고, `lnpl
+  compile`에는 나오지 않는다 (이슈 #85).
 - **mode B 두 진단**(`guard-skipped-steps`, `validation-sample-derived`)은
   **워크플로 id**만 갖는다 — 그 표면에는 가드 노드 id가 없다(rfcs/0022 표 1).
   RFC-0024가 손대지 않은 범위다.
