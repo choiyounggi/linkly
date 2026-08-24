@@ -94,6 +94,40 @@ lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
 서명 알고리즘은 HS256 고정이고 검증은 서버 측 allowlist로 한다(`alg: none` 거부).
 자세한 계약은 `docs/backends.md`.
 
+### `outbox drain` / `outbox ack` — `lnpl_outbox` 드레인/ack (이슈 #102)
+
+```
+lnpl outbox drain --backend sqlite:<path> [--limit N]
+lnpl outbox ack --backend sqlite:<path> <seq> [<seq>...]
+```
+
+`--backend sqlite:...`로 실행한 `emit`은 `lnpl_outbox`에 영속된다(`run`과 같은
+`--backend` 규칙). `fake`는 프로세스 밖 저장소가 없으므로 두 서브커맨드 모두 이
+값을 거부한다(rc 2).
+
+| 서브커맨드 | 플래그 | 뜻 |
+|-----------|--------|-----|
+| `drain` | `--backend` | 필수. `sqlite:<path>`만 유효 |
+| `drain` | `--limit` | 출력할 최대 개수 (기본 무제한) |
+| `ack` | `--backend` | 필수. `sqlite:<path>`만 유효 |
+| `ack` | (위치 인자) `<seq>` | delivered로 마킹할 `seq` 값(들). `drain` 출력의 첫 필드 |
+
+`drain`은 아직 delivered로 마킹되지 않은 모든 행을 `seq` 오름차순(삽입 순서)
+JSON Lines로 stdout에 찍는다. 한 줄이 `{"seq", "emission_id", "event", "payload",
+"created_at"}`.
+
+**행의 정체성은 `seq`이지 `emission_id`가 아니다.** `emission_id`는
+`interp.py`의 프로세스-로컬 카운터라, 같은 문서를 같은 저장소에 대해 두 번
+따로 실행하면 첫 emit끼리 같은 `emission_id`를 재현한다 — 그건 재전송이 아니라
+서로 다른 두 emission이므로, 두 번째 실행이 실패해서는 안 된다(2026-08-24 실측).
+그래서 저장소가 소유하는 대리키 `seq`(sqlite `AUTOINCREMENT`)가 행을 구분하고,
+`ack`도 `seq`로 받는다. 같은 `seq` 재-ack는 멱등(성공, 상태 불변). 배치에 모르는
+`seq`가 하나라도 있으면 **아무것도 쓰지 않고** 그 `seq`를 이름과 함께 rc 1로
+거부한다 — 나머지가 조용히 acked되는 일은 없다.
+
+스키마·drain/ack 의미론의 정본과 외부 릴레이(cron/systemd/k8s CronJob이
+drain→publish→ack 루프를 소유) 위임 구도는 `docs/backends.md`.
+
 ### `build` — 네이티브 바이너리로 컴파일 (모드 B)
 
 | 플래그 | 뜻 |

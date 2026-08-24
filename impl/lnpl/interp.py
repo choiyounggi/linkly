@@ -190,6 +190,12 @@ class FakeRepository:
         """
         self.rows.setdefault(entity_id, {})[key] = row
 
+    def record_emission(self, emission):
+        """Nothing to persist — the Fake has no store that outlives the run
+        (issue #102: outbox persistence is a `SqliteRepositoryDriver`
+        contract, the same asymmetry `persist`'s own docstring states)."""
+        return None
+
     def close(self):
         return None
 
@@ -1057,6 +1063,18 @@ class Interpreter:
                 response.setdefault(binding, {})[field] = \
                     result["bindings"][binding][field]
             result["response"] = response
+        # issue #102, D5: additive and non-destructive, the same `response`
+        # precedent (issue #96) — a run that never emits gets no `emissions`
+        # key at all, so it stays byte-identical to before this feature
+        # existed. Unlike `response` this is NOT gated on `status ==
+        # "completed"`: `spec.py`'s `emitted` assertion already reads
+        # `self.outbox` unconditionally (RFC-0003 — the synchronous part of
+        # `emit` ends at registering the publish, before whatever runs
+        # after it), and this clause is that same surface on the JSON
+        # result, so the two must not disagree about what a failed run
+        # still registered.
+        if self.outbox:
+            result["emissions"] = list(self.outbox)
         result["duration_ms"] = total
         result["correlation_id"] = self.trace.correlation_id
         if con["response_slo_ms"] is not None:
@@ -1287,6 +1305,15 @@ class Interpreter:
             emission = {"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1),
                         "event": event_ref,
                         "payload": mask_payload(payload, self._entity_node())}
+            # issue #102: persisted before the in-memory outbox sees it, so a
+            # driver fault here (translated to RunError below, the same as
+            # every other repo call) never leaves an emission counted in
+            # `self.outbox`/`result["emissions"]` that the durable store does
+            # not actually have.
+            try:
+                self.repo.record_emission(emission)
+            except DriverError as exc:
+                raise RunError(str(exc)) from exc
             self.outbox.append(emission)
             child.attrs["event"] = event_ref
             child.attrs["emission_id"] = emission["emission_id"]

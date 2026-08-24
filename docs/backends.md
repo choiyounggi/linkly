@@ -160,6 +160,72 @@ failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프
 바인딩된 dict가 곧 저장된 행이라 no-op이지만, 실제 저장소에서 이 flush가 없으면
 갱신이 실행 중에만 보이고 끝나서 사라진다.
 
+### 아웃박스 — `lnpl_outbox` (이슈 #102)
+
+관측에서 끝나던 `emit`을 실화한다. 코어가 소유하는 것은 테이블 스키마와
+drain/ack 의미론뿐이다 — 릴레이(실제로 브로커에 퍼블리시하는 쪽)는 프로세스
+밖이다(#88 원칙).
+
+```sql
+CREATE TABLE IF NOT EXISTS lnpl_outbox (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    emission_id  TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    delivered_at INTEGER
+)
+```
+
+`--backend sqlite:...`로 실행한 `EventEmit` 효과는 등록되는 순간(RFC-0003 —
+동기 구간은 "퍼블리시를 등록"에서 끝난다) 이 테이블에 한 행으로 남는다. 삭제가
+아니라 **상태 마킹**이다 — `delivered_at`이 `NULL`이면 미전달, 값이 있으면
+전달됨이고, 행 자체는 지워지지 않는다.
+
+**행의 정체성은 `seq`이지 `emission_id`가 아니다 — 이슈 #102 원문(PK를
+`emission_id`로)에서 측정치를 근거로 벗어난 결정이다.** `emission_id`는
+`"%s#%d" % (effect_id, len(outbox)+1)`(`interp.py`)로, **한 `Interpreter`
+인스턴스에 로컬한 카운터**다. 같은 문서를 `lnpl run`으로 같은 저장소에 대해
+두 번 따로 실행하면, 두 실행 각각의 첫 emit이 정확히 같은 `emission_id`를
+재현한다 — CLI가 실행마다 새 `Interpreter`를 만들고 `correlation_id`도 넘기지
+않아 기본값(`cid-0001`)으로 고정되기 때문이다. 처음에는 `emission_id`를 PK로
+잡았으나, **두 번째 `lnpl run` 호출이 PK 충돌로 실패**하는 것을 그대로 실측했다
+(2026-08-24, 이 태스크 구현 중). 이것은 재전송이 아니라 — at-least-once의
+dedupe 대상은 **같은 배달**이 다시 오는 경우다 — 서로 다른 두 실행이 만든
+**서로 다른 두 emission**이므로, 두 번째 행이 성공적으로 쌓이는 쪽이 옳다.
+그래서 배달의 정체성은 저장소가 소유하는 대리키 `seq`(sqlite
+`AUTOINCREMENT`)로 옮기고, `emission_id`는 그 emission을 만든 트레이스를
+가리키는 평범한 컬럼으로 남긴다 — `interp.py`의 `emission_id`/`correlation_id`
+생성 자체는 손대지 않았다(골든 출력과 모드 A/B 차동 검사가 그 값을 읽는
+결정적 트레이스 계약의 일부라 파급 범위가 이 태스크보다 크다).
+
+CLI 계약(`plugins/lnpl/skills/lnpl-authoring/cli-surface.md`에 상세):
+
+- `lnpl outbox drain --backend sqlite:<path> [--limit N]` — 미전달 행을
+  `seq` 오름차순(삽입 순서) JSON Lines로 stdout에 낸다. 한 줄이
+  `{"seq", "emission_id", "event", "payload", "created_at"}`. `seq`가
+  insertion order와 같으므로 그대로 커서로 쓸 수 있다 — SSE 구독(t103)이
+  Last-Event-ID 스타일로 재개하려는 지점이 정확히 이 값이다.
+- `lnpl outbox ack --backend sqlite:<path> <seq> [<seq>...]` — 해당
+  `seq`들을 delivered로 마킹한다. **같은 `seq` 재-ack는 멱등**(성공, 상태
+  불변) — `UPDATE ... WHERE seq = ? AND delivered_at IS NULL`이 이미
+  마킹된 행에는 0행을 건드리고 조용히 성공한다. 배치 중 **모르는 `seq`가
+  하나라도 있으면 아무것도 쓰지 않고** 그 `seq`를 이름과 함께 rc≠0으로
+  거부한다 — 나머지가 조용히 acked되어 "일부만 성공했다"를 호출자가 메시지
+  만으로 알 수 없게 되는 일은 없다.
+
+**외부 릴레이가 소유하는 것.** 이 구현은 drain으로 읽고 ack로 지우는 것까지만
+한다 — 실제로 카프카·SQS 등에 퍼블리시하는 폴링 퍼블리셔는 cron·systemd
+타이머·k8s `CronJob` 같은 프로세스 밖 스케줄러가 소유하며, 그 루프는
+`drain → (각 행을 브로커에 퍼블리시) → 성공한 seq만 ack`다. `ack`는 실제
+퍼블리시가 확인된 뒤에만 불러야 한다 — 미리 ack하면 퍼블리시가 실패했을 때
+그 emission을 다시 볼 방법이 없다(at-least-once가 깨진다).
+
+**하지 않는 것.** HTTP 드레인(`GET /_outbox`)과 웹훅 push는 이슈가 후속으로
+명시한 범위라 `serve.py`를 건드리지 않았다. 브로커 바인딩(kafka 등)은 릴레이
+구현체의 몫이다. `#79`의 워크플로 단위 트랜잭션 경계와의 결합(실패한 실행이
+emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 자체가 아직 없다.
+
 ## 4. jwt
 
 | 항목 | 값 |
@@ -193,6 +259,9 @@ failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
 | **postgres / redis 서버 바인딩** | 이 계획을 세운 머신에 서버도 드라이버도 없었다(`psql`·`redis-server` 없음, `psycopg2`·`redis` 미설치). 통합 테스트로 뒷받침할 수 없는 바인딩은 주장일 뿐이다 |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
+| **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
+| **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
+| **아웃박스와 워크플로 트랜잭션 경계의 결합(#79)** | 실패한 실행이 emit한 행이 롤백 없이 남는다 — 결합 규칙 자체가 아직 없어 명시적으로 이월했다 |
 
 ## 6. 차동 검증과의 관계
 

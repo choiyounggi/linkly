@@ -1,5 +1,6 @@
 .orchestration/
 .worktrees/
+.dev-loop/
 .claude/tmp/
 .claude/worktrees/
 __pycache__/

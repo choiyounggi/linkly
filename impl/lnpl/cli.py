@@ -375,6 +375,59 @@ def cmd_serve(args):
     return 0
 
 
+def cmd_outbox_drain(args):
+    """`lnpl outbox drain --backend sqlite:...` — every undelivered emission,
+    JSON Lines on stdout, oldest first (issue #102, D3). `ack` is the only
+    thing that removes a row from this view; draining twice without acking
+    shows the same rows both times, which is the at-least-once contract.
+    """
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: outbox drain needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no outbox to drain",
+              file=sys.stderr)
+        return 2
+    try:
+        for emission in repository.drain_outbox(limit=args.limit):
+            sys.stdout.write(json.dumps(emission, ensure_ascii=False) + "\n")
+        return 0
+    except DriverError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        repository.close()
+
+
+def cmd_outbox_ack(args):
+    """`lnpl outbox ack --backend sqlite:... <seq>...` — mark each row
+    delivered. `seq` (not `emission_id`) is the row's identity: a run of the
+    same document against the same store can legitimately reproduce an
+    `emission_id` a prior run already used (interp.py's counter is local to
+    one Interpreter instance), so `seq` — sqlite's own AUTOINCREMENT, and
+    `drain`'s first field on every line — is what `ack` addresses. Idempotent
+    on a re-ack; an unknown seq fails closed (naming it, rc != 0) before
+    anything is written (issue #102, D3 revised).
+    """
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: outbox ack needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no outbox to ack",
+              file=sys.stderr)
+        return 2
+    try:
+        repository.ack_outbox(args.seq)
+        return 0
+    except DriverError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        repository.close()
+
+
 # Distinguishes "the operator asked for the default in-memory store" (None,
 # which the Interpreter turns into its FakeRepository) from "the selector was
 # rejected" — two answers `open_repository` cannot both return as None.
@@ -816,6 +869,31 @@ def main(argv=None):
     tk.add_argument("--ttl", default="15m",
                     help="access-token lifetime (default: 15m)")
     tk.set_defaults(func=cmd_token)
+
+    ob = sub.add_parser("outbox",
+                        help="drain/ack the lnpl_outbox — at-least-once emit "
+                             "delivery (issue #102)")
+    ob_sub = ob.add_subparsers(dest="outbox_cmd", required=True)
+
+    obd = ob_sub.add_parser("drain",
+                            help="print undelivered emissions as JSON Lines, "
+                                 "oldest first")
+    obd.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="a persistent capability backend, e.g. sqlite:./store.db "
+                          "(`fake` has no outbox to drain)")
+    obd.add_argument("--limit", type=int, default=None,
+                     help="cap the number of emissions printed (default: unlimited)")
+    obd.set_defaults(func=cmd_outbox_drain)
+
+    oba = ob_sub.add_parser("ack", help="mark one or more outbox rows delivered")
+    oba.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="a persistent capability backend, e.g. sqlite:./store.db "
+                          "(`fake` has no outbox to ack)")
+    oba.add_argument("seq", nargs="+", type=int,
+                     help="one or more `seq` values (from `outbox drain`'s "
+                          "output) to mark delivered — a repeated or "
+                          "already-delivered seq is a no-op success")
+    oba.set_defaults(func=cmd_outbox_ack)
 
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
     bd.add_argument("source")

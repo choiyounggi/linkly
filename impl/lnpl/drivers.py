@@ -132,6 +132,18 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    def record_emission(self, emission):
+        """Persist one `EventEmit` registration for durable at-least-once
+        delivery (issue #102). `emission` is `{"emission_id", "event",
+        "payload"}` — the same dict the interpreter's in-memory `outbox`
+        already holds.
+
+        Reference implementation: `interp.FakeRepository`, a no-op — it has
+        no store that outlives the run, so there is nothing here to persist
+        (the same asymmetry `persist`'s own docstring states for the Fake).
+        """
+        raise NotImplementedError
+
     def query_sorted(self, entity_id, field):
         """Every row for `entity_id`, ordered by `field` ascending, `row_key`
         (`repo_policy.row_key`) the tiebreaker for equal values (issue #99,
@@ -262,6 +274,49 @@ _UPDATE_ROW_VERSIONED = ("UPDATE lnpl_rows SET payload = ?, _version = _version 
                          "WHERE entity_id = ? AND row_key = ? AND _version = ?")
 _DELETE_ROW = "DELETE FROM lnpl_rows WHERE entity_id = ? AND row_key = ?"
 
+# issue #102, D1 (revised after measurement — see docs/backends.md "outbox
+# row identity"): `emission_id` is NOT the primary key here. It is
+# `"%s#%d" % (effect_id, len(outbox)+1)` (interp.py), a counter local to one
+# Interpreter instance — every fresh `lnpl run` starts that counter at 1, so
+# a second run of the same document against the same store reproduces the
+# same `emission_id` for its first emission of a given effect. That is not a
+# duplicate delivery; it is a distinct emission from a distinct run, and a
+# PK on `emission_id` made the second run's INSERT fail outright (reproduced
+# 2026-08-24, two `lnpl run` invocations against one sqlite store). At-least-
+# once dedupe is about the SAME delivery being redelivered — the delivery's
+# identity is `seq`, a storage-owned surrogate key, not `emission_id`, which
+# is deterministic-trace-owned (golden outputs and the mode A/B differential
+# read it — RFC-0003's contract there is untouched by this table).
+# `emission_id` stays a plain column so the trace value that produced a row
+# is still visible; it is `seq` that `ack` addresses. Status marking, not
+# deletion, still holds: `delivered_at` is what a drained-then-acked row
+# loses, never the row itself. `created_at` is millis since epoch (bound
+# parameter, `time.time()` below), not sqlite's own `CURRENT_TIMESTAMP` —
+# kept for the drain output even though `seq` (not `created_at`) is now the
+# order/cursor key, since `seq` already IS insertion order and doubles as
+# the monotonic cursor a Last-Event-ID-style consumer (t103) needs.
+_CREATE_OUTBOX_TABLE = """
+CREATE TABLE IF NOT EXISTS lnpl_outbox (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    emission_id  TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    delivered_at INTEGER
+)
+"""
+_INSERT_OUTBOX = ("INSERT INTO lnpl_outbox (emission_id, event, payload, created_at) "
+                  "VALUES (?, ?, ?, ?)")
+_SELECT_OUTBOX_SEQ = "SELECT 1 FROM lnpl_outbox WHERE seq = ?"
+_SELECT_UNDELIVERED = ("SELECT seq, emission_id, event, payload, created_at "
+                       "FROM lnpl_outbox WHERE delivered_at IS NULL ORDER BY seq")
+_SELECT_UNDELIVERED_LIMIT = _SELECT_UNDELIVERED + " LIMIT ?"
+# The `delivered_at IS NULL` guard is what makes a re-ack idempotent without a
+# second read: acking an already-delivered seq matches zero rows and reports
+# no error, its `delivered_at` left exactly as the first ack set it.
+_MARK_DELIVERED = ("UPDATE lnpl_outbox SET delivered_at = ? "
+                   "WHERE seq = ? AND delivered_at IS NULL")
+
 
 def _encode(row):
     return json.dumps(row, ensure_ascii=False, sort_keys=True)
@@ -304,6 +359,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
                 self._conn.execute("PRAGMA journal_mode = WAL")
                 self._conn.execute("PRAGMA synchronous = NORMAL")
             self._conn.execute(_CREATE_TABLE)
+            self._conn.execute(_CREATE_OUTBOX_TABLE)
             self._conn.commit()
         except sqlite3.Error as exc:
             raise DriverError("cannot open the sqlite store at %r: %s"
@@ -388,6 +444,81 @@ class SqliteRepositoryDriver(RepositoryDriver):
             self._conn.commit()
         except sqlite3.Error as exc:
             raise DriverError("cannot persist %s: %s" % (entity_id, exc)) from exc
+
+    def record_emission(self, emission):
+        """Persist one `EventEmit` registration (issue #102, D1/D2).
+
+        `emission` is the same `{"emission_id", "event", "payload"}` dict the
+        interpreter's in-memory `outbox` already holds — this call is what
+        makes it survive the process. `emission_id` rides in as a plain
+        column, not the row's identity: two separate runs of the same
+        document legitimately reproduce the same `emission_id` for their
+        first emission of a given effect (it is a per-Interpreter counter,
+        interp.py), and each is a genuinely distinct emission, not a
+        redelivery of one — so a second row for a repeated `emission_id` is
+        the correct outcome, never a conflict. `seq` (sqlite's own
+        AUTOINCREMENT) is the row's real identity; `ack_outbox` addresses by
+        it.
+        """
+        try:
+            self._conn.execute(
+                _INSERT_OUTBOX,
+                (emission["emission_id"], emission["event"],
+                 _encode(emission["payload"]), int(time.time() * 1000)))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot record emission %s: %s"
+                              % (emission["emission_id"], exc)) from exc
+
+    def drain_outbox(self, limit=None):
+        """Every undelivered emission, `seq` ascending — insertion order,
+        which doubles as a monotonic delivery cursor (issue #102, D3
+        revised: `seq`, not `created_at`/`emission_id`, is the row's real
+        order/identity — see the schema comment above `_CREATE_OUTBOX_TABLE`).
+        Never a delivered row — `ack_outbox` is what removes one from this
+        view, by marking `delivered_at`, not by deleting it (D1). Empty list
+        when nothing is undelivered, never `None` — the same empty-is-a-
+        value contract `query`/`query_sorted` already state for their own
+        reads.
+        """
+        try:
+            if limit is None:
+                found = self._conn.execute(_SELECT_UNDELIVERED).fetchall()
+            else:
+                found = self._conn.execute(
+                    _SELECT_UNDELIVERED_LIMIT, (limit,)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot drain outbox: %s" % exc) from exc
+        return [{"seq": row[0], "emission_id": row[1], "event": row[2],
+                "payload": json.loads(row[3]), "created_at": row[4]}
+               for row in found]
+
+    def ack_outbox(self, seqs):
+        """Mark every row in `seqs` delivered (issue #102, D3 revised: `seq`
+        is the delivery identity `ack` addresses, not `emission_id` — see
+        the schema comment above `_CREATE_OUTBOX_TABLE`).
+
+        Fails closed: every seq is checked to exist BEFORE anything is
+        written, so an unknown seq in the batch leaves the known ones
+        untouched too — a caller must never learn "some of these worked"
+        from a message that only names the ones that did not. A known seq
+        already delivered is a no-op success (idempotent re-ack): the
+        `_MARK_DELIVERED` guard makes that true without a second read here.
+        """
+        try:
+            missing = [seq for seq in seqs
+                      if self._conn.execute(
+                          _SELECT_OUTBOX_SEQ, (seq,)).fetchone() is None]
+            if missing:
+                raise DriverError(
+                    "outbox ack: unknown seq(s): %s"
+                    % ", ".join(str(seq) for seq in missing))
+            now = int(time.time() * 1000)
+            for seq in seqs:
+                self._conn.execute(_MARK_DELIVERED, (now, seq))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot ack outbox: %s" % exc) from exc
 
     def close(self):
         conn, self._conn = getattr(self, "_conn", None), None

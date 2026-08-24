@@ -41,6 +41,20 @@ workflow Look
     read product
 """
 
+# issue #102: minimal enough to isolate one `EventEmit` per run — the shape
+# `DriverFaultTranslationTest.test_a_failing_emit_becomes_a_failed_run` needs.
+EMIT_ONLY = """entity Order
+    field
+        id UUID
+        status Text
+
+event OrderPlaced on Order create
+
+workflow PlaceOrder
+    create order
+    emit orderPlaced
+"""
+
 BACKENDS = ("fake", "sqlite")
 
 
@@ -339,6 +353,11 @@ class _FailingRepository(FakeRepository):
             raise DriverError("the store rejected the write")
         return super().persist(entity_id, key, row)
 
+    def record_emission(self, emission):
+        if self.failing == "record_emission":
+            raise DriverError("the outbox store is unreachable")
+        return super().record_emission(emission)
+
 
 class _FailingCache(FakeCache):
 
@@ -377,7 +396,7 @@ class DriverFaultTranslationTest(ContractTestCase):
     rc, the served status code, and the result shape are all derived from
     `status`/`failure_reason`, so a DriverError that escaped instead of being
     translated would turn a bad database into a traceback at every one of them.
-    Each case names one translation site; without them the three try/except
+    Each case names one translation site; without them the four try/except
     blocks could be deleted and every other test would stay green.
     """
 
@@ -406,6 +425,26 @@ class DriverFaultTranslationTest(ContractTestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("the store rejected the write", result["failure_reason"])
+
+    def test_a_failing_outbox_record_becomes_a_failed_run(self):
+        """issue #102: `EventEmit`'s `repo.record_emission` call is a driver
+        call like every other — an untranslated fault here would surface as
+        a traceback out of `lnpl run` instead of an ordinary failed run."""
+        doc = compile_source(EMIT_ONLY)
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        payload = {"id": "o-1", "status": "new"}
+        interp = Interpreter(doc, repo_rows={},
+                             repository=_FailingRepository("record_emission"))
+
+        result = interp.run_workflow(target, payload)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("the outbox store is unreachable", result["failure_reason"])
+        # The failed emission must not be counted as registered — neither in
+        # the in-memory outbox (spec's `emitted` reads it) nor on the JSON
+        # result — since the durable store never actually recorded it.
+        self.assertEqual([], interp.outbox)
+        self.assertNotIn("emissions", result)
 
     def test_a_failing_cache_write_becomes_a_failed_run(self):
         doc = compile_source(GUARDED)
