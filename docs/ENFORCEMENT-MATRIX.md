@@ -113,6 +113,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | event-source-orphaned | info | `on`-소스 이벤트를 `emit`하는 워크플로에 그 소스가 지목하는 `<op> <entity>` 스텝이 아예 없을 때 (issue #98) | 컴파일 타임 — lowering |
 | derived-never-assigned | warning | `derived` 필드를 가진 entity에 `create` 스텝이 있는데, 그 필드를 채우는 `set`/`format`이 같은 워크플로 안에 하나도 없을 때 (issue #95) | 컴파일 타임 — lowering |
 | declared-not-bound | info | `call`/`request`의 target이 URL 리터럴이 아닌 논리명인데, 그 이름을 선언한 `capability http`가 모듈에 없을 때 (issue #101) — method POST·인증 없음으로 그대로 실행된다 | 컴파일 타임 — lowering |
+| stored-row-shape-mismatch | warning | `read`/`find`가 돌려준 행에 entity가 선언한 필드가 없거나(missing), 있어도 선언된 타입과 맞지 않을 때(type) — 값은 절대 싣지 않는다 (issue #85) | 런타임 — 인터프리터 |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -120,7 +121,8 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 질문은 하나다(RFC-0021): **프로그램을 고치면 이 진단이 사라지는가.** 사라지면
 `warning`(`unknown-verb` · `unknown-entity` · `guard-skipped-steps` ·
 `guard-orphaned-steps` · `aggregation-orphaned-list` · `event-source-mismatch` ·
-`derived-never-assigned`),
+`derived-never-assigned` · `stored-row-shape-mismatch`(프로그램이 아니라
+데이터를 고치면 사라진다는 점만 다르다 — 이슈 #85, RFC-0021 질문의 데이터판)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

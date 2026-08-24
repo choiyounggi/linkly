@@ -51,6 +51,7 @@ CODES = (
     "event-source-orphaned",        # #98  `emit` fires, but its declared `on <Entity> <op>` step never runs in this workflow
     "derived-never-assigned",       # #95  a `derived` field is `create`d, but no `set`/`format` in the workflow ever fills it
     "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
+    "stored-row-shape-mismatch",    # #85  a read/find row is missing a declared field, or has the wrong type
 )
 
 # code -> grade (#52). One question decides every row:
@@ -102,6 +103,11 @@ SEVERITY_OF = {
     # same "the program is correct, the platform is stating what it does
     # with it" case `declared-not-enforced` already covers.
     "declared-not-bound":         "info",
+    # #85: backfilling the stored row (adding the missing field, or fixing
+    # its type) removes this — the data needs to change, not the program,
+    # but it is still an edit that makes the diagnostic go away, so `warning`
+    # (RFC-0021's data-side reading of the same question).
+    "stored-row-shape-mismatch": "warning",
 }
 
 # How the runtime treats a declaration.
