@@ -14,9 +14,10 @@ import sys
 from . import __version__
 from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
 from .drivers import (DriverError, HmacTokenProvider, TokenError,
-                      audience_for_path, open_network, open_repository)
-from .interp import (Interpreter, RunError, _duration_ms, refinement_index,
-                     sample_payload)
+                      audience_for_path, open_network, open_repository,
+                      _is_url_literal)
+from .interp import (Interpreter, RunError, _duration_ms, open_clock,
+                     refinement_index, sample_payload)
 from .lexer import LexError
 from .lower import LowerError, lower
 from .parser import ParseError, parse
@@ -191,12 +192,21 @@ def cmd_run(args):
     repository = _open_backend(getattr(args, "backend", "fake"))
     if repository is _REJECTED:
         return 2
-    network = _open_network(getattr(args, "network", "fake"))
+    network_spec = getattr(args, "network", "fake")
+    resolved = _open_endpoints(doc, getattr(args, "endpoint", None), network_spec)
+    if resolved is _REJECTED:
+        return 2
+    endpoints, capabilities = resolved
+    network = _open_network(network_spec, endpoints=endpoints,
+                            capabilities=capabilities)
     if network is _REJECTED:
+        return 2
+    clock = _open_clock(getattr(args, "clock", "virtual"))
+    if clock is _REJECTED:
         return 2
     try:
         interp = Interpreter(doc, repo_rows=rows, repository=repository,
-                             network=network)
+                             network=network, clock=clock)
         result = interp.run_workflow(target, payload)
         # Compile-time and run-time findings are one report, not two.
         diagnostics.extend(interp.diagnostics)
@@ -335,10 +345,19 @@ def cmd_serve(args):
     token_provider = _token_provider(getattr(args, "jwt_secret_env", None))
     if token_provider is _REJECTED:
         return 2
+    network_spec = getattr(args, "network", "fake")
+    resolved = _open_endpoints(doc, getattr(args, "endpoint", None), network_spec)
+    if resolved is _REJECTED:
+        return 2
+    endpoints, capabilities = resolved
+    network = _open_network(network_spec, endpoints=endpoints,
+                            capabilities=capabilities)
+    if network is _REJECTED:
+        return 2
 
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     server = serve(doc, args.host, args.port, repository_factory=factory,
-                   token_provider=token_provider)
+                   token_provider=token_provider, network=network)
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -354,6 +373,59 @@ def cmd_serve(args):
     finally:
         server.server_close()
     return 0
+
+
+def cmd_outbox_drain(args):
+    """`lnpl outbox drain --backend sqlite:...` — every undelivered emission,
+    JSON Lines on stdout, oldest first (issue #102, D3). `ack` is the only
+    thing that removes a row from this view; draining twice without acking
+    shows the same rows both times, which is the at-least-once contract.
+    """
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: outbox drain needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no outbox to drain",
+              file=sys.stderr)
+        return 2
+    try:
+        for emission in repository.drain_outbox(limit=args.limit):
+            sys.stdout.write(json.dumps(emission, ensure_ascii=False) + "\n")
+        return 0
+    except DriverError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        repository.close()
+
+
+def cmd_outbox_ack(args):
+    """`lnpl outbox ack --backend sqlite:... <seq>...` — mark each row
+    delivered. `seq` (not `emission_id`) is the row's identity: a run of the
+    same document against the same store can legitimately reproduce an
+    `emission_id` a prior run already used (interp.py's counter is local to
+    one Interpreter instance), so `seq` — sqlite's own AUTOINCREMENT, and
+    `drain`'s first field on every line — is what `ack` addresses. Idempotent
+    on a re-ack; an unknown seq fails closed (naming it, rc != 0) before
+    anything is written (issue #102, D3 revised).
+    """
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: outbox ack needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no outbox to ack",
+              file=sys.stderr)
+        return 2
+    try:
+        repository.ack_outbox(args.seq)
+        return 0
+    except DriverError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        repository.close()
 
 
 # Distinguishes "the operator asked for the default in-memory store" (None,
@@ -377,12 +449,108 @@ def _open_backend(spec):
         return _REJECTED
 
 
-def _open_network(spec):
+def _open_network(spec, endpoints=None, capabilities=None):
     """`--network`'s value -> a NetworkDriver, None for the fake, `_REJECTED`
     on a bad selector — the `_open_backend` selector mirrored (RFC-0027 §1).
+
+    `endpoints`/`capabilities` (issue #101) are already resolved by
+    `_open_endpoints` and just threaded through to `open_network`.
     """
     try:
-        return open_network(spec)
+        return open_network(spec, endpoints=endpoints, capabilities=capabilities)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _network_targets(doc):
+    """Every `NetworkCall.target` in `doc` that is a logical name, not a URL
+    literal, deduplicated in first-appearance order (issue #101 D3) — the
+    set `_open_endpoints` must resolve under `--network http`."""
+    seen = []
+    for n in doc["nodes"]:
+        if n["kind"] != "NetworkCall":
+            continue
+        target = n["target"]
+        if target not in seen and not _is_url_literal(target):
+            seen.append(target)
+    return seen
+
+
+def _http_capabilities(doc):
+    """name -> {"method", "auth"} for every declared `capability http` node
+    (issue #101) — `method` is present only on those, so it doubles as the
+    filter for "is this Capability node an http one"."""
+    return {n["name"]: {"method": n["method"], "auth": n.get("auth")}
+            for n in doc["nodes"] if n["kind"] == "Capability" and "method" in n}
+
+
+def _open_endpoints(doc, endpoint_args, network_spec):
+    """`--endpoint`/`LNPL_ENDPOINT_*` + declared `capability http` auth ->
+    (endpoints, capabilities) for `HttpNetworkDriver`, or `_REJECTED`.
+
+    Issue #101 D3/D5: validated before the run/serve starts — a `--network
+    http` module whose compiled `NetworkCall` targets do not all resolve, or
+    whose declared auth names an unset environment variable, is a failed
+    launch, the same rc 2 `_open_backend`/`_token_provider` already give a
+    bad selector or a missing secret. `--network fake` skips all of it: the
+    fake driver has no notion of either (D7).
+    """
+    caps = _http_capabilities(doc)
+    if network_spec != "http":
+        return {}, caps
+    given = {}
+    for item in endpoint_args or []:
+        name, sep, url = item.partition("=")
+        if not sep:
+            print("error: --endpoint %r is not NAME=URL" % item, file=sys.stderr)
+            return _REJECTED
+        given[name] = url
+    endpoints = {}
+    resolved_caps = {}
+    for name in _network_targets(doc):
+        # CLI wins over env (D2: explicit beats implicit).
+        url = given.get(name)
+        if url is None:
+            url = os.environ.get("LNPL_ENDPOINT_%s" % name.upper())
+        if url is None:
+            print("error: network target %r has no --endpoint mapping or "
+                  "LNPL_ENDPOINT_%s environment variable — map it with "
+                  "`--endpoint %s=<url>` or set LNPL_ENDPOINT_%s"
+                  % (name, name.upper(), name, name.upper()), file=sys.stderr)
+            return _REJECTED
+        endpoints[name] = url
+        cap = caps.get(name)
+        if cap is None:
+            # declared-not-bound (D4): a legitimate, undeclared logical name
+            # still calls out — method POST, no auth, the pre-#101 default.
+            resolved_caps[name] = {"method": "POST", "headers": {}}
+            continue
+        headers = {}
+        auth = cap.get("auth")
+        if auth is not None:
+            value = os.environ.get(auth["env"])
+            if value is None:
+                print("error: %s is not set in the environment (capability "
+                      "http %s declares `auth %s from %s`)"
+                      % (auth["env"], name, auth["kind"], auth["env"]),
+                      file=sys.stderr)
+                return _REJECTED
+            if auth["kind"] == "bearer":
+                headers["Authorization"] = "Bearer %s" % value
+            else:
+                headers[auth["header"]] = value
+        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers}
+    return endpoints, resolved_caps
+
+
+def _open_clock(spec):
+    """`--clock`'s value -> a Clock instance, None for the default virtual
+    binding, `_REJECTED` on a bad selector — the `_open_backend`/
+    `_open_network` selectors mirrored (RFC-0029 §Execution Model/Clock).
+    """
+    try:
+        return open_clock(spec)
     except ValueError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return _REJECTED
@@ -648,6 +816,9 @@ def main(argv=None):
                    help="start with an empty repository (exercises retry)")
     r.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
     r.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    r.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
+                   help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME>, --endpoint wins)")
+    r.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
     r.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)
@@ -674,6 +845,9 @@ def main(argv=None):
     sv.add_argument("--port", type=int, default=8080,
                     help="TCP port; 0 binds an ephemeral port (default: 8080)")
     sv.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
+    sv.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    sv.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
+                    help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME>, --endpoint wins)")
     sv.add_argument("--jwt-secret-env", default=None, metavar="NAME",
                     help="name of the environment variable holding the HS256 "
                          "signing secret. Given, `security jwt` services verify "
@@ -695,6 +869,31 @@ def main(argv=None):
     tk.add_argument("--ttl", default="15m",
                     help="access-token lifetime (default: 15m)")
     tk.set_defaults(func=cmd_token)
+
+    ob = sub.add_parser("outbox",
+                        help="drain/ack the lnpl_outbox — at-least-once emit "
+                             "delivery (issue #102)")
+    ob_sub = ob.add_subparsers(dest="outbox_cmd", required=True)
+
+    obd = ob_sub.add_parser("drain",
+                            help="print undelivered emissions as JSON Lines, "
+                                 "oldest first")
+    obd.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="a persistent capability backend, e.g. sqlite:./store.db "
+                          "(`fake` has no outbox to drain)")
+    obd.add_argument("--limit", type=int, default=None,
+                     help="cap the number of emissions printed (default: unlimited)")
+    obd.set_defaults(func=cmd_outbox_drain)
+
+    oba = ob_sub.add_parser("ack", help="mark one or more outbox rows delivered")
+    oba.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="a persistent capability backend, e.g. sqlite:./store.db "
+                          "(`fake` has no outbox to ack)")
+    oba.add_argument("seq", nargs="+", type=int,
+                     help="one or more `seq` values (from `outbox drain`'s "
+                          "output) to mark delivered — a repeated or "
+                          "already-delivered seq is a no-op success")
+    oba.set_defaults(func=cmd_outbox_ack)
 
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
     bd.add_argument("source")

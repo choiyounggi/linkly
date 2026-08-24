@@ -39,6 +39,7 @@ SEVERITIES = ("info", "warning", "error")
 # or renaming one as a breaking change.
 CODES = (
     "unknown-verb",                 # #36  verb outside VERB_LEXICON -> no Effect
+    "unknown-entity",               # #91  step object outside the declared entities
     "declared-not-enforced",        # #38  declared, and the runtime does nothing with it
     "declared-measured-only",       # #38  observed and reported, never blocks
     "authorization-not-verified",   # #38  Authorization Effect records, never checks
@@ -46,6 +47,10 @@ CODES = (
     "guard-orphaned-steps",         # RFC-0023  a guard owns one item; a later step touches the state it protected
     "validation-sample-derived",     # #55  mode B decided Validation from a sample payload
     "aggregation-orphaned-list",    # RFC-0025  sum/count reads a RowSet no earlier unguarded `list` fills
+    "event-source-mismatch",        # #98  `emit` and its declared `on <Entity> <op>` step are not in the same guard scope
+    "event-source-orphaned",        # #98  `emit` fires, but its declared `on <Entity> <op>` step never runs in this workflow
+    "derived-never-assigned",       # #95  a `derived` field is `create`d, but no `set`/`format` in the workflow ever fills it
+    "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
 )
 
 # code -> grade (#52). One question decides every row:
@@ -64,6 +69,7 @@ CODES = (
 # twice, differently, for the same fact.
 SEVERITY_OF = {
     "unknown-verb":               "warning",
+    "unknown-entity":             "warning",
     "declared-not-enforced":      "info",
     "declared-measured-only":     "info",
     "authorization-not-verified": "info",
@@ -78,6 +84,24 @@ SEVERITY_OF = {
     # the program is what needs to change, so `warning` (same test as
     # `unknown-verb`, `guard-orphaned-steps`).
     "aggregation-orphaned-list":  "warning",
+    # #98: moving the `emit` under the same guard scope as the `<op> <entity>`
+    # step its source declares removes this — same test as `guard-orphaned-steps`.
+    "event-source-mismatch":      "warning",
+    # #98: no edit to the program removes this one short of adding the
+    # `<op> <entity>` step or dropping the source/emit — a statement about the
+    # source declaration being descriptive only, same logic as
+    # `declared-not-enforced`.
+    "event-source-orphaned":      "info",
+    # #95: adding the missing `set`/`format` step removes this — same test as
+    # `unknown-verb`, `aggregation-orphaned-list`.
+    "derived-never-assigned":     "warning",
+    # #101: a `capability http` declaration is optional — an undeclared
+    # target still runs (method POST, no auth), so the program is correct as
+    # written. Adding the declaration is a legitimate edit that removes this,
+    # but it changes intent (opting into method/auth), not fixing a bug — the
+    # same "the program is correct, the platform is stating what it does
+    # with it" case `declared-not-enforced` already covers.
+    "declared-not-bound":         "info",
 }
 
 # How the runtime treats a declaration.

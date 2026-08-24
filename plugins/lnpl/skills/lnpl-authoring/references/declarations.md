@@ -40,6 +40,7 @@
 | 코드 | 등급 |
 |------|------|
 | `unknown-verb` | **warning** |
+| `unknown-entity` | **warning** |
 | `declared-not-enforced` | **info** |
 | `declared-measured-only` | **info** |
 | `authorization-not-verified` | **info** |
@@ -47,3 +48,7 @@
 | `guard-orphaned-steps` | **warning** |
 | `validation-sample-derived` | **info** |
 | `aggregation-orphaned-list` | **warning** |
+| `event-source-mismatch` | **warning** |
+| `event-source-orphaned` | **info** |
+| `derived-never-assigned` | **warning** |
+| `declared-not-bound` | **info** |

@@ -79,7 +79,30 @@ else
   PROBLEMS=1
 fi
 
-# 5. SDK 헤더 경로 -----------------------------------------------------------
+# 5. sysroot 정합 -------------------------------------------------------------
+# 이슈 #104: brew LLVM의 clang은 bottle 빌드 시점의 SDK 경로를 기본 sysroot로
+# 굽는다. 이 머신의 SDK가 다르면(또는 없으면) S7이 조용히 죽는다. backend.py의
+# S7은 이제 이 계산을 직접 하고(-isysroot) 실패를 BackendError로 번역하지만,
+# 여기서도 같은 계산을 미리 해서 "모드 B 대량 실패"를 코드 회귀로 오독하기
+# 전에 원인을 보여준다.
+if command -v xcrun >/dev/null 2>&1; then
+  SDK_PATH="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
+  if [ -n "$SDK_PATH" ] && [ -d "$SDK_PATH" ]; then
+    echo "sysroot 정합: $SDK_PATH"
+  else
+    echo "sysroot 정합: xcrun이 SDK를 못 찾음 (반환값: '${SDK_PATH:-없음}')"
+    note "xcode-select --install (Command Line Tools 재설치)"
+    note "xcrun --sdk macosx --show-sdk-path 를 직접 실행해 원인을 확인하라"
+    note "LNPL_LLVM_BIN으로 sysroot를 스스로 해석하는 LLVM 설치를 가리킬 수도 있다"
+    PROBLEMS=1
+  fi
+else
+  echo "sysroot 정합: xcrun 없음"
+  note "xcode-select --install (Command Line Tools 설치)"
+  PROBLEMS=1
+fi
+
+# 6. SDK 헤더 경로 -----------------------------------------------------------
 # homebrew clang은 SDKROOT를 무시한다. CommandLineTools의 SDK는 비어 있을 수
 # 있어 CPATH/LIBRARY_PATH로 직접 가리켜야 한다.
 if [ -n "${CPATH:-}" ] && [ -n "${LIBRARY_PATH:-}" ]; then

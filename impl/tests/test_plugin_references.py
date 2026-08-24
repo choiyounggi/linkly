@@ -387,6 +387,7 @@ class UndocumentedRuleTest(unittest.TestCase):
 
     SET_TARGET_HEADING = "## 할당(`set`)의 대상"
     READ_VERBS_PREFIX = "읽기 동사:"
+    CREATE_VERBS_PREFIX = "결과를 바인딩하는 동사:"
     NO_BINDING_PREFIX = "바인딩을 만들지 않는 동사:"
     ROWSET_VERBS_PREFIX = "행 집합(RowSet) 동사:"
 
@@ -398,8 +399,8 @@ class UndocumentedRuleTest(unittest.TestCase):
         return body
 
     def _repo_verbs(self):
-        """(단일 행 바인딩을 만드는 동사, 아무 바인딩도 만들지 않는 동사,
-        RowSet을 바인딩하는 동사).
+        """(단일 행 바인딩을 만드는 동사, `as`로 결과를 바인딩할 수 있는
+        동사, 아무 바인딩도 만들지 않는 동사, RowSet을 바인딩하는 동사).
 
         `lower.READ_VERBS`를 그대로 쓴다 — `_check_scoped_conditions`가
         `read_entities`를 세우는 것과 같은 소스(RFC-0025 §5/§6.1:
@@ -409,9 +410,13 @@ class UndocumentedRuleTest(unittest.TestCase):
         썼는데, `lower.py`가 `read_entities`를 그 테이블에서 떼어 놓은 뒤로
         그 재계산이 바로 이 검사가 막으려던 조용한 어긋남이 되었다 — 소스를
         한 곳으로 합치고, RowSet을 세 번째 갈래로 분리한다(둘 다 아니므로).
+        issue #97 / RFC-0012 Updates(RFC-0030): `create` 연산은 더 이상
+        "아무 바인딩도 만들지 않는" 갈래가 아니다 — `as <이름>`을 붙이면
+        결과를 바인딩한다(`update`/`delete`는 여전히 바인딩하지 않는다) —
+        그래서 네 번째 갈래로 분리한다.
         """
         from lnpl.lower import READ_VERBS, VERB_LEXICON
-        reads, writes, rowset = set(), set(), set()
+        reads, create, writes, rowset = set(), set(), set(), set()
         for verb, (kind, attrs) in VERB_LEXICON.items():
             if kind != "RepositoryCall":
                 continue
@@ -419,25 +424,39 @@ class UndocumentedRuleTest(unittest.TestCase):
                 reads.add(verb)
             elif attrs.get("operation") == "query":
                 rowset.add(verb)
+            elif attrs.get("operation") == "create":
+                create.add(verb)
             else:
                 writes.add(verb)
-        return reads, writes, rowset
+        return reads, create, writes, rowset
 
     def test_set_target_binding_rule_is_documented(self):
         body = self._set_target_section()
-        self.assertIn("읽은", body)
+        # issue #97 / RFC-0012 Updates: `set`의 바인딩은 이제 "읽은" 행뿐
+        # 아니라 `create ... as`로 "만든" 행도 포함한다.
+        self.assertIn("읽었거나 만든", body)
         # 규칙만 알고 빠져나오지 못하면 소용없다 — 수리 경로가 같은 절에 있어야 한다.
         self.assertRegex(body, r"`read`|`load`|`find`")
+        self.assertIn("`create <명사> as <이름>`", body)
 
     def test_the_read_verbs_in_the_document_match_the_lexicon(self):
         """전사 드리프트 차단: 어휘가 바뀌면 문서가 따라오거나 붉어진다."""
-        reads, _writes, _rowset = self._repo_verbs()
+        reads, _create, _writes, _rowset = self._repo_verbs()
         line = line_starting(self._set_target_section(), self.READ_VERBS_PREFIX)
         self.assertIsNotNone(line, "%r 줄이 없다" % self.READ_VERBS_PREFIX)
         self.assertEqual(backticked(line), reads)
 
+    def test_the_create_verbs_in_the_document_match_the_lexicon(self):
+        """issue #97 / RFC-0012 Updates: `as`로 결과를 바인딩할 수 있는
+        동사(`create`/`insert`)가 문서에 자기 갈래를 갖는다."""
+        _reads, create, _writes, _rowset = self._repo_verbs()
+        line = line_starting(self._set_target_section(), self.CREATE_VERBS_PREFIX)
+        self.assertIsNotNone(line, "%r 줄이 없다" % self.CREATE_VERBS_PREFIX)
+        self.assertEqual(backticked(line), create)
+        self.assertIn("create", create)
+
     def test_the_non_binding_verbs_in_the_document_match_the_lexicon(self):
-        _reads, writes, _rowset = self._repo_verbs()
+        _reads, _create, writes, _rowset = self._repo_verbs()
         line = line_starting(self._set_target_section(), self.NO_BINDING_PREFIX)
         self.assertIsNotNone(line, "%r 줄이 없다" % self.NO_BINDING_PREFIX)
         self.assertEqual(backticked(line), writes)
@@ -445,21 +464,21 @@ class UndocumentedRuleTest(unittest.TestCase):
     def test_the_rowset_verbs_in_the_document_match_the_lexicon(self):
         """RFC-0025 §5: `list`는 단일 행도, "바인딩 없음"도 아닌 세 번째
         갈래다 — 그 갈래가 문서에도 따로 있어야 한다."""
-        _reads, _writes, rowset = self._repo_verbs()
+        _reads, _create, _writes, rowset = self._repo_verbs()
         line = line_starting(self._set_target_section(), self.ROWSET_VERBS_PREFIX)
         self.assertIsNotNone(line, "%r 줄이 없다" % self.ROWSET_VERBS_PREFIX)
         self.assertEqual(backticked(line), rowset)
         self.assertIn("list", rowset)
 
-    def test_the_three_verb_lines_do_not_overlap(self):
-        """경계: 세 줄이 서로 겹치면 위 검사들은 통과해도 갈래가 무의미하다."""
-        reads, writes, rowset = self._repo_verbs()
-        self.assertEqual(reads & writes, set())
-        self.assertEqual(reads & rowset, set())
-        self.assertEqual(writes & rowset, set())
-        self.assertGreater(len(reads), 0)
-        self.assertGreater(len(writes), 0)
-        self.assertGreater(len(rowset), 0)
+    def test_the_four_verb_lines_do_not_overlap(self):
+        """경계: 네 줄이 서로 겹치면 위 검사들은 통과해도 갈래가 무의미하다."""
+        reads, create, writes, rowset = self._repo_verbs()
+        groups = (reads, create, writes, rowset)
+        for i, a in enumerate(groups):
+            for b in groups[i + 1:]:
+                self.assertEqual(a & b, set())
+        for group in groups:
+            self.assertGreater(len(group), 0)
 
     def test_input_is_documented_as_an_illegal_assignment_target(self):
         """에러 케이스: `set input.x to …`가 왜 거부되는지."""

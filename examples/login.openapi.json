@@ -44,6 +44,45 @@
         "x-retry": 3,
         "x-timeout-ms": 3000
       }
+    },
+    "/login-service/user/{id}": {
+      "get": {
+        "operationId": "login_service_get_user",
+        "summary": "get one User",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          },
+          "401": {
+            "description": "authentication failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {

@@ -34,6 +34,8 @@ lnpl --version
 | `--no-row` | 빈 저장소로 시작한다(재시도 경로를 관측할 때) |
 | `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로) 또는 `sqlite:<path>`(파일에 남는 실제 저장소). 이슈 #25 |
 | `--network` | `NetworkCall` 드라이버. `fake`(기본, 결정적, I/O 없음) 또는 `http`(`http.client`로 실제 요청). RFC-0027, 이슈 #64 |
+| `--endpoint` | `NAME=URL` (반복 가능). `--network http`에서 `call`/`request`의 논리명을 실제 URL로 매핑한다. `LNPL_ENDPOINT_<NAME>` 환경변수로도 줄 수 있고, `--endpoint`가 이긴다. 매핑 안 된 논리명이 있으면 기동이 rc 2로 실패한다(요청 중 실패보다 기동 실패). 이슈 #101 |
+| `--clock` | 시간 바인딩. `virtual`(기본, 결정적, 프로세스 로컬) 또는 `real`(단조 벽시계 — `CacheAccess` TTL을 실제 경과 시간에 묶는다). `spec`/`diff`에는 없다. RFC-0029, 이슈 #100 |
 | `--strict` | 위와 같다 |
 
 `--workflow`는 선언명이 아니라 노드 id를 받는다(`GetReport`가 아니라
@@ -65,6 +67,8 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--host` | 바인드 주소 (기본 `127.0.0.1` — 루프백 전용) |
 | `--port` | TCP 포트, `0`이면 임시 포트 (기본 `8080`) |
 | `--backend` | `run`과 같다. `sqlite:<path>`를 주면 요청 사이에 상태가 남는다 |
+| `--network` | `run`과 같다. 이슈 #101 전에는 `serve`에 이 플래그 자체가 없어서 모든 요청이 `fake` 드라이버로 나갔다 |
+| `--endpoint` | `run`과 같다 — `--network http`에서 소켓을 바인드하기 전에 검사한다(백엔드·jwt 시크릿과 같은 자리). 이슈 #101 |
 | `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |
 
 각 워크플로가 `POST /<service-slug>/<workflow-slug>`에서 실행된다. 상태코드
@@ -89,6 +93,40 @@ lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
 발급과 검증이 같은 함수를 읽는다 — 이웃 서비스용 토큰은 통하지 않는다.
 서명 알고리즘은 HS256 고정이고 검증은 서버 측 allowlist로 한다(`alg: none` 거부).
 자세한 계약은 `docs/backends.md`.
+
+### `outbox drain` / `outbox ack` — `lnpl_outbox` 드레인/ack (이슈 #102)
+
+```
+lnpl outbox drain --backend sqlite:<path> [--limit N]
+lnpl outbox ack --backend sqlite:<path> <seq> [<seq>...]
+```
+
+`--backend sqlite:...`로 실행한 `emit`은 `lnpl_outbox`에 영속된다(`run`과 같은
+`--backend` 규칙). `fake`는 프로세스 밖 저장소가 없으므로 두 서브커맨드 모두 이
+값을 거부한다(rc 2).
+
+| 서브커맨드 | 플래그 | 뜻 |
+|-----------|--------|-----|
+| `drain` | `--backend` | 필수. `sqlite:<path>`만 유효 |
+| `drain` | `--limit` | 출력할 최대 개수 (기본 무제한) |
+| `ack` | `--backend` | 필수. `sqlite:<path>`만 유효 |
+| `ack` | (위치 인자) `<seq>` | delivered로 마킹할 `seq` 값(들). `drain` 출력의 첫 필드 |
+
+`drain`은 아직 delivered로 마킹되지 않은 모든 행을 `seq` 오름차순(삽입 순서)
+JSON Lines로 stdout에 찍는다. 한 줄이 `{"seq", "emission_id", "event", "payload",
+"created_at"}`.
+
+**행의 정체성은 `seq`이지 `emission_id`가 아니다.** `emission_id`는
+`interp.py`의 프로세스-로컬 카운터라, 같은 문서를 같은 저장소에 대해 두 번
+따로 실행하면 첫 emit끼리 같은 `emission_id`를 재현한다 — 그건 재전송이 아니라
+서로 다른 두 emission이므로, 두 번째 실행이 실패해서는 안 된다(2026-08-24 실측).
+그래서 저장소가 소유하는 대리키 `seq`(sqlite `AUTOINCREMENT`)가 행을 구분하고,
+`ack`도 `seq`로 받는다. 같은 `seq` 재-ack는 멱등(성공, 상태 불변). 배치에 모르는
+`seq`가 하나라도 있으면 **아무것도 쓰지 않고** 그 `seq`를 이름과 함께 rc 1로
+거부한다 — 나머지가 조용히 acked되는 일은 없다.
+
+스키마·drain/ack 의미론의 정본과 외부 릴레이(cron/systemd/k8s CronJob이
+drain→publish→ack 루프를 소유) 위임 구도는 `docs/backends.md`.
 
 ### `build` — 네이티브 바이너리로 컴파일 (모드 B)
 
@@ -164,18 +202,21 @@ status completed
 진단은 **stderr로 나가고 종료 코드는 0**이다. `--strict`를 줘야 rc 2로 올라간다.
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
-(`unknown-verb`, `guard-skipped-steps`, `guard-orphaned-steps`,
-`aggregation-orphaned-list`), `info`는 고쳐도 사라지지 않는 플랫폼
-상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
-`authorization-not-verified`, `validation-sample-derived`). 등급별 표는
+(`unknown-verb`, `unknown-entity`, `guard-skipped-steps`, `guard-orphaned-steps`,
+`aggregation-orphaned-list`, `event-source-mismatch`, `derived-never-assigned`), `info`는 고쳐도 사라지지 않는
+플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
+`authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
+`declared-not-bound`).
+등급별 표는
 `references/declarations.md`에 생성되어 있다 — 등급을 정하는 것은 그 표가 아니라
 `diagnostics.SEVERITY_OF`이고, 문서는 그것의 사본이다. CI에서 의도한 선언을
 통과시키려면 `--strict=warning`을 쓴다.
 
 위치 정보는 네 종류다:
 
-- **파싱·lowering 에러**와 **`unknown-verb`**는 `line N`만 갖는다 — 소스 줄을
-  바로 가리킨다.
+- **파싱·lowering 에러**와 **`unknown-verb`/`unknown-entity`**는 `line N`만
+  갖는다 — 소스 줄을 바로 가리킨다(`unknown-entity`는 이슈 #91, 형식은
+  `unknown-verb`와 동일).
 - **집행 진단** 3종(`declared-not-enforced`, `declared-measured-only`,
   `authorization-not-verified`)은 **노드 id와 `(line N)` 둘 다** 갖는다
   (`[security.shorten] (line 46)`, RFC-0024). `line`은 IR 노드의 선택 필드라
@@ -192,6 +233,11 @@ status completed
 - **`aggregation-orphaned-list`도 `line N`만 갖는다** — 같은 이유다: 저자가
   고쳐야 하는 것은 그 `set` 줄(또는 그 앞에 `list`를 추가하는 것)이라, 줄을
   바로 가리킨다(RFC-0025 §4).
+- **`event-source-mismatch`/`event-source-orphaned`도 `line N`만 갖는다** — 저자가
+  보거나 옮겨야 하는 것은 그 `emit` 줄이라, 줄을 바로 가리킨다(issue #98).
+- **`derived-never-assigned`도 `line N`만 갖는다** — 저자가 고쳐야 하는 것은 그
+  `create` 줄(또는 그 앞뒤에 `set`/`format`을 추가하는 것)이라, 줄을 바로
+  가리킨다(issue #95).
 
 노드 id에서 선언명을 되짚는 규칙은
 [references/naming.md](references/naming.md)에 있다.

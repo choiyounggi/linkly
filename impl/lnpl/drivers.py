@@ -132,6 +132,44 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    def record_emission(self, emission):
+        """Persist one `EventEmit` registration for durable at-least-once
+        delivery (issue #102). `emission` is `{"emission_id", "event",
+        "payload"}` — the same dict the interpreter's in-memory `outbox`
+        already holds.
+
+        Reference implementation: `interp.FakeRepository`, a no-op — it has
+        no store that outlives the run, so there is nothing here to persist
+        (the same asymmetry `persist`'s own docstring states for the Fake).
+        """
+        raise NotImplementedError
+
+    def query_sorted(self, entity_id, field):
+        """Every row for `entity_id`, ordered by `field` ascending, `row_key`
+        (`repo_policy.row_key`) the tiebreaker for equal values (issue #99,
+        D3/D7 — the `expose list` GET surface).
+
+        Same empty-list-never-None contract as `query`. `field` names a
+        top-level key of the JSON `payload` — never SQL text: the statement
+        text stays constant, `field` rides in as a bound `json_extract` path
+        parameter (STATEMENT TEXT IS CONSTANT, this module's docstring).
+        """
+        raise NotImplementedError
+
+    def read_outbox(self, event, after_seq=0):
+        """Every `event` emission with `seq > after_seq`, ascending (issue
+        #103): the SSE subscribe surface's tail read. Independent of
+        `delivered_at` — a live SSE subscriber and the drain/ack consumer
+        (issue #102) read this same table for two unrelated purposes, and
+        neither's cursor moves the other's. Same empty-list-never-None
+        contract as `query`/`drain_outbox`.
+
+        Reference implementation: `interp.FakeRepository`, a no-op — it has
+        no store that outlives the run, so there is nothing here to tail (the
+        same asymmetry `record_emission`'s docstring states for the Fake).
+        """
+        raise NotImplementedError
+
     def close(self):
         """Release resources. Safe to call more than once."""
         raise NotImplementedError
@@ -141,11 +179,23 @@ class CacheDriver:
     """The `redis` capability's adapter contract.
 
     Reference implementation: `interp.FakeCache`. No persistent implementation
-    ships here, and that is a decision rather than an omission: RFC-0003
-    denominates a cache TTL in the run's injected clock, which starts at 0 in
-    every process. A persisted entry would be compared against a fresh clock
-    and read as live forever, so "a persistent cache" would be a store whose
-    expiry contract is untrue. `docs/backends.md` records the gap.
+    ships here — that remains #75's job (external SPI). `docs/backends.md` §5
+    records the still-open gap (no shipped server/library on this machine).
+
+    **TTL may be store-delegated.** `set`'s `ttl_ms` is a deadline, not a
+    mandate on how it is judged (RFC-0003 §Execution Model/Clock, RFC-0029,
+    issue #100). A driver may satisfy the contract either way:
+
+      - Compare `ttl_ms` against a clock reading, the way `FakeCache` compares
+        against whichever `Clock`/`RealClock` it was constructed with.
+      - **Delegate to the store's own native expiry** (e.g. Redis `SETEX`/
+        `EXPIRE`, handed `ttl_ms` untouched) and never read a clock at all.
+        This is the recommended path for a persistent driver: the store's own
+        clock survives process restarts that an injected one does not, and it
+        is one fewer clock to keep synchronized with the store's.
+
+    Either way `get`/`invalidate` need no clock — expiry already happened (or
+    didn't) by the time they run.
     """
 
     def get(self, key):
@@ -205,21 +255,103 @@ CREATE TABLE IF NOT EXISTS lnpl_rows (
     entity_id TEXT NOT NULL,
     row_key   TEXT NOT NULL,
     payload   TEXT NOT NULL,
+    _version  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (entity_id, row_key)
 )
 """
-_SELECT_ROW = "SELECT payload FROM lnpl_rows WHERE entity_id = ? AND row_key = ?"
+_SELECT_ROW = ("SELECT payload, _version FROM lnpl_rows "
+              "WHERE entity_id = ? AND row_key = ?")
 _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
                     "ORDER BY row_key")
+# issue #99, D7: the sort field name never touches the statement text — it
+# rides as `json_extract`'s second argument, a bound parameter like every
+# other varying value here (STATEMENT TEXT IS CONSTANT, module docstring).
+# `payload` carries no per-field column (D7: the existing schema is
+# unchanged), so the sort key is extracted from the JSON blob at read time.
+_SELECT_SORTED = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
+                  "ORDER BY json_extract(payload, ?), row_key")
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
                      "VALUES (?, ?, ?)")
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
-_UPDATE_ROW = "UPDATE lnpl_rows SET payload = ? WHERE entity_id = ? AND row_key = ?"
+# Every successful write bumps `_version`, whether or not this call checks it
+# against a prior read (`_touch`'s bare update never reads-then-mutates
+# through a binding, so it has no observed version to check — issue #92 scopes
+# the guard to `persist()`, the read-modify-write path that loses updates).
+_UPDATE_ROW = ("UPDATE lnpl_rows SET payload = ?, _version = _version + 1 "
+              "WHERE entity_id = ? AND row_key = ?")
+# `persist()`'s conditional form: the write only lands if `_version` still
+# matches what the read that produced this row observed. 0 rows affected
+# means someone else's write landed first — a lost-update guard, not a
+# real fault, so it becomes `DriverError` and the interpreter's existing
+# retry/failure_reason path (RFC-0003) surfaces it without a new concept.
+_UPDATE_ROW_VERSIONED = ("UPDATE lnpl_rows SET payload = ?, _version = _version + 1 "
+                         "WHERE entity_id = ? AND row_key = ? AND _version = ?")
 _DELETE_ROW = "DELETE FROM lnpl_rows WHERE entity_id = ? AND row_key = ?"
+
+# issue #102, D1 (revised after measurement — see docs/backends.md "outbox
+# row identity"): `emission_id` is NOT the primary key here. It is
+# `"%s#%d" % (effect_id, len(outbox)+1)` (interp.py), a counter local to one
+# Interpreter instance — every fresh `lnpl run` starts that counter at 1, so
+# a second run of the same document against the same store reproduces the
+# same `emission_id` for its first emission of a given effect. That is not a
+# duplicate delivery; it is a distinct emission from a distinct run, and a
+# PK on `emission_id` made the second run's INSERT fail outright (reproduced
+# 2026-08-24, two `lnpl run` invocations against one sqlite store). At-least-
+# once dedupe is about the SAME delivery being redelivered — the delivery's
+# identity is `seq`, a storage-owned surrogate key, not `emission_id`, which
+# is deterministic-trace-owned (golden outputs and the mode A/B differential
+# read it — RFC-0003's contract there is untouched by this table).
+# `emission_id` stays a plain column so the trace value that produced a row
+# is still visible; it is `seq` that `ack` addresses. Status marking, not
+# deletion, still holds: `delivered_at` is what a drained-then-acked row
+# loses, never the row itself. `created_at` is millis since epoch (bound
+# parameter, `time.time()` below), not sqlite's own `CURRENT_TIMESTAMP` —
+# kept for the drain output even though `seq` (not `created_at`) is now the
+# order/cursor key, since `seq` already IS insertion order and doubles as
+# the monotonic cursor a Last-Event-ID-style consumer (t103) needs.
+_CREATE_OUTBOX_TABLE = """
+CREATE TABLE IF NOT EXISTS lnpl_outbox (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    emission_id  TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    delivered_at INTEGER
+)
+"""
+_INSERT_OUTBOX = ("INSERT INTO lnpl_outbox (emission_id, event, payload, created_at) "
+                  "VALUES (?, ?, ?, ?)")
+_SELECT_OUTBOX_SEQ = "SELECT 1 FROM lnpl_outbox WHERE seq = ?"
+_SELECT_UNDELIVERED = ("SELECT seq, emission_id, event, payload, created_at "
+                       "FROM lnpl_outbox WHERE delivered_at IS NULL ORDER BY seq")
+_SELECT_UNDELIVERED_LIMIT = _SELECT_UNDELIVERED + " LIMIT ?"
+# issue #103: the SSE tail's read — scoped to one event, `delivered_at`
+# ignored entirely (that column is the drain/ack consumer's alone).
+_SELECT_OUTBOX_SINCE = ("SELECT seq, emission_id, event, payload, created_at "
+                        "FROM lnpl_outbox WHERE event = ? AND seq > ? ORDER BY seq")
+# The `delivered_at IS NULL` guard is what makes a re-ack idempotent without a
+# second read: acking an already-delivered seq matches zero rows and reports
+# no error, its `delivered_at` left exactly as the first ack set it.
+_MARK_DELIVERED = ("UPDATE lnpl_outbox SET delivered_at = ? "
+                   "WHERE seq = ? AND delivered_at IS NULL")
 
 
 def _encode(row):
     return json.dumps(row, ensure_ascii=False, sort_keys=True)
+
+
+class _VersionedRow(dict):
+    """A row as `_read` found it, carrying the `_version` sqlite observed at
+    that read. Equality, iteration, and `json.dumps` (via `_encode`) see only
+    the dict's own items — `observed_version` is a plain instance attribute,
+    invisible to every user-facing surface (payload, response, wire) and
+    read only by `persist()` to gate the write against a change since this
+    read landed (issue #92; no vocabulary added, nothing exposed).
+    """
+
+    def __init__(self, data, version):
+        super().__init__(data)
+        self.observed_version = version
 
 
 class SqliteRepositoryDriver(RepositoryDriver):
@@ -245,6 +377,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
                 self._conn.execute("PRAGMA journal_mode = WAL")
                 self._conn.execute("PRAGMA synchronous = NORMAL")
             self._conn.execute(_CREATE_TABLE)
+            self._conn.execute(_CREATE_OUTBOX_TABLE)
             self._conn.commit()
         except sqlite3.Error as exc:
             raise DriverError("cannot open the sqlite store at %r: %s"
@@ -303,12 +436,124 @@ class SqliteRepositoryDriver(RepositoryDriver):
             raise DriverError("cannot query %s: %s" % (entity_id, exc)) from exc
         return [json.loads(row[0]) for row in found]
 
-    def persist(self, entity_id, key, row):
+    def query_sorted(self, entity_id, field):
         try:
-            self._conn.execute(_UPDATE_ROW, (_encode(row), entity_id, key))
+            found = self._conn.execute(
+                _SELECT_SORTED, (entity_id, "$." + field)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot query %s sorted by %s: %s"
+                              % (entity_id, field, exc)) from exc
+        return [json.loads(row[0]) for row in found]
+
+    def persist(self, entity_id, key, row):
+        version = getattr(row, "observed_version", None)
+        try:
+            if version is None:
+                self._conn.execute(_UPDATE_ROW, (_encode(row), entity_id, key))
+                self._conn.commit()
+                return
+            cursor = self._conn.execute(
+                _UPDATE_ROW_VERSIONED, (_encode(row), entity_id, key, version))
+            if cursor.rowcount == 0:
+                self._conn.rollback()
+                raise DriverError(
+                    "write conflict: row changed since read (%s %s)"
+                    % (entity_id, key))
             self._conn.commit()
         except sqlite3.Error as exc:
             raise DriverError("cannot persist %s: %s" % (entity_id, exc)) from exc
+
+    def record_emission(self, emission):
+        """Persist one `EventEmit` registration (issue #102, D1/D2).
+
+        `emission` is the same `{"emission_id", "event", "payload"}` dict the
+        interpreter's in-memory `outbox` already holds — this call is what
+        makes it survive the process. `emission_id` rides in as a plain
+        column, not the row's identity: two separate runs of the same
+        document legitimately reproduce the same `emission_id` for their
+        first emission of a given effect (it is a per-Interpreter counter,
+        interp.py), and each is a genuinely distinct emission, not a
+        redelivery of one — so a second row for a repeated `emission_id` is
+        the correct outcome, never a conflict. `seq` (sqlite's own
+        AUTOINCREMENT) is the row's real identity; `ack_outbox` addresses by
+        it.
+        """
+        try:
+            self._conn.execute(
+                _INSERT_OUTBOX,
+                (emission["emission_id"], emission["event"],
+                 _encode(emission["payload"]), int(time.time() * 1000)))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot record emission %s: %s"
+                              % (emission["emission_id"], exc)) from exc
+
+    def drain_outbox(self, limit=None):
+        """Every undelivered emission, `seq` ascending — insertion order,
+        which doubles as a monotonic delivery cursor (issue #102, D3
+        revised: `seq`, not `created_at`/`emission_id`, is the row's real
+        order/identity — see the schema comment above `_CREATE_OUTBOX_TABLE`).
+        Never a delivered row — `ack_outbox` is what removes one from this
+        view, by marking `delivered_at`, not by deleting it (D1). Empty list
+        when nothing is undelivered, never `None` — the same empty-is-a-
+        value contract `query`/`query_sorted` already state for their own
+        reads.
+        """
+        try:
+            if limit is None:
+                found = self._conn.execute(_SELECT_UNDELIVERED).fetchall()
+            else:
+                found = self._conn.execute(
+                    _SELECT_UNDELIVERED_LIMIT, (limit,)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot drain outbox: %s" % exc) from exc
+        return [{"seq": row[0], "emission_id": row[1], "event": row[2],
+                "payload": json.loads(row[3]), "created_at": row[4]}
+               for row in found]
+
+    def read_outbox(self, event, after_seq=0):
+        """Every emission of `event` with `seq > after_seq`, ascending (issue
+        #103): the SSE subscribe surface's tail read, unaffected by
+        `delivered_at` (see the schema comment above `_CREATE_OUTBOX_TABLE`
+        and the `RepositoryDriver.read_outbox` contract docstring). Empty
+        list, never `None`, matching `drain_outbox`'s own contract.
+        """
+        try:
+            found = self._conn.execute(
+                _SELECT_OUTBOX_SINCE, (event, after_seq)).fetchall()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot read outbox for %s: %s"
+                              % (event, exc)) from exc
+        return [{"seq": row[0], "emission_id": row[1], "event": row[2],
+                "payload": json.loads(row[3]), "created_at": row[4]}
+               for row in found]
+
+    def ack_outbox(self, seqs):
+        """Mark every row in `seqs` delivered (issue #102, D3 revised: `seq`
+        is the delivery identity `ack` addresses, not `emission_id` — see
+        the schema comment above `_CREATE_OUTBOX_TABLE`).
+
+        Fails closed: every seq is checked to exist BEFORE anything is
+        written, so an unknown seq in the batch leaves the known ones
+        untouched too — a caller must never learn "some of these worked"
+        from a message that only names the ones that did not. A known seq
+        already delivered is a no-op success (idempotent re-ack): the
+        `_MARK_DELIVERED` guard makes that true without a second read here.
+        """
+        try:
+            missing = [seq for seq in seqs
+                      if self._conn.execute(
+                          _SELECT_OUTBOX_SEQ, (seq,)).fetchone() is None]
+            if missing:
+                raise DriverError(
+                    "outbox ack: unknown seq(s): %s"
+                    % ", ".join(str(seq) for seq in missing))
+            now = int(time.time() * 1000)
+            for seq in seqs:
+                self._conn.execute(_MARK_DELIVERED, (now, seq))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot ack outbox: %s" % exc) from exc
 
     def close(self):
         conn, self._conn = getattr(self, "_conn", None), None
@@ -322,7 +567,10 @@ class SqliteRepositoryDriver(RepositoryDriver):
             found = self._conn.execute(_SELECT_ROW, (entity_id, key)).fetchone()
         except sqlite3.Error as exc:
             raise DriverError("cannot read %s: %s" % (entity_id, exc)) from exc
-        return None if found is None else json.loads(found[0])
+        if found is None:
+            return None
+        payload, version = found
+        return _VersionedRow(json.loads(payload), version)
 
     def _create(self, entity_id, key):
         try:
@@ -527,28 +775,88 @@ class FakeNetworkDriver(NetworkDriver):
         pass
 
 
+def _is_url_literal(target):
+    """True when `target` is already `http(s)://host[:port]/path` — the
+    resolvable-URL shape `HttpNetworkDriver.call`'s entry check requires.
+    Shared by the resolution step below so a literal is classified exactly
+    once, the same way, in both places.
+    """
+    import urllib.parse
+    parts = urllib.parse.urlsplit(target)
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
 class HttpNetworkDriver(NetworkDriver):
     """`http.client` only — standard library, zero dependencies (RFC-0027
-    §1). `target` is read as a URL; the method is fixed `POST` (RFC-0027
-    §Open Questions 4).
+    §1). `target` is read as a URL, or resolved from `endpoints`/`capabilities`
+    when it is a logical name (issue #101) — either way the resolved URL goes
+    through the same entry validation before a connection opens.
+
+    `endpoints`: {logical name -> URL}. `capabilities`: {logical name ->
+    {"method": "GET"/"POST", "headers": {...}}}, already resolved (secret
+    values substituted) by the caller — this class never reads the
+    environment or a capability declaration itself (issue #101's secrets
+    principle: the driver only ever sees a header VALUE, never an ENV name).
+    A target with no entry in `capabilities` defaults to POST/no extra
+    headers — the pre-#101 behaviour for a mapped-but-undeclared name.
     """
+
+    def __init__(self, endpoints=None, capabilities=None):
+        self._endpoints = dict(endpoints or {})
+        self._capabilities = dict(capabilities or {})
+
+    def _resolve(self, target):
+        """target -> (url, method, headers). Raises DriverError for a
+        logical name with no `endpoints` entry — the CLI's startup check
+        (issue #101 D3) is meant to catch this before a run ever starts;
+        this is the defense-in-depth path for a driver used directly.
+        """
+        if _is_url_literal(target):
+            return target, "POST", {}
+        url = self._endpoints.get(target)
+        if url is None:
+            raise DriverError(
+                "network target %r has no --endpoint mapping or "
+                "LNPL_ENDPOINT_%s environment variable (a logical name needs "
+                "one or the other under --network http)"
+                % (target, target.upper()))
+        cap = self._capabilities.get(target)
+        method = cap["method"] if cap else "POST"
+        headers = dict(cap["headers"]) if cap else {}
+        return url, method, headers
 
     def call(self, target, payload, timeout_ms):
         import http.client
         import urllib.parse
 
-        parts = urllib.parse.urlsplit(target)
-        body = json.dumps(payload).encode("utf-8")
+        url, method, headers = self._resolve(target)
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            # A logical name (RFC-0027 examples' `call PaymentGateway as p`)
+            # or a non-http(s) scheme has no host `urlsplit` can hand to
+            # `http.client` — left unchecked, `HTTPConnection(None, ...)`
+            # raises a raw AttributeError the exception clause below does not
+            # catch (issue #90). Reject before opening a connection, not
+            # after — now checked against the RESOLVED url (issue #101),
+            # since `target` itself may be a logical name `_resolve` already
+            # mapped; this check's own logic is unchanged.
+            raise DriverError(
+                "network target %r is not a resolvable URL (the http driver "
+                "needs `http(s)://host[:port]/path`; a logical name has no "
+                "address here)" % url)
         path = urllib.parse.urlunsplit(("", "", parts.path or "/",
                                         parts.query, "")) or "/"
+        body = None
+        if method != "GET":
+            body = json.dumps(payload).encode("utf-8")
+            headers = dict(headers, **{"Content-Type": "application/json"})
         try:
             conn = http.client.HTTPSConnection(
                 parts.hostname, parts.port, timeout=timeout_ms / 1000
             ) if parts.scheme == "https" else http.client.HTTPConnection(
                 parts.hostname, parts.port, timeout=timeout_ms / 1000)
             try:
-                conn.request("POST", path, body=body,
-                             headers={"Content-Type": "application/json"})
+                conn.request(method, path, body=body, headers=headers)
                 response = conn.getresponse()
                 raw = response.read()
             finally:
@@ -591,16 +899,20 @@ def open_repository(spec):
                      % (spec, ", ".join(BACKENDS)))
 
 
-def open_network(spec):
+def open_network(spec, endpoints=None, capabilities=None):
     """`--network`'s value -> a NetworkDriver, or None for the default
     (RFC-0027 §1, the `open_repository` selector mirrored).
 
     `None` means "the Interpreter builds its own FakeNetworkDriver". The
     lookup is a closed table with a defined miss, same as `open_repository`.
+
+    `endpoints`/`capabilities` (issue #101) are ignored for `fake` — the fake
+    driver has no notion of either — and passed through to `HttpNetworkDriver`
+    for `http`.
     """
     if spec == "fake":
         return None
     if spec == "http":
-        return HttpNetworkDriver()
+        return HttpNetworkDriver(endpoints=endpoints, capabilities=capabilities)
     raise ValueError("unknown network %r (accepted: %s)"
                      % (spec, ", ".join(NETWORKS)))

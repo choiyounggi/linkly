@@ -16,11 +16,21 @@ Mapping (each row cites the IR that produces it):
     Performance response-> `x-response-slo-ms` on the operation
     Policy retry/timeout-> `x-retry` / `x-timeout-ms` on the operation
     Guard when          -> `x-conditional-steps` (the steps that may be skipped)
+    Response(respond)   -> the 200 response's `content` schema, grouped by binding
+    entity a workflow touches (issue #99, D1) -> one GET /<service-slug>/
+                           <entity-slug>/{id} path, auto, no declaration needed
+    Expose(expose list) -> one GET /<service-slug>/<entity-slug> path (issue #99,
+                           D2 — opt-in only, no `expose` clause means no path)
+    Event.subscribe     -> one GET /<service-slug>/events/<event-slug> path,
+                           text/event-stream (issue #103 — opt-in only, and
+                           only for a service whose own workflow `emit`s it,
+                           same "reachable, not declared" rule D1 already uses)
 """
 
 from .diagnostics import ENFORCEMENT
 from .interp import _duration_ms
 from .refinements import BASE_CATEGORY, facets_for_base
+from .repo_policy import binding_name, event_emissions, repository_calls
 from .types import SEMANTIC_TYPES
 
 # Semantic type -> OpenAPI schema, projected from the one type registry
@@ -195,12 +205,35 @@ def generate(document, version="0.1.0"):
     for service in services:
         con = _constraints(service, nodes)
         uses_bearer = uses_bearer or "jwt" in con["mechanisms"]
-        for wf_id in service.get("children", []):
-            wf = nodes[wf_id]
-            if wf["kind"] != "Workflow":
+        svc_slug = _slug(service["name"])
+        entity_ids = set()
+        event_ids = set()
+        for child_id in service.get("children", []):
+            child = nodes[child_id]
+            if child["kind"] == "Workflow":
+                path = "/%s/%s" % (svc_slug, _slug(child["name"]))
+                paths[path] = {"post": _operation(child, service, con, nodes,
+                                                  entities, refined)}
+                entity_ids.update(eid for eid, _op
+                                  in repository_calls(document, child_id))
+                event_ids.update(event_emissions(document, child_id))
+            elif child["kind"] == "Expose":
+                entity = nodes[child["entity"]]
+                list_path = "/%s/%s" % (svc_slug, _slug(entity["name"]))
+                paths.setdefault(list_path, {})["get"] = _get_list_operation(
+                    service, entity, child["field"], con)
+        for eid in sorted(entity_ids):
+            entity = nodes[eid]
+            single_path = "/%s/%s/{id}" % (svc_slug, _slug(entity["name"]))
+            paths.setdefault(single_path, {})["get"] = _get_single_operation(
+                service, entity, con)
+        for eid in sorted(event_ids):
+            event = nodes[eid]
+            if not event.get("subscribe"):
                 continue
-            path = "/%s/%s" % (_slug(service["name"]), _slug(wf["name"]))
-            paths[path] = {"post": _operation(wf, service, con, nodes, entities)}
+            events_path = "/%s/events/%s" % (svc_slug, _slug(event["name"]))
+            paths.setdefault(events_path, {})["get"] = _events_operation(
+                service, event, con)
 
     spec = {
         "openapi": "3.1.0",
@@ -255,13 +288,18 @@ def _entity_schema(entity, refined):
             # 3.1 honours keywords beside a `$ref`, but the IR states nothing
             # about the field beyond its type, so the reference stands alone.
             props[field["name"]] = {"$ref": "#/components/schemas/%s" % tname}
-            if field.get("required", True):
-                required.append(field["name"])
-            continue
-        if tname not in TYPE_SCHEMA:
+        elif tname not in TYPE_SCHEMA:
             raise OpenApiError("no OpenAPI mapping for semantic type %r "
                                "(field %s.%s)" % (tname, entity["name"], field["name"]))
-        props[field["name"]] = dict(TYPE_SCHEMA[tname])
+        else:
+            props[field["name"]] = dict(TYPE_SCHEMA[tname])
+        if field.get("derived"):
+            # issue #95: server-computed — never required of a request, and
+            # marked the way `Password`/`writeOnly` already marks the mirror
+            # case, so request and response keep sharing this one schema
+            # ($ref) rather than splitting into two.
+            props[field["name"]]["readOnly"] = True
+            continue
         if field.get("required", True):
             required.append(field["name"])
     schema = {"type": "object", "properties": props, "additionalProperties": False}
@@ -309,7 +347,52 @@ def _walk_steps(nodes, ids, conditional=None):
                 yield inner
 
 
-def _operation(wf, service, con, nodes, entities):
+def _response_schema(steps, nodes, entities, refined):
+    """issue #96, D6: the `respond`-declared FieldMask -> a 200 response
+    schema, grouped by binding the same way `interp`'s `result["response"]`
+    groups its values (`{"<binding>": {"<field>": ...}}`) — the two shapes
+    must agree, or the OpenAPI contract would describe a body the server
+    never sends. Returns None when the workflow declares no `respond`, so a
+    document without one generates byte-identical output (D4).
+    """
+    refs = None
+    for step in steps:
+        for child_id in step.get("children", []):
+            effect = nodes[child_id]
+            if effect["kind"] == "Response":
+                refs = effect["refs"]
+    if refs is None:
+        return None
+
+    by_binding = {binding_name(e): e for e in entities}
+    grouped, order = {}, []
+    for ref in refs:
+        binding, _, field_name = ref.partition(".")
+        entity = by_binding[binding]
+        field = next(f for f in entity["fields"] if f["name"] == field_name)
+        tname = field["type"]
+        if tname in refined:
+            field_schema = {"$ref": "#/components/schemas/%s" % tname}
+        else:
+            field_schema = dict(TYPE_SCHEMA[tname])
+        if field.get("derived"):
+            # issue #95: server-computed — the response schema marks it
+            # read-only the same way `_entity_schema` already does.
+            field_schema["readOnly"] = True
+        if binding not in grouped:
+            grouped[binding] = {}
+            order.append(binding)
+        grouped[binding][field_name] = field_schema
+
+    properties = {binding: {"type": "object", "properties": grouped[binding],
+                            "required": list(grouped[binding]),
+                            "additionalProperties": False}
+                 for binding in order}
+    return {"type": "object", "properties": properties, "required": order,
+           "additionalProperties": False}
+
+
+def _operation(wf, service, con, nodes, entities, refined):
     conditional = []
     steps = list(_walk_steps(nodes, wf.get("children", []), conditional))
 
@@ -322,6 +405,8 @@ def _operation(wf, service, con, nodes, entities):
                 entity_id = ".".join(target.split(".")[:2])
                 request_entity = next((e for e in entities if e["id"] == entity_id), None)
 
+    response_schema = _response_schema(steps, nodes, entities, refined)
+
     op = {
         "operationId": "%s_%s" % (_slug(service["name"]).replace("-", "_"),
                                   _slug(wf["name"]).replace("-", "_")),
@@ -333,6 +418,9 @@ def _operation(wf, service, con, nodes, entities):
             "504": {"description": "the workflow deadline was exceeded"},
         },
     }
+    if response_schema is not None:
+        op["responses"]["200"]["content"] = {
+            "application/json": {"schema": response_schema}}
     if request_entity is not None:
         op["requestBody"] = {
             "required": True,
@@ -350,4 +438,98 @@ def _operation(wf, service, con, nodes, entities):
         op["x-timeout-ms"] = con["timeout_ms"]
     if conditional:
         op["x-conditional-steps"] = conditional
+    return op
+
+
+def _get_single_operation(service, entity, con):
+    """issue #99, D1/D6: single-row GET, auto for any entity a service's
+    workflows touch. The 200 body IS the entity schema — already `readOnly`-
+    correct via `_entity_schema` (issue #95) — so no field-by-field builder
+    is needed the way `_response_schema` needed one for `respond`'s partial
+    FieldMask.
+    """
+    op = {
+        "operationId": "%s_get_%s" % (_slug(service["name"]).replace("-", "_"),
+                                      _slug(entity["name"]).replace("-", "_")),
+        "summary": "get one %s" % entity["name"],
+        "parameters": [{"name": "id", "in": "path", "required": True,
+                        "schema": {"type": "string"}}],
+        "responses": {
+            "200": {"description": "the row, masked",
+                    "content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/%s"
+                                          % entity["name"]}}}},
+            "404": {"description": "no such row"},
+        },
+    }
+    if "jwt" in con["mechanisms"]:
+        op["security"] = [{"bearerAuth": []}]
+        op["responses"]["401"] = {"description": "authentication failed"}
+    return op
+
+
+def _get_list_operation(service, entity, field, con):
+    """issue #99, D2/D3/D6: the opt-in cursor-paginated list GET. The 200
+    envelope (`items`/`next`) mirrors exactly what `serve.py`'s `_get_list`
+    sends — same discipline `_response_schema` follows for `respond`: the
+    OpenAPI contract must describe the body the server actually returns.
+    """
+    op = {
+        "operationId": "%s_list_%s" % (_slug(service["name"]).replace("-", "_"),
+                                       _slug(entity["name"]).replace("-", "_")),
+        "summary": "list %s by %s" % (entity["name"], field),
+        "parameters": [
+            {"name": "after", "in": "query", "required": False,
+             "schema": {"type": "string"},
+             "description": "opaque cursor from a previous page's `next`"},
+            {"name": "limit", "in": "query", "required": False,
+             "schema": {"type": "integer"}},
+        ],
+        "responses": {
+            "200": {"description": "a page, ordered by %s ascending" % field,
+                    "content": {"application/json": {"schema": {
+                        "type": "object",
+                        "properties": {
+                            "items": {"type": "array",
+                                     "items": {"$ref": "#/components/schemas/%s"
+                                               % entity["name"]}},
+                            "next": {"type": ["string", "null"]},
+                        },
+                        "required": ["items", "next"],
+                        "additionalProperties": False,
+                    }}}},
+            "400": {"description": "malformed `after` cursor or `limit`"},
+        },
+    }
+    if "jwt" in con["mechanisms"]:
+        op["security"] = [{"bearerAuth": []}]
+        op["responses"]["401"] = {"description": "authentication failed"}
+    return op
+
+
+def _events_operation(service, event, con):
+    """issue #103, D2/D3/D4: the opt-in SSE subscribe surface. The body is an
+    open-ended sequence of `id:`/`data:` frames, not one JSON document, so
+    `text/event-stream` replaces `_get_list_operation`'s JSON schema — there
+    is no OpenAPI/JSON-Schema vocabulary for an SSE frame sequence.
+    """
+    op = {
+        "operationId": "%s_subscribe_%s" % (_slug(service["name"]).replace("-", "_"),
+                                            _slug(event["name"]).replace("-", "_")),
+        "summary": "subscribe to %s" % event["name"],
+        "parameters": [
+            {"name": "Last-Event-ID", "in": "header", "required": False,
+             "schema": {"type": "string"},
+             "description": "resume after this outbox seq, no loss (D3)"},
+        ],
+        "responses": {
+            "200": {"description": "an SSE stream of masked emissions, "
+                                   "id: is the outbox seq",
+                    "content": {"text/event-stream": {"schema": {"type": "string"}}}},
+            "400": {"description": "Last-Event-ID is not a valid seq"},
+        },
+    }
+    if "jwt" in con["mechanisms"]:
+        op["security"] = [{"bearerAuth": []}]
+        op["responses"]["401"] = {"description": "authentication failed"}
     return op

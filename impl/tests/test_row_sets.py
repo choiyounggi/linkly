@@ -66,8 +66,10 @@ class TestListVerb(unittest.TestCase):
         self.assertEqual(VERB_LEXICON["list"],
                          ("RepositoryCall", {"operation": "query"}))
 
-    def test_the_lexicon_has_eighteen_entries(self):
-        self.assertEqual(len(VERB_LEXICON), 18)
+    def test_the_lexicon_has_twenty_entries(self):
+        # `format` (issue #94) widened this to 19 after RFC-0025 fixed it at
+        # 18; `respond` (issue #96) widens it again to 20.
+        self.assertEqual(len(VERB_LEXICON), 20)
 
     def test_list_lowers_to_a_query_repository_call(self):
         mod = compile_doc(clicks_source("    list link\n"))

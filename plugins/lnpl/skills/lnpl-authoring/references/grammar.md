@@ -12,7 +12,7 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 ## 절(clause)
 
-`field` `goal` `policy` `security` `performance` `database` `spec` `given` `when` `expect`
+`field` `goal` `policy` `security` `performance` `database` `expose` `spec` `given` `when` `expect`
 
 ## 제어 어휘
 
@@ -32,7 +32,7 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 ## 값 표현식 (RFC-0015)
 
-산술 연산자: `+` `-`
+산술 연산자: `+` `-` `*` `/`
 
 논리 결합: `and` — `or`·`not`·괄호는 없다.
 
@@ -42,23 +42,31 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 가드 조건은 `<값> <비교연산자> <값>`이고 항은 `and`로만 잇는다. 값은 참조·정수·기간이며 이항 산술 **1개**까지 붙일 수 있다(`product.stock - input.quantity`). 중첩·괄호는 문법에 없다.
 
+## 대안 가드 (RFC-0028)
+
+`when` 뒤에 `or` 줄을 이어 쓰면 대안 가드다 — 조건이나 그 대안 중 하나라도 참이면 피가드 항목을 실행한다(`when input.channel == 1` 다음 줄 `or input.amount <= 100`). `or` 자체는 `Condition` 문법에 들어가지 않는다 — 위 절이 말하는 대로 `and`만 여전히 항을 잇는다. `until`/`repeat` 뒤에는 쓸 수 없다.
+
 ## 할당(`set`)의 대상
 
-`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽은** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.
+`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽었거나 만든** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.
 
-읽기 동사: `authenticate` `load` `find` `read` — 이 동사들만 단일 행 바인딩을 만든다.
+읽기 동사: `authenticate` `load` `find` `read` — 이 동사들이 단일 행 바인딩을 만든다.
 
-바인딩을 만들지 않는 동사: `create` `insert` `update` `delete` — 만든 행은 실행 스코프에 들어오지 않는다.
+결과를 바인딩하는 동사: `create` `insert` — 뒤에 as절을 붙이면 단일 행 바인딩을 만든다.
+
+`create <명사> as <이름>` — 만든 행이 `<이름>`으로 실행 스코프에 바인딩된다(RFC-0027 §2 표기 재사용, RFC-0012 Updates, issue #97). as절 없이 쓰면 이전과 바이트 동일하다 — 바인딩되지 않는다.
+
+바인딩을 만들지 않는 동사: `update` `delete` — 만든 행은 실행 스코프에 들어오지 않는다.
 
 행 집합(RowSet) 동사: `list` — 단일 행이 아니라 RowSet을 별개 이름공간에 바인딩한다.
 
 `set`의 대상이 될 수 없다 — 집계 표현식으로만 소비된다(RFC-0025 §2/§5).
 
-그래서 `create report` 다음의 `set report.total to 1`은 거부된다.
+그래서 `create report` 다음의 `set report.total to 1`은 거부된다 — `create report as r` 다음의 `set r.total to 1`은 허용된다.
 
 `input.<필드>`는 할당의 **대상이 될 수 없다** — 입력은 이 워크플로가 소유한 상태가 아니다. 값 쪽에는 쓸 수 있다(`set product.stock to product.stock - input.quantity`).
 
-고치는 법: 쓰기 전에 그 엔티티를 `authenticate` / `load` / `find` / `read` 중 하나로 먼저 읽는다. 읽을 수 없는 엔티티라면 그 값은 이 워크플로가 바꿀 수 있는 상태가 아니다.
+고치는 법: 쓰기 전에 그 엔티티를 `authenticate` / `load` / `find` / `read` 중 하나로 먼저 읽는다. 이 스텝이 만드는 행이라면 `create <명사> as <이름>`으로 만들면서 이름을 붙인다. 그 외의 엔티티라면 이 워크플로가 바꿀 수 있는 상태가 아니다.
 
 ## 가드의 스코프
 

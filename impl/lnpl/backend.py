@@ -38,12 +38,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
-                            Presence, Ref, encode_instant, is_instant_text,
-                            looks_like_instant, parse_condition, references,
-                            value_to_string)
+                            Presence, Ref, encode_instant, guard_condition_text,
+                            is_instant_text, looks_like_instant, parse_condition,
+                            references, value_to_string)
 from lnpl.interp import (RunError, refinement_index, sample_payload,
                          validate_effect)
 # The seed/key policy both modes read (issue #35). Imported, never restated: a
@@ -86,16 +87,27 @@ class BackendError(Exception):
 
 
 def tool(name):
-    """Locate an LLVM/MLIR tool, preferring a keg-only homebrew install."""
-    candidate = os.path.join(BREW_LLVM_BIN, name)
-    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-        return candidate
+    """Locate an LLVM/MLIR tool.
+
+    Resolution order (issue #104): `LNPL_LLVM_BIN` (a directory), if set to a
+    non-empty value, is tried first — an unset or empty value is treated as
+    "not overridden", not as a literal empty search path. This mirrors the
+    diagnostic hooks' `$LNPL_BIN` discovery order: a decisive tool owns an
+    explicit, environment-overridable resolution order rather than guessing.
+    The homebrew keg-only path is the fallback, then `$PATH`.
+    """
+    override = os.environ.get("LNPL_LLVM_BIN", "")
+    for llvm_bin in (d for d in (override, BREW_LLVM_BIN) if d):
+        candidate = os.path.join(llvm_bin, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
     found = shutil.which(name)
     if found:
         return found
     raise BackendError(
         "%s not found. Mode B needs MLIR/LLVM tools — install them with "
-        "`brew install llvm` (they land in %s)." % (name, BREW_LLVM_BIN))
+        "`brew install llvm` (they land in %s), or point LNPL_LLVM_BIN at "
+        "your install directory." % (name, override or BREW_LLVM_BIN))
 
 
 def pinned_llvm_version():
@@ -113,6 +125,49 @@ def pinned_llvm_version():
         raise BackendError(
             "mlir/llvm.pin must be one line `llvm <version>`, got %r" % line)
     return parts[1]
+
+
+def _isysroot_flags():
+    """`-isysroot <sdk>` clang args for S7, computed via `xcrun` (issue #104).
+
+    Homebrew's clang bottle bakes in the CommandLineTools SDK path present at
+    *bottle build time* as its default sysroot; on a machine whose SDK differs
+    (or lacks that exact version), header lookup fails outright. A command-line
+    `-isysroot` overrides that baked-in default (Homebrew/homebrew-core#197277),
+    so this computes the path fresh with `xcrun --sdk macosx --show-sdk-path`
+    rather than trusting `$SDKROOT` — upstream LLVM clang does not honor it
+    (llvm/llvm-project#137352), unlike Apple clang. Non-darwin platforms need no
+    sysroot flag at all.
+    """
+    if sys.platform != "darwin":
+        return []
+    try:
+        proc = subprocess.run(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                              capture_output=True, text=True)
+    except OSError as exc:
+        raise BackendError(
+            "could not run `xcrun --sdk macosx --show-sdk-path` to locate the "
+            "macOS SDK for S7 (clang): %s\n"
+            "Fix: install the Command Line Tools (`xcode-select --install`), "
+            "run `xcrun --sdk macosx --show-sdk-path` yourself to confirm it "
+            "works, or set LNPL_LLVM_BIN to an LLVM/clang install that "
+            "resolves its own sysroot." % exc)
+    sdk_path = proc.stdout.strip()
+    if proc.returncode != 0 or not sdk_path:
+        raise BackendError(
+            "`xcrun --sdk macosx --show-sdk-path` failed (exit %d): %s\n"
+            "Fix: run it yourself to see the underlying error, reinstall the "
+            "Command Line Tools (`xcode-select --install`), or set "
+            "LNPL_LLVM_BIN to an LLVM/clang install that resolves its own "
+            "sysroot." % (proc.returncode, (proc.stderr or "").strip()))
+    if not os.path.isdir(sdk_path):
+        raise BackendError(
+            "xcrun reported a macOS SDK at %r, but that path does not exist.\n"
+            "Fix: run `xcrun --sdk macosx --show-sdk-path` yourself to "
+            "confirm, reinstall the Command Line Tools "
+            "(`xcode-select --install`), or set LNPL_LLVM_BIN to an "
+            "LLVM/clang install that resolves its own sysroot." % sdk_path)
+    return ["-isysroot", sdk_path]
 
 
 def toolchain_available():
@@ -213,13 +268,22 @@ _NEGATED_CMP = {"<": "sge", "<=": "sgt", ">": "sle", ">=": "slt",
 
 
 def _literals(cond):
-    """Every integer literal a parsed condition holds, at any operand position."""
+    """Every integer literal a parsed condition holds, at any operand position.
+
+    RFC-0028 §Reference-level Specification/6: a `/` also needs `%c0_i64` (the
+    zero check) and `%c1_i64` (the safe substitute divisor) declared, even
+    when neither appears as a literal in the source text — `product.stock /
+    input.divisor` has no literal at all.
+    """
     out = set()
 
     def walk(value):
         if isinstance(value, Lit):
             out.add(value.value)
         elif isinstance(value, Arith):
+            if value.op == "/":
+                out.add(0)
+                out.add(1)
             walk(value.left)
             walk(value.right)
 
@@ -229,12 +293,36 @@ def _literals(cond):
     return out
 
 
+_ARITH_MLIR_OP = {"+": "arith.addi", "-": "arith.subi", "*": "arith.muli"}
+
+
+def _emit_division(left, right, idx, slot, lines):
+    """`left / right` (RFC-0028 §Reference-level Specification/6).
+
+    `arith.divsi` is undefined for a 0 divisor, so the divisor is swapped for
+    1 whenever it is 0 before dividing — a safe, arbitrary substitute. Mode B
+    is not required to AGREE with mode A's `RunError` here (RFC-0015 §5:
+    "값 차원은 모드 A가 단독으로 단언한다"); it is only required not to hit
+    undefined behaviour. `%c0_i64`/`%c1_i64` are declared by `_literals`
+    whenever a condition holds a `/`.
+    """
+    is_zero = "%%z%s_%s" % (idx, slot)
+    lines.append("    %s = arith.cmpi eq, %s, %%c0_i64 : i64" % (is_zero, right))
+    safe_right = "%%sr%s_%s" % (idx, slot)
+    lines.append("    %s = arith.select %s, %%c1_i64, %s : i64"
+                 % (safe_right, is_zero, right))
+    name = "%%v%s_%s" % (idx, slot)
+    lines.append("    %s = arith.divsi %s, %s : i64" % (name, left, safe_right))
+    return name
+
+
 def _emit_operand(value, idx, slot, lines):
     """One `Value` -> the SSA name holding it, appending any arithmetic first.
 
     A `Ref` is already a parameter (`condition_field_names` put it in the
     signature) and a `Lit` is already a declared constant, so only `Arith` adds
-    an operation — which is the whole of RFC-0015's arithmetic in mode B.
+    an operation — which is the whole of RFC-0015's (`+`/`-`) and RFC-0028's
+    (`*`/`/`) arithmetic in mode B.
     """
     if isinstance(value, Ref):
         return "%%%s" % _field_ident(value.name)
@@ -243,8 +331,10 @@ def _emit_operand(value, idx, slot, lines):
     if isinstance(value, Arith):
         left = _emit_operand(value.left, idx, slot + "l", lines)
         right = _emit_operand(value.right, idx, slot + "r", lines)
-        op = "arith.addi" if value.op == "+" else "arith.subi"
-        name = "%%v%d_%s" % (idx, slot)
+        if value.op == "/":
+            return _emit_division(left, right, idx, slot, lines)
+        op = _ARITH_MLIR_OP[value.op]
+        name = "%%v%s_%s" % (idx, slot)
         lines.append("    %s = %s %s, %s : i64" % (name, op, left, right))
         return name
     raise BackendError("cannot emit value %r" % (value,))
@@ -277,22 +367,55 @@ def _emit_condition(cond, idx, lines, negate):
         # `impl/tests/golden/` are compared as text, so a rename would move
         # bytes for programs whose meaning did not change.
         if single:
-            name = "%%ucond%d" % idx if negate else "%%cond%d" % idx
+            name = "%%ucond%s" % idx if negate else "%%cond%s" % idx
         else:
-            name = "%%cond%d_%d" % (idx, n)
+            name = "%%cond%s_%d" % (idx, n)
         lines.append("    %s = arith.cmpi %s, %s, %s : i64"
                      % (name, pred, left, right))
         names.append(name)
 
     folded = names[0]
     for n, name in enumerate(names[1:], start=1):
-        nxt = "%%and%d_%d" % (idx, n)
+        nxt = "%%and%s_%d" % (idx, n)
         lines.append("    %s = arith.andi %s, %s : i1" % (nxt, folded, name))
         folded = nxt
 
     if negate and not single:
-        nxt = "%%ucond%d" % idx
+        nxt = "%%ucond%s" % idx
         lines.append("    %s = arith.xori %s, %%true_i1 : i1" % (nxt, folded))
+        folded = nxt
+    return folded
+
+
+def _emit_alt_condition(cond_texts, idx, lines):
+    """RFC-0028 §Reference-level Specification/6: OR-fold the primary
+    condition and its `or` alternatives, `when`-only (never negated — an
+    alt-guard cannot be an `until`, RFC-0028 §Reference-level
+    Specification/1).
+
+    Reuses `_emit_condition` per text with a composite `<idx>_<n>` SSA
+    namespace, so the single-condition path it also serves stays completely
+    untouched (`idx` there is the bare int, unchanged bytes for every
+    existing golden fixture).
+
+    Returns `None` — falling back to the run-level skip flag, exactly the
+    single-condition contract — if ANY term has no compiled evaluator
+    (Presence). Computing only the compilable side would silently
+    under-evaluate the OR, contradicting the "every alternative is
+    evaluated" rule mode A follows (§Reference-level Specification/4).
+    """
+    names = []
+    for n, text in enumerate(cond_texts):
+        emitted = _emit_condition(_parsed(text), "%s_%d" % (idx, n), lines,
+                                  negate=False)
+        if emitted is None:
+            return None
+        names.append(emitted)
+
+    folded = names[0]
+    for n, name in enumerate(names[1:], start=1):
+        nxt = "%%or%s_%d" % (idx, n)
+        lines.append("    %s = arith.ori %s, %s : i1" % (nxt, folded, name))
         folded = nxt
     return folded
 
@@ -324,11 +447,15 @@ def _steps_in_order(nodes, ids, out):
                 for _ in range(int(node["count"])):
                     _steps_in_order(nodes, node.get("children", []), out)
             elif node["mode"] == "when":
-                # RFC-0008 G9: when becomes arith.cmpi + scf.if
+                # RFC-0008 G9: when becomes arith.cmpi + scf.if. RFC-0028: the
+                # third element is `alternatives` (`()` for a plain guard —
+                # every existing 2-element unpacking site was updated to
+                # match, not left to default one in silently).
                 inner = []
                 _steps_in_order(nodes, node.get("children", []), inner)
                 for step, _cond in inner:
-                    out.append((step, ("when", node.get("condition"))))
+                    out.append((step, ("when", node.get("condition"),
+                               tuple(node.get("alternatives") or ()))))
             elif node["mode"] == "until":
                 # RFC-0008 G10: until unrolls to round_cap (16) iterations.
                 # Condition evaluation deferred; unrolling ensures Mode A ≈ Mode B.
@@ -336,7 +463,7 @@ def _steps_in_order(nodes, ids, out):
                 _steps_in_order(nodes, node.get("children", []), inner)
                 for _ in range(_UNTIL_ROUND_CAP):
                     for step, _cond in inner:
-                        out.append((step, ("until", node.get("condition"))))
+                        out.append((step, ("until", node.get("condition"), ())))
             else:
                 raise BackendError("unknown guard mode %r" % node["mode"])
         else:
@@ -393,15 +520,19 @@ def condition_field_names(document, workflow_id):
     _, steps = _workflow_steps(document, workflow_id)
     fields = set()
     for _step, cond in steps:
-        if cond and isinstance(cond, tuple) and len(cond) == 2:
-            _mode, cond_str = cond
-            parsed = _parsed(cond_str)
-            if parsed is not None:
-                # RFC-0015: EVERY reference, not the left operand of the first
-                # term. `product.stock >= input.quantity` needs both sides as
-                # parameters, or the compiled guard compares against a register
-                # nobody wrote.
-                fields.update(references(parsed))
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            # RFC-0028: the union of the condition and every alternative's
+            # references — an alt-guard fixes ALL of them as i64 parameters,
+            # not only the ones the primary condition happens to read.
+            for text in (cond_str,) + tuple(alternatives):
+                parsed = _parsed(text)
+                if parsed is not None:
+                    # RFC-0015: EVERY reference, not the left operand of the
+                    # first term. `product.stock >= input.quantity` needs
+                    # both sides as parameters, or the compiled guard
+                    # compares against a register nobody wrote.
+                    fields.update(references(parsed))
     return sorted(fields)
 
 
@@ -613,6 +744,11 @@ def _walk_markers(nodes, ids, out):
                 ("lnpl.mode", node.get("mode")),
                 ("lnpl.guard_condition", node.get("condition")),
                 ("lnpl.count", node.get("count")),
+                # RFC-0028 §Reference-level Specification/6. `None` (omitted
+                # by `_mlir_attr_dict`'s `is not None` filter) for every
+                # guard this RFC does not touch — `_mlir_attr` already
+                # renders a list/tuple, so no new serialisation is needed.
+                ("lnpl.guard_alternatives", node.get("alternatives") or None),
                 ("lnpl.children", list(node.get("children", []))),
             ]))
             _walk_markers(nodes, node.get("children", []), out)
@@ -694,8 +830,9 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
     for idx, (step, cond) in enumerate(steps, start=1):
         node_id = step["id"]
         guard_mode = guard_condition = None
-        if cond and isinstance(cond, tuple) and len(cond) == 2:
-            guard_mode, guard_condition = cond
+        guard_alternatives = ()
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            guard_mode, guard_condition, guard_alternatives = cond
 
         unroll_round = None
         if occurrences[node_id] > 1:
@@ -708,6 +845,9 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
             "index": idx,
             "guard_mode": guard_mode,
             "guard_condition": guard_condition,
+            # RFC-0028 §Reference-level Specification/6. `()` for every guard
+            # this RFC does not touch (`until`, or a plain `when`).
+            "guard_alternatives": guard_alternatives,
             "unroll_round": unroll_round,
             # Read `children` off the dict we were handed rather than off
             # `document`: one divergence test strips them to prove the
@@ -910,7 +1050,11 @@ def restore_skips(document, workflow_id, ran_indices, seeded=None, payload=None)
             # mode A's single record.
             continue
         skips.append({"mode": entry["guard_mode"],
-                      "condition": entry["guard_condition"],
+                      # RFC-0028 §Reference-level Specification/5: the same
+                      # SSOT join `interp._skip_record` uses, so an alt-guard's
+                      # combined text cannot drift between the two modes.
+                      "condition": guard_condition_text(
+                          entry["guard_condition"], entry["guard_alternatives"]),
                       "step": entry["name"],
                       "rounds": 0 if entry["guard_mode"] == "until" else None})
     return skips
@@ -990,6 +1134,7 @@ def emit_lnpl_mlir(document, workflow_id, seeded=None, payload=None):
                 ("lnpl.index", op["index"]),
                 ("lnpl.guard_mode", op["guard_mode"]),
                 ("lnpl.guard_condition", op["guard_condition"]),
+                ("lnpl.guard_alternatives", list(op["guard_alternatives"]) or None),
                 ("lnpl.unroll_round", op["unroll_round"]),
             ]),
             _mlir_str(op["node_id"])))
@@ -1064,11 +1209,13 @@ def _render_std(module_attrs, ops):
     # Declare i64 constants for condition comparisons. RFC-0015 put literals on
     # either side of a comparator and inside arithmetic, so the sweep is over
     # every `Lit` the condition holds rather than over one right-hand value.
+    # RFC-0028: every alternative is swept too, not only the primary.
     cond_i64_values = set()
     for entry in ops:
-        parsed = _parsed(entry["guard_condition"])
-        if parsed is not None:
-            cond_i64_values.update(_literals(parsed))
+        for text in (entry["guard_condition"],) + tuple(entry["guard_alternatives"]):
+            parsed = _parsed(text)
+            if parsed is not None:
+                cond_i64_values.update(_literals(parsed))
 
     # Declare all i64 constants upfront
     for value in sorted(cond_i64_values):
@@ -1099,8 +1246,17 @@ def _render_std(module_attrs, ops):
 
         if guard_mode == "when":
             # RFC-0008 G8-G9: when becomes scf.if with condition evaluation
-            parsed = _parsed(guard_str)
-            emitted = _emit_condition(parsed, idx, lines, negate=False)
+            guard_alts = entry["guard_alternatives"]
+            if guard_alts:
+                # RFC-0028 §Reference-level Specification/6: OR-fold, a
+                # brand-new code path — the `else` below is untouched, so
+                # every existing golden fixture (no alternatives) still runs
+                # through the exact `_emit_condition` call it always has.
+                emitted = _emit_alt_condition((guard_str,) + tuple(guard_alts),
+                                              idx, lines)
+            else:
+                parsed = _parsed(guard_str)
+                emitted = _emit_condition(parsed, idx, lines, negate=False)
 
             if emitted is not None:
                 lines.append(f"    scf.if {emitted} {{")
@@ -1291,7 +1447,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
           "-o", llvm_dialect], "S5-S6 (mlir-opt: standard dialects -> LLVM dialect)")
     _run([tool(MLIR_TRANSLATE), "--mlir-to-llvmir", llvm_dialect, "-o", ll_path],
          "S6 (mlir-translate: LLVM dialect -> LLVM IR)")
-    _run([tool("clang"), ll_path, c_path, "-o", bin_path],
+    _run([tool("clang")] + _isysroot_flags() + [ll_path, c_path, "-o", bin_path],
          "S7 (clang: LLVM IR + runtime -> native binary)")
 
     if not keep_intermediate:

@@ -173,6 +173,147 @@ class PersistenceTest(DriverTestCase):
         driver.close()          # must not raise
 
 
+class OutboxRecordTest(DriverTestCase):
+    """`record_emission` (issue #102, D1/D2 — revised, see the schema
+    comment above `drivers._CREATE_OUTBOX_TABLE`): the same `{emission_id,
+    event, payload}` dict the interpreter's in-memory `outbox` already
+    holds, persisted so it survives the process. `seq` (sqlite's own
+    AUTOINCREMENT), not `emission_id`, is the row's identity — `emission_id`
+    is a per-Interpreter counter (interp.py), not a store-wide dedupe key.
+    """
+
+    def test_a_recorded_emission_is_seen_by_drain(self):
+        driver = self.open()
+        driver.record_emission({"emission_id": "step.emit#1",
+                                "event": "entity.event.orderPlaced",
+                                "payload": {"id": "o-1"}})
+
+        drained = driver.drain_outbox()
+        self.assertEqual(1, len(drained))
+        self.assertEqual("step.emit#1", drained[0]["emission_id"])
+        self.assertEqual("entity.event.orderPlaced", drained[0]["event"])
+        self.assertEqual({"id": "o-1"}, drained[0]["payload"])
+        self.assertIn("seq", drained[0])
+
+    def test_a_repeated_emission_id_is_two_distinct_rows_not_a_conflict(self):
+        """The bug this schema fixes (measured 2026-08-24): two separate
+        `lnpl run` invocations of the same document reproduce the same
+        `emission_id` for their first emission of a given effect — that is
+        two distinct emissions, not a redelivery, so a second write under
+        the same `emission_id` must succeed, not conflict."""
+        driver = self.open()
+        emission = {"emission_id": "step.emit#1", "event": "E", "payload": {}}
+        driver.record_emission(emission)
+
+        driver.record_emission(emission)  # must not raise
+
+        drained = driver.drain_outbox()
+        self.assertEqual(2, len(drained))
+        self.assertEqual(["step.emit#1", "step.emit#1"],
+                         [e["emission_id"] for e in drained])
+        self.assertNotEqual(drained[0]["seq"], drained[1]["seq"])
+
+    def test_a_recorded_emission_survives_the_driver_that_wrote_it(self):
+        first = SqliteRepositoryDriver(self.path)
+        first.record_emission({"emission_id": "step.emit#1", "event": "E",
+                               "payload": {"x": 1}})
+        first.close()
+
+        second = self.open()
+
+        self.assertEqual(1, len(second.drain_outbox()))
+
+
+class OutboxDrainTest(DriverTestCase):
+    """`drain_outbox` (issue #102, D3 revised): undelivered rows, `seq`
+    ascending (insertion order — also the monotonic cursor t103's SSE
+    surface needs), `--limit` capped."""
+
+    def _record(self, driver, n):
+        for i in range(1, n + 1):
+            driver.record_emission({"emission_id": "step.emit#%d" % i,
+                                    "event": "E", "payload": {"i": i}})
+
+    def test_drain_orders_by_seq(self):
+        driver = self.open()
+        self._record(driver, 3)
+
+        drained = driver.drain_outbox()
+        self.assertEqual(["step.emit#1", "step.emit#2", "step.emit#3"],
+                         [e["emission_id"] for e in drained])
+        self.assertEqual(sorted(e["seq"] for e in drained),
+                         [e["seq"] for e in drained])
+
+    def test_drain_respects_limit(self):
+        driver = self.open()
+        self._record(driver, 3)
+
+        drained = driver.drain_outbox(limit=1)
+        self.assertEqual(["step.emit#1"], [e["emission_id"] for e in drained])
+
+    def test_an_empty_outbox_drains_to_an_empty_list(self):
+        """Boundary: no emissions ever recorded is a valid, non-error state
+        (D1's status-marking model has nothing to mark yet), not an absent
+        answer."""
+        driver = self.open()
+
+        self.assertEqual([], driver.drain_outbox())
+
+    def test_drain_never_returns_a_delivered_emission(self):
+        """D1: status marking, not deletion — `ack` is what removes a row
+        from this view, and the removal is by `delivered_at`, not a DELETE."""
+        driver = self.open()
+        self._record(driver, 2)
+        first_seq = driver.drain_outbox()[0]["seq"]
+        driver.ack_outbox([first_seq])
+
+        drained = driver.drain_outbox()
+        self.assertEqual(["step.emit#2"], [e["emission_id"] for e in drained])
+
+
+class OutboxAckTest(DriverTestCase):
+    """`ack_outbox` (issue #102, D3 revised): addresses by `seq`, marks
+    delivered, idempotent on a re-ack, and fails closed (naming the seq)
+    before writing anything when any seq in the batch is unknown."""
+
+    def test_ack_removes_the_emission_from_the_next_drain(self):
+        driver = self.open()
+        driver.record_emission({"emission_id": "step.emit#1", "event": "E",
+                                "payload": {}})
+        seq = driver.drain_outbox()[0]["seq"]
+
+        driver.ack_outbox([seq])
+
+        self.assertEqual([], driver.drain_outbox())
+
+    def test_a_duplicate_ack_is_idempotent(self):
+        driver = self.open()
+        driver.record_emission({"emission_id": "step.emit#1", "event": "E",
+                                "payload": {}})
+        seq = driver.drain_outbox()[0]["seq"]
+        driver.ack_outbox([seq])
+
+        driver.ack_outbox([seq])  # must not raise
+
+        self.assertEqual([], driver.drain_outbox())
+
+    def test_an_unknown_seq_names_itself_and_fails_closed(self):
+        driver = self.open()
+        driver.record_emission({"emission_id": "step.emit#1", "event": "E",
+                                "payload": {}})
+        seq = driver.drain_outbox()[0]["seq"]
+        no_such_seq = seq + 999
+
+        with self.assertRaises(DriverError) as caught:
+            driver.ack_outbox([seq, no_such_seq])
+        self.assertIn(str(no_such_seq), str(caught.exception))
+
+        # A caller must never learn "some of these worked" from a message
+        # that only names the ones that did not — the known seq in the same
+        # batch is untouched too.
+        self.assertEqual(1, len(driver.drain_outbox()))
+
+
 class OpenRepositoryTest(DriverTestCase):
 
     def test_fake_selects_the_interpreters_own_store(self):

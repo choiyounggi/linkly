@@ -38,6 +38,37 @@
           "call token"
         ]
       }
+    },
+    "/token-service/token/{id}": {
+      "get": {
+        "operationId": "token_service_get_token",
+        "summary": "get one Token",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
     }
   },
   "components": {

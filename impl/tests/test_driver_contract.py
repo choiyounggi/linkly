@@ -19,7 +19,7 @@ import unittest
 
 from lnpl.drivers import DriverError, SqliteRepositoryDriver
 from lnpl.interp import (MASK, Clock, FakeCache, FakeRepository,
-                        Interpreter)
+                        Interpreter, RunError)
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows
@@ -39,6 +39,20 @@ service Shop
 
 workflow Look
     read product
+"""
+
+# issue #102: minimal enough to isolate one `EventEmit` per run — the shape
+# `DriverFaultTranslationTest.test_a_failing_emit_becomes_a_failed_run` needs.
+EMIT_ONLY = """entity Order
+    field
+        id UUID
+        status Text
+
+event OrderPlaced on Order create
+
+workflow PlaceOrder
+    create order
+    emit orderPlaced
 """
 
 BACKENDS = ("fake", "sqlite")
@@ -246,6 +260,37 @@ class SharedContractTest(ContractTestCase):
                 self.assertIn(MASK, logged)
 
 
+class CacheDriverContractTest(unittest.TestCase):
+    """TCK for `CacheDriver` (issue #100, RFC-0003 §Execution Model/Clock):
+    the expiry scenario any conformant implementation — `FakeCache` today, a
+    real store-delegated driver tomorrow — must satisfy. `set` without a TTL
+    is refused, a live key hits, an expired key misses and is gone from the
+    store (`CacheDriver`'s docstring, "TTL may be store-delegated")."""
+
+    def test_a_set_without_ttl_is_refused(self):
+        cache = FakeCache(Clock())
+        with self.assertRaises(RunError):
+            cache.set("k", "v", ttl_ms=None)
+
+    def test_a_live_key_hits_and_an_expired_key_misses(self):
+        clock = Clock(step_cost_ms=0)
+        cache = FakeCache(clock)
+        cache.set("k", "v", ttl_ms=10)
+
+        self.assertEqual(cache.get("k"), "v")
+        self.assertEqual(cache.hits, 1)
+
+        clock.now = 10
+        self.assertIsNone(cache.get("k"))
+        self.assertEqual(cache.misses, 1)
+
+    def test_invalidate_removes_a_live_key(self):
+        cache = FakeCache(Clock())
+        cache.set("k", "v", ttl_ms=1000)
+        cache.invalidate("k")
+        self.assertIsNone(cache.get("k"))
+
+
 class DriverSwapEquivalenceTest(ContractTestCase):
     """Same document, same payload, only the driver differs — the observables
     must match. This is the claim `--backend` makes."""
@@ -308,11 +353,40 @@ class _FailingRepository(FakeRepository):
             raise DriverError("the store rejected the write")
         return super().persist(entity_id, key, row)
 
+    def record_emission(self, emission):
+        if self.failing == "record_emission":
+            raise DriverError("the outbox store is unreachable")
+        return super().record_emission(emission)
+
 
 class _FailingCache(FakeCache):
 
     def set(self, key, value, ttl_ms):
         raise DriverError("the cache is unreachable")
+
+
+class _StealingSqliteDriver(SqliteRepositoryDriver):
+    """Lands one competing write on the first `read` this instance serves --
+    deterministic proof that a real sqlite version conflict (issue #92)
+    translates through the same site as every other `DriverError`, without
+    depending on real thread scheduling to produce one."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self._stolen = False
+
+    def execute(self, entity_id, operation, key):
+        row = super().execute(entity_id, operation, key)
+        if operation == "read" and not self._stolen and row is not None:
+            self._stolen = True
+            thief = SqliteRepositoryDriver(self.path)
+            try:
+                thief_row = thief.execute(entity_id, operation, key)
+                thief_row["stock"] = thief_row["stock"] - 1
+                thief.persist(entity_id, key, thief_row)
+            finally:
+                thief.close()
+        return row
 
 
 class DriverFaultTranslationTest(ContractTestCase):
@@ -322,7 +396,7 @@ class DriverFaultTranslationTest(ContractTestCase):
     rc, the served status code, and the result shape are all derived from
     `status`/`failure_reason`, so a DriverError that escaped instead of being
     translated would turn a bad database into a traceback at every one of them.
-    Each case names one translation site; without them the three try/except
+    Each case names one translation site; without them the four try/except
     blocks could be deleted and every other test would stay green.
     """
 
@@ -352,6 +426,26 @@ class DriverFaultTranslationTest(ContractTestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("the store rejected the write", result["failure_reason"])
 
+    def test_a_failing_outbox_record_becomes_a_failed_run(self):
+        """issue #102: `EventEmit`'s `repo.record_emission` call is a driver
+        call like every other — an untranslated fault here would surface as
+        a traceback out of `lnpl run` instead of an ordinary failed run."""
+        doc = compile_source(EMIT_ONLY)
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        payload = {"id": "o-1", "status": "new"}
+        interp = Interpreter(doc, repo_rows={},
+                             repository=_FailingRepository("record_emission"))
+
+        result = interp.run_workflow(target, payload)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("the outbox store is unreachable", result["failure_reason"])
+        # The failed emission must not be counted as registered — neither in
+        # the in-memory outbox (spec's `emitted` reads it) nor on the JSON
+        # result — since the durable store never actually recorded it.
+        self.assertEqual([], interp.outbox)
+        self.assertNotIn("emissions", result)
+
     def test_a_failing_cache_write_becomes_a_failed_run(self):
         doc = compile_source(GUARDED)
         target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
@@ -363,6 +457,26 @@ class DriverFaultTranslationTest(ContractTestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("the cache is unreachable", result["failure_reason"])
+
+    def test_a_persist_conflict_becomes_a_failed_run_naming_it(self):
+        """The one translation site this issue adds: `rows_affected == 0` on
+        the versioned UPDATE is a `DriverError` like any other, so it reaches
+        the caller the same way -- an ordinary failed run naming the
+        conflict, not a silent overwrite and not a traceback (issue #92)."""
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        driver = _StealingSqliteDriver(os.path.join(box.name, "store.db"))
+        self.addCleanup(driver.close)
+        doc = compile_source(VALUE_INVENTORY)
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        payload = {"id": "p-1", "stock": 9, "quantity": 4}
+        interp = Interpreter(doc, repo_rows=default_rows(doc, target, payload),
+                             repository=driver)
+
+        result = interp.run_workflow(target, payload)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("conflict", result["failure_reason"])
 
     def test_a_driver_error_never_escapes_the_run(self):
         """The guarantee stated directly: whatever the driver raises, the
@@ -411,8 +525,18 @@ class AssignmentFlushTargetTest(ContractTestCase):
                              repository=repository).run_workflow(target, payload)
 
         self.assertEqual(result["status"], "completed")
+        # issue #97 / RFC-0012 Updates (RFC-0030): `create order` (no `as`)
+        # now ALSO flushes once, seeding its non-derived payload-matching
+        # fields — this fires before the `set product.stock` flush below,
+        # since VALUE_INVENTORY's `create order` step runs first. The row
+        # content, not just the flush address, is what issue #97 actually
+        # changes, so this asserts the seeded value rather than only the
+        # (entity_id, key) pair.
         self.assertEqual(repository.persisted,
-                         [("entity.product", "entity.product#p-1")])
+                         [("entity.order", "entity.order#p-1"),
+                          ("entity.product", "entity.product#p-1")])
+        self.assertEqual(repository.rows["entity.order"]["entity.order#p-1"],
+                         {"id": "p-1", "quantity": 4})
 
     def test_a_binding_with_no_entity_behind_it_fails_the_run(self):
         """The compiler cannot emit this — it refuses `set input.x` and an
@@ -443,7 +567,16 @@ class AssignmentFlushTargetTest(ContractTestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("names no declared entity", result["failure_reason"])
-        self.assertEqual(repository.persisted, [])
+        # issue #97 / RFC-0012 Updates (RFC-0030): `create order` (no `as`)
+        # runs and legitimately flushes its own payload-seeded row BEFORE
+        # the demoted-entity failure below it — that flush is not the bug
+        # this test is about, so it is asserted rather than hidden. The
+        # POINT of this test — the broken assignment's flush is refused, not
+        # silently dropped on the Fake — is that no SECOND flush follows it.
+        self.assertEqual(repository.persisted,
+                         [("entity.order", "entity.order#p-1")])
+        self.assertEqual(repository.rows["entity.order"]["entity.order#p-1"],
+                         {"id": "p-1", "quantity": 4})
 
 
 class DefaultPathTest(ContractTestCase):

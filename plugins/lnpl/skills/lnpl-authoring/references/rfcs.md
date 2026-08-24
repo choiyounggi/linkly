@@ -38,5 +38,8 @@
 | RFC-0025 행 집합(Row Set)과 집계 | `list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 집계 값을 전혀 계산하지 않는지 | `rfcs/0025-row-sets-and-aggregation.md` |
 | RFC-0026 `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps`의 `line`과 `suggestion` | `unknown-verb`/`guard-orphaned-steps`가 왜 구조화 `line`을 갖는지, did-you-mean 제안이 별칭과 철자 오타를 어떻게 나눠 잡는지 | `rfcs/0026-unknown-verb-line-and-suggestion.md` |
 | RFC-0027 네트워크 드라이버와 결과 바인딩 | `call`/`request ... as <name>`로 네트워크 응답을 바인딩하고 실패를 status 값으로 분기하고 싶다 — `--network`의 fake/http 선택이 무엇을 고르는지, 접속 실패가 왜 예외가 아니라 값인지 | `rfcs/0027-network-driver-and-result-binding.md` |
+| RFC-0028 산술 연산자 확장과 대안 가드 | `*`/`/`를 쓰고 싶다, 또는 `when A` / `or B`로 대안 가드를 쓰고 싶다 — 0 나눗셈이 왜 컴파일 에러가 아니라 RunError인지, mode B가 왜 그 실패에 합의할 의무가 없는지 | `rfcs/0028-arithmetic-and-alternative-guards.md` |
+| RFC-0029 Clock 계약과 `--clock real` 바인딩 | `CacheAccess` TTL을 벽시계 경과에 묶고 싶다 — `--clock real`이 무엇을 바꾸고 무엇을 바꾸지 않는지, `diff`/`spec`이 왜 이 선택자를 받지 않는지 | `rfcs/0029-clock-contract-and-real-binding.md` |
+| RFC-0030 `create` 결과 바인딩과 payload 시드 | `create <명사> as <이름>`로 생성 직후 그 행에 `set`/`format`/`respond`를 쓰고 싶다 — payload 동명 필드가 `derived` 제외하고 왜 `as` 유무와 무관하게 시드되는지, `as` 없는 `create`는 정확히 무엇이 바이트 동일한지 | `rfcs/0030-create-result-binding-and-payload-seed.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

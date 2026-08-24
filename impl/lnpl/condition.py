@@ -3,7 +3,8 @@
 RFC-0008: All condition interpretation passes through parse_condition().
 No condition is evaluated differently in parser vs. runtime vs. compiler.
 
-Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, then RFC-0015):
+Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, RFC-0015,
+then RFC-0028):
 
   Condition  ::= Presence | Comparison ('and' Comparison)*
   Presence   ::= Reference ('exists' | 'missing')
@@ -11,18 +12,21 @@ Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, then RFC-0015)
   Comparator ::= '<' | '<=' | '>' | '>=' | '==' | '!='
   Value      ::= Operand (ArithOp Operand)?     -- at most ONE binary operator
   Operand    ::= Reference | Integer | Duration
-  ArithOp    ::= '+' | '-'
+  ArithOp    ::= '+' | '-' | '*' | '/'           -- RFC-0028 added `*`/`/`
   Reference  ::= CamelName | Namespace '.' CamelName
   Namespace  ::= 'input' | CamelName
   Integer    ::= [0-9]+                          -- unsigned
   Duration   ::= Integer ('ms' | 's' | 'm' | 'h' | 'd')   -- 'h'/'d': RFC-0016
 
-Three properties of that grammar are decisions, not omissions (RFC-0015):
+Three properties of that grammar are decisions, not omissions (RFC-0015,
+`*`/`/` reversed by RFC-0028 — see that RFC's §Alternatives):
 
-  **No `or`, no `not`, no parentheses, no `*` or `/`.** The surface covers the
-  five requirements of issue #47 and stops. An unbounded expression language
-  would have to be evaluated identically by an interpreter and by emitted MLIR;
-  every production added is a second evaluator to keep honest.
+  **No `or` inside a `Condition`, no `not`, no parentheses.** RFC-0028 puts
+  `or` back into the language, but as a guard-line STRUCTURE (`AltGuard`,
+  `parser.py`) rather than a `Condition`-grammar operator — this module's
+  grammar is unchanged by it. An unbounded expression language would have to
+  be evaluated identically by an interpreter and by emitted MLIR; every
+  production added here is a second evaluator to keep honest.
 
   **`and` combines Comparisons only.** Mode B decides existence through one
   run-level boolean (`run_binary(skip=...)`) and comparisons through i64
@@ -148,8 +152,30 @@ class Aggregate:
             raise ValueError(f"invalid aggregate function: {self.func}")
 
 
-# An `AssignStep`'s right-hand side: a `Value` or an `Aggregate` (RFC-0025 §2).
-AssignRHS = Union[Value, Aggregate]
+@dataclass(frozen=True)
+class FormatCall:
+    """`format <target> from "<template>" [with <ref>...]` (issue #94) — an
+    `AssignStep` right-hand side, never a `Value`: the template is a string,
+    not a numeric/instant operand, so it is a sibling of `Value` and
+    `Aggregate`, not an `Operand`.
+
+    `template` is the format string with its surrounding quotes stripped.
+    `args` are the `with` clause's References, in source order — positional
+    `{}` placeholders only (RFC-0028's "closed verb, not an expression"
+    rule): no named fields, no padding, no precision. Whether the count of
+    `{}` in `template` matches `len(args)` is checked at parse time here (a
+    syntax property); whether the target's declared type can hold a string
+    or an argument's declared type is Password needs the document, and is
+    `lower.py`'s job (issue #94's D3), the same split RFC-0025's aggregate
+    checks already draw.
+    """
+    template: str
+    args: Tuple["Ref", ...]
+
+
+# An `AssignStep`'s right-hand side: a `Value`, an `Aggregate` (RFC-0025 §2),
+# or a `FormatCall` (issue #94).
+AssignRHS = Union[Value, Aggregate, FormatCall]
 
 
 @dataclass(frozen=True)
@@ -246,6 +272,93 @@ def parse_assignment(text: Optional[str]) -> Tuple[str, AssignRHS]:
     if not value_tokens:
         raise ConditionError(f"assignment needs a value after `to`: {text!r}")
     return target, _parse_value_or_aggregate(value_tokens, text)
+
+
+def parse_format(text: Optional[str]) -> Tuple[str, FormatCall]:
+    """`format <Reference> from "<template>" [with <Reference>...]` -> (target
+    name, FormatCall) (issue #94).
+
+    Lives here for the same reason `parse_assignment` does: the one function
+    every consumer (lowering, mode A) re-reads `Assignment.expression` through,
+    so a template's `{}` count and its argument count can never mean two
+    different things in two places. Unlike `parse_assignment`, the stored
+    `Assignment.expression` is not a verbatim slice of this text — it holds
+    only the right-hand side (`format "<template>" [with <ref>...]`, no
+    target, no `from`) — so re-reading it goes through `_parse_format_rhs`,
+    this function's own dispatch target inside `_parse_value_or_aggregate`.
+    """
+    tokens = (text or "").split()
+    if not tokens or tokens[0] != "format":
+        raise ConditionError(f"format step must start with `format`: {text!r}")
+    if len(tokens) < 4:
+        raise ConditionError(
+            f"format needs a target and `from \"<template>\"`: {text!r} "
+            "(the form is `format <target> from \"<template>\" "
+            "[with <ref>...]`)")
+    target = tokens[1]
+    if not _is_reference_name(target):
+        raise ConditionError(
+            f"format target must be camelCase or binding.field: {text!r}")
+    if tokens[2] != "from":
+        raise ConditionError(
+            f"format needs `from` after its target: {text!r} "
+            "(the form is `format <target> from \"<template>\" "
+            "[with <ref>...]`)")
+    template = _parse_template_token(tokens[3], text)
+    args = _parse_with_clause(tokens[4:], text)
+    _check_placeholder_count(template, args, text)
+    return target, FormatCall(template, args)
+
+
+def _parse_template_token(token, text):
+    if len(token) < 2 or token[0] != '"' or token[-1] != '"':
+        raise ConditionError(
+            f"format template must be one double-quoted word, no spaces: "
+            f"{text!r}")
+    template = token[1:-1]
+    if '"' in template:
+        raise ConditionError(f"format template contains an embedded quote: {text!r}")
+    return template
+
+
+def _parse_with_clause(rest, text):
+    """`[with <ref> [<ref>...]]` — optional; omitted only when 0 refs are
+    needed (issue #94, D6: a template with no `{}` takes no `with` clause)."""
+    if not rest:
+        return ()
+    if rest[0] != "with":
+        raise ConditionError(
+            f"format takes only `with <ref>...` after its template: {text!r}")
+    arg_tokens = rest[1:]
+    if not arg_tokens:
+        raise ConditionError(f"format `with` needs at least one reference: {text!r}")
+    args = []
+    for tok in arg_tokens:
+        if not _is_reference_name(tok):
+            raise ConditionError(
+                f"format argument must be camelCase or binding.field: {text!r}")
+        args.append(Ref(tok))
+    return tuple(args)
+
+
+def _check_placeholder_count(template, args, text):
+    placeholders = template.count("{}")
+    if placeholders != len(args):
+        raise ConditionError(
+            f"format template {template!r} has {placeholders} `{{}}` "
+            f"placeholder(s) but `with` gives {len(args)} argument(s): {text!r}")
+
+
+def _parse_format_rhs(tokens, text):
+    """The `format "<template>" [with <ref>...]` shape `Assignment.expression`
+    stores (issue #94) — `parse_value_or_aggregate`'s dispatch target when an
+    already-lowered expression is re-read, never hand-written by an author
+    (the author's `from`/target syntax is `parse_format`'s job)."""
+    if len(tokens) < 2:
+        raise ConditionError(f"missing format template: {text!r}")
+    template = _parse_template_token(tokens[1], text)
+    args = _parse_with_clause(tokens[2:], text)
+    return FormatCall(template, args)
 
 
 def is_instant_text(raw) -> bool:
@@ -373,6 +486,11 @@ def references(cond) -> Tuple[str, ...]:
         return ()
     if isinstance(cond, Aggregate):
         return references(cond.ref)
+    if isinstance(cond, FormatCall):
+        out = []
+        for ref in cond.args:
+            out.extend(references(ref))
+        return tuple(out)
     raise ValueError(f"unknown condition type: {type(cond)}")
 
 
@@ -396,6 +514,25 @@ def condition_to_string(cond: Condition) -> Optional[str]:
     raise ValueError(f"unknown condition type: {type(cond)}")
 
 
+def guard_condition_text(condition: Optional[str],
+                         alternatives: Optional[Tuple[str, ...]] = None) -> Optional[str]:
+    """RFC-0028 §Reference-level Specification/4·5 — the ONE spelling of an
+    alt-guard's combined condition for skip records and mode A/B comparison.
+
+    No alternatives: `condition` unchanged (byte-identical to every guard
+    before this RFC — the backward-compatibility guarantee). With
+    alternatives: `condition` and each alternative, source order, joined by
+    `" or "`. This is display/comparison text only — it is never fed back
+    through `parse_condition` (RFC-0028 does not add `or` to the `Condition`
+    grammar). Mode A's `interp._skip_record` and mode B's
+    `backend.restore_skips` both call this so they cannot independently drift
+    on the join rule.
+    """
+    if not alternatives:
+        return condition
+    return " or ".join([condition, *alternatives])
+
+
 def value_to_string(value: AssignRHS) -> str:
     """Normalized spelling of one `Value` or `Aggregate`."""
     if isinstance(value, Ref):
@@ -416,6 +553,11 @@ def value_to_string(value: AssignRHS) -> str:
                              value_to_string(value.right))
     if isinstance(value, Aggregate):
         return "%s %s" % (value.func, value.ref.name)
+    if isinstance(value, FormatCall):
+        rendered = 'format "%s"' % value.template
+        if value.args:
+            rendered += " with " + " ".join(a.name for a in value.args)
+        return rendered
     raise ValueError(f"unknown value type: {type(value)}")
 
 
@@ -472,10 +614,13 @@ def _parse_term(tokens, text, allow_presence):
 
 
 def _parse_value_or_aggregate(tokens, text):
-    """`Value | Aggregate` (RFC-0025 §2) — dispatched on the first token, since
-    `sum`/`count` cannot start a `Value` (they are not valid `Operand`s)."""
+    """`Value | Aggregate | FormatCall` — dispatched on the first token, since
+    `sum`/`count`/`format` cannot start a `Value` (they are not valid
+    `Operand`s)."""
     if tokens and tokens[0] in AGG_FUNCS:
         return _parse_aggregate(tokens, text)
+    if tokens and tokens[0] == "format":
+        return _parse_format_rhs(tokens, text)
     return _parse_value(tokens, text)
 
 
@@ -505,7 +650,7 @@ def _parse_value(tokens, text):
         if tokens[1] not in ARITH_OPS:
             raise ConditionError(
                 f"invalid arithmetic operator {tokens[1]!r}: {text!r} "
-                "(RFC-0015 supports `+` and `-` only)")
+                "(RFC-0028 supports `+` `-` `*` `/` only)")
         return Arith(_parse_operand(tokens[0], text), tokens[1],
                      _parse_operand(tokens[2], text))
     raise ConditionError(

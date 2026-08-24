@@ -55,6 +55,9 @@
             "$ref": "#/$defs/nodeAssignment"
           },
           {
+            "$ref": "#/$defs/nodeResponse"
+          },
+          {
             "$ref": "#/$defs/nodeNetworkCall"
           },
           {
@@ -80,6 +83,9 @@
           },
           {
             "$ref": "#/$defs/nodePerformance"
+          },
+          {
+            "$ref": "#/$defs/nodeExpose"
           }
         ]
       }
@@ -341,6 +347,9 @@
               "$ref": "#/$defs/eventSourceSchedule"
             }
           ]
+        },
+        "subscribe": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -417,12 +426,43 @@
         },
         "version": {
           "type": "string"
+        },
+        "method": {
+          "enum": [
+            "get",
+            "post"
+          ]
+        },
+        "auth": {
+          "$ref": "#/$defs/httpCapabilityAuth"
         }
       },
       "required": [
         "kind",
         "id",
         "name"
+      ],
+      "additionalProperties": false
+    },
+    "httpCapabilityAuth": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "bearer",
+            "apikey"
+          ]
+        },
+        "env": {
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "env"
       ],
       "additionalProperties": false
     },
@@ -673,12 +713,12 @@
       ],
       "additionalProperties": false
     },
-    "nodeGuard": {
+    "nodeResponse": {
       "type": "object",
       "properties": {
         "kind": {
           "enum": [
-            "Guard"
+            "Response"
           ]
         },
         "id": {
@@ -690,30 +730,88 @@
         "line": {
           "$ref": "#/$defs/lineNumber"
         },
-        "mode": {
-          "enum": [
-            "when",
-            "until",
-            "repeat"
-          ]
-        },
-        "condition": {
-          "type": "string"
-        },
-        "count": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "children": {
-          "$ref": "#/$defs/nodeIdArray"
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
         }
       },
       "required": [
         "kind",
         "id",
-        "mode"
+        "refs"
       ],
       "additionalProperties": false
+    },
+    "nodeGuard": {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "Guard"
+              ]
+            },
+            "id": {
+              "$ref": "#/$defs/nodeId"
+            },
+            "meta": {
+              "$ref": "#/$defs/meta"
+            },
+            "line": {
+              "$ref": "#/$defs/lineNumber"
+            },
+            "mode": {
+              "enum": [
+                "when",
+                "until",
+                "repeat"
+              ]
+            },
+            "condition": {
+              "type": "string"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "alternatives": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "children": {
+              "$ref": "#/$defs/nodeIdArray"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "mode"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "not": {
+            "required": [
+              "alternatives"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "until",
+                  "repeat"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "nodeNetworkCall": {
       "type": "object",
@@ -786,6 +884,9 @@
           ]
         },
         "query": {
+          "type": "string"
+        },
+        "result": {
           "type": "string"
         }
       },
@@ -1050,6 +1151,38 @@
         "kind",
         "id",
         "budgets"
+      ],
+      "additionalProperties": false
+    },
+    "nodeExpose": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Expose"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
+        "entity": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "field": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "entity",
+        "field"
       ],
       "additionalProperties": false
     }

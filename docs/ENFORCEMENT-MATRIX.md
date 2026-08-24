@@ -17,6 +17,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | verb | effect kind | 비고 |
 |------|-------------|------|
 | set | Assignment | 목적어가 엔티티명이 아니라 값 표현식이다(`set product.stock to product.stock - input.quantity`). 바인딩된 행의 필드를 갱신하고 그 사실을 effect로 남긴다 — RFC-0015 |
+| format | Assignment | 형식 문자열의 위치 `{}` 개수만큼 Reference 인자를 받아 조립한 문자열을 대상 필드(Text 계열)에 쓴다(`format order.label from "ORD-{}-{}" with product.name input.quantity`). `{}` 개수와 인자 개수 불일치, Password 계열 인자, Text가 아닌 대상은 모두 컴파일 에러 — 마스킹 chokepoint(#43)를 문자열 조립으로 우회하는 경로를 막는다. RFC-0028이 정한 "표현식으로 안 되는 계산은 동사로 흡수" 규칙의 첫 적용 — issue #94 |
 | validate | Validation | 대상이 필드면 그 필드의 규칙, `input`이면 엔티티 전체를 시맨틱 타입 규칙으로 검사 |
 | authenticate | RepositoryCall | operation `read` |
 | load | RepositoryCall | operation `read` |
@@ -34,6 +35,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | emit | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 |
 | publish | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 |
 | authorize | Authorization | requirement를 **기록만** 한다 — §B의 `security` 항목과 같은 간극 |
+| respond | Response | 목적어가 엔티티명이 아니라 `<binding>.<field>` Reference 목록이다(`respond order.id order.status`). 다른 Effect와 달리 상태를 바꾸지 않는다 — 워크플로가 성공적으로 끝난 시점에 바인딩값을 읽어 `response` 절로 조립할 뿐이다. Password 계열 참조는 컴파일 에러 — 마스킹 chokepoint(#43)를 respond로 우회하는 경로를 막는다. OpenAPI 200 스키마가 이 목록에서 유도된다 — issue #96 |
 
 ### 사전 밖 동사
 
@@ -99,6 +101,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | code | severity | 언제 나오나 | 어디서 나오나 |
 |------|----------|-------------|---------------|
 | unknown-verb | warning | 스텝의 동사가 `VERB_LEXICON` 밖일 때 | 컴파일 타임 — lowering |
+| unknown-entity | warning | 스텝 객체가 선언된 entity 중 어느 것과도(소문자 연결형·필드명) 매칭되지 않는데, 모듈이 entity를 정확히 1개 선언해 그 하나로 조용히 해석될 때 (issue #91) | 컴파일 타임 — lowering |
 | declared-not-enforced | info | §B에서 status가 `unenforced`인 선언이 있을 때 | 컴파일 타임 — lowering |
 | declared-measured-only | info | §B에서 status가 `measured`인 선언이 있을 때 | 컴파일 타임 — lowering |
 | authorization-not-verified | info | Authorization Effect가 실제로 실행됐을 때 | 런타임 — 인터프리터 |
@@ -106,14 +109,19 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | guard-orphaned-steps | warning | 가드 조건이 참조한 엔티티를, 그 가드 뒤의 비가드 스텝이 읽거나 쓸 때 (RFC-0023) | 컴파일 타임 — lowering |
 | validation-sample-derived | info | mode B 빌드가 Validation 결과를 파생 sample payload로 확정했을 때 | 컴파일 타임 — mode B 빌드 |
 | aggregation-orphaned-list | warning | `sum`/`count`가 참조하는 RowSet을, 이 워크플로의 어떤 `list`도(가드 밖에서) 앞서 채우지 않을 때 (RFC-0025) | 컴파일 타임 — lowering |
+| event-source-mismatch | warning | `event <E> on <Entity> <op>` 소스가 선언돼 있고 워크플로에 `emit <E>`가 있는데, 같은 워크플로의 `<op> <entity>` 스텝이 emit과 같은 가드 스코프에 있지 않을 때 (issue #98) | 컴파일 타임 — lowering |
+| event-source-orphaned | info | `on`-소스 이벤트를 `emit`하는 워크플로에 그 소스가 지목하는 `<op> <entity>` 스텝이 아예 없을 때 (issue #98) | 컴파일 타임 — lowering |
+| derived-never-assigned | warning | `derived` 필드를 가진 entity에 `create` 스텝이 있는데, 그 필드를 채우는 `set`/`format`이 같은 워크플로 안에 하나도 없을 때 (issue #95) | 컴파일 타임 — lowering |
+| declared-not-bound | info | `call`/`request`의 target이 URL 리터럴이 아닌 논리명인데, 그 이름을 선언한 `capability http`가 모듈에 없을 때 (issue #101) — method POST·인증 없음으로 그대로 실행된다 | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
 `impl/tests/test_enforcement_matrix.py`가 둘이 어긋나면 실패한다. 등급을 가르는
 질문은 하나다(RFC-0021): **프로그램을 고치면 이 진단이 사라지는가.** 사라지면
-`warning`(`unknown-verb` · `guard-skipped-steps` · `guard-orphaned-steps` ·
-`aggregation-orphaned-list`), 사라지지 않으면 `info`(나머지 네 행 — 플랫폼이
-자기가 하는 일을 진술한 것이다).
+`warning`(`unknown-verb` · `unknown-entity` · `guard-skipped-steps` ·
+`guard-orphaned-steps` · `aggregation-orphaned-list` · `event-source-mismatch` ·
+`derived-never-assigned`),
+사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만
 rc 0이 rc 2로 승격되고, `--strict=<level>`이 어느 등급부터 승격할지 고른다(이슈

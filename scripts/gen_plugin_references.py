@@ -19,10 +19,10 @@ sys.path.insert(0, os.path.join(REPO, "impl"))
 from lnpl import __version__                                    # noqa: E402
 from lnpl.diagnostics import CODES, ENFORCEMENT, SEVERITY_OF     # noqa: E402
 from lnpl.lexer import (ARITH_OPS, ASSIGN_KEYWORDS, COMPARATORS,  # noqa: E402
-                        DURATION_UNITS, KEYWORDS_CLAUSE, KEYWORDS_CONTROL,
-                        KEYWORDS_TOP, LOGICAL_OPS, PAYLOAD_NAMESPACE, RESERVED,
-                        SCHEDULE_AT, SCHEDULE_KEYWORD, SCHEDULE_RECURRENCES,
-                        SCHEDULE_ZONES)
+                        DURATION_UNITS, GUARD_ALT_KEYWORD, KEYWORDS_CLAUSE,
+                        KEYWORDS_CONTROL, KEYWORDS_TOP, LOGICAL_OPS,
+                        PAYLOAD_NAMESPACE, RESERVED, SCHEDULE_AT,
+                        SCHEDULE_KEYWORD, SCHEDULE_RECURRENCES, SCHEDULE_ZONES)
 from lnpl.lower import (ARGUMENT_MECHANISMS, KIND_PREFIX, KIND_WORD,  # noqa: E402
                         PERF_METRICS, POLICY_NAMES, READ_VERBS,
                         SECURITY_MECHANISMS, VALUELESS_PERF, VERB_LEXICON,
@@ -72,6 +72,14 @@ def render_grammar():
     lines.append("가드 조건은 `<값> <비교연산자> <값>`이고 항은 `and`로만 잇는다. "
                  "값은 참조·정수·기간이며 이항 산술 **1개**까지 붙일 수 있다"
                  "(`product.stock - input.quantity`). 중첩·괄호는 문법에 없다.\n")
+    lines.append("## 대안 가드 (RFC-0028)\n")
+    lines.append("`when` 뒤에 `%s` 줄을 이어 쓰면 대안 가드다 — 조건이나 그 "
+                 "대안 중 하나라도 참이면 피가드 항목을 실행한다"
+                 "(`when input.channel == 1` 다음 줄 "
+                 "`%s input.amount <= 100`). `%s` 자체는 `Condition` 문법에 "
+                 "들어가지 않는다 — 위 절이 말하는 대로 `and`만 여전히 항을 "
+                 "잇는다. `until`/`repeat` 뒤에는 쓸 수 없다.\n"
+                 % (GUARD_ALT_KEYWORD, GUARD_ALT_KEYWORD, GUARD_ALT_KEYWORD))
     # r3 N-2: the rule existed only in the refusal. `create report` then
     # `set report.orderCount to …` is rejected, and nothing in the references
     # said why — so the author had to reverse-engineer "read-family only" from
@@ -84,32 +92,41 @@ def render_grammar():
     # operation this section used to lump in with `read` via `repo_policy
     # .READ_OPS`, a table this document's own binding rule does not read).
     reads = list(READ_VERBS)
+    create_verbs = [v for v, (kind, attrs) in VERB_LEXICON.items()
+                    if kind == "RepositoryCall" and attrs.get("operation") == "create"]
     writes = [v for v, (kind, attrs) in VERB_LEXICON.items()
              if kind == "RepositoryCall"
-             and attrs.get("operation") in ("create", "update", "delete")]
+             and attrs.get("operation") in ("update", "delete")]
     rowset_verbs = [v for v, (kind, attrs) in VERB_LEXICON.items()
                     if kind == "RepositoryCall" and v not in READ_VERBS
                     and attrs.get("operation") not in ("create", "update", "delete")]
     lines.append("## 할당(`set`)의 대상\n")
-    lines.append("`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽은** 행이다. "
-                 "스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), "
-                 "`set`은 그렇게 생긴 바인딩에만 쓴다.\n")
+    lines.append("`set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽었거나 "
+                 "만든** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 "
+                 "바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.\n")
     lines.append("읽기 동사: " + " ".join("`%s`" % v for v in reads)
-                 + " — 이 동사들만 단일 행 바인딩을 만든다.")
-    lines.append("\n바인딩을 만들지 않는 동사: " + " ".join("`%s`" % v for v in writes)
+                 + " — 이 동사들이 단일 행 바인딩을 만든다.")
+    lines.append("\n결과를 바인딩하는 동사: " + " ".join("`%s`" % v for v in create_verbs)
+                 + " — 뒤에 as절을 붙이면 단일 행 바인딩을 만든다.")
+    lines.append("\n`create <명사> as <이름>` — 만든 행이 `<이름>`으로 실행 스코프에 "
+                 "바인딩된다(RFC-0027 §2 표기 재사용, RFC-0012 Updates, issue #97). "
+                 "as절 없이 쓰면 이전과 바이트 동일하다 — 바인딩되지 않는다.\n")
+    lines.append("바인딩을 만들지 않는 동사: " + " ".join("`%s`" % v for v in writes)
                  + " — 만든 행은 실행 스코프에 들어오지 않는다.\n")
     if rowset_verbs:
         lines.append("행 집합(RowSet) 동사: " + " ".join("`%s`" % v for v in rowset_verbs)
                      + " — 단일 행이 아니라 RowSet을 별개 이름공간에 바인딩한다.")
         lines.append("\n`set`의 대상이 될 수 없다 — 집계 표현식으로만 "
                      "소비된다(RFC-0025 §2/§5).\n")
-    lines.append("그래서 `create report` 다음의 `set report.total to 1`은 거부된다.\n")
+    lines.append("그래서 `create report` 다음의 `set report.total to 1`은 거부된다 — "
+                 "`create report as r` 다음의 `set r.total to 1`은 허용된다.\n")
     lines.append("`input.<필드>`는 할당의 **대상이 될 수 없다** — 입력은 이 워크플로가 "
                  "소유한 상태가 아니다. 값 쪽에는 쓸 수 있다"
                  "(`set product.stock to product.stock - input.quantity`).\n")
     lines.append("고치는 법: 쓰기 전에 그 엔티티를 " + " / ".join("`%s`" % v for v in reads)
-                 + " 중 하나로 먼저 읽는다. 읽을 수 없는 엔티티라면 그 값은 이 "
-                   "워크플로가 바꿀 수 있는 상태가 아니다.\n")
+                 + " 중 하나로 먼저 읽는다. 이 스텝이 만드는 행이라면 "
+                   "`create <명사> as <이름>`으로 만들면서 이름을 붙인다. 그 "
+                   "외의 엔티티라면 이 워크플로가 바꿀 수 있는 상태가 아니다.\n")
     lines.append("## 가드의 스코프\n")
     lines.append("가드는 **바로 다음 항목 하나**를 소유한다. 그 항목은 스텝 한 줄이거나 "
                  "`parallel`/`pipeline` 블록 하나다. 뒤따르는 블록 전체를 감싸지 "
@@ -434,12 +451,34 @@ def render_naming():
     lines.append("| `validate %s` | **해석된다** — 소문자 연결형 |" % obj)
     lines.append("| `validate %s` | 거부 — camelCase는 이 규칙이 아니다 |"
                  % (entity[0].lower() + entity[1:]))
-    lines.append("| `validate %s` | 거부 — 선언과 같은 표기여도 안 된다 |" % entity)
+    lines.append("| `validate %s` | 거부 (엔티티를 둘 이상 선언했을 때) — 선언과 같은 "
+                 "표기여도 안 된다; 하나뿐이면 대신 `unknown-entity` 경고로 컴파일된다 "
+                 "(아래 참조) |" % entity)
     lines.append("| `validate %ss` | 거부 — 복수형을 단수로 되돌리지 않는다 |" % obj)
     lines.append("| `validate order` | 해석된다 — `entity Order`의 소문자 연결형 |")
     lines.append("\n두 가지 예외가 있다:\n")
     lines.append("- 모듈이 엔티티를 **정확히 하나** 선언하면 객체를 생략할 수 있다.")
     lines.append("- 객체가 어떤 엔티티의 **필드명**과 같으면 그 엔티티로 해석된다.\n")
+
+    lines.append("## 선언되지 않은 명사를 쓰면 — `unknown-entity`\n")
+    lines.append("스텝 객체가 위 표의 어느 형태로도 매칭되지 않을 때, 모듈이 엔티티를 "
+                 "**정확히 하나** 선언했으면 컴파일은 계속된다 — `_resolve_entity`가 "
+                 "그 하나를 그대로 쓴다(런타임 동작은 바뀌지 않는다, 이슈 #91 §4). "
+                 "대신 `unknown-verb`(#36→#82)와 대칭인 `unknown-entity` "
+                 "**warning** 진단이 하나 실린다:\n")
+    lines.append("```")
+    lines.append("warning: unknown-entity [line 8] find user — 'user' names no "
+                 "declared entity; declared: customer — did you mean 'customer'?")
+    lines.append("```")
+    lines.append("\n형식은 `unknown-verb`가 확정한 구조 그대로다 — 구조화 `line`, "
+                 "did-you-mean 제안(RFC-0026). 엔티티가 **하나뿐이면** 제안은 늘 "
+                 "그 하나다. `--strict=warning`으로 게이트할 수 있다(RFC-0021). "
+                 "엔티티를 둘 이상 선언한 모듈에서 객체가 매칭에 실패하면 이 진단이 "
+                 "아니라 바로 아래의 모호성 에러가 난다 — 그 경로는 이미 조용하지 "
+                 "않으므로 이슈 #91의 범위가 아니다. `<명사>.<필드>` Reference의 "
+                 "명사부(가드·`set` 대상)는 이 진단의 범위가 아니다 — 선언되지 않은 "
+                 "바인딩을 쓰면 이미 컴파일 에러이므로(#45), 무진단으로 통과하는 "
+                 "구멍이 없다.\n")
 
     lines.append("## 이 에러가 나면\n")
     lines.append("```")
@@ -518,6 +557,16 @@ RFC_ROUTES = {
     "0027": ("`call`/`request ... as <name>`로 네트워크 응답을 바인딩하고 "
              "실패를 status 값으로 분기하고 싶다 — `--network`의 fake/http "
              "선택이 무엇을 고르는지, 접속 실패가 왜 예외가 아니라 값인지", ()),
+    "0028": ("`*`/`/`를 쓰고 싶다, 또는 `when A` / `or B`로 대안 가드를 쓰고 "
+             "싶다 — 0 나눗셈이 왜 컴파일 에러가 아니라 RunError인지, mode B가 "
+             "왜 그 실패에 합의할 의무가 없는지", ()),
+    "0029": ("`CacheAccess` TTL을 벽시계 경과에 묶고 싶다 — `--clock real`이 "
+             "무엇을 바꾸고 무엇을 바꾸지 않는지, `diff`/`spec`이 왜 이 "
+             "선택자를 받지 않는지", ()),
+    "0030": ("`create <명사> as <이름>`로 생성 직후 그 행에 `set`/`format`/"
+             "`respond`를 쓰고 싶다 — payload 동명 필드가 `derived` 제외하고 "
+             "왜 `as` 유무와 무관하게 시드되는지, `as` 없는 `create`는 "
+             "정확히 무엇이 바이트 동일한지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

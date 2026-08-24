@@ -28,14 +28,16 @@ class _StubHandler(BaseHTTPRequestHandler):
     delay_s = 0
     raw_body = None  # not JSON-encoded when set, to exercise the malformed-body path
     received = []
+    received_headers = []
+    received_methods = []
 
     def log_message(self, format, *args):
         pass
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length) if length else b""
-        type(self).received.append(json.loads(raw) if raw else None)
+    def _reply(self, body_received):
+        type(self).received.append(body_received)
+        type(self).received_headers.append(dict(self.headers))
+        type(self).received_methods.append(self.command)
         if self.delay_s:
             time.sleep(self.delay_s)
         payload = (self.raw_body if self.raw_body is not None
@@ -46,11 +48,25 @@ class _StubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b""
+        self._reply(json.loads(raw) if raw else None)
+
+    def do_GET(self):
+        # method get 본문 없음 (issue #101, D6): a GET carries no body — this
+        # driver-side fixture records `None` when it received none, so a test
+        # can assert the request had no JSON body the same way it does for POST.
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b""
+        self._reply(json.loads(raw) if raw else None)
+
 
 def _make_handler(status=200, body=None, delay_s=0, raw_body=None):
     return type("_Handler", (_StubHandler,), {
         "status": status, "body": body if body is not None else {},
         "delay_s": delay_s, "raw_body": raw_body, "received": [],
+        "received_headers": [], "received_methods": [],
     })
 
 
@@ -180,8 +196,132 @@ class HttpNetworkDriverTest(_ServerTestCase):
         with self.assertRaises(DriverError):
             driver.call(url, {}, timeout_ms=50)
 
+    def test_a_logical_name_target_raises_driver_error_not_attribute_error(self):
+        """Issue #90: `urlsplit("PaymentGateway")` yields `hostname=None`, and
+        without entry-point validation `http.client.HTTPConnection(None, ...)`
+        raises a raw `AttributeError` the module's exception clause does not
+        catch — the ONE ERROR TYPE OUT contract breaks. The message carries
+        the original target verbatim (docs/backends.md path-value convention)."""
+        driver = HttpNetworkDriver()
+        self.addCleanup(driver.close)
+
+        with self.assertRaises(DriverError) as caught:
+            driver.call("PaymentGateway", {}, 1000)
+
+        self.assertIn("PaymentGateway", str(caught.exception))
+
+    def test_a_non_http_scheme_target_raises_driver_error(self):
+        """Boundary: a well-formed URL whose scheme is not http/https (RFC-0027
+        §1 — this driver speaks http.client only) is rejected the same way as
+        a logical name, not attempted as a connection."""
+        driver = HttpNetworkDriver()
+        self.addCleanup(driver.close)
+
+        with self.assertRaises(DriverError) as caught:
+            driver.call("ftp://host/path", {}, 1000)
+
+        self.assertIn("ftp://host/path", str(caught.exception))
+
     def test_close_does_not_raise(self):
         HttpNetworkDriver().close()
+
+    # ---- issue #101: logical-name resolution + method/auth ----
+
+    def test_a_logical_name_resolves_through_endpoints_and_calls_out(self):
+        """Normal case: `--endpoint PaymentGateway=<url>`-style mapping makes
+        a logical-name `call` reach the mock server, same as a URL literal."""
+        url = self.start(_make_handler(status=200, body={"ok": True}))
+        driver = HttpNetworkDriver(endpoints={"PaymentGateway": url})
+        self.addCleanup(driver.close)
+
+        status, body = driver.call("PaymentGateway", {"amount": 42}, 2000)
+
+        self.assertEqual((status, body), (200, {"ok": True}))
+
+    def test_a_declared_bearer_auth_capability_sends_the_authorization_header(self):
+        handler = _make_handler(status=200, body={})
+        url = self.start(handler)
+        driver = HttpNetworkDriver(
+            endpoints={"PaymentGateway": url},
+            capabilities={"PaymentGateway": {
+                "method": "POST", "headers": {"Authorization": "Bearer tok123"}}})
+        self.addCleanup(driver.close)
+
+        driver.call("PaymentGateway", {}, 2000)
+
+        self.assertEqual(handler.received_headers[0].get("Authorization"),
+                         "Bearer tok123")
+
+    def test_a_declared_apikey_auth_capability_sends_the_named_header(self):
+        handler = _make_handler(status=200, body={})
+        url = self.start(handler)
+        driver = HttpNetworkDriver(
+            endpoints={"PaymentGateway": url},
+            capabilities={"PaymentGateway": {
+                "method": "POST", "headers": {"X-Api-Key": "abc123"}}})
+        self.addCleanup(driver.close)
+
+        driver.call("PaymentGateway", {}, 2000)
+
+        self.assertEqual(handler.received_headers[0].get("X-Api-Key"), "abc123")
+
+    def test_a_get_method_capability_sends_no_body(self):
+        """Boundary (D6): `method get` sends no request body — a webhook-style
+        GET, unlike the fixed-POST pre-#101 behaviour."""
+        handler = _make_handler(status=200, body={})
+        url = self.start(handler)
+        driver = HttpNetworkDriver(
+            endpoints={"Webhook": url},
+            capabilities={"Webhook": {"method": "GET", "headers": {}}})
+        self.addCleanup(driver.close)
+
+        driver.call("Webhook", {"amount": 42}, 2000)
+
+        self.assertEqual(handler.received_methods[0], "GET")
+        self.assertIsNone(handler.received[0])
+
+    def test_a_mapped_but_undeclared_logical_name_defaults_to_post_no_auth(self):
+        """A logical name mapped via `endpoints` but naming no `capabilities`
+        entry (declared-not-bound, issue #101 D4) still calls out — method
+        POST, no extra headers, same as the pre-#101 fixed behaviour."""
+        handler = _make_handler(status=200, body={})
+        url = self.start(handler)
+        driver = HttpNetworkDriver(endpoints={"Unbound": url})
+        self.addCleanup(driver.close)
+
+        driver.call("Unbound", {"x": 1}, 2000)
+
+        self.assertEqual(handler.received_methods[0], "POST")
+        self.assertEqual(handler.received[0], {"x": 1})
+        self.assertNotIn("Authorization", handler.received_headers[0])
+
+    def test_a_url_literal_target_ignores_capabilities_and_stays_post(self):
+        """Regression (DoD): a URL literal target is byte-identical to
+        pre-#101 behaviour even when a `capabilities` entry happens to share
+        its exact string — capability lookup is keyed by logical name only,
+        and a URL literal never goes through it."""
+        handler = _make_handler(status=200, body={})
+        url = self.start(handler)
+        driver = HttpNetworkDriver(
+            capabilities={url: {"method": "GET", "headers": {"X-Should-Not": "1"}}})
+        self.addCleanup(driver.close)
+
+        driver.call(url, {"amount": 42}, 2000)
+
+        self.assertEqual(handler.received_methods[0], "POST")
+        self.assertEqual(handler.received[0], {"amount": 42})
+        self.assertNotIn("X-Should-Not", handler.received_headers[0])
+
+    def test_a_logical_name_with_no_endpoint_entry_raises_driver_error(self):
+        """Error case: defense-in-depth for a driver used directly, without
+        the CLI's startup mapping check (issue #101 D3) ever running."""
+        driver = HttpNetworkDriver(endpoints={"OtherGateway": "http://x/"})
+        self.addCleanup(driver.close)
+
+        with self.assertRaises(DriverError) as caught:
+            driver.call("PaymentGateway", {}, 1000)
+
+        self.assertIn("PaymentGateway", str(caught.exception))
 
 
 class OpenNetworkTest(unittest.TestCase):

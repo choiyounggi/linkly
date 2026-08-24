@@ -14,7 +14,9 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
-from .condition import PAYLOAD_NAMESPACE
+import time
+
+from .condition import PAYLOAD_NAMESPACE, guard_condition_text
 from .diagnostics import Diagnostics
 from .drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
 from .refinements import BASE_CATEGORY
@@ -42,7 +44,14 @@ class RunError(Exception):
 
 
 class Clock:
-    """Injected monotonic clock in milliseconds — deterministic in tests."""
+    """Injected monotonic clock in milliseconds — deterministic in tests.
+
+    The **virtual** binding (RFC-0003 §Execution Model/Clock, RFC-0029
+    Updates): process-local, starts at 0, advances only via `advance()`. This
+    is the default for every execution path (`run`, `spec`, `diff`) and its
+    values/ordering are a regression boundary — `lnpl diff` and the spec
+    goldens are only valid on this binding. See `RealClock` for the other.
+    """
 
     def __init__(self, step_cost_ms=5):
         self.now = 0
@@ -51,6 +60,47 @@ class Clock:
     def advance(self, ms=None):
         self.now += self.step_cost_ms if ms is None else ms
         return self.now
+
+
+class RealClock:
+    """The **real** binding (`--clock real`, RFC-0003 §Execution Model/Clock,
+    RFC-0029 Updates): `now` reads a monotonic wall-clock, so it advances on
+    its own between calls. `advance()` is a no-op — nothing to fast-forward.
+
+    First consumer: `CacheAccess` TTL (issue #100) — binding a cache entry's
+    expiry to actual elapsed time is what a persistent cache driver needs
+    (`docs/backends.md` §5, `CacheDriver`'s docstring). Never used by `spec`/
+    `diff`: both stay on the virtual binding, since a non-deterministic clock
+    cannot produce a repeatable comparison.
+    """
+
+    @property
+    def now(self):
+        return time.monotonic_ns() // 1_000_000
+
+    def advance(self, ms=None):
+        return self.now
+
+
+# The closed table of clock selectors `--clock` accepts.
+CLOCKS = ("virtual", "real")
+
+
+def open_clock(spec):
+    """`--clock`'s value -> a Clock instance, or None for the default virtual
+    binding.
+
+    `None` means "the Interpreter builds its own virtual `Clock()`", which
+    keeps the untouched path byte-identical to what it was before this issue
+    — the same shape as `drivers.open_repository`/`open_network`. The lookup
+    is a closed table with a defined miss.
+    """
+    if spec == "virtual":
+        return None
+    if spec == "real":
+        return RealClock()
+    raise ValueError("unknown clock %r (accepted: %s)"
+                     % (spec, ", ".join(CLOCKS)))
 
 
 class FakeRepository:
@@ -99,6 +149,16 @@ class FakeRepository:
         table = self.rows.get(entity_id, {})
         return [row for _key, row in sorted(table.items())]
 
+    def query_sorted(self, entity_id, field):
+        """Every row for `entity_id`, ordered by `field` ascending, row_key
+        the tiebreaker (issue #99, D7 — `SqliteRepositoryDriver.query_sorted`
+        pushed to SQL via `json_extract`; the Fake sorts in memory, over the
+        same `(field value, row_key)` pair, so the two backends agree).
+        """
+        table = self.rows.get(entity_id, {})
+        return [row for _key, row in
+               sorted(table.items(), key=lambda kv: (kv[1].get(field), kv[0]))]
+
     # -- RepositoryDriver contract (drivers.py) ----------------------------
     # This class is the contract's reference implementation, so the three
     # methods below exist to make that explicit rather than to add behaviour:
@@ -118,16 +178,42 @@ class FakeRepository:
                 target.setdefault(key, dict(row) if isinstance(row, dict) else row)
 
     def persist(self, entity_id, key, row):
-        """Nothing to do: a read binds the dict this table holds, so a write
-        through the binding has already landed."""
+        """Write `row` into the table under `key`.
+
+        For the read-then-`set` path this is a no-op in effect: `row` IS the
+        dict `self.rows[entity_id][key]` already holds (a read binds that
+        exact object), so reassigning the same reference changes nothing.
+        For `create`'s payload-seeding (issue #97 / RFC-0012 Updates), `row`
+        is a freshly built dict never yet in the table — a genuine write is
+        what makes the Fake agree with `SqliteRepositoryDriver.persist`
+        (drivers.py), which always writes what it is given.
+        """
+        self.rows.setdefault(entity_id, {})[key] = row
+
+    def record_emission(self, emission):
+        """Nothing to persist — the Fake has no store that outlives the run
+        (issue #102: outbox persistence is a `SqliteRepositoryDriver`
+        contract, the same asymmetry `persist`'s own docstring states)."""
         return None
+
+    def read_outbox(self, event, after_seq=0):
+        """Nothing to tail — same asymmetry `record_emission` states: with
+        no persisted emission, there is nothing an SSE subscriber (issue
+        #103) could ever be shown."""
+        return []
 
     def close(self):
         return None
 
 
 class FakeCache:
-    """Stands in for a `redis` capability. TTL is the Performance budget."""
+    """Stands in for a `redis` capability. TTL is the Performance budget.
+
+    TTL is judged entirely through whichever `Clock` this is constructed
+    with — `get`/`set` never read a wall clock directly. A store-backed
+    `CacheDriver` may follow the same clock-comparison shape, or delegate TTL
+    to the store's own native expiry instead (`CacheDriver`'s docstring).
+    """
 
     def __init__(self, clock):
         self.clock = clock
@@ -205,6 +291,22 @@ class Trace:
                 "logs": self.logs}
 
 
+class _CreatedRow(dict):
+    """A row from `create <Entity> as <name>` (issue #97 / RFC-0012 Updates).
+
+    `bindings` keys it under the author's chosen `as` name, not the entity's
+    default binding name, so `Interpreter._entity_id_for_binding` (built
+    from `repo_policy.binding_name`) cannot resolve it there — the entity id
+    rides on the row itself instead, the same way `drivers._VersionedRow`
+    carries `observed_version` invisibly to every user-facing surface
+    (payload, response, wire).
+    """
+
+    def __init__(self, data, entity_id):
+        super().__init__(data)
+        self.entity_id = entity_id
+
+
 def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
     """Yield the WorkflowStep ids to execute, applying Guard/Concurrency/Pipeline.
 
@@ -229,22 +331,52 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
             mode = node["mode"]
             inner_ids = node.get("children", [])
             if mode == "when":
-                if not _condition_holds(node.get("condition"), payload, bindings):
-                    # Issue #83: a second, pure re-evaluation just to collect the
-                    # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
-                    # line above on purpose: that line is a mutation_check.py
-                    # anchor, and re-evaluating here instead of threading a
-                    # collector through the control-flow call leaves it byte-
-                    # identical.
+                alternatives = node.get("alternatives")
+                if not alternatives:
+                    if not _condition_holds(node.get("condition"), payload, bindings):
+                        # Issue #83: a second, pure re-evaluation just to collect the
+                        # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
+                        # line above on purpose: that line is a mutation_check.py
+                        # anchor, and re-evaluating here instead of threading a
+                        # collector through the control-flow call leaves it byte-
+                        # identical.
+                        raw_evals = []
+                        _condition_holds(node.get("condition"), payload, bindings,
+                                         collector=raw_evals)
+                        result["skipped"].append(_skip_record(
+                            nodes, node,
+                            evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
+                        interp.trace.log("INFO", "guard skipped the guarded item",
+                                         guard=node_id, condition=node.get("condition"))
+                        continue
+                else:
+                    # RFC-0028 §Reference-level Specification/4: evaluate the
+                    # condition AND every alternative — no short-circuit, same
+                    # reasoning `And` already uses (pure terms, and the trace
+                    # must show every alternative's value).
+                    texts = [node.get("condition")] + list(alternatives)
                     raw_evals = []
-                    _condition_holds(node.get("condition"), payload, bindings,
-                                     collector=raw_evals)
-                    result["skipped"].append(_skip_record(
-                        nodes, node,
-                        evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
-                    interp.trace.log("INFO", "guard skipped the guarded item",
-                                     guard=node_id, condition=node.get("condition"))
-                    continue
+                    holds_per_text = []
+                    for text in texts:
+                        term_evals = []
+                        holds_per_text.append(_condition_holds(
+                            text, payload, bindings, collector=term_evals))
+                        raw_evals.extend(term_evals)
+                    if not any(holds_per_text):
+                        result["skipped"].append(_skip_record(
+                            nodes, node,
+                            evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
+                        interp.trace.log(
+                            "INFO", "guard skipped the guarded item",
+                            guard=node_id,
+                            condition=guard_condition_text(
+                                node.get("condition"), alternatives))
+                        continue
+                    fired = next(i for i, h in enumerate(holds_per_text) if h)
+                    if fired > 0:
+                        interp.trace.log(
+                            "INFO", "guard alternative matched", guard=node_id,
+                            condition=alternatives[fired - 1])
                 for inner in _flatten_items(nodes, inner_ids, interp, result, root,
                                             con, payload, bindings):
                     yield inner
@@ -337,10 +469,16 @@ def _skip_record(nodes, node, rounds=None, evaluations=None):
     `differential._normalise_skips` — an ALLOW-list of exactly
     `{mode, condition, step, rounds}` — excludes it the same way it already
     excludes `guard`, with no change needed there.
+
+    `condition` (RFC-0028 §Reference-level Specification/4): the primary
+    condition text, or — when the guard has `alternatives` — the SSOT-joined
+    text `guard_condition_text` builds. Mode B's `restore_skips` calls the
+    same function, so the two modes cannot independently drift on the join.
     """
     return {"guard": node["id"],
             "mode": node["mode"],
-            "condition": node.get("condition"),
+            "condition": guard_condition_text(node.get("condition"),
+                                              node.get("alternatives")),
             "steps": _guarded_step_names(nodes, node.get("children", [])),
             "rounds": rounds,
             "evaluations": evaluations if evaluations is not None else []}
@@ -517,7 +655,21 @@ def eval_value(value, condition, payload, bindings):
         right = eval_value(value.right, condition, payload, bindings)
         if left is None or right is None:
             return None
-        result = left + right if value.op == '+' else left - right
+        if value.op == '+':
+            result = left + right
+        elif value.op == '-':
+            result = left - right
+        elif value.op == '*':
+            result = left * right
+        else:  # '/' — RFC-0028 §1: truncating (toward zero), not Python floor
+            if right == 0:
+                raise RunError(
+                    "division by zero: %s (in %r)"
+                    % (_value_text(value), condition))
+            # Integer-only (no float: an i64 magnitude exceeds float64's exact
+            # range) truncation toward zero, matching mode B's `arith.divsi`.
+            quotient, _ = divmod(abs(left), abs(right))
+            result = -quotient if (left < 0) != (right < 0) else quotient
         if result < INT64_MIN or result > INT64_MAX:
             raise RunError(
                 "value out of the 64-bit range: %s = %d (in %r)"
@@ -564,6 +716,29 @@ def eval_aggregate(agg, expression, rowsets):
                 % (expression, field, value))
         total = _checked(total + value, field, expression)
     return total
+
+
+def eval_format(fmt, payload, bindings):
+    """A parsed `FormatCall` -> str, or None when an argument reference
+    resolves to nothing (issue #94) — the same "unresolved reference"
+    contract `eval_value` uses for a `Value`, so the caller's existing
+    None -> RunError translation covers this RHS kind too.
+
+    Substitution is a plain, sequential `{}` replace — not `str.format`,
+    which would also interpret `{name}`/`{0}` and accept a template wider
+    than the positional-only grammar `condition.parse_format` already
+    enforces (issue #94, D1: no named fields, no padding, no precision).
+    """
+    parts = []
+    for ref in fmt.args:
+        raw = resolve_reference(ref.name, payload, bindings)
+        if raw is None:
+            return None
+        parts.append(str(raw))
+    out = fmt.template
+    for part in parts:
+        out = out.replace("{}", part, 1)
+    return out
 
 
 def _checked(number, name, condition):
@@ -750,8 +925,22 @@ class Interpreter:
         """
         views = {binding_name(n): self._entity_view(n)
                  for n in self.doc["nodes"] if n["kind"] == "Entity"}
-        return {name: mask_payload(row, views.get(name))
-                for name, row in bindings.items()}
+        masked = {}
+        for name, row in bindings.items():
+            view = views.get(name)
+            if view is None:
+                # issue #97 / RFC-0012 Updates: `name` may be a `create ...
+                # as <name>` binding — its row DOES have a declared Entity
+                # shape (unlike a NetworkCall result), just not under this
+                # entity's own binding name, so `views.get(name)` misses it.
+                # Without this, a Password field seeded from the payload
+                # would leave this chokepoint unmasked.
+                entity_id = getattr(row, "entity_id", None)
+                entity_node = self.nodes.get(entity_id) if entity_id else None
+                if entity_node is not None:
+                    view = self._entity_view(entity_node)
+            masked[name] = mask_payload(row, view)
+        return masked
 
     # ---- execution ---------------------------------------------------------
     def run_workflow(self, workflow_id, payload=None):
@@ -783,6 +972,12 @@ class Interpreter:
         # `Aggregate` is not a `Value` (RFC-0025 §2) — so only step execution
         # needs it; `_flatten_items` (guard evaluation) does not.
         rowsets = {}
+        # issue #96: refs from every `Response` node a step that actually ran
+        # (not one a guard skipped, not one that failed) owns, in program
+        # order. Collected here rather than by a second walk of the document
+        # after the fact, so a guard that never fired contributes nothing —
+        # the same rule every other Effect gets from this loop.
+        response_refs = []
         for item_id in _flatten_items(self.nodes, wf.get("children", []), self, result,
                                      root, con, payload, bindings):
             step = self.nodes[item_id]
@@ -813,6 +1008,10 @@ class Interpreter:
                                     "duration_ms": span.duration_ms,
                                     "effects": [self.nodes[c]["kind"]
                                                 for c in step.get("children", [])]})
+            if last_error is None:
+                for child_id in step.get("children", []):
+                    if self.nodes[child_id]["kind"] == "Response":
+                        response_refs.extend(self.nodes[child_id]["refs"])
             if last_error is not None:
                 result["status"] = "failed"
                 result["failed_step"] = step["name"]
@@ -858,6 +1057,30 @@ class Interpreter:
         root.end_ms = self.clock.now
         total = root.duration_ms
         result["bindings"] = self._masked_bindings(bindings)
+        # issue #96, D3/D4: additive and non-destructive — a workflow with no
+        # `respond` (no refs collected) gets no `response` key at all, so its
+        # `result` is unchanged from before this feature existed. Built from
+        # `result["bindings"]`, i.e. AFTER the masking chokepoint, per RFC-0003
+        # §Observability — no second masking rule for this channel either.
+        if result["status"] == "completed" and response_refs:
+            response = {}
+            for ref in response_refs:
+                binding, _, field = ref.partition(".")
+                response.setdefault(binding, {})[field] = \
+                    result["bindings"][binding][field]
+            result["response"] = response
+        # issue #102, D5: additive and non-destructive, the same `response`
+        # precedent (issue #96) — a run that never emits gets no `emissions`
+        # key at all, so it stays byte-identical to before this feature
+        # existed. Unlike `response` this is NOT gated on `status ==
+        # "completed"`: `spec.py`'s `emitted` assertion already reads
+        # `self.outbox` unconditionally (RFC-0003 — the synchronous part of
+        # `emit` ends at registering the publish, before whatever runs
+        # after it), and this clause is that same surface on the JSON
+        # result, so the two must not disagree about what a failed run
+        # still registered.
+        if self.outbox:
+            result["emissions"] = list(self.outbox)
         result["duration_ms"] = total
         result["correlation_id"] = self.trace.correlation_id
         if con["response_slo_ms"] is not None:
@@ -896,12 +1119,14 @@ class Interpreter:
                 raise RunError(
                     "assignment target %r names no bound row — %s was never read"
                     % (target, binding))
-            from .condition import Aggregate, parse_value_or_aggregate
+            from .condition import Aggregate, FormatCall, parse_value_or_aggregate
             rhs = parse_value_or_aggregate(effect["expression"])
             if isinstance(rhs, Aggregate):
                 # RFC-0025 §5: sums/counts the RowSet, never a "resolves to
                 # nothing" — an absent or empty RowSet is 0, not a fault.
                 value = eval_aggregate(rhs, effect["expression"], rowsets)
+            elif isinstance(rhs, FormatCall):
+                value = eval_format(rhs, payload, bindings)
             else:
                 value = eval_value(rhs, effect["expression"], payload, bindings)
             if value is None:
@@ -924,6 +1149,13 @@ class Interpreter:
             # disagree, silently, on exactly the operation this flush exists
             # for.
             entity_id = self._entity_id_for_binding(binding)
+            if entity_id is None:
+                # issue #97 / RFC-0012 Updates: `binding` may be a `create
+                # ... as <name>` result — a namespace `_entity_id_for_binding`
+                # cannot see (it is built from entities' OWN binding names,
+                # not from author-chosen `as` names) — so the entity id rides
+                # on the row itself instead (`_CreatedRow.entity_id`).
+                entity_id = getattr(row, "entity_id", None)
             if entity_id is None:
                 raise RunError(
                     "assignment target %r names no declared entity, so the "
@@ -981,6 +1213,30 @@ class Interpreter:
                 self.clock.advance(1)
                 child.end_ms = self.clock.now
                 raise RunError("repository read found no row for %s" % effect["entity"])
+            if effect["operation"] == "create":
+                # issue #97 / RFC-0012 Updates: payload seeding — same-named,
+                # non-derived fields copy into the row created above,
+                # regardless of `as` ("뼈대 행" fix, issue #97 §3). `as`
+                # additionally binds the seeded row into `bindings` so a
+                # later `set`/`format`/`respond` can address it, the same
+                # scope a `read` binding gets (RFC-0027 §2 notation reused).
+                created_key = row_key(effect["entity"], payload)
+                entity_node = self.nodes.get(effect["entity"])
+                seeded = {"id": created_key}
+                if entity_node is not None:
+                    for field in entity_node.get("fields", []):
+                        if field.get("derived"):
+                            continue
+                        fname = field["name"]
+                        if fname in payload:
+                            seeded[fname] = payload[fname]
+                if len(seeded) > 1:
+                    try:
+                        self.repo.persist(effect["entity"], created_key, seeded)
+                    except DriverError as exc:
+                        raise RunError(str(exc)) from exc
+                if effect.get("result"):
+                    bindings[effect["result"]] = _CreatedRow(seeded, effect["entity"])
         elif kind == "CacheAccess":
             key = effect["key"].replace("{id}", str(payload.get("id", "-")))
             try:
@@ -1055,11 +1311,27 @@ class Interpreter:
             emission = {"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1),
                         "event": event_ref,
                         "payload": mask_payload(payload, self._entity_node())}
+            # issue #102: persisted before the in-memory outbox sees it, so a
+            # driver fault here (translated to RunError below, the same as
+            # every other repo call) never leaves an emission counted in
+            # `self.outbox`/`result["emissions"]` that the durable store does
+            # not actually have.
+            try:
+                self.repo.record_emission(emission)
+            except DriverError as exc:
+                raise RunError(str(exc)) from exc
             self.outbox.append(emission)
             child.attrs["event"] = event_ref
             child.attrs["emission_id"] = emission["emission_id"]
             self.trace.log("INFO", "event publish registered",
                            event=event_ref, emission_id=emission["emission_id"])
+        elif kind == "Response":
+            # issue #96: declarative — `run_workflow` reads `effect["refs"]`
+            # off this step and assembles `result["response"]` from
+            # `bindings` after the run completes. Nothing to evaluate here;
+            # this branch exists only so the step's effect walk does not
+            # treat an unrecognized kind as unimplemented (the `else` below).
+            pass
         else:
             raise RunError("Phase 1 interpreter does not execute %s" % kind)
 
@@ -1111,6 +1383,11 @@ def validate_effect(nodes, effect, payload, refinements):
     happens to declare first (issue #48, qa t1 F-6/S4). `lower` always writes an
     Entity node id here, so a miss means the IR bypassed the compiler — fail
     closed, like 부록 A.7 ⓐ upstream.
+
+    A `derived` field (issue #95) is excluded from the "must be present" half
+    of this check and rejected outright if the payload supplies it anyway — it
+    is server-computed, so the client sending one is mass-assignment, not a
+    completed form.
     """
     rule = effect.get("rule")
     if rule == "semantic-types":
@@ -1120,6 +1397,15 @@ def validate_effect(nodes, effect, payload, refinements):
             raise RunError("validation references undeclared entity %r"
                            % target)
         for field in entity.get("fields", []):
+            if field.get("derived"):
+                # issue #95: server-computed, so the payload must not name it
+                # at all — the trust-boundary inversion the brief's own
+                # `Order{total, placedAt}` regression reports.
+                if field["name"] in payload:
+                    raise RunError(
+                        "field %r is derived (server-computed) and must not "
+                        "be supplied in the payload" % field["name"])
+                continue
             if field["name"] not in payload:
                 raise RunError("missing required field %r" % field["name"])
             check_semantic_type(field["type"], payload[field["name"]],
@@ -1329,6 +1615,12 @@ def sample_payload(entities, refinements=None):
     payload = {}
     for entity in entities:
         for field in entity.get("fields", []):
+            if field.get("derived"):
+                # issue #95: the client can never send this, so the default
+                # fixture must not manufacture a value for it either — doing
+                # so would make every derived-field entity fail its own
+                # default-payload validation forever.
+                continue
             value = sample_for_type(field["type"], refinements)
             if value is not None:
                 payload[field["name"]] = value

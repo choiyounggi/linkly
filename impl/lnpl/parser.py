@@ -5,11 +5,12 @@ A top-level keyword closes the previous block; a clause keyword opens a
 sub-section that closes at the next clause or top-level keyword.
 """
 
-from .lexer import (KEYWORDS_CLAUSE, KEYWORDS_TOP, SCHEDULE_AT,
-                    SCHEDULE_KEYWORD, tokenize)
+from .lexer import (GUARD_ALT_KEYWORD, KEYWORDS_CLAUSE, KEYWORDS_TOP,
+                    SCHEDULE_AT, SCHEDULE_KEYWORD, tokenize)
 from .condition import parse_condition, ConditionError
 
-SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database")
+SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database",
+                   "expose")
 ENTITY_CLAUSES = ("field",)
 
 # The sections of a `spec` block, and the full set a `workflow` accepts.
@@ -126,6 +127,32 @@ def _append_workflow_item(decl, line):
                                         "indent": line.indent}
         return
 
+    if head == GUARD_ALT_KEYWORD:
+        pending = decl.extra.get("_pending_guard")
+        if pending is not None:
+            # RFC-0028 (issue #93): reuses the slot issue #45 turned into a
+            # ParseError — a second guard line no longer means "second guard
+            # was silently dropped," it can mean "this is an alternative."
+            # Scoped to `when` only: `until`'s stop condition and `repeat`'s
+            # count have no natural OR (RFC-0028 §Alternatives).
+            if pending["mode"] != "when":
+                raise ParseError(
+                    "line %d: `or` continues a `when` guard's alternatives, "
+                    "but the pending guard on line %d is `%s` (RFC-0028: "
+                    "alternative guards apply to `when` only)"
+                    % (line.lineno, pending["lineno"], pending["mode"]))
+            if len(line.tokens) < 2:
+                raise ParseError("line %d: `or` needs a condition" % line.lineno)
+            cond_str = " ".join(line.tokens[1:])
+            try:
+                parse_condition(cond_str)
+            except ConditionError as e:
+                raise ParseError("line %d: invalid condition: %s" % (line.lineno, e))
+            pending.setdefault("alternatives", []).append(cond_str)
+            return
+        # No pending guard: `or` is an ordinary word, unchanged from before
+        # this RFC (falls through to the plain step path below).
+
     _attach(decl, {"item": "step", "line": line}, line)
 
 
@@ -185,6 +212,22 @@ def parse(source):
         head = line.head
 
         if head in KEYWORDS_TOP:
+            if head == "capability" and len(line.tokens) > 1 and line.tokens[1] == "http":
+                # `capability http <Name>` (issue #101 / RFC-0027): `http` is a
+                # fixed kind marker, not the capability's name — unlike
+                # `capability <name> [<version>]` below, which reads token[1]
+                # as the name. Its body (`method`/`auth` lines) is grammar-free
+                # content, like `refine`'s facet lines: `lower` parses and
+                # validates it, this module only shapes the block.
+                if len(line.tokens) != 3:
+                    raise ParseError(
+                        "line %d: `capability http` takes exactly one name — "
+                        "`capability http <Name>`" % line.lineno)
+                cur = Decl(head, line.tokens[2], line.lineno)
+                cur.extra["capability_kind"] = "http"
+                cur_clause = None
+                decls.append(cur)
+                continue
             name = _require_name(line)
             cur = Decl(head, name, line.lineno)
             cur_clause = None
@@ -305,6 +348,26 @@ def parse(source):
             # FacetLine+ sits directly under the declaration: `refine` has no
             # clause keyword (RFC-0002 §Full grammar). Values are checked when
             # lowering, where the base decides which facets apply.
+            cur.items.append(line)
+            continue
+
+        if (cur.kind == "capability" and cur.extra.get("capability_kind") == "http"
+                and cur_clause is None):
+            # `method <get|post>` / `auth bearer|apikey ...` (issue #101):
+            # each line carries its keyword and value together, unlike a
+            # SERVICE_CLAUSES block (a bare opener, then content lines) — so
+            # it is shaped the same as `refine`'s facet lines just above, and
+            # `lower` parses/validates the two allowed keywords when it builds
+            # the Capability node. Every other capability kind still falls
+            # through to the generic "takes no clause lines" rejection below.
+            cur.items.append(line)
+            continue
+
+        if cur.kind == "event" and cur_clause is None:
+            # `subscribe` (issue #103, D1): the same content-line shape
+            # `capability http`'s `method`/`auth` lines use just above — no
+            # clause keyword opens it, `lower` parses/validates the one
+            # allowed word when it builds the Event node.
             cur.items.append(line)
             continue
 

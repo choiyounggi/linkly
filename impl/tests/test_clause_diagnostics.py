@@ -11,13 +11,14 @@ premised on an unreachable path.
 
 import unittest
 
+from lnpl.lower import LowerError, lower
 from lnpl.parser import SERVICE_CLAUSES, ENTITY_CLAUSES, ParseError, parse
 
 
 class TestServiceContextListsItsClauses(unittest.TestCase):
     """issue #63 repro: a mistyped clause keyword under `service`."""
 
-    def test_typo_lists_all_five_service_clauses(self):
+    def test_typo_lists_all_service_clauses(self):
         with self.assertRaises(ParseError) as ctx:
             parse("service S\n    polices\n        timeout 2s\n")
         message = str(ctx.exception)
@@ -55,12 +56,20 @@ class TestWorkflowBodyNeverReachesThisError(unittest.TestCase):
 
 
 class TestClauselessDeclarationsSayTheyTakeNone(unittest.TestCase):
-    def test_event_stray_line_says_it_takes_no_clause_lines(self):
-        with self.assertRaises(ParseError) as ctx:
-            parse("event E on Foo create\n    stray line\n")
+    def test_event_stray_line_is_rejected_at_lower_not_parse(self):
+        # issue #103: `event` gained ONE content-line carve-out (`subscribe`,
+        # the same shape `capability http`'s `method`/`auth` lines already
+        # use) — a stray line under `event` now parses (it is captured, like
+        # any other content line under a clause-free block) and is rejected
+        # when `lower` finds it is not a bare `subscribe` line, not at parse
+        # time. `capability C` (no `http` kind) below is unaffected: the
+        # carve-out is `event`-only.
+        src = ("entity Foo\n    field\n        id UUID\n"
+              "event E on Foo create\n    stray line\n")
+        with self.assertRaises(LowerError) as ctx:
+            lower(parse(src), "m")
         message = str(ctx.exception)
-        self.assertIn("takes no clause lines", message)
-        self.assertNotIn("opens:", message)
+        self.assertIn("subscribe", message)
 
     def test_capability_stray_line_says_it_takes_no_clause_lines(self):
         with self.assertRaises(ParseError) as ctx:

@@ -64,12 +64,29 @@ EFFECT_SLUG = {
     "Authorization": "authz",
     "EventEmit": "emit",
     "BusinessRule": "rule",
+    "Response": "respond",
 }
 
 # The one verb whose object is a value expression rather than an entity name
 # (RFC-0015). It stays in `VERB_LEXICON` below so the closed table still answers
 # "which verbs exist"; `_WfContext._step` routes it to its own derivation.
 ASSIGN_VERB = "set"
+
+# The second Assignment-deriving verb (issue #94): `format <target> from
+# "<template>" [with <ref>...]`. Routed the same way `ASSIGN_VERB` is —
+# `_WfContext._step` sends it to its own derivation rather than
+# `_derive_effect`, because its object is a template + reference list, not an
+# entity name.
+FORMAT_VERB = "format"
+
+# issue #96: `respond <ref> [<ref>...]` — a flat FieldMask over References,
+# declaring the workflow's response body. Routed the same way `FORMAT_VERB`
+# is: its object is a list of References, not a single entity name, so
+# `_WfContext._step` sends it to its own derivation (`_derive_respond`)
+# rather than `_derive_effect`. Unlike `format`/`set` it derives no
+# Assignment — nothing is written — so it gets its own IR node kind,
+# `Response`.
+RESPOND_VERB = "respond"
 
 # R1: the closed step-verb lexicon. verb -> (Effect kind, fixed fields)
 VERB_LEXICON = {
@@ -95,6 +112,16 @@ VERB_LEXICON = {
     "emit": ("EventEmit", {}),
     "publish": ("EventEmit", {}),
     "authorize": ("Authorization", {}),
+    # issue #94: States.Format-style string assembly, absorbed as a verb
+    # rather than an expression extension (RFC-0028's design rule, first
+    # applied). Shares `set`'s Assignment kind and binding rule; the shape
+    # of its right-hand side is what `_derive_format` and `condition.FormatCall`
+    # differ on.
+    "format": ("Assignment", {}),
+    # issue #96: declares the workflow's response body — a FieldMask, not an
+    # Effect that changes state, so it gets its own kind rather than reusing
+    # one of the nine Effect kinds above.
+    "respond": ("Response", {}),
 }
 
 # RFC-0026: `unknown-verb`'s did-you-mean, tier 1. The closed lexicon's actual
@@ -126,6 +153,7 @@ VERB_ALIASES = {
 # call instead.
 GUARD_SUBJECT = "guard condition"
 ASSIGN_SUBJECT = "assignment"
+RESPOND_SUBJECT = "response"
 
 # The verbs that put a SINGLE-ROW binding in the execution scope, computed from
 # the same test the lowerer uses to build `read_entities`. A refusal that names
@@ -146,6 +174,23 @@ SECURITY_MECHANISMS = ("jwt", "role", "encrypt")
 PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
 ARGUMENT_MECHANISMS = ("role", "encrypt")
+
+# `capability http <Name>` (issue #101 / RFC-0027): the outbound HTTP method
+# and auth-scheme vocabularies. Closed sets, widened only on demand (issue
+# text) — the same "add a table row, not a branch" shape as POLICY_NAMES etc.
+HTTP_METHODS = ("get", "post")
+HTTP_AUTH_KINDS = ("bearer", "apikey")
+
+# issue #99, D2: `expose` opt-in list surface. `list` is the only verb — a
+# closed set of one, widened only if a later issue asks for more (RFC-0016
+# §Open Questions precedent). The sort field's base type is restricted to
+# Integer|DateTime because both compare with a plain `<`/`>` and serialize to
+# a JSON value `json_extract` and Python's own `<` agree on ordering for
+# (RFC-0025's `list` keyword already means something else — a RowSet bound
+# inside a workflow body; this is a different grammar position, `service ...
+# expose ...`, not a workflow step, so the two do not collide).
+EXPOSE_VERBS = ("list",)
+EXPOSE_SORT_BASES = ("Integer", "DateTime")
 
 
 class LowerError(Exception):
@@ -226,6 +271,99 @@ def _node(kind, nid, **fields):
     node = {"kind": kind, "id": nid}
     node.update({k: v for k, v in fields.items() if v is not None})
     return node
+
+
+def _looks_like_url(target):
+    """Advisory only (declared-not-bound, issue #101): a bare logical name vs.
+    a URL literal. `drivers.HttpNetworkDriver` is the authority that actually
+    rejects a malformed URL at the resolved target (RFC-0027, unchanged by
+    #101) — this just decides whether `call <target>` needed a capability."""
+    return target.startswith("http://") or target.startswith("https://")
+
+
+def _parse_http_auth(line):
+    """One `auth ...` line -> {"kind", "env"} or {"kind", "header", "env"}.
+
+    RFC-0027 secrets principle (`--jwt-secret-env` precedent): only the
+    environment variable's NAME is ever recorded — never a value.
+    """
+    tokens = line.tokens
+    if len(tokens) < 2 or tokens[1] not in HTTP_AUTH_KINDS:
+        raise LowerError(
+            "line %d: `auth` takes one of %s"
+            % (line.lineno, "/".join(HTTP_AUTH_KINDS)))
+    kind = tokens[1]
+    if kind == "bearer":
+        if len(tokens) != 4 or tokens[2] != "from":
+            raise LowerError(
+                "line %d: `auth bearer` needs `from <ENV_NAME>`" % line.lineno)
+        return {"kind": "bearer", "env": tokens[3]}
+    if len(tokens) != 5 or tokens[3] != "from":
+        raise LowerError(
+            "line %d: `auth apikey` needs `<HEADER_NAME> from <ENV_NAME>`"
+            % line.lineno)
+    return {"kind": "apikey", "header": tokens[2], "env": tokens[4]}
+
+
+def _parse_http_capability(d):
+    """`capability http <Name>` body lines -> {"method": ..., "auth": ...|None}.
+
+    `method` is required (no silent POST default — issue #101's whole point is
+    that method/auth are declared, not guessed); `auth` is optional. Each
+    keyword may appear at most once.
+    """
+    method = None
+    auth = None
+    for line in d.items:
+        head = line.tokens[0]
+        if head == "method":
+            if method is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `method` twice"
+                    % (line.lineno, d.name))
+            if len(line.tokens) != 2 or line.tokens[1] not in HTTP_METHODS:
+                raise LowerError(
+                    "line %d: `method` takes one of %s"
+                    % (line.lineno, "/".join(HTTP_METHODS)))
+            method = line.tokens[1]
+        elif head == "auth":
+            if auth is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `auth` twice"
+                    % (line.lineno, d.name))
+            auth = _parse_http_auth(line)
+        else:
+            raise LowerError(
+                "line %d: capability http takes `method`/`auth`, got %r"
+                % (line.lineno, head))
+    if method is None:
+        raise LowerError(
+            "line %d: capability http %s declares no `method` — one of %s "
+            "is required" % (d.lineno, d.name, "/".join(HTTP_METHODS)))
+    return {"method": method, "auth": auth}
+
+
+def _parse_event_subscribe(d):
+    """`event ... subscribe` body lines -> `True`, or a refusal.
+
+    issue #103, D1: a bare flag, one word, at most once — the same shape
+    `_parse_perf_line`'s `VALUELESS_PERF` branch already gives a flag metric.
+    Structural validation only; `subscribe` reaching the IR at all is what
+    `serve.py` reads to derive the SSE route (D2) — this function does not
+    know about routes or auth.
+    """
+    subscribed = False
+    for line in d.items:
+        if line.tokens != ["subscribe"]:
+            raise LowerError(
+                "line %d: event %s takes only a bare `subscribe` line, got %r"
+                % (line.lineno, d.name, " ".join(line.tokens)))
+        if subscribed:
+            raise LowerError(
+                "line %d: event %s declares `subscribe` twice"
+                % (line.lineno, d.name))
+        subscribed = True
+    return subscribed
 
 
 def _parse_policy_line(tokens, lineno):
@@ -344,6 +482,42 @@ def _parse_security_line(tokens, lineno):
     if len(tokens) != 1:
         raise LowerError("line %d: `%s` takes no argument" % (lineno, head))
     return head
+
+
+def _parse_expose_line(tokens, lineno, registry, base_of):
+    """issue #99, D2: `list <Entity> by <field>` -> `{entity, field}`.
+
+    Unlike `_parse_security_line`/`_parse_policy_line` this is not a closed
+    keyword lookup alone: `<Entity>` and `<field>` are live references, so a
+    typo here is a dangling reference (RFC-0001 structure rule 6), same as an
+    undeclared capability in a `database` line — not a guess at what was
+    meant.
+    """
+    verb = tokens[0]
+    if verb not in EXPOSE_VERBS:
+        raise LowerError("line %d: unknown expose verb %r (allowed: %s)"
+                         % (lineno, verb, ", ".join(EXPOSE_VERBS)))
+    if len(tokens) != 4 or tokens[2] != "by":
+        raise LowerError(
+            "line %d: `expose %s` needs `%s <Entity> by <field>`"
+            % (lineno, verb, verb))
+    entity_name, field_name = tokens[1], tokens[3]
+    entity = next((e for e in registry.values() if e["name"] == entity_name), None)
+    if entity is None:
+        raise LowerError(
+            "line %d: %r is not a declared entity (dangling reference — "
+            "RFC-0001 structure rule 6)" % (lineno, entity_name))
+    field = next((f for f in entity["fields"] if f["name"] == field_name), None)
+    if field is None:
+        raise LowerError("line %d: entity %s has no field %r"
+                         % (lineno, entity_name, field_name))
+    base = base_of.get(field["type"], field["type"])
+    if base not in EXPOSE_SORT_BASES:
+        raise LowerError(
+            "line %d: expose list sort field must be Integer or DateTime "
+            "(allowed: %s), but %s.%s is base %r"
+            % (lineno, ", ".join(EXPOSE_SORT_BASES), entity_name, field_name, base))
+    return {"entity": entity["id"], "field": field_name}
 
 
 def _number(tok):
@@ -523,11 +697,20 @@ def lower(decls, module_name):
     for decl in by_kind["entity"]:
         fields = []
         for line in decl.clauses.get("field", []):
-            if len(line.tokens) != 2:
-                raise LowerError("line %d: field must be `<name> <Type>`" % line.lineno)
-            fields.append({"name": line.tokens[0],
-                           "type": _resolve_type(line.tokens[1], refined_names,
-                                                 used_presets, line.lineno)})
+            if len(line.tokens) not in (2, 3):
+                raise LowerError(
+                    "line %d: field must be `<name> <Type>` or `<name> <Type> "
+                    "derived`" % line.lineno)
+            if len(line.tokens) == 3 and line.tokens[2] != "derived":
+                raise LowerError(
+                    "line %d: unknown field modifier %r — `derived` is the "
+                    "only one (issue #95)" % (line.lineno, line.tokens[2]))
+            field = {"name": line.tokens[0],
+                    "type": _resolve_type(line.tokens[1], refined_names,
+                                          used_presets, line.lineno)}
+            if len(line.tokens) == 3:
+                field["derived"] = True
+            fields.append(field)
         if not fields:
             raise LowerError("entity %s declares no fields" % decl.name)
         from .condition import PAYLOAD_NAMESPACE
@@ -551,6 +734,11 @@ def lower(decls, module_name):
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
     cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
+    # issue #101: which declared capabilities carry outbound HTTP metadata —
+    # `_derive_effect`'s NetworkCall branch uses only the name set, to flag a
+    # `call <target>` whose target names no `capability http` declaration.
+    http_cap_names = {d.name for d in by_kind["capability"]
+                      if d.extra.get("capability_kind") == "http"}
 
     # ---- workflow ownership: nearest preceding service (RFC-0002 A.2 R2) ----
     owner_of = {}
@@ -596,6 +784,18 @@ def lower(decls, module_name):
                 mod.diagnostics, "performance",
                 [(b["metric"], l.lineno)
                  for b, l in zip(budgets, d.clauses["performance"])], perfid)
+        # issue #99, D2: `expose list <Entity> by <field>` -> one Expose node
+        # per line, ids scoped under the service the same way `goal` lines
+        # become numbered BusinessRule nodes below. Expose nodes ride in
+        # `children` (not `constraints`): like a Workflow, and unlike
+        # Security/Policy/Performance, an Expose node synthesizes a servable
+        # route rather than constraining one.
+        expose_nodes = []
+        for n, line in enumerate(d.clauses.get("expose", []), start=1):
+            parsed = _parse_expose_line(line.tokens, line.lineno, registry, base_of)
+            expose_nodes.append(_node(
+                "Expose", "%s.expose.%d" % (sid, n),
+                entity=parsed["entity"], field=parsed["field"], line=line.lineno))
         # Capability attribution (formerly the provisional R3). A service takes the
         # capabilities its own `database` clause names; with no such clause, a
         # single-service module attributes all of them, and a multi-service module
@@ -639,6 +839,7 @@ def lower(decls, module_name):
         children = [g["id"] for g in goal_nodes]
         children += [derive_id(w.name, "Workflow")
                      for w in by_kind["workflow"] if owner_of.get(id(w)) is d]
+        children += [e["id"] for e in expose_nodes]
         service_nodes.append(_node(
             "Service", sid, name=d.name,
             requires=requires or None,
@@ -646,6 +847,7 @@ def lower(decls, module_name):
             children=children or None,
             line=d.lineno))
         service_nodes.extend(goal_nodes)
+        service_nodes.extend(expose_nodes)
 
     # A.6.4 emit-on-use: a preset a field named rides into this document as a
     # node, built by the same function a declaration uses. An unused preset is
@@ -665,6 +867,10 @@ def lower(decls, module_name):
                       line=ent["decl"].lineno))
 
     declared_event_ids = set()
+    # eid -> (entity id, create|update|delete) for `on`-sourced events only —
+    # issue #98's mismatch/orphaned checks apply to this coupling and nowhere
+    # else (a schedule-sourced or bare `event X` has no step to check against).
+    event_sources = {}
     for d in by_kind["event"]:
         eid = derive_id(d.name, "Event")
         declared_event_ids.add(eid)
@@ -677,6 +883,7 @@ def lower(decls, module_name):
                                  "(dangling reference — RFC-0001 structure rule 6)"
                                  % (d.lineno, ent_name))
             source = {"ref": ref, "on": trigger}
+            event_sources[eid] = (ref, trigger)
         elif "schedule" in d.extra:
             source = _schedule_source(d.extra["schedule"], d.lineno)
             # RFC-0016: the declaration reaches the IR and the OpenAPI schedule
@@ -684,12 +891,14 @@ def lower(decls, module_name):
             # `performance batch`, which parses into silence (t3 F-2).
             _declaration_diagnostics(mod.diagnostics, "event",
                                      [("schedule", d.lineno)], where=eid)
-        mod.add(_node("Event", eid, name=d.name, source=source, line=d.lineno))
+        subscribe = _parse_event_subscribe(d)
+        mod.add(_node("Event", eid, name=d.name, source=source,
+                      subscribe=subscribe or None, line=d.lineno))
 
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, registry, mod.diagnostics)
+        ctx = _WfContext(wid, registry, mod.diagnostics, http_cap_names)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
                       line=d.lineno))
@@ -700,14 +909,20 @@ def lower(decls, module_name):
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
         _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
                            mod.diagnostics, d.name)
+        _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
+                                     d.name, mod.diagnostics)
+        _check_derived_never_assigned(ctx.emitted, registry, d.name,
+                                      mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
 
     for d in by_kind["capability"]:
+        http_fields = (_parse_http_capability(d)
+                      if d.extra.get("capability_kind") == "http" else {})
         mod.add(_node("Capability", derive_id(d.name, "Capability"),
                       name=d.name, version=d.extra.get("version"),
-                      line=d.lineno))
+                      line=d.lineno, **http_fields))
 
     return mod
 
@@ -715,10 +930,11 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, registry, diagnostics):
+    def __init__(self, wid, registry, diagnostics, http_cap_names=frozenset()):
         self.wid = wid
         self.registry = registry
         self.diagnostics = diagnostics
+        self.http_cap_names = http_cap_names
         self.emitted = []
         self._step_n = 0
         self._guard_n = 0
@@ -744,16 +960,56 @@ class _WfContext:
         self._step_n += 1
         return "%s.step.%d" % (self.wid, self._step_n)
 
+    def _registry_with_create_bindings(self):
+        """`set`/`format`/`respond` resolve `<binding>.<field>` through
+        `_derive_assignment`/`_derive_format`/`_derive_respond`'s own
+        `registry`-keyed lookup, immediately — before `_check_scoped_conditions`
+        ever runs. issue #97 / RFC-0012 Updates: a `create <Entity> as <name>`
+        binding needs to satisfy that SAME lookup, with zero change to those
+        three functions — `repo_policy.binding_name` is idempotent on an
+        already-camelCase string (`name[:1].lower() + name[1:]`), so a
+        synthetic entry whose `name` IS the `as` name resolves through the
+        exact loop those functions already run (`for ent in registry.values():
+        if binding_name(ent) == binding`), keeping its real `id`/`fields` so
+        the derived node still names the real entity.
+
+        Scoped to `self` (per-workflow, rebuilt from `self.emitted` so far) —
+        unlike `self.registry` (document-global), two workflows reusing the
+        same `as` name for different entities never collide.
+        """
+        extra = {}
+        for node in self.emitted:
+            if (node["kind"] == "RepositoryCall"
+                    and node.get("operation") == "create" and node.get("result")):
+                entity = self.registry[node["entity"]]
+                extra["__create_as__.%s" % node["result"]] = dict(
+                    entity, name=node["result"])
+        if not extra:
+            return self.registry
+        merged = dict(self.registry)
+        merged.update(extra)
+        return merged
+
     def _step(self, line):
         step_id = self._next_step_id()
         self.step_lines[step_id] = line.lineno
         verb = line.tokens[0]
         obj = line.tokens[1] if len(line.tokens) > 1 else None
         if verb == ASSIGN_VERB:
-            derived = _derive_assignment(step_id, line, self.registry)
+            derived = _derive_assignment(
+                step_id, line, self._registry_with_create_bindings())
+        elif verb == FORMAT_VERB:
+            derived = _derive_format(
+                step_id, line, self._registry_with_create_bindings())
+        elif verb == RESPOND_VERB:
+            derived = _derive_respond(
+                step_id, line, self._registry_with_create_bindings())
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
-                                     line.lineno, line.tokens[2:])
+                                     line.lineno, line.tokens[2:],
+                                     diagnostics=self.diagnostics,
+                                     step_text=" ".join(line.tokens),
+                                     http_cap_names=self.http_cap_names)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -816,6 +1072,10 @@ class _WfContext:
             fields["count"] = int(guard["arg"])
         else:
             fields["condition"] = guard["arg"]
+        # RFC-0028 §Reference-level Specification/3: additive, `when`-only.
+        # `parser.py` only ever populates this for `mode == "when"`.
+        if guard.get("alternatives"):
+            fields["alternatives"] = list(guard["alternatives"])
         self.emitted.append(_node("Guard", node_id, children=[inner_id],
                                   line=guard["lineno"], **fields))
         return node_id
@@ -970,6 +1230,152 @@ def _check_event_refs(emitted, declared_event_ids, workflow_name):
                else "none declared"))
 
 
+def _guard_owner_map(top_ids, by_id):
+    """node id -> the `Guard` node that owns it, or `None` at the top level.
+
+    Same tree RFC-0023's `_steps_outside_guards` already walks (top-level
+    order, a `Guard`'s single child, a block's several), generalised to record
+    *which* guard owns a node instead of filtering guarded ones out. Every
+    node reachable from `top_ids` gets an entry, including a `WorkflowStep`'s
+    own Effect children — an `EventEmit`/`RepositoryCall` id needs the same
+    owner its parent step has.
+    """
+    owner = {}
+
+    def walk(node_id, guard):
+        node = by_id.get(node_id)
+        if node is None:
+            return
+        owner[node_id] = guard
+        if node["kind"] == "Guard":
+            children = node.get("children") or []
+            if children:
+                walk(children[0], node)
+            return
+        for child_id in node.get("children") or []:
+            walk(child_id, guard)
+
+    for nid in top_ids or []:
+        walk(nid, None)
+    return owner
+
+
+def _guard_key(guard):
+    """A guard's protection identity for scope comparison (issue #98).
+
+    Two *physically distinct* `Guard` nodes with the same mode+condition (the
+    "repeat the guard line" remedy) count as the same scope — node identity
+    would wrongly flag that remedy as still broken. `None` (top level, no
+    guard) is its own key: unconditional steps always run together.
+    """
+    if guard is None:
+        return None
+    if guard.get("mode") == "repeat":
+        return ("repeat", guard.get("count"))
+    return (guard.get("mode"), guard.get("condition"))
+
+
+def _check_event_source_mismatch(emitted, top_ids, event_sources, workflow_name,
+                                 diagnostics):
+    """`event-source-mismatch` (warning) / `event-source-orphaned` (info) — #98.
+
+    `event <E> on <Entity> <op>` claims E is the event for `<op> <entity>`, but
+    nothing checked `emit E` against that claim. A guard that skips `create
+    order` still lets an unguarded `emit orderPlaced` beside it fire — the
+    declaration becomes a lie at runtime with no compile-time signal.
+
+    For each `on`-sourced event this workflow `emit`s:
+      * no `<op> <entity>` `RepositoryCall` runs here at all -> the source is
+        descriptive only for this workflow -> `event-source-orphaned` (info,
+        same grading logic as `declared-not-enforced`: no local edit removes
+        it short of restructuring the workflow or dropping the source/emit);
+      * one runs, but none share the emit's guard scope (`_guard_key`) ->
+        `event-source-mismatch` (warning: moving the emit under that scope, or
+        that scope's condition under the emit, removes it — `ORPHAN_HINT`
+        names both remedies, same wording RFC-0023 already uses);
+      * one runs and shares the emit's guard scope -> silent.
+
+    A schedule-sourced or source-less event (`event X` alone) never appears in
+    `event_sources`, so its `emit` is untouched (issue #98 §3).
+    """
+    by_id = {node["id"]: node for node in emitted}
+    owner = _guard_owner_map(top_ids, by_id)
+
+    for step in emitted:
+        if step["kind"] != "EventEmit":
+            continue
+        eid = step.get("event")
+        source = event_sources.get(eid)
+        if source is None:
+            continue
+        entity_ref, op = source
+        op_steps = [n for n in emitted
+                    if n["kind"] == "RepositoryCall"
+                    and n.get("entity") == entity_ref
+                    and n.get("operation") == op]
+        where = step.get("line")
+        where_str = ("line %d" % where) if where else workflow_name
+        if not op_steps:
+            diagnostics.add(
+                code="event-source-orphaned",
+                where=where_str, subject=eid, line=where,
+                message="`emit %s` fires, but workflow %s never runs `%s` on "
+                        "the entity its `on` source declares — the source "
+                        "declaration is descriptive only here"
+                        % (eid, workflow_name, op))
+            continue
+        emit_scope = _guard_key(owner.get(step["id"]))
+        if any(_guard_key(owner.get(rs["id"])) == emit_scope for rs in op_steps):
+            continue
+        diagnostics.add(
+            code="event-source-mismatch",
+            where=where_str, subject=eid, line=where,
+            message="`emit %s` is not in the same guard scope as the `%s` "
+                    "step its `on` source declares, so it can fire whether "
+                    "or not that step ran. %s" % (eid, op, ORPHAN_HINT))
+
+
+def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics):
+    """`derived-never-assigned` (warning) — issue #95.
+
+    A `derived` field is server-computed, so a `create` step for an entity
+    that declares one is a lie unless something in this workflow actually
+    fills it. `set`/`format` both lower to an `Assignment` node carrying
+    `entity`/`target` (D5: no new verb), so checking for one is the same
+    "did the document say what it claims" scan `_check_event_source_mismatch`
+    already runs for `emit` — this is that check's field-level twin.
+
+    Deliberately workflow-scoped and order-blind: the field only needs to be
+    assigned *somewhere* in the workflow that creates it, not before the
+    `create` step specifically — RFC-0015 already refuses `set` on a row this
+    workflow never read, which is a stronger, separate guarantee than this
+    diagnostic is trying to add.
+    """
+    assigned = {(node["entity"], node["target"].rsplit(".", 1)[-1])
+               for node in emitted if node["kind"] == "Assignment"}
+    for step in emitted:
+        if step["kind"] != "RepositoryCall" or step.get("operation") != "create":
+            continue
+        entity = registry.get(step["entity"])
+        if entity is None:
+            continue
+        where = step.get("line")
+        where_str = ("line %d" % where) if where else workflow_name
+        for field in entity["fields"]:
+            if not field.get("derived"):
+                continue
+            if (entity["id"], field["name"]) in assigned:
+                continue
+            diagnostics.add(
+                code="derived-never-assigned",
+                where=where_str, subject="%s.%s" % (entity["id"], field["name"]),
+                line=where,
+                message="`create %s` never assigns %s's derived field %r — "
+                        "add a `set`/`format` step that fills it somewhere in "
+                        "this workflow" % (entity["name"], entity["name"],
+                                          field["name"]))
+
+
 def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                              top_ids=None, diagnostics=None):
     """Refuse a guard reference that can never resolve, or can never be compared.
@@ -997,8 +1403,9 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     and `when token missing` asks about the request rather than about a row. That
     is also why `input.` is the spelling worth preferring — it is checked.
     """
-    from .condition import (Aggregate, ConditionError, Lit, PAYLOAD_NAMESPACE,
-                            parse_condition, parse_value_or_aggregate, references)
+    from .condition import (Aggregate, ConditionError, FormatCall, Lit,
+                            PAYLOAD_NAMESPACE, parse_condition,
+                            parse_value_or_aggregate, references)
     from .repo_policy import binding_name
 
     by_binding = {binding_name(ent): ent for ent in registry.values()}
@@ -1019,8 +1426,18 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     # (RFC-0012 §G12.4).
     network_bindings = {node["result"] for node in emitted
                         if node["kind"] == "NetworkCall" and node.get("result")}
+    # issue #97 / RFC-0012 Updates: `create <Entity> as <name>` binds the
+    # created row's own Entity shape under `<name>` — a separate namespace
+    # from `by_binding` (the entity's default binding name), since the two
+    # are guaranteed disjoint by the collision check `_derive_effect` runs
+    # at emission time.
+    create_bindings = {node["result"]: registry[node["entity"]]
+                       for node in emitted
+                       if node["kind"] == "RepositoryCall"
+                       and node.get("operation") == "create"
+                       and node.get("result")}
     scope = _Scope(workflow_name, by_binding, read_entities, declared_fields,
-                   base_of or {}, network_bindings)
+                   base_of or {}, network_bindings, create_bindings)
     by_id = {node["id"]: node for node in emitted}
 
     # Source order, not emission order: `_WfContext._guard` emits its guarded step
@@ -1055,37 +1472,54 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         if not guarded and child.get("operation") == "query":
                             listed.add(child["entity"])
                         continue
+                    if child["kind"] == "Response":
+                        text = "respond %s" % " ".join(child["refs"])
+                        _check_respond(child["refs"], scope, text, base_of or {})
+                        continue
                     if child["kind"] != "Assignment":
                         continue
-                    # The target and the expression's operands are references
-                    # like any other, so the same judgements apply — including
-                    # "is it an Integer".
-                    text = "set %s to %s" % (child["target"], child["expression"])
-                    scope.check_reference(child["target"], text,
-                                          ASSIGN_SUBJECT, is_target=True)
                     rhs = parse_value_or_aggregate(child["expression"])
-                    if isinstance(rhs, Aggregate):
-                        entity_id = _check_aggregate(rhs, by_binding, base_of or {},
-                                                     workflow_name, text)
-                        if entity_id not in listed and diagnostics is not None:
-                            line = child.get("line")
-                            diagnostics.add(
-                                code="aggregation-orphaned-list",
-                                where=("line %d" % line) if line else workflow_name,
-                                subject=text,
-                                message="`%s` reads a RowSet no earlier "
-                                        "unguarded `list` fills in this "
-                                        "workflow, so it is always empty and "
-                                        "this always evaluates to 0"
-                                        % text,
-                                line=line)
+                    if isinstance(rhs, FormatCall):
+                        # issue #94: format's own type rule, not the numeric/
+                        # instant one `check_reference` enforces below — a
+                        # Text-family target and reference arguments of any
+                        # type (Password excluded) are exactly what `set`'s
+                        # rule would refuse.
+                        text = "format %s from %r%s" % (
+                            child["target"], rhs.template,
+                            (" with " + " ".join(a.name for a in rhs.args))
+                            if rhs.args else "")
+                        _check_format(child["target"], rhs, scope, text,
+                                     base_of or {})
                     else:
-                        for name in references(rhs):
-                            scope.check_reference(name, text, ASSIGN_SUBJECT)
-                        # The expression is a `Value` like any other, so
-                        # `instant + instant` is as meaningless here as in a
-                        # guard.
-                        _value_dimension(rhs, scope, text, ASSIGN_SUBJECT)
+                        # The target and the expression's operands are
+                        # references like any other, so the same judgements
+                        # apply — including "is it an Integer".
+                        text = "set %s to %s" % (child["target"], child["expression"])
+                        scope.check_reference(child["target"], text,
+                                              ASSIGN_SUBJECT, is_target=True)
+                        if isinstance(rhs, Aggregate):
+                            entity_id = _check_aggregate(rhs, by_binding, base_of or {},
+                                                         workflow_name, text)
+                            if entity_id not in listed and diagnostics is not None:
+                                line = child.get("line")
+                                diagnostics.add(
+                                    code="aggregation-orphaned-list",
+                                    where=("line %d" % line) if line else workflow_name,
+                                    subject=text,
+                                    message="`%s` reads a RowSet no earlier "
+                                            "unguarded `list` fills in this "
+                                            "workflow, so it is always empty and "
+                                            "this always evaluates to 0"
+                                            % text,
+                                    line=line)
+                        else:
+                            for name in references(rhs):
+                                scope.check_reference(name, text, ASSIGN_SUBJECT)
+                            # The expression is a `Value` like any other, so
+                            # `instant + instant` is as meaningless here as in a
+                            # guard.
+                            _value_dimension(rhs, scope, text, ASSIGN_SUBJECT)
                     assigned.add(child["target"])
             else:
                 visit(node.get("children") or [], guarded=guarded)
@@ -1140,12 +1574,120 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
     return entity["id"]
 
 
+def _check_format(target, rhs, scope, text, base_of):
+    """issue #94, D3(b)/(c): `format`'s own type rule.
+
+    Neither side goes through `_dimension_of` (RFC-0016's Integer/DateTime
+    check) — that rule is for arithmetic and comparison, and `format` does
+    neither. Its target must be Text-family (the one field type arithmetic
+    and comparisons never accept, which is exactly why the language had no
+    way to write one before this verb); its arguments may be any type
+    EXCEPT Password — the masking chokepoint (issue #43) that this verb
+    would otherwise let an author route around by assembling a masked
+    field's value into an unmasked one.
+    """
+    target_field = scope.resolve_field(target, text, ASSIGN_SUBJECT, is_target=True)
+    if target_field is None:
+        raise LowerError(
+            "workflow %s: format target %r must name a bound row's field "
+            "(`<binding>.<field>`), not a bare or input reference"
+            % (scope.workflow_name, text))
+    declared = target_field.get("type")
+    base = base_of.get(declared, declared)
+    if base != "Text":
+        raise LowerError(
+            "workflow %s: format target %r has declared type %s, whose base "
+            "is %s — format writes only to a Text-family field (RFC-0016 "
+            "gives Text no numeric/instant dimension, so no other verb could "
+            "ever write one; format is the one verb that assembles strings)"
+            % (scope.workflow_name, text, declared, base))
+    for ref in rhs.args:
+        arg_field = scope.resolve_field(ref.name, text, ASSIGN_SUBJECT)
+        if arg_field is None:
+            continue                      # bare/network reference — unchecked
+        arg_declared = arg_field.get("type")
+        arg_base = base_of.get(arg_declared, arg_declared)
+        if arg_base == "Password":
+            raise LowerError(
+                "workflow %s: format argument %r has declared type %s, "
+                "whose base is Password — format must not assemble a "
+                "Password field into a string (issue #43's masking "
+                "chokepoint: a masked field's value must never leave "
+                "through an unmasked one)"
+                % (scope.workflow_name, ref.name, arg_declared))
+
+
+def _check_respond(refs, scope, text, base_of):
+    """issue #96, D3: `respond`'s own reference rule.
+
+    Reuses `_Scope.resolve_field` (issue #45's existing Reference check) for
+    "does this reference name a bound row's declared field, and was that
+    entity actually read" — no new lookup invented. `resolve_field` returning
+    None means a bare or network-result reference, neither of which has a
+    declared field type for the OpenAPI 200 schema to derive (D6), so that is
+    refused here the same way `_check_format`'s target check refuses one.
+    Then, the Password rule: `format`'s argument check forbids assembling a
+    masked field into an unmasked one (issue #43's masking chokepoint);
+    `respond` extends that same chokepoint to the response surface itself.
+    """
+    for ref in refs:
+        field = scope.resolve_field(ref, text, RESPOND_SUBJECT)
+        if field is None:
+            raise LowerError(
+                "workflow %s: respond reference %r must name a bound row's "
+                "field (`<binding>.<field>`), not a bare or network-result "
+                "reference — a response field needs a declared type"
+                % (scope.workflow_name, ref))
+        declared = field.get("type")
+        base = base_of.get(declared, declared)
+        if base == "Password":
+            raise LowerError(
+                "workflow %s: respond reference %r has declared type %s, "
+                "whose base is Password — respond must not surface a "
+                "Password field in the response (issue #43's masking "
+                "chokepoint: a masked field's value must never leave "
+                "through an unmasked one)"
+                % (scope.workflow_name, ref, declared))
+
+
+def _check_literal_zero_divisor(value, where):
+    """RFC-0028 §Reference-level Specification/2: a literal `0` divisor always
+    fails (the run could only ever end in `RunError`), so it is refused here
+    rather than sent to a run that cannot do anything else. A REFERENCED
+    divisor is a runtime value — that is §2's `RunError` row, decided at run
+    time because the document alone cannot know it will be 0.
+
+    `Arith.left`/`.right` are `Ref | Lit`, never `Arith` (RFC-0015: arithmetic
+    does not nest), so this needs no recursion.
+    """
+    from .condition import Arith, Lit
+    if isinstance(value, Arith) and value.op == '/' \
+            and isinstance(value.right, Lit) and value.right.value == 0:
+        raise LowerError(
+            "%s: divides by the literal 0 — division by zero is not a "
+            "runtime input here: the right operand is the literal 0"
+            % where)
+
+
 def _check_guard(node, scope, assigned, workflow_name, parse_condition,
                  references, ConditionError, Lit):
-    """One Guard's condition: every reference resolvable, comparable, and stable."""
+    """One Guard's condition (and, since RFC-0028, each `or` alternative):
+    every reference resolvable, comparable, and stable.
+
+    Each alternative is an independent `Condition` — RFC-0028 does not widen
+    `Condition`'s grammar — so it gets exactly the same checks the primary
+    condition does, one text at a time.
+    """
     text = node.get("condition")
     if not text:
         return                            # `repeat` carries a count, not a condition
+    for one_text in (text,) + tuple(node.get("alternatives") or ()):
+        _check_one_condition(one_text, scope, assigned, workflow_name,
+                             parse_condition, references, ConditionError, Lit)
+
+
+def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
+                         references, ConditionError, Lit):
     try:
         cond = parse_condition(text)
     except ConditionError:
@@ -1173,6 +1715,9 @@ def _check_guard(node, scope, assigned, workflow_name, parse_condition,
                 "workflow %s: guard condition %r compares two literals, so it "
                 "decides nothing — name a field on at least one side"
                 % (workflow_name, text))
+        where = "workflow %s: guard condition %r" % (workflow_name, text)
+        _check_literal_zero_divisor(term.left, where)
+        _check_literal_zero_divisor(term.right, where)
 
     _check_dimensions(cond, scope, text)
 
@@ -1275,7 +1820,7 @@ class _Scope:
     """
 
     def __init__(self, workflow_name, by_binding, read_entities, declared_fields,
-                 base_of, network_bindings=frozenset()):
+                 base_of, network_bindings=frozenset(), create_bindings=None):
         self.workflow_name = workflow_name
         self.by_binding = by_binding
         self.read_entities = read_entities
@@ -1284,6 +1829,14 @@ class _Scope:
         # Entity behind them, so `check_reference` skips the field-existence
         # check for these (a response body has no declared shape).
         self.network_bindings = network_bindings
+        # issue #97 / RFC-0012 Updates: names bound by `create ... as
+        # <name>` — UNLIKE a network result, this row DOES have a declared
+        # Entity shape (the noun `create` names), so it gets the same
+        # field-checked treatment a `read` binding gets, not the "any field
+        # name accepted" treatment `network_bindings` gets. `binding ->
+        # entity node`, keyed by the `as` name, not the entity's own binding
+        # name.
+        self.create_bindings = create_bindings or {}
         self.base_of = base_of
 
     def check_reference(self, name, text, subject=GUARD_SUBJECT,
@@ -1294,6 +1847,31 @@ class _Scope:
         when the document does not declare a type for it — a bare reference
         names a payload field the document never describes, so its dimension is
         decided at runtime, exactly as its value is.
+        """
+        field_node = self.resolve_field(name, text, subject, is_target)
+        if field_node is None:
+            return None
+        return self._dimension_of(field_node, name, text)
+
+    def resolve_field(self, name, text, subject=GUARD_SUBJECT,
+                      is_target=False):
+        """One `Reference`, resolved to its field's declaration — every
+        judgement `check_reference` makes EXCEPT the final numeric/instant
+        dimension (`_dimension_of`).
+
+        Returns the field's declaration dict, or None when the document does
+        not structurally describe it (a bare reference, or a network-result
+        binding whose response shape is not declared — RFC-0027 §2/§4).
+        Raises `LowerError` for every reference that IS structurally
+        checkable but fails: unknown binding, undeclared field, or a binding
+        this workflow never reads.
+
+        A caller that also needs the numeric/instant dimension calls
+        `check_reference`, which applies `_dimension_of` on top of this. A
+        caller with its OWN type rule — `format`'s Text-only target,
+        Password-forbidden argument (issue #94) — calls this directly, since
+        `_dimension_of` would refuse every Text-family field `format` exists
+        to write.
         """
         from .condition import PAYLOAD_NAMESPACE
         if "." not in name:
@@ -1307,7 +1885,7 @@ class _Scope:
                     "declares (declared fields: %s)"
                     % (self.workflow_name, text, field,
                        ", ".join(sorted(self.declared_fields)) or "none"))
-            return self._dimension_of(self.declared_fields[field], name, text)
+            return self.declared_fields[field]
 
         if binding in self.network_bindings:
             # RFC-0027 §2/§4: a network result binding's shape is not
@@ -1315,6 +1893,21 @@ class _Scope:
             # field name is accepted here — the same "unchecked, resolved at
             # runtime" treatment `input.*` gets, one level down.
             return None
+
+        if binding in self.create_bindings:
+            # issue #97 / RFC-0012 Updates: a `create ... as <name>` binding
+            # is live the instant the row is created — no "this workflow
+            # never reads it" gate applies here, unlike a plain entity
+            # binding (RFC-0012 §G12.2/§G12.5), since the row was just made
+            # by this same step.
+            entity = self.create_bindings[binding]
+            fields = {f["name"]: f for f in entity["fields"]}
+            if field not in fields:
+                raise LowerError(
+                    "workflow %s: %s %r names field %r, which entity %s "
+                    "does not declare"
+                    % (self.workflow_name, subject, text, field, entity["name"]))
+            return fields[field]
 
         entity = self.by_binding.get(binding)
         if entity is None:
@@ -1340,8 +1933,9 @@ class _Scope:
                 raise LowerError(
                     "workflow %s: %s %r assigns to %s, but this workflow never "
                     "reads it — no binding can ever exist, so there is nothing "
-                    "to assign to (read it first with one of %s; `set` writes "
-                    "only to a row this workflow read)"
+                    "to assign to (read it first with one of %s, or create it "
+                    "with `as` if this step creates it; `set` writes only to "
+                    "a row this workflow read or created)"
                     % (self.workflow_name, subject, text, entity["id"],
                        " / ".join("`%s`" % v for v in READ_VERBS)))
             if subject != GUARD_SUBJECT:
@@ -1357,7 +1951,7 @@ class _Scope:
                 "be false forever (to check the run's input instead, write "
                 "`input.%s`)"
                 % (self.workflow_name, subject, text, entity["id"], field))
-        return self._dimension_of(fields[field], name, text)
+        return fields[field]
 
     def _dimension_of(self, field_node, name, text):
         """The operand's dimension, or a refusal (RFC-0015 §D6, RFC-0016).
@@ -1386,12 +1980,24 @@ class _Scope:
             % (self.workflow_name, text, name, declared))
 
 
-def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
+def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
+                   diagnostics=None, step_text=None, http_cap_names=frozenset()):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
-    verb but `NetworkCall` ignores it; only `call`/`request` read an `as
-    <name>` trailing clause there (RFC-0027 §2).
+    verb but `NetworkCall` and `create`/`insert` ignores it; those read an
+    `as <name>` trailing clause there (RFC-0027 §2, extended to `create` by
+    issue #97 / RFC-0012 Updates — `update`/`delete` still ignore `rest`,
+    since they answer an affected-row count, not a row).
+
+    `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
+    `unknown-entity` warning for a step object that names no declared entity,
+    without changing which entity it falls back to resolving.
+
+    `http_cap_names` (issue #101) is the declared `capability http` name set,
+    used only by the `NetworkCall` branch to flag a target with no matching
+    declaration — it runs with method POST and no auth either way, so this is
+    informational, not a rejection.
     """
     entry = VERB_LEXICON.get(verb)
     if entry is None:
@@ -1400,7 +2006,13 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
     eid = "%s.%s" % (step_id, EFFECT_SLUG[kind])
 
     if kind == "Validation":
-        ent = _resolve_entity(registry, obj, verb, lineno)
+        from .condition import PAYLOAD_NAMESPACE
+        # `input` (RFC-0015 §D6) is the reserved payload keyword, not an
+        # entity noun — the loop below would never match it against a
+        # declared entity, and it is not #91's "unknown entity" failure mode.
+        validation_diagnostics = None if obj == PAYLOAD_NAMESPACE else diagnostics
+        ent = _resolve_entity(registry, obj, verb, lineno,
+                              diagnostics=validation_diagnostics, step_text=step_text)
         field_names = [f["name"] for f in ent["fields"]]
         if obj and obj in field_names:
             ftype = next(f["type"] for f in ent["fields"] if f["name"] == obj)
@@ -1412,7 +2024,34 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
                     line=lineno)
 
     if kind == "RepositoryCall":
-        ent = _resolve_entity(registry, obj, verb, lineno)
+        ent = _resolve_entity(registry, obj, verb, lineno,
+                              diagnostics=diagnostics, step_text=step_text)
+        if fixed["operation"] == "create" and rest:
+            # issue #97 / RFC-0012 Updates: `create <noun> as <name>` reuses
+            # RFC-0027 §2's result-binding notation and its two static checks
+            # verbatim (camelCase shape, collision with an entity's
+            # single-row binding name) — `update`/`delete` are untouched,
+            # since they answer an affected-row count, not a row to bind.
+            if len(rest) == 2 and rest[0] == "as":
+                name = rest[1]
+                if not re.match(r"^[a-z][a-zA-Z0-9]*$", name):
+                    raise LowerError(
+                        "line %d: `as %s` is not a valid binding name — it "
+                        "must be camelCase, like every other binding name "
+                        "(RFC-0012 §G12.1)" % (lineno, name))
+                for e in registry.values():
+                    if name == binding_name(e):
+                        raise LowerError(
+                            "line %d: `as %s` collides with entity %s's "
+                            "single-row binding name — a result binding "
+                            "cannot share a name with it "
+                            "(RFC-0027 §2)" % (lineno, name, e["name"]))
+                return _node(kind, eid, entity=ent["id"],
+                            operation=fixed["operation"], result=name,
+                            line=lineno)
+            raise LowerError(
+                "line %d: create accepts either no trailing words or "
+                "'as <name>', got %r" % (lineno, tuple(rest)))
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 
@@ -1426,6 +2065,14 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=()):
 
     if kind == "NetworkCall":
         target = obj or "unspecified"
+        if (diagnostics is not None and not _looks_like_url(target)
+                and target not in http_cap_names):
+            diagnostics.add(
+                code="declared-not-bound", where=eid,
+                subject="call %s" % target,
+                message="%r has no `capability http` declaration — it runs "
+                        "with method POST and no auth" % target,
+                line=lineno)
         if not rest:
             # RFC-0027 §3: the unbound, backward-compatible form — no
             # `result` field, byte-identical to the pre-RFC-0027 no-op.
@@ -1492,6 +2139,8 @@ def _derive_assignment(step_id, line, registry):
     except ConditionError as exc:
         raise LowerError("line %d: %s" % (line.lineno, exc))
 
+    _check_literal_zero_divisor(value, "line %d: assignment %r" % (line.lineno, text))
+
     binding, _, field = target.partition(".")
     if not field:
         raise LowerError(
@@ -1524,12 +2173,124 @@ def _derive_assignment(step_id, line, registry):
                  line=line.lineno)
 
 
-def _resolve_entity(registry, obj, verb, lineno):
+def _derive_format(step_id, line, registry):
+    """`format <binding>.<field> from "<template>" [with <ref>...]` -> an
+    Assignment Effect node (issue #94). Structurally the same shape
+    `_derive_assignment` builds — same binding rule, same node fields — just
+    parsed by `condition.parse_format` instead of `parse_assignment`. The
+    template's `{}`-vs-argument-count check already happened inside
+    `parse_format`; what THIS function still owns is what `_derive_assignment`
+    owns too: does the target name a declared entity this document has, and
+    does that entity declare the field. Whether the target was actually READ
+    (so a binding exists at runtime) needs the whole step list and is
+    `_check_scoped_conditions`'s job, same as for `set` — this function alone
+    cannot see the steps around it.
+    """
+    from .condition import ConditionError, PAYLOAD_NAMESPACE, parse_format
+    from .condition import value_to_string
+    from .repo_policy import binding_name
+
+    text = " ".join(line.tokens)
+    try:
+        target, value = parse_format(text)
+    except ConditionError as exc:
+        raise LowerError("line %d: %s" % (line.lineno, exc))
+
+    binding, _, field = target.partition(".")
+    if not field:
+        raise LowerError(
+            "line %d: format target %r must name a bound row's field "
+            "(`<binding>.<field>`) — a bare name is an input field, and the "
+            "input is not state this workflow owns" % (line.lineno, target))
+    if binding == PAYLOAD_NAMESPACE:
+        raise LowerError(
+            "line %d: %r formats into the run's input, which is not state — "
+            "format into a row this workflow read (`<binding>.%s`)"
+            % (line.lineno, text, field))
+
+    entity = None
+    for ent in registry.values():
+        if binding_name(ent) == binding:
+            entity = ent
+            break
+    if entity is None:
+        raise LowerError(
+            "line %d: format target %r names %r, which is not a declared "
+            "entity" % (line.lineno, target, binding))
+    if field not in {f["name"] for f in entity["fields"]}:
+        raise LowerError(
+            "line %d: format target %r names field %r, which entity %s does "
+            "not declare" % (line.lineno, target, field, entity["name"]))
+
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Assignment"])
+    return _node("Assignment", eid, target=target,
+                 expression=value_to_string(value), entity=entity["id"],
+                 line=line.lineno)
+
+
+def _derive_respond(step_id, line, registry):
+    """`respond <ref> [<ref>...]` -> a Response node (issue #96, D1).
+
+    A flat FieldMask over References — no nesting, no aliases, no conditions,
+    no wildcards, so unlike `format`/`set` there is no sub-grammar to parse:
+    each token after the verb IS a Reference, verbatim. Same two-phase split
+    those two verbs use: this function checks each reference's OWN shape — a
+    real dot, a declared entity, a declared field — the same immediate check
+    `_derive_assignment`/`_derive_format` already apply to their one target.
+    Whether the entity was actually READ (so a binding exists at runtime) and
+    whether a referenced field is Password-typed (issue #43's masking
+    chokepoint) both need the whole step list and stay
+    `_check_scoped_conditions`'s job, via `_check_respond` — the same split
+    `format`'s Password check uses.
+    """
+    from .repo_policy import binding_name
+
+    refs = line.tokens[1:]
+    if not refs:
+        raise LowerError(
+            "line %d: `respond` names no references — list at least one "
+            "`<binding>.<field>`" % line.lineno)
+
+    for ref in refs:
+        binding, _, field = ref.partition(".")
+        if not field:
+            raise LowerError(
+                "line %d: respond reference %r must name a bound row's "
+                "field (`<binding>.<field>`), not a bare name"
+                % (line.lineno, ref))
+        entity = None
+        for ent in registry.values():
+            if binding_name(ent) == binding:
+                entity = ent
+                break
+        if entity is None:
+            raise LowerError(
+                "line %d: respond reference %r names %r, which is not a "
+                "declared entity" % (line.lineno, ref, binding))
+        if field not in {f["name"] for f in entity["fields"]}:
+            raise LowerError(
+                "line %d: respond reference %r names field %r, which entity "
+                "%s does not declare"
+                % (line.lineno, ref, field, entity["name"]))
+
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Response"])
+    return _node("Response", eid, refs=list(refs), line=line.lineno)
+
+
+def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=None):
     """Pick the entity a step operates on.
 
     The object names it when there is a choice; with exactly one entity declared
     the object may be omitted. Ambiguity is an error that lists the candidates —
     picking one would make the program's meaning depend on declaration order.
+
+    Issue #91: when the object *is* given, matches no declared entity's
+    lowercase-concatenated name and no field name, and exactly one entity is
+    declared, the single-entity fallback below still resolves it — unchanged,
+    per issue #91 §4 — but a `diagnostics` accumulator now records an
+    `unknown-entity` warning first, symmetric to `unknown-verb` (#36/#82). An
+    object that is ambiguous across >1 declared entity keeps raising, as
+    before: that case is not a silent pass and is out of #91's scope.
     """
     if not registry:
         raise LowerError("line %d: `%s` needs an entity in scope, and the module "
@@ -1541,6 +2302,22 @@ def _resolve_entity(registry, obj, verb, lineno):
                 return ent
             if obj in [f["name"] for f in ent["fields"]]:
                 return ent
+        if len(registry) == 1:
+            ent = next(iter(registry.values()))
+            if diagnostics is not None:
+                # D3: with exactly one entity declared, it is unconditionally
+                # the suggestion — the same lowercase-concatenated form the
+                # match above just failed against.
+                suggestion = "".join(split_pascal(ent["name"]))
+                text = step_text or ("%s %s" % (verb, obj))
+                diagnostics.add(
+                    code="unknown-entity",
+                    where="line %d" % lineno, subject=obj, line=lineno,
+                    suggestion=suggestion,
+                    message="%s — '%s' names no declared entity; declared: %s"
+                            " — did you mean '%s'?"
+                            % (text, obj, suggestion, suggestion))
+            return ent
     if len(registry) == 1:
         return next(iter(registry.values()))
     raise LowerError(

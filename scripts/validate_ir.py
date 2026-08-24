@@ -278,6 +278,112 @@ def network_negatives():
     ]
 
 
+CREATE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "create",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.place.order",
+            "name": "PlaceOrder",
+            "children": ["wf.place.order.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.place.order.step.1",
+            "name": "create order as newOrder",
+            "children": ["wf.place.order.step.1.repo"],
+        },
+        {
+            "kind": "RepositoryCall",
+            "id": "wf.place.order.step.1.repo",
+            "entity": "entity.order",
+            "operation": "create",
+            "result": "newOrder",
+        },
+    ],
+}
+
+
+def create_negatives():
+    """issue #97 / RFC-0012 Updates — `RepositoryCall.result`, a new optional
+    string field on the `create` branch. Same shape `network_negatives`
+    pins for `NetworkCall.result`: one negative per keyword the field turns
+    on (`type`), plus one proving the pre-existing `required`/`enum`/
+    `additionalProperties` checks still apply unchanged once `result` is
+    present.
+    """
+    n1 = copy.deepcopy(CREATE_FIXTURE)
+    del n1["nodes"][2]["entity"]                          # required 누락 —
+                                                            # result가 있어도 여전히 걸린다
+
+    n2 = copy.deepcopy(CREATE_FIXTURE)
+    n2["nodes"][2]["result"] = 42                          # type 위반 — string이 아님
+
+    n3 = copy.deepcopy(CREATE_FIXTURE)
+    del n3["nodes"][2]["operation"]                        # required 누락(다른 필드) —
+                                                            # result가 있어도 여전히 걸린다
+
+    n4 = copy.deepcopy(CREATE_FIXTURE)
+    n4["nodes"][2]["binding"] = "newOrder"                 # 미선언 속성(오타 대역)
+
+    return [
+        ("required field removed: RepositoryCall.entity (result field present)", n1),
+        ("result is not a string: RepositoryCall.result = 42", n2),
+        ("required field removed: RepositoryCall.operation (result field present)", n3),
+        ("undeclared property on a RepositoryCall: binding (typo for result)", n4),
+    ]
+
+
+CAPABILITY_HTTP_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "capability_http",
+    "nodes": [
+        {
+            "kind": "Capability",
+            "id": "cap.payment.gateway",
+            "name": "PaymentGateway",
+            "method": "post",
+            "auth": {"kind": "bearer", "env": "PAYMENT_TOKEN"},
+        },
+    ],
+}
+
+
+def capability_http_negatives():
+    """issue #101 — `capability http`'s two new Capability fields, `method`
+    (enum) and `auth` (a nested object with its own `kind` enum + required
+    `env`). The golden example's Capability nodes carry neither field, so a
+    mutant of it never reaches this branch — one negative per keyword each
+    field turns on, per `network_negatives`'s template.
+    """
+    n1 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    n1["nodes"][0]["method"] = "put"                      # method 밖 — 폐집합 get/post
+
+    n2 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    n2["nodes"][0]["auth"]["kind"] = "basic"               # auth.kind 밖 — 폐집합 bearer/apikey
+
+    n3 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    del n3["nodes"][0]["auth"]["env"]                      # auth.env 필수 누락
+
+    n4 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    n4["nodes"][0]["auth"]["token"] = "sk-live-abc"        # 미선언 속성 — 값이 실릴 자리가
+                                                            # 애초에 없다는 것의 증거
+                                                            # (RFC-0027 시크릿 원칙)
+
+    n5 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
+    del n5["nodes"][0]["name"]                             # required 누락 —
+                                                            # method/auth가 있어도 여전히 걸린다
+
+    return [
+        ("method outside the enum: 'put'", n1),
+        ("auth.kind outside the enum: 'basic'", n2),
+        ("auth is missing its required env", n3),
+        ("undeclared property on auth: token (a secret VALUE, not an env name)", n4),
+        ("required field removed: Capability.name (method/auth present)", n5),
+    ]
+
+
 SCHEDULE_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "rollup",
@@ -325,6 +431,197 @@ def schedule_negatives():
         ("undeclared property on the schedule source: cron", n4),
         ("entity and schedule keys mixed: oneOf matches neither", n5),
         ("at outside 00:00..23:59: '24:00'", n6),
+    ]
+
+
+SUBSCRIBE_EVENT_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "orders",
+    "nodes": [
+        {
+            "kind": "Event",
+            "id": "event.order.placed",
+            "name": "OrderPlaced",
+            "source": {"ref": "entity.order", "on": "create"},
+            "subscribe": True,
+        },
+    ],
+}
+
+
+def subscribe_negatives():
+    """issue #103 — `Event.subscribe` is a single boolean field, unlike
+    `capability http`'s `method`/`auth` (an enum plus a nested object): the
+    only structural way to violate it is the field's own type, per
+    `network_negatives`'s template for a single-scalar addition.
+    """
+    n1 = copy.deepcopy(SUBSCRIBE_EVENT_FIXTURE)
+    n1["nodes"][0]["subscribe"] = "yes"            # type 불일치 — boolean 아님
+
+    return [
+        ("subscribe is not a boolean: 'yes'", n1),
+    ]
+
+
+ALT_GUARD_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "alt_guard",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.approve",
+            "name": "Approve",
+            "children": ["wf.approve.guard.1"],
+        },
+        {
+            "kind": "Guard",
+            "id": "wf.approve.guard.1",
+            "mode": "when",
+            "condition": "input.channel == 1",
+            "alternatives": ["input.amount <= 100"],
+            "children": ["wf.approve.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.approve.step.1",
+            "name": "create payment",
+        },
+    ],
+}
+
+
+def alt_guard_negatives():
+    """RFC-0028 §Reference-level Specification/3 — `Guard.alternatives`, a new
+    optional field. One negative per keyword the field turns on (`type` of the
+    field itself, `type` of an item, the when-only constraint), plus one
+    proving `additionalProperties` still applies once `alternatives` is
+    present — the same "still independent" shape `network_negatives` pins for
+    `NetworkCall.result`.
+    """
+    n1 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n1["nodes"][1]["alternatives"] = "input.amount <= 100"    # type 위반 — 배열 아님
+
+    n2 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n2["nodes"][1]["alternatives"] = [1]                       # item type 위반
+
+    n3 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n3["nodes"][1]["mode"] = "repeat"
+    n3["nodes"][1]["count"] = 3
+    del n3["nodes"][1]["condition"]                            # repeat엔 condition 없음
+
+    n4 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n4["nodes"][1]["altCondition"] = "typo"                    # 미선언 속성(오타 대역)
+
+    return [
+        ("alternatives is not an array: 'input.amount <= 100'", n1),
+        ("alternatives item is not a string: 1", n2),
+        ("alternatives on a repeat guard", n3),
+        ("undeclared property on a Guard: altCondition", n4),
+    ]
+
+
+RESPOND_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "respond",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.approve",
+            "name": "Approve",
+            "children": ["wf.approve.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.approve.step.1",
+            "name": "respond order.id order.status",
+            "children": ["wf.approve.step.1.respond"],
+        },
+        {
+            "kind": "Response",
+            "id": "wf.approve.step.1.respond",
+            "refs": ["order.id", "order.status"],
+        },
+    ],
+}
+
+
+def respond_negatives():
+    """issue #96, D5 — `Response.refs`, a new node kind. One negative per
+    keyword it turns on (`type` of the field itself, `type` of an item, the
+    `minItems: 1` floor), plus one proving `additionalProperties` still
+    applies once `refs` is present — the same "still independent" shape
+    `alt_guard_negatives` pins for `Guard.alternatives`.
+    """
+    n1 = copy.deepcopy(RESPOND_FIXTURE)
+    n1["nodes"][2]["refs"] = "order.id"     # type 위반 — 배열 아님
+
+    n2 = copy.deepcopy(RESPOND_FIXTURE)
+    n2["nodes"][2]["refs"] = [1]             # item type 위반
+
+    n3 = copy.deepcopy(RESPOND_FIXTURE)
+    n3["nodes"][2]["refs"] = []              # minItems 위반 — 빈 배열
+
+    n4 = copy.deepcopy(RESPOND_FIXTURE)
+    n4["nodes"][2]["mask"] = "typo"          # 미선언 속성(오타 대역)
+
+    return [
+        ("refs is not an array: 'order.id'", n1),
+        ("refs item is not a string: 1", n2),
+        ("refs is an empty array", n3),
+        ("undeclared property on a Response: mask", n4),
+    ]
+
+
+EXPOSE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "expose",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.order",
+            "name": "Order",
+            "fields": [{"name": "placedAt", "type": "DateTime"}],
+        },
+        {
+            "kind": "Service",
+            "id": "svc.orders",
+            "name": "Orders",
+            "children": ["svc.orders.expose.1"],
+        },
+        {
+            "kind": "Expose",
+            "id": "svc.orders.expose.1",
+            "entity": "entity.order",
+            "field": "placedAt",
+        },
+    ],
+}
+
+
+def expose_negatives():
+    """issue #99, D2/D9 — `Expose`, a new node kind. One negative per keyword
+    it turns on (`type` of `entity`, `type` of `field`, both required fields
+    missing), plus one proving `additionalProperties` still applies once the
+    kind exists — the same "still independent" shape `respond_negatives`
+    pins for `Response.refs`.
+    """
+    n1 = copy.deepcopy(EXPOSE_FIXTURE)
+    n1["nodes"][2]["entity"] = 1                # type 위반 — nodeId 아님
+
+    n2 = copy.deepcopy(EXPOSE_FIXTURE)
+    n2["nodes"][2]["field"] = 1                  # type 위반 — string 아님
+
+    n3 = copy.deepcopy(EXPOSE_FIXTURE)
+    del n3["nodes"][2]["entity"]                 # 필수 필드 누락
+
+    n4 = copy.deepcopy(EXPOSE_FIXTURE)
+    n4["nodes"][2]["by"] = "placedAt"            # 미선언 속성(오타 대역)
+
+    return [
+        ("entity is not a nodeId: 1", n1),
+        ("field is not a string: 1", n2),
+        ("required field removed: Expose.entity", n3),
+        ("undeclared property on an Expose: by", n4),
     ]
 
 
@@ -434,6 +731,14 @@ def self_test():
          SCHEDULE_EVENT_FIXTURE),
         ("ROWSET_FIXTURE (RFC-0025 query RepositoryCall)", ROWSET_FIXTURE),
         ("NETWORK_FIXTURE (RFC-0027 NetworkCall.result)", NETWORK_FIXTURE),
+        ("ALT_GUARD_FIXTURE (RFC-0028 Guard.alternatives)", ALT_GUARD_FIXTURE),
+        ("RESPOND_FIXTURE (issue #96 Response.refs)", RESPOND_FIXTURE),
+        ("CREATE_FIXTURE (issue #97 RepositoryCall.result)", CREATE_FIXTURE),
+        ("EXPOSE_FIXTURE (issue #99 Expose)", EXPOSE_FIXTURE),
+        ("CAPABILITY_HTTP_FIXTURE (issue #101 Capability.method/auth)",
+         CAPABILITY_HTTP_FIXTURE),
+        ("SUBSCRIBE_EVENT_FIXTURE (issue #103 Event.subscribe)",
+         SUBSCRIBE_EVENT_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -471,7 +776,9 @@ def self_test():
         ("line below minimum: wf.login.line = 0", mutated_line_zero),
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
-      + rowset_negatives() + network_negatives()
+      + rowset_negatives() + network_negatives() + alt_guard_negatives() \
+      + respond_negatives() + create_negatives() + expose_negatives() \
+      + capability_http_negatives() + subscribe_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):
