@@ -196,6 +196,20 @@ class FakeRepository:
         contract, the same asymmetry `persist`'s own docstring states)."""
         return None
 
+    def begin(self):
+        """No-op (issue #79, RFC-0032) — the Fake has no transaction to
+        open, the same asymmetry `record_emission` states. `run_workflow`
+        calls this and `commit`/`rollback` unconditionally around every
+        run; on the Fake all three do nothing, so a failed run's writes
+        (already applied directly into `self.rows`) are not undone."""
+        return None
+
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None
+
     def read_outbox(self, event, after_seq=0):
         """Nothing to tail — same asymmetry `record_emission` states: with
         no persisted emission, there is nothing an SSE subscriber (issue
@@ -978,58 +992,75 @@ class Interpreter:
         # after the fact, so a guard that never fired contributes nothing —
         # the same rule every other Effect gets from this loop.
         response_refs = []
-        for item_id in _flatten_items(self.nodes, wf.get("children", []), self, result,
-                                     root, con, payload, bindings):
-            step = self.nodes[item_id]
-            span = Span(step["name"], "WorkflowStep", self.clock.now)
-            root.children.append(span)
-            attempts = 0
-            last_error = None
-            while True:
-                attempts += 1
-                try:
-                    self._run_step(step, span, con, payload, deadline, bindings,
-                                   rowsets)
-                    last_error = None
-                    break
-                except RunError as exc:
-                    last_error = exc
-                    if not self._retryable(step, con, attempts, deadline):
+        # issue #79, RFC-0032: one transaction per execution, not per step.
+        # `begin()` opens it before the first step; exactly one of
+        # `commit()`/`rollback()` below closes it before this method
+        # returns or re-raises. A `RunError` escaping the loop itself (e.g.
+        # a guard condition `_flatten_items` cannot evaluate) never reaches
+        # the per-step `except` below, so it is caught here too — otherwise
+        # that path would leave the transaction open.
+        self.repo.begin()
+        try:
+            for item_id in _flatten_items(self.nodes, wf.get("children", []), self,
+                                         result, root, con, payload, bindings):
+                step = self.nodes[item_id]
+                span = Span(step["name"], "WorkflowStep", self.clock.now)
+                root.children.append(span)
+                attempts = 0
+                last_error = None
+                while True:
+                    attempts += 1
+                    try:
+                        self._run_step(step, span, con, payload, deadline, bindings,
+                                       rowsets)
+                        last_error = None
                         break
-                    self.trace.log("WARN", "step retry",
-                                   step=step["name"], attempt=attempts, reason=str(exc))
-                    self.clock.advance(_backoff_ms(attempts))
-            span.end_ms = self.clock.now
-            span.attrs["attempts"] = attempts
-            self.trace.metric("step.duration_ms",
-                              {"workflow": wf["name"], "step": step["name"]},
-                              span.duration_ms)
-            result["steps"].append({"step": step["name"], "attempts": attempts,
-                                    "duration_ms": span.duration_ms,
-                                    "effects": [self.nodes[c]["kind"]
-                                                for c in step.get("children", [])]})
-            if last_error is None:
-                for child_id in step.get("children", []):
-                    if self.nodes[child_id]["kind"] == "Response":
-                        response_refs.extend(self.nodes[child_id]["refs"])
-            if last_error is not None:
-                result["status"] = "failed"
-                result["failed_step"] = step["name"]
-                result["failure_reason"] = str(last_error)
-                self.trace.log("ERROR", "step failed",
-                               step=step["name"], reason=str(last_error))
-                if con["rollback"]:
-                    self.trace.log("INFO", "rollback: no Transaction boundary in scope, "
-                                          "nothing to compensate")
-                break
-            if deadline is not None and self.clock.now > deadline:
-                result["status"] = "failed"
-                result["failed_step"] = step["name"]
-                result["failure_reason"] = ("deadline exceeded after step %r"
-                                            % step["name"])
-                self.trace.log("ERROR", "deadline exceeded",
-                               step=step["name"], deadline_ms=con["timeout_ms"])
-                break
+                    except RunError as exc:
+                        last_error = exc
+                        if not self._retryable(step, con, attempts, deadline):
+                            break
+                        self.trace.log("WARN", "step retry",
+                                       step=step["name"], attempt=attempts, reason=str(exc))
+                        self.clock.advance(_backoff_ms(attempts))
+                span.end_ms = self.clock.now
+                span.attrs["attempts"] = attempts
+                self.trace.metric("step.duration_ms",
+                                  {"workflow": wf["name"], "step": step["name"]},
+                                  span.duration_ms)
+                result["steps"].append({"step": step["name"], "attempts": attempts,
+                                        "duration_ms": span.duration_ms,
+                                        "effects": [self.nodes[c]["kind"]
+                                                    for c in step.get("children", [])]})
+                if last_error is None:
+                    for child_id in step.get("children", []):
+                        if self.nodes[child_id]["kind"] == "Response":
+                            response_refs.extend(self.nodes[child_id]["refs"])
+                if last_error is not None:
+                    result["status"] = "failed"
+                    result["failed_step"] = step["name"]
+                    result["failure_reason"] = str(last_error)
+                    self.trace.log("ERROR", "step failed",
+                                   step=step["name"], reason=str(last_error))
+                    break
+                if deadline is not None and self.clock.now > deadline:
+                    result["status"] = "failed"
+                    result["failed_step"] = step["name"]
+                    result["failure_reason"] = ("deadline exceeded after step %r"
+                                                % step["name"])
+                    self.trace.log("ERROR", "deadline exceeded",
+                                   step=step["name"], deadline_ms=con["timeout_ms"])
+                    break
+        except RunError:
+            self.repo.rollback()
+            raise
+        if result["status"] == "completed":
+            self.repo.commit()
+        else:
+            self.repo.rollback()
+            if con["rollback"]:
+                self.trace.log(
+                    "INFO", "rollback: execution boundary rolled back, "
+                            "writes made during this run are discarded")
 
         # Issue #44 (t1 F-5, t2 F-6): the run completed, but not all of what the
         # program declared actually happened. `status` stays `completed` — a

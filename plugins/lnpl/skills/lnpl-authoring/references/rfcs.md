@@ -41,5 +41,6 @@
 | RFC-0028 산술 연산자 확장과 대안 가드 | `*`/`/`를 쓰고 싶다, 또는 `when A` / `or B`로 대안 가드를 쓰고 싶다 — 0 나눗셈이 왜 컴파일 에러가 아니라 RunError인지, mode B가 왜 그 실패에 합의할 의무가 없는지 | `rfcs/0028-arithmetic-and-alternative-guards.md` |
 | RFC-0029 Clock 계약과 `--clock real` 바인딩 | `CacheAccess` TTL을 벽시계 경과에 묶고 싶다 — `--clock real`이 무엇을 바꾸고 무엇을 바꾸지 않는지, `diff`/`spec`이 왜 이 선택자를 받지 않는지 | `rfcs/0029-clock-contract-and-real-binding.md` |
 | RFC-0030 `create` 결과 바인딩과 payload 시드 | `create <명사> as <이름>`로 생성 직후 그 행에 `set`/`format`/`respond`를 쓰고 싶다 — payload 동명 필드가 `derived` 제외하고 왜 `as` 유무와 무관하게 시드되는지, `as` 없는 `create`는 정확히 무엇이 바이트 동일한지 | `rfcs/0030-create-result-binding-and-payload-seed.md` |
+| RFC-0032 실행-스코프 트랜잭션 경계와 `policy rollback` 집행 승격 | `policy rollback`이 실패한 실행의 쓰기를 정말 되돌리는지, 그 경계가 어디까지인지 — 명시적 `Transaction` 노드 없이 워크플로 실행 전체가 왜 암묵적 트랜잭션 하나가 되는지, `emit`으로 등록한 outbox 행이 그 롤백에 왜 같이 묶이는지 | `rfcs/0032-transaction-boundary-and-rollback-enforcement.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

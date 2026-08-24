@@ -8,6 +8,7 @@
 - Updated-by: RFC-0013 (§Policy Enforcement)
 - Updated-by: RFC-0027 (§Reference-level Specification/Execution Model)
 - Updated-by: RFC-0029 (§Execution Model)
+- Updated-by: RFC-0032 (§Execution Model/§Policy Enforcement/§Examples)
 
 ## Motivation
 
@@ -96,9 +97,9 @@ await 지점이므로, 실행 타임라인은 IR에서 정적으로 읽힌다.
 | NetworkCall | 비동기 아웃바운드 호출 = await 지점. 모든 호출에 명시적 connect timeout + request timeout 필수 — 무한 기본값 금지(타임아웃 없는 호출 하나가 pool을 고갈시킨다). 잔여 데드라인과 상관ID를 자동 전파한다. 실패 유형별 재시도 판정은 §Policy Enforcement의 표를 따른다 |
 | RepositoryCall | capability 커넥션 pool을 통해 실행되는 await 지점. 커넥션 획득은 operation당 1회이며, 다른 pool 자원을 획득하기 전에 반환해야 한다(같은 pool에 대한 중첩 획득은 pool 만석 시점에 데드락 — 금지). operation별 멱등성은 §Policy Enforcement의 판정 표를 따른다 |
 | CacheAccess | `get` = miss가 오류가 아니라 정상 경로인 조회(miss 시 원천 조회로 폴백). `set` = TTL 필수 — TTL 값은 Performance 제약의 `cache` 예산이 소유한다(RFC-0001 CacheAccess 행). `invalidate` = 삭제. 캐시는 성능 계층일 뿐 정합성 메커니즘이 아니다 — 캐시 불가용 시 원천으로 폴백하되 동시성 상한 안에서만(무제한 폴백 herd는 캐시 장애를 원천 장애로 만든다) |
-| Transaction | 원자적 스코프 노드: children 전부 성공 시 커밋, 하나라도 실패 시 abort — 부분 쓰기는 관측되지 않는다. `isolation` 서술은 힌트이며 집행 수준은 해당 capability가 결정한다. Policy `rollback`의 보상 경계가 이 노드다(§Policy Enforcement) |
+| Transaction | 원자적 스코프 노드: children 전부 성공 시 커밋, 하나라도 실패 시 abort — 부분 쓰기는 관측되지 않는다. `isolation` 서술은 힌트이며 집행 수준은 해당 capability가 결정한다. Policy `rollback`의 보상 경계가 이 노드다(§Policy Enforcement). **Phase 1은 이 노드를 선언할 문법이 없다**(`VERB_LEXICON`이 어떤 동사도 `Transaction`으로 도출하지 않는다) — 그 공백 동안 워크플로 실행 전체가 유일한 암묵적 경계다: 실행 시작 시 열리고, 완주 시 커밋되며, 실패 시 그 실행에서 이뤄진 모든 쓰기를 롤백한다(RFC-0032). 명시적 `Transaction` 노드가 도입되면 이 암묵적 경계는 "children으로 아무 `Transaction`도 갖지 않는 워크플로"의 경계로 좁혀진다 — 지금은 모든 워크플로가 그 경우다 |
 | Authorization | 소유 step의 다른 Effect보다 먼저 평가되는 게이트. **거부(deny)는 비재시도 실패다** — 같은 요청은 다시 보내도 같은 결과이므로 재시도 대상이 아니다. 검사 서비스 불가용(전송 실패)과 거부는 구분되며, 전자만 재시도 판정 대상이다 |
-| EventEmit | 비동기 발행 — step의 동기 구간은 발행 요청 등록까지다. Transaction의 children으로 소유된 EventEmit은 **커밋 성공 후에만** 발행된다(롤백된 트랜잭션의 이벤트 유출 금지). 전달 보장은 at-least-once이며, 소비자가 event id로 dedupe할 수 있도록 발행마다 유일한 event id를 부여한다(발행 메커니즘의 구현은 §Open Questions ③) |
+| EventEmit | 비동기 발행 — step의 동기 구간은 발행 요청 등록까지다. Transaction의 children으로 소유된 EventEmit은 **커밋 성공 후에만** 발행된다(롤백된 트랜잭션의 이벤트 유출 금지). Phase 1은 명시적 `Transaction` 노드가 없으므로(위 Transaction 행), 모든 EventEmit은 워크플로 실행 전체의 암묵적 경계가 그 소유자다 — 등록(`record_emission`)은 그 경계의 커밋과 함께만 durable해지고, 실행이 실패해 롤백되면 등록 자체가 저장소에 남지 않는다(RFC-0032, issue #102). 전달 보장은 at-least-once이며, 소비자가 event id로 dedupe할 수 있도록 발행마다 유일한 event id를 부여한다(발행 메커니즘의 구현은 §Open Questions ③) |
 
 **Clock.** 런타임의 모든 경과 시간 판정 — `Policy.timeout` 데드라인 기산과
 잔여 시간 전파, `Policy.retry`의 backoff 대기, `CacheAccess`의 TTL 판정, trace
@@ -156,6 +157,7 @@ RFC-0001의 `Guard` 노드(2026-07-31 신설)는 피가드 항목 하나를 감�
 ### Policy Enforcement
 
 > 갱신됨: RFC-0013
+> 갱신됨: RFC-0032 (`Policy.rollback` 행)
 
 Constraint 노드(RFC-0001: Policy·Security·Performance)의 런타임 의미.
 Security의 `mechanisms`는 컴파일러가 구현을 선택하는 입력이며(CHARTER §핵심
@@ -165,7 +167,7 @@ Security의 `mechanisms`는 컴파일러가 구현을 선택하는 입력이며(
 | 항목 | 런타임 의미(계약) |
 |------|------------------|
 | `Policy.retry N` | 실패한 **step**의 재실행. 최대 N회 재시도(초기 시도는 별도 — `retry 3` = 실패 후 최대 3회 더 시도). 대기는 capped exponential backoff + full jitter. 재시도는 2중 게이트를 모두 통과할 때만: ① step이 소유한 Effect 전부가 아래 멱등 판정 표에서 멱등 ② 실패 유형이 아래 실패 유형 표에서 재시도 가능. 모든 재시도는 `Policy.timeout`의 잔여 데드라인 안에서만 수행한다 |
-| `Policy.rollback` | 실패 시 보상의 경계는 **Transaction 노드**다. 진행 중이던 Transaction은 원자적으로 abort되고(부분 쓰기 없음), 이미 커밋된 선행 step의 Transaction들은 역순으로 보상을 실행한다. Transaction 밖의 Effect(예: 외부 NetworkCall)는 자동 보상이 불가하다 — rollback이 보장하는 범위는 Transaction 경계까지이며, 그 밖의 보상은 계약하지 않는다(한계는 §Open Questions ③과 연결) |
+| `Policy.rollback` | 실패 시 보상의 경계는 **Transaction 노드**다(§Execution Model Transaction 행). Phase 1은 이 노드를 선언할 문법이 없으므로, 그 공백 동안은 워크플로 실행 전체가 유일한 경계다: 실행이 실패로 종결하면(재시도 소진, 데드라인 초과, 또는 step 순회 자체를 중단시키는 구성 오류를 포함해 `status`가 `failed`로 확정되거나 예외가 전파되는 모든 경로) 그 실행에서 커밋되지 않은 모든 쓰기가 롤백된다 — 그리고 경계가 실행 전체이므로 "이미 커밋된 선행 Transaction"은 존재할 수 없다(있었다면 그것은 이전 실행이 커밋한 데이터이고, 이번 rollback의 대상이 아니다). 명시적 `Transaction` 노드가 도입되면 한 워크플로 안에 여러 개가 존재할 수 있고, 그때는 원래 서술대로 진행 중이던 것만 abort, 이미 커밋된 선행 Transaction들은 역순 보상 대상이 된다. Transaction 경계(현재는 실행 전체) 밖의 Effect(예: 외부 NetworkCall)는 여전히 자동 보상이 불가하다 — rollback이 보장하는 범위는 그 경계까지이며, 그 밖의 보상은 계약하지 않는다(한계는 §Open Questions ③과 연결) |
 | `Policy.timeout T` | workflow 실행 전체의 데드라인. 실행 시작 시각에 기산하고, 모든 하위 Effect 호출에 **잔여 데드라인을 전파**한다(호출받은 쪽은 잔여 시간을 자신의 타임아웃 상한으로 삼는다). 초과 시: in-flight Effect에 취소를 전파하고(아무도 읽지 않을 일을 계속하지 않는다), actor 메일박스의 해당 실행 작업을 폐기하며, workflow는 `TimedOut` 실패로 종결한다 |
 | `Performance.cache T` | 해당 workflow의 CacheAccess `set`에 적용되는 TTL 예산. TTL의 소유권은 Performance 제약에 있다(RFC-0001 CacheAccess 행 — 중복 지정 금지). 런타임 계약: TTL 없는 `set`은 금지된다 — 모든 key는 TTL을 가진다(무효화가 유실돼도 TTL이 백스톱) |
 | `Performance.response X` | **SLO 선언이다 — 집행 대상이 아니다.** 런타임은 초과 요청을 차단하지 않는다(유효한 요청을 자기 손으로 실패시키는 것은 SLO 개선이 아니다). 대신 계측·경보한다: step/workflow duration histogram의 **p50/p95/p99**를 SLO와 비교하고 위반 시 경보를 발화한다. 평균 단독 비교는 금지 — 평균은 사용자가 실제로 겪는 꼬리 지연을 가린다 |
@@ -342,11 +344,17 @@ trace tr-003  (workflow=login, cid-e08d, deadline 3000ms)
         │    backoff+jitter — 전부 잔여 데드라인 내)
         ├── retry 소진 → step 실패
         └── policy.login rollback 평가:
-              보상 경계 = Transaction 노드. Login IR에는 커밋된 선행
-              Transaction이 없으므로 보상 목록이 비어 있다 — rollback은
-              no-op으로 종결되고, 이것 자체가 계약 준수다(보상은 Transaction
-              경계까지만 보장된다는 §Policy Enforcement의 서술).
+              보상 경계 = 워크플로 실행 전체(RFC-0032 — Phase 1은 명시적
+              Transaction 노드를 선언할 문법이 없다). driver.rollback()이
+              실제로 호출된다. Login IR의 step 1(validate)은 쓰기가 없고
+              step 2(authenticate)는 read만 시도했으므로, 이 실행이 커밋한
+              쓰기는 애초에 없다 — 되돌릴 것이 없을 뿐, rollback이 no-op으로
+              "정의돼서" 그런 것이 아니다. 쓰기가 있는 워크플로라면(RFC-0032
+              §Reference-level Specification 참조) 그 쓰기도 이번 rollback으로
+              함께 사라졌을 것이다.
 ```
+
+> 갱신됨: RFC-0032 (타임라인 C의 rollback 평가 서술)
 
 - workflow는 `Failed`로 종결, 원인(connection refused ×4)이 보존된다.
 - ERROR 로그 1건 발화 — 사람이 봐야 하는 상황이다(의존성 불가용). 시도별

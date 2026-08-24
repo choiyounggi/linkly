@@ -567,6 +567,10 @@ RFC_ROUTES = {
              "`respond`를 쓰고 싶다 — payload 동명 필드가 `derived` 제외하고 "
              "왜 `as` 유무와 무관하게 시드되는지, `as` 없는 `create`는 "
              "정확히 무엇이 바이트 동일한지", ()),
+    "0032": ("`policy rollback`이 실패한 실행의 쓰기를 정말 되돌리는지, 그 "
+             "경계가 어디까지인지 — 명시적 `Transaction` 노드 없이 워크플로 "
+             "실행 전체가 왜 암묵적 트랜잭션 하나가 되는지, `emit`으로 등록한 "
+             "outbox 행이 그 롤백에 왜 같이 묶이는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

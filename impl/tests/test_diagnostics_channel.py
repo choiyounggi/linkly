@@ -303,9 +303,11 @@ class TestEnforcementMatrix(unittest.TestCase):
     def test_the_four_declarations_issue_38_names_are_unenforced_or_measured(self):
         # The issue's own examples; if one of these ever reads "enforced" the
         # claim must be backed by real enforcement, not a table edit.
+        # `policy rollback` was the fourth example at #38's writing; issue
+        # #79/RFC-0032 backed it with real enforcement (the execution
+        # boundary), so it now lives in the enforced test below instead.
         self.assertEqual(ENFORCEMENT[("security", "jwt")][0], "unenforced")
         self.assertEqual(ENFORCEMENT[("security", "role")][0], "unenforced")
-        self.assertEqual(ENFORCEMENT[("policy", "rollback")][0], "unenforced")
         self.assertEqual(ENFORCEMENT[("performance", "response")][0], "measured")
 
     def test_genuinely_enforced_declarations_are_marked_enforced(self):
@@ -313,6 +315,7 @@ class TestEnforcementMatrix(unittest.TestCase):
         # unenforced the matrix would carry no information.
         self.assertEqual(ENFORCEMENT[("policy", "retry")][0], "enforced")
         self.assertEqual(ENFORCEMENT[("policy", "timeout")][0], "enforced")
+        self.assertEqual(ENFORCEMENT[("policy", "rollback")][0], "enforced")
         self.assertEqual(ENFORCEMENT[("performance", "cache")][0], "enforced")
 
 
