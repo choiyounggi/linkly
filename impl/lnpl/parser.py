@@ -5,8 +5,8 @@ A top-level keyword closes the previous block; a clause keyword opens a
 sub-section that closes at the next clause or top-level keyword.
 """
 
-from .lexer import (KEYWORDS_CLAUSE, KEYWORDS_TOP, SCHEDULE_AT,
-                    SCHEDULE_KEYWORD, tokenize)
+from .lexer import (GUARD_ALT_KEYWORD, KEYWORDS_CLAUSE, KEYWORDS_TOP,
+                    SCHEDULE_AT, SCHEDULE_KEYWORD, tokenize)
 from .condition import parse_condition, ConditionError
 
 SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database")
@@ -125,6 +125,32 @@ def _append_workflow_item(decl, line):
                                         "lineno": line.lineno,
                                         "indent": line.indent}
         return
+
+    if head == GUARD_ALT_KEYWORD:
+        pending = decl.extra.get("_pending_guard")
+        if pending is not None:
+            # RFC-0028 (issue #93): reuses the slot issue #45 turned into a
+            # ParseError — a second guard line no longer means "second guard
+            # was silently dropped," it can mean "this is an alternative."
+            # Scoped to `when` only: `until`'s stop condition and `repeat`'s
+            # count have no natural OR (RFC-0028 §Alternatives).
+            if pending["mode"] != "when":
+                raise ParseError(
+                    "line %d: `or` continues a `when` guard's alternatives, "
+                    "but the pending guard on line %d is `%s` (RFC-0028: "
+                    "alternative guards apply to `when` only)"
+                    % (line.lineno, pending["lineno"], pending["mode"]))
+            if len(line.tokens) < 2:
+                raise ParseError("line %d: `or` needs a condition" % line.lineno)
+            cond_str = " ".join(line.tokens[1:])
+            try:
+                parse_condition(cond_str)
+            except ConditionError as e:
+                raise ParseError("line %d: invalid condition: %s" % (line.lineno, e))
+            pending.setdefault("alternatives", []).append(cond_str)
+            return
+        # No pending guard: `or` is an ordinary word, unchanged from before
+        # this RFC (falls through to the plain step path below).
 
     _attach(decl, {"item": "step", "line": line}, line)
 

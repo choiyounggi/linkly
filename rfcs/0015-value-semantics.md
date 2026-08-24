@@ -4,7 +4,7 @@
 
 - Status: **Accepted** (RFC-0015, 2026-08-06)
 - Updates: RFC-0001 §Appendix A/A.4 Node catalogue(`Assignment` 1종 추가), RFC-0002 §Full grammar(`Condition`/`Value`/`AssignStep`), RFC-0008 §Reference-level Specification/1. Full Grammar
-- Updated-by: RFC-0025 (§1)
+- Updated-by: RFC-0025 (§1), RFC-0028 (§1, §4)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 가드 조건의 문법은 RFC-0002
 §Full grammar에 있었으나 RFC-0008 §1이 그 절을 이미 갱신했으므로 **효력 있는 계약은

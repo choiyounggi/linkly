@@ -328,6 +328,63 @@ def schedule_negatives():
     ]
 
 
+ALT_GUARD_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "alt_guard",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.approve",
+            "name": "Approve",
+            "children": ["wf.approve.guard.1"],
+        },
+        {
+            "kind": "Guard",
+            "id": "wf.approve.guard.1",
+            "mode": "when",
+            "condition": "input.channel == 1",
+            "alternatives": ["input.amount <= 100"],
+            "children": ["wf.approve.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.approve.step.1",
+            "name": "create payment",
+        },
+    ],
+}
+
+
+def alt_guard_negatives():
+    """RFC-0028 §Reference-level Specification/3 — `Guard.alternatives`, a new
+    optional field. One negative per keyword the field turns on (`type` of the
+    field itself, `type` of an item, the when-only constraint), plus one
+    proving `additionalProperties` still applies once `alternatives` is
+    present — the same "still independent" shape `network_negatives` pins for
+    `NetworkCall.result`.
+    """
+    n1 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n1["nodes"][1]["alternatives"] = "input.amount <= 100"    # type 위반 — 배열 아님
+
+    n2 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n2["nodes"][1]["alternatives"] = [1]                       # item type 위반
+
+    n3 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n3["nodes"][1]["mode"] = "repeat"
+    n3["nodes"][1]["count"] = 3
+    del n3["nodes"][1]["condition"]                            # repeat엔 condition 없음
+
+    n4 = copy.deepcopy(ALT_GUARD_FIXTURE)
+    n4["nodes"][1]["altCondition"] = "typo"                    # 미선언 속성(오타 대역)
+
+    return [
+        ("alternatives is not an array: 'input.amount <= 100'", n1),
+        ("alternatives item is not a string: 1", n2),
+        ("alternatives on a repeat guard", n3),
+        ("undeclared property on a Guard: altCondition", n4),
+    ]
+
+
 def load_json(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -434,6 +491,7 @@ def self_test():
          SCHEDULE_EVENT_FIXTURE),
         ("ROWSET_FIXTURE (RFC-0025 query RepositoryCall)", ROWSET_FIXTURE),
         ("NETWORK_FIXTURE (RFC-0027 NetworkCall.result)", NETWORK_FIXTURE),
+        ("ALT_GUARD_FIXTURE (RFC-0028 Guard.alternatives)", ALT_GUARD_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -471,7 +529,7 @@ def self_test():
         ("line below minimum: wf.login.line = 0", mutated_line_zero),
         ("line is not an integer: wf.login.line = '4'", mutated_line_string),
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
-      + rowset_negatives() + network_negatives()
+      + rowset_negatives() + network_negatives() + alt_guard_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

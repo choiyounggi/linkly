@@ -3,7 +3,8 @@
 RFC-0008: All condition interpretation passes through parse_condition().
 No condition is evaluated differently in parser vs. runtime vs. compiler.
 
-Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, then RFC-0015):
+Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, RFC-0015,
+then RFC-0028):
 
   Condition  ::= Presence | Comparison ('and' Comparison)*
   Presence   ::= Reference ('exists' | 'missing')
@@ -11,18 +12,21 @@ Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, then RFC-0015)
   Comparator ::= '<' | '<=' | '>' | '>=' | '==' | '!='
   Value      ::= Operand (ArithOp Operand)?     -- at most ONE binary operator
   Operand    ::= Reference | Integer | Duration
-  ArithOp    ::= '+' | '-'
+  ArithOp    ::= '+' | '-' | '*' | '/'           -- RFC-0028 added `*`/`/`
   Reference  ::= CamelName | Namespace '.' CamelName
   Namespace  ::= 'input' | CamelName
   Integer    ::= [0-9]+                          -- unsigned
   Duration   ::= Integer ('ms' | 's' | 'm' | 'h' | 'd')   -- 'h'/'d': RFC-0016
 
-Three properties of that grammar are decisions, not omissions (RFC-0015):
+Three properties of that grammar are decisions, not omissions (RFC-0015,
+`*`/`/` reversed by RFC-0028 — see that RFC's §Alternatives):
 
-  **No `or`, no `not`, no parentheses, no `*` or `/`.** The surface covers the
-  five requirements of issue #47 and stops. An unbounded expression language
-  would have to be evaluated identically by an interpreter and by emitted MLIR;
-  every production added is a second evaluator to keep honest.
+  **No `or` inside a `Condition`, no `not`, no parentheses.** RFC-0028 puts
+  `or` back into the language, but as a guard-line STRUCTURE (`AltGuard`,
+  `parser.py`) rather than a `Condition`-grammar operator — this module's
+  grammar is unchanged by it. An unbounded expression language would have to
+  be evaluated identically by an interpreter and by emitted MLIR; every
+  production added here is a second evaluator to keep honest.
 
   **`and` combines Comparisons only.** Mode B decides existence through one
   run-level boolean (`run_binary(skip=...)`) and comparisons through i64
@@ -396,6 +400,25 @@ def condition_to_string(cond: Condition) -> Optional[str]:
     raise ValueError(f"unknown condition type: {type(cond)}")
 
 
+def guard_condition_text(condition: Optional[str],
+                         alternatives: Optional[Tuple[str, ...]] = None) -> Optional[str]:
+    """RFC-0028 §Reference-level Specification/4·5 — the ONE spelling of an
+    alt-guard's combined condition for skip records and mode A/B comparison.
+
+    No alternatives: `condition` unchanged (byte-identical to every guard
+    before this RFC — the backward-compatibility guarantee). With
+    alternatives: `condition` and each alternative, source order, joined by
+    `" or "`. This is display/comparison text only — it is never fed back
+    through `parse_condition` (RFC-0028 does not add `or` to the `Condition`
+    grammar). Mode A's `interp._skip_record` and mode B's
+    `backend.restore_skips` both call this so they cannot independently drift
+    on the join rule.
+    """
+    if not alternatives:
+        return condition
+    return " or ".join([condition, *alternatives])
+
+
 def value_to_string(value: AssignRHS) -> str:
     """Normalized spelling of one `Value` or `Aggregate`."""
     if isinstance(value, Ref):
@@ -505,7 +528,7 @@ def _parse_value(tokens, text):
         if tokens[1] not in ARITH_OPS:
             raise ConditionError(
                 f"invalid arithmetic operator {tokens[1]!r}: {text!r} "
-                "(RFC-0015 supports `+` and `-` only)")
+                "(RFC-0028 supports `+` `-` `*` `/` only)")
         return Arith(_parse_operand(tokens[0], text), tokens[1],
                      _parse_operand(tokens[2], text))
     raise ConditionError(

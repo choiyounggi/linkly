@@ -176,6 +176,102 @@ workflow Refund
     create refund
 """
 
+# Issue #93 / RFC-0028: `total = price * quantity`, the case `*` was missing
+# for. `/` rides the same fixture (see `test_arithmetic_and_alt_guards.py`,
+# which substitutes the last line's operator) so both operators share one
+# entity shape rather than each needing their own fixture.
+#
+# `test_arithmetic_and_alt_guards.py` runs it through mode A and
+# `test_backend.py` through the differential, so it lives here (same split
+# `VALUE_INVENTORY` above documents).
+PRICE_INVENTORY = """capability postgres
+
+entity Product
+    field
+        id UUID
+        stock Integer
+        price Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Integer
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow PlaceOrder
+    read product
+    read order
+    when product.stock >= input.quantity
+    set order.total to product.price * input.quantity
+    when product.stock >= input.quantity
+    set product.stock to product.stock - input.quantity
+"""
+
+# Issue #93 / RFC-0028: `*`/`/` INSIDE a guard condition, not an assignment.
+# Mode B only ever computes arithmetic that reaches `_emit_condition` — an
+# Assignment's expression never does (RFC-0028 §Reference-level
+# Specification/6) — so `PRICE_INVENTORY` above cannot exercise
+# `arith.muli`/`arith.divsi` at all; this fixture is what does. The divisor
+# is a payload field (`input.divisor`), not a literal, so the compiled
+# zero-check has something to guard at runtime.
+#
+# Two workflows, not one guard with two `when` lines: a second `when` on the
+# same guarded item is a parse error (RFC-0015/RFC-0028), and a second guard
+# on a NEW `create product` after the first would conflict with the row
+# `read product` already bound — neither is what this fixture is testing.
+# The guarded item is `validate product` (no repository write) so the ONLY
+# thing that decides whether it runs is the guard.
+GUARD_ARITH = """capability postgres
+
+entity Product
+    field
+        id UUID
+        stock Integer
+        factor Integer
+        threshold Integer
+        divisor Integer
+
+service ArithService
+    policy
+        timeout 5s
+
+workflow CheckRatioMul
+    read product
+    when product.stock * input.factor >= input.threshold
+    validate product
+
+workflow CheckRatioDiv
+    read product
+    when product.stock / input.divisor >= input.threshold
+    validate product
+"""
+
+# Issue #93 / RFC-0028: the alternative-guard structure — `create payment`
+# runs when EITHER the channel is trusted (1) OR the amount is small enough
+# to not need that trust. Two entities so the payload exercises two distinct
+# fields, matching the RFC's own golden-adjacent example.
+ALT_GUARD_APPROVE = """capability postgres
+
+entity Payment
+    field
+        id UUID
+        channel Integer
+        amount Integer
+
+service PaymentService
+    policy
+        timeout 5s
+
+workflow Approve
+    when input.channel == 1
+    or input.amount <= 100
+    create payment
+"""
+
 
 def guarded_source(guard):
     """`GUARDED` with its guard line replaced — e.g. `guarded_source("repeat 3")`.

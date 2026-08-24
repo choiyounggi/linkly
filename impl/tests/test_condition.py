@@ -247,6 +247,19 @@ class TestValueExpressions(unittest.TestCase):
         self.assertEqual(condition_to_string(c),
                          "product.stock - input.quantity >= 0")
 
+    def test_multiplication_and_division_on_either_side(self):
+        # RFC-0028 (issue #93): `*` and `/` join `+`/`-` in ArithOp.
+        c = parse_condition("product.price * input.quantity >= 0")
+        self.assertEqual(c.left, Arith(Ref("product.price"), "*",
+                                       Ref("input.quantity")))
+        self.assertEqual(condition_to_string(c),
+                         "product.price * input.quantity >= 0")
+        c2 = parse_condition("product.total / input.count >= 0")
+        self.assertEqual(c2.left, Arith(Ref("product.total"), "/",
+                                        Ref("input.count")))
+        self.assertEqual(condition_to_string(c2),
+                         "product.total / input.count >= 0")
+
     def test_and_combines_two_comparisons(self):
         c = parse_condition("input.amount > 0 and input.amount <= 10000")
         self.assertIsInstance(c, And)
@@ -275,8 +288,10 @@ class TestValueExpressions(unittest.TestCase):
         self.assertEqual(references(parse_condition("token missing")), ("token",))
 
     # ---- error -------------------------------------------------------------
-    def test_rejects_multiplication_and_division(self):
-        for text in ("stock * 2 > 0", "stock / 2 > 0"):
+    def test_rejects_an_operator_outside_the_four(self):
+        # RFC-0028 widened ArithOp to `+ - * /`; the table is still closed —
+        # this pins that a fifth arithmetic-looking operator stays refused.
+        for text in ("stock % 2 > 0", "stock ^ 2 > 0"):
             with self.assertRaises(ConditionError):
                 parse_condition(text)
 

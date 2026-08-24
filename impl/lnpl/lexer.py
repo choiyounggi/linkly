@@ -43,13 +43,23 @@ DURATION_SCAN = tuple(sorted(DURATION_UNIT_MS.items(), key=lambda kv: -len(kv[0]
 # and the reference was the implementation (t4 F-7).
 COMPARATORS = ("<=", ">=", "==", "!=", "<", ">")
 
-# RFC-0015 value expressions. `*` and `/` are deliberately absent: nothing in
-# issue #47 needs them, and division would have to answer for rounding and for
-# division by zero in two runtimes at once.
-ARITH_OPS = ("+", "-")
+# RFC-0015 value expressions, widened by RFC-0028 (issue #93) to add `*`/`/`.
+# `/` is integer truncating division; 0 as the literal divisor is a compile
+# error (`lower.py`), a runtime-zero divisor is a `RunError` (mode A) that
+# mode B need not agree on (RFC-0028 §Reference-level Specification/6).
+ARITH_OPS = ("+", "-", "*", "/")
 
-# The one logical combinator. `or`/`not` are not in the language.
+# The one logical combinator INSIDE a `Condition`. `not` is not in the
+# language. `or` is not a `Condition`-grammar operator either — RFC-0028
+# (issue #93) adds it as a guard-line STRUCTURE (`AltGuard`, see
+# GUARD_ALT_KEYWORD below), not a combinator here.
 LOGICAL_OPS = ("and",)
+
+# RFC-0028 §Reference-level Specification/1: the alternative-guard keyword.
+# Only recognized by the parser when a `when` guard is pending — see
+# `parser._append_workflow_item`. Not a `KEYWORDS_CONTROL` entry: unlike
+# `when`/`until`/`repeat`, `or` does not open a new guard on its own.
+GUARD_ALT_KEYWORD = "or"
 
 # The assignment step, `set <reference> to <value>`.
 ASSIGN_KEYWORDS = ("set", "to")

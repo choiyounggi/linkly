@@ -3,7 +3,7 @@
 ## Status
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
-- Updated-by: RFC-0011 (§부록 A.6.3, §부록 A.7)
+- Updated-by: RFC-0011 (§부록 A.6.3, §부록 A.7), RFC-0028 (§노드 카탈로그/Guard)
 
 ## Motivation
 

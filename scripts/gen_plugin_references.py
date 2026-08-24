@@ -19,10 +19,10 @@ sys.path.insert(0, os.path.join(REPO, "impl"))
 from lnpl import __version__                                    # noqa: E402
 from lnpl.diagnostics import CODES, ENFORCEMENT, SEVERITY_OF     # noqa: E402
 from lnpl.lexer import (ARITH_OPS, ASSIGN_KEYWORDS, COMPARATORS,  # noqa: E402
-                        DURATION_UNITS, KEYWORDS_CLAUSE, KEYWORDS_CONTROL,
-                        KEYWORDS_TOP, LOGICAL_OPS, PAYLOAD_NAMESPACE, RESERVED,
-                        SCHEDULE_AT, SCHEDULE_KEYWORD, SCHEDULE_RECURRENCES,
-                        SCHEDULE_ZONES)
+                        DURATION_UNITS, GUARD_ALT_KEYWORD, KEYWORDS_CLAUSE,
+                        KEYWORDS_CONTROL, KEYWORDS_TOP, LOGICAL_OPS,
+                        PAYLOAD_NAMESPACE, RESERVED, SCHEDULE_AT,
+                        SCHEDULE_KEYWORD, SCHEDULE_RECURRENCES, SCHEDULE_ZONES)
 from lnpl.lower import (ARGUMENT_MECHANISMS, KIND_PREFIX, KIND_WORD,  # noqa: E402
                         PERF_METRICS, POLICY_NAMES, READ_VERBS,
                         SECURITY_MECHANISMS, VALUELESS_PERF, VERB_LEXICON,
@@ -72,6 +72,14 @@ def render_grammar():
     lines.append("가드 조건은 `<값> <비교연산자> <값>`이고 항은 `and`로만 잇는다. "
                  "값은 참조·정수·기간이며 이항 산술 **1개**까지 붙일 수 있다"
                  "(`product.stock - input.quantity`). 중첩·괄호는 문법에 없다.\n")
+    lines.append("## 대안 가드 (RFC-0028)\n")
+    lines.append("`when` 뒤에 `%s` 줄을 이어 쓰면 대안 가드다 — 조건이나 그 "
+                 "대안 중 하나라도 참이면 피가드 항목을 실행한다"
+                 "(`when input.channel == 1` 다음 줄 "
+                 "`%s input.amount <= 100`). `%s` 자체는 `Condition` 문법에 "
+                 "들어가지 않는다 — 위 절이 말하는 대로 `and`만 여전히 항을 "
+                 "잇는다. `until`/`repeat` 뒤에는 쓸 수 없다.\n"
+                 % (GUARD_ALT_KEYWORD, GUARD_ALT_KEYWORD, GUARD_ALT_KEYWORD))
     # r3 N-2: the rule existed only in the refusal. `create report` then
     # `set report.orderCount to …` is rejected, and nothing in the references
     # said why — so the author had to reverse-engineer "read-family only" from
@@ -540,6 +548,9 @@ RFC_ROUTES = {
     "0027": ("`call`/`request ... as <name>`로 네트워크 응답을 바인딩하고 "
              "실패를 status 값으로 분기하고 싶다 — `--network`의 fake/http "
              "선택이 무엇을 고르는지, 접속 실패가 왜 예외가 아니라 값인지", ()),
+    "0028": ("`*`/`/`를 쓰고 싶다, 또는 `when A` / `or B`로 대안 가드를 쓰고 "
+             "싶다 — 0 나눗셈이 왜 컴파일 에러가 아니라 RunError인지, mode B가 "
+             "왜 그 실패에 합의할 의무가 없는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

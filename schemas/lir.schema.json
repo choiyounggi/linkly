@@ -674,46 +674,72 @@
       "additionalProperties": false
     },
     "nodeGuard": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "enum": [
-            "Guard"
-          ]
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "Guard"
+              ]
+            },
+            "id": {
+              "$ref": "#/$defs/nodeId"
+            },
+            "meta": {
+              "$ref": "#/$defs/meta"
+            },
+            "line": {
+              "$ref": "#/$defs/lineNumber"
+            },
+            "mode": {
+              "enum": [
+                "when",
+                "until",
+                "repeat"
+              ]
+            },
+            "condition": {
+              "type": "string"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "alternatives": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "children": {
+              "$ref": "#/$defs/nodeIdArray"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "mode"
+          ],
+          "additionalProperties": false
         },
-        "id": {
-          "$ref": "#/$defs/nodeId"
-        },
-        "meta": {
-          "$ref": "#/$defs/meta"
-        },
-        "line": {
-          "$ref": "#/$defs/lineNumber"
-        },
-        "mode": {
-          "enum": [
-            "when",
-            "until",
-            "repeat"
-          ]
-        },
-        "condition": {
-          "type": "string"
-        },
-        "count": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "children": {
-          "$ref": "#/$defs/nodeIdArray"
+        {
+          "not": {
+            "required": [
+              "alternatives"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "until",
+                  "repeat"
+                ]
+              }
+            }
+          }
         }
-      },
-      "required": [
-        "kind",
-        "id",
-        "mode"
-      ],
-      "additionalProperties": false
+      ]
     },
     "nodeNetworkCall": {
       "type": "object",
