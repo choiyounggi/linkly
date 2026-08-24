@@ -31,7 +31,7 @@
 | `performance parallel` | **unenforced** | parsed, but the execution plan never reads it |
 | `performance prefetch` | **unenforced** | parsed, but the execution plan never reads it |
 | `performance batch` | **unenforced** | parsed, but the execution plan never reads it |
-| `event schedule` | **unenforced** | no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor |
+| `event schedule` | **unenforced** | by default nothing calls it; `lnpl trigger --schedule NAME` and `POST /-/schedules/<slug>` (`lnpl serve`) run the linked workflow on demand, but only when an external scheduler (cron/systemd — see `lnpl schedules`) is configured to call one of them (issue #81) |
 
 ## 진단 코드
 

@@ -44,9 +44,10 @@ def _parse_fields(specs):
 from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
-from .openapi import OpenApiError, generate as generate_openapi
+from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, build_routes, serve
-from .wsgi import ExporterError, open_exporter, open_log_format
+from .wsgi import (ExporterError, open_exporter, open_log_format,
+                   resolve_schedule_triggers, _schedule_events)
 from .spec import SpecError, extract, run_manifest
 
 
@@ -195,6 +196,27 @@ def _select_workflow(requested, source, workflows):
     return requested
 
 
+class ScheduleSelectionError(Exception):
+    """`--schedule` named an id this module declares no schedule event for."""
+
+
+def _select_schedule_event(requested, source, events):
+    """The schedule Event id `lnpl trigger --schedule` names, or a rejection
+    that lists the candidates — mirrors `_select_workflow` (issue #81, D2):
+    the derived node id (`event.daily.rollup`), validated at the boundary,
+    one message naming every candidate. Unlike `--workflow`, there is no
+    "first one" default (a cron entry has to name the schedule it means)
+    and no empty-`requested` case to handle: `--schedule` is `required=True`
+    in argparse, so `cmd_trigger` never reaches this with one.
+    """
+    ids = [n["id"] for n in events]
+    if requested not in ids:
+        raise ScheduleSelectionError(
+            "error: --schedule %r is not a schedule event of %s (valid: %s)"
+            % (requested, source, ", ".join(ids)))
+    return requested
+
+
 def cmd_run(args):
     doc, _, _, diagnostics = _compile(args.source)
     if args.payload:
@@ -299,6 +321,149 @@ def _print_human(result, interp):
     for entry in interp.trace.logs:
         if entry["level"] in ("WARN", "ERROR"):
             print("  %-5s %s" % (entry["level"], entry["message"]))
+
+
+def cmd_trigger(args):
+    """`lnpl trigger <source...> --schedule <event-id>` (issue #81, D2): an
+    external scheduler (cron/systemd) calls this directly — no `serve`
+    socket, no built-in cron loop (the design this issue explicitly
+    rejected). Same mode-A execution `cmd_run` already runs; the only
+    difference from `run` is that the workflow is chosen by the declared
+    schedule event's linkage (`resolve_schedule_triggers`, wsgi.py, D1)
+    rather than by `--workflow`. Success is rc 0; a failed run (RunError, or
+    `result["status"] != "completed"`) is rc != 0 — the same "0 or not" a
+    cron entry already branches on for every other command.
+    """
+    doc, _, _, diagnostics = _compile(args.source)
+    events = _schedule_events(doc)
+    if not events:
+        print("no `on schedule` event to trigger", file=sys.stderr)
+        _emit_diagnostics(diagnostics)
+        return 1
+    target_event = _select_schedule_event(
+        args.schedule, _source_display(args.source), events)
+    event_node = next(n for n in events if n["id"] == target_event)
+    triggers = resolve_schedule_triggers(doc, events=[event_node])
+    target, _service = triggers[target_event]
+
+    if args.payload:
+        with open(args.payload, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    else:
+        payload = sample_payload(_entities(doc), refinement_index(doc))
+
+    rows = _repo_rows(doc, payload, target)
+    repository = _open_backend(getattr(args, "backend", "fake"))
+    if repository is _REJECTED:
+        return 2
+    network_spec = getattr(args, "network", "fake")
+    resolved = _open_endpoints(doc, getattr(args, "endpoint", None), network_spec)
+    if resolved is _REJECTED:
+        return 2
+    endpoints, capabilities = resolved
+    network = _open_network(network_spec, endpoints=endpoints,
+                            capabilities=capabilities)
+    if network is _REJECTED:
+        return 2
+    clock = _open_clock(getattr(args, "clock", "virtual"))
+    if clock is _REJECTED:
+        return 2
+    try:
+        interp = Interpreter(doc, repo_rows=rows, repository=repository,
+                             network=network, clock=clock)
+        result = interp.run_workflow(target, payload)
+        diagnostics.extend(interp.diagnostics)
+        _print_human(result, interp)
+        _emit_diagnostics(diagnostics)
+        return _strict_rc(args, 0 if result["status"] == "completed" else 1,
+                          diagnostics)
+    finally:
+        if repository is not None:
+            repository.close()
+        if network is not None:
+            network.close()
+
+
+# `every` -> a function of (hour, minute) -> the crontab 5-field expression.
+# A closed table (issue #81, D3), the same size as `lexer.SCHEDULE_RECURRENCES`
+# it mirrors: RFC-0016 accepts only `daily` today, and each new recurrence
+# RFC-0016 admits gets exactly one new row here, never a guessed mapping.
+_CRONTAB_EXPR = {
+    "daily": lambda hh, mm: "%d %d * * *" % (mm, hh),
+}
+
+_GENERATED_HEADER = (
+    "# generated by `lnpl schedules` from %s — do not hand-edit; re-run the "
+    "command instead (issue #81, D3)"
+)
+
+
+def _crontab_snippet(entry, event_name, trigger_cmd):
+    hh, mm = (int(p) for p in entry["at"].split(":"))
+    expr = _CRONTAB_EXPR[entry["every"]](hh, mm)
+    # SCHEDULE_ZONES is fixed to ("UTC",) — RFC-0016 accepts no other zone —
+    # so the assumption below is always true today, stated rather than
+    # silently relied on.
+    return ("# %s: %s at %s %s (assumes the cron daemon's clock is %s)\n"
+            "%s %s"
+            % (event_name, entry["every"], entry["at"], entry["zone"],
+               entry["zone"], expr, trigger_cmd))
+
+
+def _systemd_snippet(entry, event_name, slug, trigger_cmd):
+    hh, mm = entry["at"].split(":")
+    return (
+        "# %s.timer\n"
+        "[Unit]\n"
+        "Description=lnpl schedule trigger: %s (RFC-0016)\n\n"
+        "[Timer]\n"
+        "OnCalendar=*-*-* %s:%s:00 %s\n"
+        "Persistent=true\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n\n"
+        "# %s.service\n"
+        "[Unit]\n"
+        "Description=lnpl trigger: %s\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=%s\n"
+        % (slug, event_name, hh, mm, entry["zone"], slug, event_name, trigger_cmd))
+
+
+def cmd_schedules(args):
+    """`lnpl schedules <source...> --format crontab|systemd` (issue #81,
+    D3): every declared `on schedule` trigger, rendered as the external
+    scheduler snippet that calls `lnpl trigger` — consumes
+    `x-lnpl-schedules` (`openapi.generate`'s existing metadata, not
+    regenerated here) rather than re-deriving the schedule fields.
+    """
+    doc, _, _, diagnostics = _compile(args.source)
+    schedules = generate_openapi(doc).get("x-lnpl-schedules", [])
+    if not schedules:
+        print("no `on schedule` event declared in %s" % _source_display(args.source),
+             file=sys.stderr)
+        _emit_diagnostics(diagnostics)
+        return 1
+    nodes = {n["id"]: n for n in doc["nodes"]}
+    source_args = " ".join(args.source)
+    blocks = [_GENERATED_HEADER % _source_display(args.source)]
+    for entry in schedules:
+        event = nodes[entry["event"]]
+        trigger_cmd = "lnpl trigger %s --schedule %s" % (source_args, entry["event"])
+        if args.format == "crontab":
+            blocks.append(_crontab_snippet(entry, event["name"], trigger_cmd))
+        else:
+            blocks.append(_systemd_snippet(entry, event["name"], _slug(event["name"]),
+                                           trigger_cmd))
+    text = "\n\n".join(blocks) + "\n"
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print("wrote %s (%d schedule(s))" % (args.output, len(schedules)))
+    else:
+        sys.stdout.write(text)
+    _emit_diagnostics(diagnostics)
+    return 0
 
 
 def cmd_spec(args):
@@ -920,6 +1085,44 @@ def main(argv=None):
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)
 
+    tg = sub.add_parser("trigger",
+                        help="run a declared `on schedule` event's linked "
+                             "workflow (interpreter mode A) — the entry "
+                             "point an external scheduler calls; no "
+                             "built-in cron (issue #81)")
+    tg.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
+    tg.add_argument("--schedule", required=True, metavar="EVENT-ID",
+                    help="the schedule event's node id (e.g. "
+                         "event.daily.rollup) — see `lnpl schedules` for "
+                         "the id each declared `on schedule` event derives")
+    tg.add_argument("--payload", help="JSON file with the workflow input")
+    tg.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
+    tg.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    tg.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
+                    help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME>, --endpoint wins)")
+    tg.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
+    tg.add_argument("--strict", nargs="?", const="info", default=None,
+                     type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
+    tg.set_defaults(func=cmd_trigger)
+
+    sc = sub.add_parser("schedules",
+                        help="render every declared `on schedule` event as "
+                             "an external-scheduler snippet that calls "
+                             "`lnpl trigger` (issue #81)")
+    sc.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
+    sc.add_argument("--format", choices=("crontab", "systemd"), default="crontab",
+                    help="snippet shape: `crontab` (default, a 5-field line "
+                         "per schedule) or `systemd` (a .timer + .service "
+                         "unit pair per schedule)")
+    sc.add_argument("-o", "--output", help="write the snippet to this path")
+    sc.set_defaults(func=cmd_schedules)
+
     sp = sub.add_parser("spec", help="extract `spec` blocks as a test manifest")
     sp.add_argument("source", nargs="+",
                     help="one or more .lnpl files (merged in the given order), "
@@ -1086,10 +1289,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         return args.func(args)
-    except WorkflowSelectionError as exc:
+    except (WorkflowSelectionError, ScheduleSelectionError) as exc:
         # Operator error, like a mistyped --field: rc 2, message already carries
         # the candidates, and no "compile error:" prefix — nothing failed to
-        # compile (issue #50).
+        # compile (issue #50; issue #81 D2 for --schedule).
         print(str(exc), file=sys.stderr)
         return 2
     except (LexError, ParseError, LowerError, SpecError, OpenApiError,

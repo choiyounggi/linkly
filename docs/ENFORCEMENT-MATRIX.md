@@ -80,7 +80,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | performance | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | performance | prefetch | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | performance | batch | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
-| event | schedule | unenforced | declared-not-enforced | 스케줄러가 없다. 선언은 IR과 OpenAPI 스케줄 메타데이터까지만 도달한다 — 실행기는 이슈 #26(서빙 계층)이 소유한다 (RFC-0016) |
+| event | schedule | unenforced | declared-not-enforced | 기본 경로(선언만)는 아무것도 부르지 않는다. `lnpl trigger --schedule NAME`과 `POST /-/schedules/<slug>`(`lnpl serve`)가 요청 시 연결된 워크플로를 실행한다 — 단 cron/systemd 같은 외부 스케줄러가 그중 하나를 부르도록 구성돼 있어야 한다(issue #81, `lnpl schedules`가 그 스니펫을 생성한다) |
 
 `enforced` 행의 진단 코드 셀이 `—`인 것은 값이 빠진 것이 아니라 **진단을 내지
 않는다는 뜻**이다. 집행되는 선언까지 경고하면 보고 전체가 정보를 잃는다.
@@ -95,6 +95,10 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 그래서 status는 **가장 약한 경로**(기본값)를 말하고, 집행되는 경로는 `근거` 칸이
 이름으로 지목한다. 한 칸에 하나의 status만 적고 경로를 감추면 두 경로 중 하나에
 대해서는 반드시 거짓이 된다.
+
+`event schedule`도 같은 이유로 `unenforced`다(issue #81) — 컴파일러는 운영자가
+`lnpl trigger`나 `/-/schedules/<slug>`를 실제로 cron/systemd에 연결했는지 알
+방법이 없고, 연결하지 않으면 선언은 여전히 아무것도 실행하지 않는다.
 
 ## C. 진단 코드
 

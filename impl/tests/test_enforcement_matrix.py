@@ -492,6 +492,29 @@ class TestPathDependentEnforcement(unittest.TestCase):
         self.assertEqual("enforced", status)
         self.assertIn("transaction", reason.lower())
 
+    def test_the_schedule_reason_names_the_path_that_enforces_it(self):
+        """issue #81 gave `event schedule` a real trigger surface, same
+        compile-time-cannot-know-the-deployment shape as `security jwt`."""
+        _, reason = ENFORCEMENT[("event", "schedule")]
+
+        self.assertIn("lnpl trigger", reason)
+        self.assertIn("/-/schedules/", reason)
+
+    def test_the_schedule_reason_still_says_the_default_path_does_not(self):
+        """Both halves, or the row reads as a promise the default cannot
+        keep — nobody calls the trigger surface without an external
+        scheduler configured to do so."""
+        status, reason = ENFORCEMENT[("event", "schedule")]
+
+        self.assertEqual("unenforced", status)
+        self.assertIn("default", reason)
+
+    def test_the_schedule_document_repeats_the_same_path(self):
+        row = next(line for line in read_doc().splitlines()
+                   if line.startswith("| event | schedule |"))
+
+        self.assertIn("lnpl trigger", row)
+
 
 class TestDiagnosticCodeTable(unittest.TestCase):
     """§C documents the closed code set callers branch on."""

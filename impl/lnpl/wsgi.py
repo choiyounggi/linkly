@@ -155,7 +155,9 @@ class CursorError(Exception):
 
 
 class ServeError(Exception):
-    """The routing table and the generated OpenAPI contract disagree."""
+    """The routing table and the generated OpenAPI contract disagree, or
+    (issue #81) a schedule trigger's event-to-workflow linkage is
+    ambiguous — both are startup-time refusals, never a guess."""
 
 
 class WsgiConfigError(Exception):
@@ -307,6 +309,97 @@ def build_routes(document):
     if set(routes) != contract:
         raise ServeError("served paths %r do not match the OpenAPI contract %r"
                          % (sorted(routes), sorted(contract)))
+    return routes
+
+
+def _schedule_events(document):
+    """Every schedule-sourced Event node, in document order — the same
+    `"every" in source` filter `openapi._schedules` already uses to tell a
+    schedule source from an entity source."""
+    return [n for n in document["nodes"] if n["kind"] == "Event"
+           and n.get("source") and "every" in n["source"]]
+
+
+def resolve_schedule_triggers(document, events=None):
+    """schedule Event id -> (workflow id, owning Service node) (issue #81, D1).
+
+    An Event carries no owner in the IR — `lower.py`'s `owner_of` computes
+    "nearest preceding `service` declaration" (RFC-0002 A.2 R2) for a
+    Workflow only. This applies that SAME rule to a schedule Event, post-hoc
+    over the compiled document's `line` fields, rather than duplicating it
+    inside `lower.py` (out of this task's scope): the nearest `Service`
+    whose own `line` does not exceed the event's.
+
+    Exactly one Workflow child of that service is required. Zero (no
+    preceding service, or one with no workflow) or two-or-more is refused
+    with `ServeError` rather than guessed — the brief's fail-closed
+    alternative to inventing a second, undeclared link between an event and
+    a workflow.
+
+    `events` restricts resolution to a subset (default: every schedule event
+    in the document) — `cli.cmd_trigger` uses this to fail only on the one
+    schedule it was asked to run, not on an unrelated ambiguous schedule
+    elsewhere in the same module.
+    """
+    services = sorted((n for n in document["nodes"] if n["kind"] == "Service"),
+                      key=lambda n: n["line"])
+    nodes = {n["id"]: n for n in document["nodes"]}
+    triggers = {}
+    for event in (events if events is not None else _schedule_events(document)):
+        owner = None
+        for service in services:
+            if service["line"] <= event["line"]:
+                owner = service
+            else:
+                break
+        if owner is None:
+            raise ServeError(
+                "schedule event %r (line %d) precedes every `service` "
+                "declaration in this module — no service owns it, so no "
+                "workflow can be chosen without guessing (issue #81, D1)"
+                % (event["name"], event["line"]))
+        candidates = [cid for cid in owner.get("children", [])
+                     if nodes[cid]["kind"] == "Workflow"]
+        if len(candidates) != 1:
+            raise ServeError(
+                "schedule event %r (line %d) is owned by service %r, which "
+                "declares %d workflow(s) — exactly one is required to pick "
+                "a trigger target without guessing (issue #81, D1)"
+                % (event["name"], event["line"], owner["name"], len(candidates)))
+        triggers[event["id"]] = (candidates[0], owner)
+    return triggers
+
+
+def build_schedule_routes(document, triggers=None):
+    """`/-/schedules/<event-slug>` -> the SAME `"workflow"` route shape
+    `build_routes` already produces (issue #81, D1) — so `_do_post`/`_run`/
+    `_respond`/`map_result`/`_check_auth`/the JSON access log (t78) all run
+    UNMODIFIED for a trigger request: an external scheduler and an
+    OpenAPI-declared workflow POST share the identical execution, response,
+    and observation path. `auth` is looked up the same way `build_routes`
+    already looks it up for that same service's own workflow routes (a
+    `security jwt` service refuses an unauthenticated trigger exactly like
+    it refuses an unauthenticated workflow call — no new auth invented).
+
+    Kept OUT of `build_routes`'s own dict/assertion on purpose: RFC-0016
+    keeps a schedule off `paths` (`x-lnpl-schedules` is metadata, not an
+    operation), so merging these in before `build_routes`'s
+    `set(routes) == contract` check would break that assertion for every
+    document with a schedule declaration.
+    """
+    if triggers is None:
+        triggers = resolve_schedule_triggers(document)
+    nodes = {n["id"]: n for n in document["nodes"]}
+    routes = {}
+    for eid, (wid, service) in triggers.items():
+        event = nodes[eid]
+        auth = False
+        for cid in service.get("constraints", []):
+            node = nodes.get(cid)
+            if node is not None and node["kind"] == "Security":
+                auth = "jwt" in node.get("mechanisms", [])
+        path = "/-/schedules/%s" % _slug(event["name"])
+        routes[path] = {"kind": "workflow", "workflow": wid, "auth": auth}
     return routes
 
 
@@ -839,8 +932,14 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     production WSGI host) and `serve.serve()` (the embedded dev server) call
     — the two entry points can never drift apart because they build the same
     object the same way (issue #80, D2).
+
+    issue #81, D1: the schedule-trigger routes are merged in AFTER
+    `build_routes`'s own OpenAPI-contract assertion, so they can never make
+    that assertion fail — see `build_schedule_routes`.
     """
-    return LnplWsgiApp(document, build_routes(document),
+    routes = build_routes(document)
+    routes.update(build_schedule_routes(document))
+    return LnplWsgiApp(document, routes,
                        repository_factory=repository_factory,
                        token_provider=token_provider, network=network,
                        clock=clock, log_format=log_format, exporter=exporter)

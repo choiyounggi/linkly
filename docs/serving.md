@@ -96,6 +96,35 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 
 어댑터 계약·백엔드 선택·jwt 검증 체크리스트의 정본은 `docs/backends.md`다.
 
+## 스케줄 트리거 (이슈 #81)
+
+`event ... on schedule`은 IR과 OpenAPI `x-lnpl-schedules`까지만 도달하고 실행기가
+없다(RFC-0016). 내장 크론은 설계상 기각했다 — 대신 외부 스케줄러(cron/systemd)가
+직접 부르는 트리거 표면을 세 가지 낸다:
+
+- **트리거 라우트** — `POST /-/schedules/<event-slug>`. OpenAPI 계약에는 실리지
+  않는다(스케줄은 오퍼레이션이 아니라 `x-lnpl-schedules` 메타데이터다) — 대신
+  `build_routes`가 만드는 워크플로 라우트와 **완전히 같은 코드 경로**로
+  실행된다: 같은 M1–M9 매핑, 같은 `_check_auth`(그 이벤트가 속한 서비스가
+  `security jwt`를 선언했으면 M3/M3a 그대로), 같은 `skipped[]` 관측, 같은
+  JSON 접근 로그(#78) — 새 판정을 하나도 만들지 않는다.
+- **`lnpl trigger <src>... --schedule <event-id>`** — 소켓을 열지 않는
+  일회성 CLI 경로. `lnpl run`과 같은 모드 A 실행이고, 워크플로 선택만
+  `--workflow` 대신 스케줄 이벤트의 연결로 갈린다. 성공은 rc 0, 실행 실패는
+  rc ≠ 0 — cron이 그대로 판정에 쓸 수 있다.
+- **`lnpl schedules <src>... --format crontab|systemd`** — `x-lnpl-schedules`
+  메타데이터로부터 crontab 한 줄 또는 systemd `.timer`+`.service` 쌍을
+  만든다. 출력은 생성물이고 손으로 고치는 대상이 아니다(헤더에 명시).
+
+**이벤트→워크플로 연결.** 스케줄 이벤트는 IR에서 어떤 워크플로에도 속하지
+않는다(`lower.py`의 `owner_of`는 워크플로 전용이다). 트리거 표면은 워크플로가
+이미 쓰는 것과 같은 규칙 — "가장 가까이 앞선 `service` 선언"(RFC-0002 A.2 R2)
+— 을 컴파일된 문서의 `line` 필드 위에서 그대로 적용해, 그 서비스의 워크플로
+자식 하나를 target으로 고른다. **정확히 하나가 아니면**(앞선 서비스가 없거나,
+그 서비스에 워크플로가 0개거나 2개 이상이면) `ServeError`로 **기동 시점에**
+거부한다 — 추측하지 않는다. `lnpl serve`는 문서의 모든 스케줄 이벤트를 한
+번에 검증하고, `lnpl trigger`는 그중 요청한 하나만 검증한다.
+
 ## 계약 한계 (이 서버가 아닌 것)
 
 - **capability 백엔드는 기본이 fake다.** 플래그 없이 띄우면 저장은 요청마다
@@ -109,8 +138,10 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   `iss`/`aud`/`typ`를 전부 검증하고, 실패는 401 `auth-invalid`다. 어느 검사가
   깨졌는지는 응답에 싣지 않는다 — 위조를 다듬는 쪽이 원하는 피드백이라서,
   correlation id와 함께 서버 stderr로 나간다. 토큰은 `lnpl token`이 발급한다.
-- 스케줄 트리거(#49, `x-lnpl-schedules`)는 서빙되지 않는다. 모드 B(네이티브)
-  서빙도 없다.
+- **내장 스케줄러(크론 루프)는 없다** — 이 서버는 어떤 타이머도 자체적으로
+  돌리지 않는다. `event ... on schedule`이 선언한 시각/주기를 실제로 지키는
+  것은 여전히 운영자가 붙이는 외부 스케줄러(cron/systemd)의 몫이다 — 아래
+  "스케줄 트리거" 절, 이슈 #81. 모드 B(네이티브) 서빙도 없다.
 - **WebSocket은 이 이슈(#103)에서 명시 보류한다.** SSE는 단방향 HTTP 스트림이라
   stdlib(WSGI 이터레이터 — dev 서버는 `wsgiref`, 운영은 gunicorn 등 아무 WSGI
   호스트나)로 구현 가능하지만, WebSocket은 프로토콜 업그레이드·프레이밍에

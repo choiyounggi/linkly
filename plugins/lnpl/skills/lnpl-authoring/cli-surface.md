@@ -42,6 +42,50 @@ lnpl --version
 `wf.get.report`). 도출 규칙은 [references/naming.md](references/naming.md)에 있고,
 잘못된 id를 주면 유효한 id 전부가 에러에 나열된다.
 
+### `trigger` — `on schedule` 이벤트의 연결 워크플로를 실행 (인터프리터, 모드 A, 이슈 #81)
+
+```
+lnpl trigger <src>.lnpl --schedule event.daily.rollup
+```
+
+`event ... on schedule`은 내장 크론이 없다(RFC-0016) — `serve` 소켓 없이 외부
+스케줄러(cron/systemd)가 직접 부르는 일회성 진입점이 이 서브커맨드다.
+실행 자체는 `run`과 같은 모드 A다.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--schedule` | 필수. **스케줄 이벤트 노드 id**(`GetReport`가 아니라 `event.daily.rollup`). 이 모듈이 선언한 `on schedule` 이벤트가 아니면 유효한 id 전부와 함께 rc 2로 거부된다 |
+| `--payload` | `run`과 같다 |
+| `--backend` | `run`과 같다 |
+| `--network` | `run`과 같다 |
+| `--endpoint` | `run`과 같다 |
+| `--clock` | `run`과 같다 |
+| `--strict` | `run`과 같다 |
+
+**연결 규칙.** 스케줄 이벤트는 IR에서 어떤 워크플로에도 속하지 않는다 —
+워크플로가 이미 쓰는 "가장 가까이 앞선 `service` 선언" 규칙(RFC-0002 A.2 R2)을
+그대로 적용해, 그 서비스의 워크플로 자식 하나를 target으로 고른다. 정확히
+하나가 아니면(0개 또는 2개 이상) rc 2로 거부된다 — 추측하지 않는다. 실행
+성공은 rc 0, 실패(`status != completed` 또는 런타임 에러)는 rc ≠ 0 — cron이
+그대로 판정에 쓸 수 있다. `lnpl serve`도 같은 연결로 `POST
+/-/schedules/<event-slug>` 라우트를 만든다 — 정본은 `docs/serving.md`.
+
+### `schedules` — `on schedule` 이벤트를 외부 스케줄러 스니펫으로 (이슈 #81)
+
+```
+lnpl schedules <src>.lnpl --format crontab
+lnpl schedules <src>.lnpl --format systemd
+```
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--format` | `crontab`(기본, 5필드 한 줄) 또는 `systemd`(`.timer`+`.service` 쌍) |
+| `-o` / `--output` | 스니펫을 파일로 |
+
+OpenAPI `x-lnpl-schedules` 메타데이터(기존 생성물)를 소비해 `lnpl trigger`를
+부르는 스니펫을 만든다 — 스니펫 자체도 생성물이고, 출력 헤더가 손편집
+대상이 아님을 밝힌다. 선언된 `on schedule` 이벤트가 없으면 rc 1.
+
 ### `spec` — `spec` 블록을 테스트 매니페스트로
 
 | 플래그 | 뜻 |
