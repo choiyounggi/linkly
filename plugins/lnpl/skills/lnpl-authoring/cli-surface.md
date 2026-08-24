@@ -165,7 +165,7 @@ status completed
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
 (`unknown-verb`, `unknown-entity`, `guard-skipped-steps`, `guard-orphaned-steps`,
-`aggregation-orphaned-list`, `event-source-mismatch`), `info`는 고쳐도 사라지지 않는
+`aggregation-orphaned-list`, `event-source-mismatch`, `derived-never-assigned`), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`).
 등급별 표는
@@ -196,6 +196,9 @@ status completed
   바로 가리킨다(RFC-0025 §4).
 - **`event-source-mismatch`/`event-source-orphaned`도 `line N`만 갖는다** — 저자가
   보거나 옮겨야 하는 것은 그 `emit` 줄이라, 줄을 바로 가리킨다(issue #98).
+- **`derived-never-assigned`도 `line N`만 갖는다** — 저자가 고쳐야 하는 것은 그
+  `create` 줄(또는 그 앞뒤에 `set`/`format`을 추가하는 것)이라, 줄을 바로
+  가리킨다(issue #95).
 
 노드 id에서 선언명을 되짚는 규칙은
 [references/naming.md](references/naming.md)에 있다.

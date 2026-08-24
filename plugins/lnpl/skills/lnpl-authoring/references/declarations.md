@@ -50,3 +50,4 @@
 | `aggregation-orphaned-list` | **warning** |
 | `event-source-mismatch` | **warning** |
 | `event-source-orphaned` | **info** |
+| `derived-never-assigned` | **warning** |

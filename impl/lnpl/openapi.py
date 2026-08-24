@@ -255,13 +255,18 @@ def _entity_schema(entity, refined):
             # 3.1 honours keywords beside a `$ref`, but the IR states nothing
             # about the field beyond its type, so the reference stands alone.
             props[field["name"]] = {"$ref": "#/components/schemas/%s" % tname}
-            if field.get("required", True):
-                required.append(field["name"])
-            continue
-        if tname not in TYPE_SCHEMA:
+        elif tname not in TYPE_SCHEMA:
             raise OpenApiError("no OpenAPI mapping for semantic type %r "
                                "(field %s.%s)" % (tname, entity["name"], field["name"]))
-        props[field["name"]] = dict(TYPE_SCHEMA[tname])
+        else:
+            props[field["name"]] = dict(TYPE_SCHEMA[tname])
+        if field.get("derived"):
+            # issue #95: server-computed — never required of a request, and
+            # marked the way `Password`/`writeOnly` already marks the mirror
+            # case, so request and response keep sharing this one schema
+            # ($ref) rather than splitting into two.
+            props[field["name"]]["readOnly"] = True
+            continue
         if field.get("required", True):
             required.append(field["name"])
     schema = {"type": "object", "properties": props, "additionalProperties": False}
