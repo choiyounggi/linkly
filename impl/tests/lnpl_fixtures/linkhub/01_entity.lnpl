@@ -1,0 +1,27 @@
+# linkhub 분할 픽스처, 1/2 (RFC-0031 Examples). examples/linkhub.lnpl을
+# entity측 선언(01)과 workflow측 선언(02)으로 나눈 것 — 파일명 정렬 병합이
+# 원본의 선언 순서와 정확히 같아지도록 나눈 경계다. 원본과 바이트 대 바이트로
+# 같은 선언이어야 IR 해시가 일치한다(test_multi_file.py) — 손대지 말 것.
+
+capability postgres
+capability redis
+
+refine VisitCount of Integer
+    min 0
+
+entity Bookmark
+    field
+        id UUID
+        url URL
+        title Text
+        owner UUID
+        savedAt DateTime
+        visits VisitCount
+
+event BookmarkSaved on Bookmark create
+
+service LinkHubService
+    policy
+        retry 3
+    performance
+        cache 5m
