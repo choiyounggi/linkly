@@ -4,7 +4,7 @@
 
 - Status: **Accepted** (RFC-0014, 2026-08-06)
 - Updates: RFC-0008 §Reference-level Specification/2. Guard Runtime Semantics
-- Updated-by: RFC-0027 (§Reference-level Specification/2.4 스킵 레코드)
+- Updated-by: RFC-0027 (§Reference-level Specification/2.4 스킵 레코드), RFC-0028 (§Reference-level Specification/2)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 가드의 실행 의미론은
 RFC-0003 §Guard에 있었으나 RFC-0008 §2가 그 절을 이미 갱신했으므로, **효력 있는

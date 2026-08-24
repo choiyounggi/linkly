@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**2167 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**2204 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**28 RFCs — 27 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
+**29 RFCs — 28 `Accepted`, RFC-0000 `Superseded` by RFC-0007.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -292,6 +292,7 @@ suite is defined against.
 | [0025 Row Sets and Aggregation](rfcs/0025-row-sets-and-aggregation.md) | `list` reads an entity's every row into a RowSet — a namespace of its own, apart from single-row bindings — and `sum`/`count` aggregate it in a `set`. Mode B computes no aggregate values; `lnpl diff` still proves the four observable classes agree. *Updates 0012 §G12.2, 0015 §1* |
 | [0026 Unknown-Verb Line and Suggestion](rfcs/0026-unknown-verb-line-and-suggestion.md) | `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps` carry a structured `line`, and an unknown verb gets a two-tier did-you-mean: a curated alias table for semantic near-synonyms (`persist` -> `create`), difflib for spelling typos. *Updates 0024 §Scope* |
 | [0027 Network Driver and Result Binding](rfcs/0027-network-driver-and-result-binding.md) | `call`/`request` become real outbound calls behind a `NetworkDriver` (`--network fake\|http`), and `as <name>` binds the response so a guard can branch on `status` — a transport failure on a bound call is a value (`status` 0), not a run failure. *Updates 0003 §Execution Model, 0012 §G12.2, 0014* |
+| [0028 Arithmetic and Alternative Guards](rfcs/0028-arithmetic-and-alternative-guards.md) | `*`/`/` join `+`/`-` (integer, truncating; 0 divisor is a `RunError`, not a compile error unless it is the literal `0`), and `when A` / `or B` promotes two guard lines into an alternative guard — a structure, not a `Condition`-grammar operator. *Updates 0001 §Node catalogue/Guard, 0014 §2, 0015 §1 §4* |
 
 Twenty-seven are `Accepted`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
@@ -353,7 +354,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2167 tests in 72.080s
+Ran 2204 tests in 72.080s
 OK
 ```
 

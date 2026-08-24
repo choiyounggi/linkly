@@ -816,6 +816,10 @@ class _WfContext:
             fields["count"] = int(guard["arg"])
         else:
             fields["condition"] = guard["arg"]
+        # RFC-0028 §Reference-level Specification/3: additive, `when`-only.
+        # `parser.py` only ever populates this for `mode == "when"`.
+        if guard.get("alternatives"):
+            fields["alternatives"] = list(guard["alternatives"])
         self.emitted.append(_node("Guard", node_id, children=[inner_id],
                                   line=guard["lineno"], **fields))
         return node_id
@@ -1140,12 +1144,44 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
     return entity["id"]
 
 
+def _check_literal_zero_divisor(value, where):
+    """RFC-0028 §Reference-level Specification/2: a literal `0` divisor always
+    fails (the run could only ever end in `RunError`), so it is refused here
+    rather than sent to a run that cannot do anything else. A REFERENCED
+    divisor is a runtime value — that is §2's `RunError` row, decided at run
+    time because the document alone cannot know it will be 0.
+
+    `Arith.left`/`.right` are `Ref | Lit`, never `Arith` (RFC-0015: arithmetic
+    does not nest), so this needs no recursion.
+    """
+    from .condition import Arith, Lit
+    if isinstance(value, Arith) and value.op == '/' \
+            and isinstance(value.right, Lit) and value.right.value == 0:
+        raise LowerError(
+            "%s: divides by the literal 0 — division by zero is not a "
+            "runtime input here: the right operand is the literal 0"
+            % where)
+
+
 def _check_guard(node, scope, assigned, workflow_name, parse_condition,
                  references, ConditionError, Lit):
-    """One Guard's condition: every reference resolvable, comparable, and stable."""
+    """One Guard's condition (and, since RFC-0028, each `or` alternative):
+    every reference resolvable, comparable, and stable.
+
+    Each alternative is an independent `Condition` — RFC-0028 does not widen
+    `Condition`'s grammar — so it gets exactly the same checks the primary
+    condition does, one text at a time.
+    """
     text = node.get("condition")
     if not text:
         return                            # `repeat` carries a count, not a condition
+    for one_text in (text,) + tuple(node.get("alternatives") or ()):
+        _check_one_condition(one_text, scope, assigned, workflow_name,
+                             parse_condition, references, ConditionError, Lit)
+
+
+def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
+                         references, ConditionError, Lit):
     try:
         cond = parse_condition(text)
     except ConditionError:
@@ -1173,6 +1209,9 @@ def _check_guard(node, scope, assigned, workflow_name, parse_condition,
                 "workflow %s: guard condition %r compares two literals, so it "
                 "decides nothing — name a field on at least one side"
                 % (workflow_name, text))
+        where = "workflow %s: guard condition %r" % (workflow_name, text)
+        _check_literal_zero_divisor(term.left, where)
+        _check_literal_zero_divisor(term.right, where)
 
     _check_dimensions(cond, scope, text)
 
@@ -1491,6 +1530,8 @@ def _derive_assignment(step_id, line, registry):
         target, value = parse_assignment(text)
     except ConditionError as exc:
         raise LowerError("line %d: %s" % (line.lineno, exc))
+
+    _check_literal_zero_divisor(value, "line %d: assignment %r" % (line.lineno, text))
 
     binding, _, field = target.partition(".")
     if not field:

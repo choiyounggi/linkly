@@ -19,7 +19,8 @@ from lnpl.parser import parse
 from lnpl.repo_policy import (READ_OPS, default_rows, repository_calls,
                               seeded_entities)
 from lnpl.repo_policy import row_key
-from tests.fixtures import (CHECKOUT_LNPL, GUARDED, UNTIL_COUNTER,
+from tests.fixtures import (ALT_GUARD_APPROVE, CHECKOUT_LNPL, GUARD_ARITH,
+                            GUARDED, PRICE_INVENTORY, UNTIL_COUNTER,
                             VALUE_INVENTORY, VALUE_PAYMENT, guarded_source)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1770,3 +1771,142 @@ class TestValueExpressionModeEquivalence(unittest.TestCase):
         ok, report = differential.verify(doc, "wf.place.order", payload, {},
                                          self.workdir, seeded=frozenset())
         self.assertTrue(ok, "empty-seed run:\n%s" % "\n".join(report))
+
+
+class TestArithmeticAndAltGuardsCompile(unittest.TestCase):
+    """Issue #93 / RFC-0028 in mode B, text-level (no toolchain required).
+
+    `*`/`/` only ever reach `_emit_condition` (a guard's comparison) — an
+    Assignment's expression is a marker string mode B never computes, exactly
+    as `+`/`-` already were (RFC-0028 §Reference-level Specification/6).
+    """
+
+    def test_multiplication_in_an_assignment_is_only_a_marker(self):
+        doc = lower(parse(PRICE_INVENTORY), "price").to_document()
+        text = backend.emit_mlir(doc, "wf.place.order")
+        self.assertIn("Assignment", text)
+        self.assertNotIn("arith.muli", text,
+                         "an Assignment's expression must not be computed — "
+                         "mode B models no repository to write it into")
+
+    def test_multiplication_in_a_guard_condition_is_emitted(self):
+        doc = lower(parse(GUARD_ARITH), "arith").to_document()
+        text = backend.emit_mlir(doc, "wf.check.ratio.mul")
+        self.assertIn("arith.muli %product__stock, %input__factor : i64", text)
+
+    def test_division_in_a_guard_condition_is_emitted_with_a_zero_check(self):
+        doc = lower(parse(GUARD_ARITH), "arith").to_document()
+        text = backend.emit_mlir(doc, "wf.check.ratio.div")
+        self.assertIn("arith.divsi", text)
+        self.assertIn("arith.cmpi eq", text)
+        self.assertIn("%c0_i64", text,
+                      "a zero constant must exist for the divisor to compare "
+                      "against")
+
+
+class TestAltGuardCompile(unittest.TestCase):
+    """The alternative-guard OR-fold, text-level (no toolchain required)."""
+
+    def test_the_alternative_ors_with_the_primary(self):
+        doc = lower(parse(ALT_GUARD_APPROVE), "approve").to_document()
+        text = backend.emit_mlir(doc, "wf.approve")
+        self.assertIn("arith.ori", text)
+
+    def test_a_presence_alternative_falls_back_to_the_skip_flag(self):
+        # Boundary: if EITHER term has no compiled evaluator, the whole
+        # alt-guard must fall back — computing only the compilable side would
+        # silently under-evaluate the OR (RFC-0028 §Reference-level
+        # Specification/6).
+        source = ALT_GUARD_APPROVE.replace(
+            "or input.amount <= 100", "or token exists")
+        doc = lower(parse(source), "approve").to_document()
+        text = backend.emit_mlir(doc, "wf.approve")
+        # `%skip` alone is not evidence — it is a parameter on every compiled
+        # module's signature regardless of whether any guard uses it. The
+        # run-level check pattern (`_render_std`'s fallback branch) is what
+        # actually proves the compiled guard is skip-flag-driven here.
+        self.assertIn("arith.cmpi eq, %skip, %c0", text)
+        self.assertNotIn("arith.ori", text)
+
+
+@NEEDS_TOOLS
+class TestArithmeticModeEquivalence(unittest.TestCase):
+    """Mode A/B agreement on `*`/`/` in a guard condition (safe divisors)."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-arith-",
+                                        dir=os.path.join(REPO, ".claude", "tmp"))
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _doc(self):
+        return lower(parse(GUARD_ARITH), "arith").to_document()
+
+    def _payload(self, stock, factor, threshold, divisor):
+        return {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "stock": stock,
+                "factor": factor, "threshold": threshold, "divisor": divisor}
+
+    def test_multiplication_agrees_on_both_sides_of_the_threshold(self):
+        doc = self._doc()
+        for factor, threshold in ((3, 10), (3, 100)):
+            payload = self._payload(5, factor, threshold, 1)
+            rows = default_rows(doc, "wf.check.ratio.mul", payload)
+            ok, report = differential.verify(doc, "wf.check.ratio.mul", payload,
+                                             rows, self.workdir)
+            self.assertTrue(ok, "factor=%d threshold=%d:\n%s"
+                            % (factor, threshold, "\n".join(report)))
+
+    def test_division_agrees_for_a_nonzero_divisor(self):
+        doc = self._doc()
+        for divisor, threshold in ((2, 2), (2, 3)):
+            payload = self._payload(5, 1, threshold, divisor)
+            rows = default_rows(doc, "wf.check.ratio.div", payload)
+            ok, report = differential.verify(doc, "wf.check.ratio.div", payload,
+                                             rows, self.workdir)
+            self.assertTrue(ok, "divisor=%d threshold=%d:\n%s"
+                            % (divisor, threshold, "\n".join(report)))
+
+    def test_division_by_a_runtime_zero_does_not_crash_mode_b(self):
+        """RFC-0028's documented boundary: mode B need not AGREE on a value
+        failure (RFC-0015 §5, "값 차원은 모드 A가 단독으로 단언한다"), but it
+        must not hit `arith.divsi`'s undefined behaviour either. This checks
+        the weaker, correct claim — the binary still prints a status line —
+        not that it reports `failed`.
+        """
+        doc = self._doc()
+        payload = self._payload(5, 1, 1, 0)
+        observed = differential.observe_mode_b(
+            doc, "wf.check.ratio.div", self.workdir, payload=payload,
+            seeded=seeded_entities(doc, "wf.check.ratio.div"))
+        self.assertIsNotNone(observed["status"])
+
+
+@NEEDS_TOOLS
+class TestAltGuardModeEquivalence(unittest.TestCase):
+    """Mode A/B agreement across every alt-guard branch (D5, issue #93)."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(prefix="lnpl-altguard-",
+                                        dir=os.path.join(REPO, ".claude", "tmp"))
+
+    def tearDown(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def _verify(self, channel, amount):
+        doc = lower(parse(ALT_GUARD_APPROVE), "approve").to_document()
+        payload = {"id": "9e3f1b7a-2b3c-4d5e-8f9a-0b1c2d3e4f5a",
+                  "channel": channel, "amount": amount}
+        return differential.verify(doc, "wf.approve", payload, {}, self.workdir)
+
+    def test_the_primary_branch_agrees(self):
+        ok, report = self._verify(channel=1, amount=5000)
+        self.assertTrue(ok, "\n".join(report))
+
+    def test_the_alternative_branch_agrees(self):
+        ok, report = self._verify(channel=2, amount=50)
+        self.assertTrue(ok, "\n".join(report))
+
+    def test_the_skip_branch_agrees(self):
+        ok, report = self._verify(channel=2, amount=5000)
+        self.assertTrue(ok, "\n".join(report))

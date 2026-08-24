@@ -14,7 +14,7 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
 """
 
-from .condition import PAYLOAD_NAMESPACE
+from .condition import PAYLOAD_NAMESPACE, guard_condition_text
 from .diagnostics import Diagnostics
 from .drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
 from .refinements import BASE_CATEGORY
@@ -229,22 +229,52 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
             mode = node["mode"]
             inner_ids = node.get("children", [])
             if mode == "when":
-                if not _condition_holds(node.get("condition"), payload, bindings):
-                    # Issue #83: a second, pure re-evaluation just to collect the
-                    # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
-                    # line above on purpose: that line is a mutation_check.py
-                    # anchor, and re-evaluating here instead of threading a
-                    # collector through the control-flow call leaves it byte-
-                    # identical.
+                alternatives = node.get("alternatives")
+                if not alternatives:
+                    if not _condition_holds(node.get("condition"), payload, bindings):
+                        # Issue #83: a second, pure re-evaluation just to collect the
+                        # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
+                        # line above on purpose: that line is a mutation_check.py
+                        # anchor, and re-evaluating here instead of threading a
+                        # collector through the control-flow call leaves it byte-
+                        # identical.
+                        raw_evals = []
+                        _condition_holds(node.get("condition"), payload, bindings,
+                                         collector=raw_evals)
+                        result["skipped"].append(_skip_record(
+                            nodes, node,
+                            evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
+                        interp.trace.log("INFO", "guard skipped the guarded item",
+                                         guard=node_id, condition=node.get("condition"))
+                        continue
+                else:
+                    # RFC-0028 §Reference-level Specification/4: evaluate the
+                    # condition AND every alternative — no short-circuit, same
+                    # reasoning `And` already uses (pure terms, and the trace
+                    # must show every alternative's value).
+                    texts = [node.get("condition")] + list(alternatives)
                     raw_evals = []
-                    _condition_holds(node.get("condition"), payload, bindings,
-                                     collector=raw_evals)
-                    result["skipped"].append(_skip_record(
-                        nodes, node,
-                        evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
-                    interp.trace.log("INFO", "guard skipped the guarded item",
-                                     guard=node_id, condition=node.get("condition"))
-                    continue
+                    holds_per_text = []
+                    for text in texts:
+                        term_evals = []
+                        holds_per_text.append(_condition_holds(
+                            text, payload, bindings, collector=term_evals))
+                        raw_evals.extend(term_evals)
+                    if not any(holds_per_text):
+                        result["skipped"].append(_skip_record(
+                            nodes, node,
+                            evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
+                        interp.trace.log(
+                            "INFO", "guard skipped the guarded item",
+                            guard=node_id,
+                            condition=guard_condition_text(
+                                node.get("condition"), alternatives))
+                        continue
+                    fired = next(i for i, h in enumerate(holds_per_text) if h)
+                    if fired > 0:
+                        interp.trace.log(
+                            "INFO", "guard alternative matched", guard=node_id,
+                            condition=alternatives[fired - 1])
                 for inner in _flatten_items(nodes, inner_ids, interp, result, root,
                                             con, payload, bindings):
                     yield inner
@@ -337,10 +367,16 @@ def _skip_record(nodes, node, rounds=None, evaluations=None):
     `differential._normalise_skips` — an ALLOW-list of exactly
     `{mode, condition, step, rounds}` — excludes it the same way it already
     excludes `guard`, with no change needed there.
+
+    `condition` (RFC-0028 §Reference-level Specification/4): the primary
+    condition text, or — when the guard has `alternatives` — the SSOT-joined
+    text `guard_condition_text` builds. Mode B's `restore_skips` calls the
+    same function, so the two modes cannot independently drift on the join.
     """
     return {"guard": node["id"],
             "mode": node["mode"],
-            "condition": node.get("condition"),
+            "condition": guard_condition_text(node.get("condition"),
+                                              node.get("alternatives")),
             "steps": _guarded_step_names(nodes, node.get("children", [])),
             "rounds": rounds,
             "evaluations": evaluations if evaluations is not None else []}
@@ -517,7 +553,21 @@ def eval_value(value, condition, payload, bindings):
         right = eval_value(value.right, condition, payload, bindings)
         if left is None or right is None:
             return None
-        result = left + right if value.op == '+' else left - right
+        if value.op == '+':
+            result = left + right
+        elif value.op == '-':
+            result = left - right
+        elif value.op == '*':
+            result = left * right
+        else:  # '/' — RFC-0028 §1: truncating (toward zero), not Python floor
+            if right == 0:
+                raise RunError(
+                    "division by zero: %s (in %r)"
+                    % (_value_text(value), condition))
+            # Integer-only (no float: an i64 magnitude exceeds float64's exact
+            # range) truncation toward zero, matching mode B's `arith.divsi`.
+            quotient, _ = divmod(abs(left), abs(right))
+            result = -quotient if (left < 0) != (right < 0) else quotient
         if result < INT64_MIN or result > INT64_MAX:
             raise RunError(
                 "value out of the 64-bit range: %s = %d (in %r)"
