@@ -201,7 +201,7 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 **테스트 2234개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 28편 — 27편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
+**RFC 29편 — 28편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -244,6 +244,7 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0025 행 집합(Row Set)과 집계](rfcs/0025-row-sets-and-aggregation.md) | `list`가 엔티티의 전 행을 RowSet — 단일 행 바인딩과 별개의 이름공간 — 으로 읽고, `set`의 `sum`/`count`가 그것을 집계한다. mode B는 집계 값을 계산하지 않지만 `lnpl diff`는 관측 4클래스의 합의를 그대로 증명한다. *0012 §G12.2·0015 §1 갱신* |
 | [0026 unknown-verb의 line과 suggestion](rfcs/0026-unknown-verb-line-and-suggestion.md) | `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps`가 구조화 `line`을 갖고, 어휘 밖 동사는 2단 did-you-mean을 받는다 — 의미 동의어는 수제 별칭 테이블(`persist` → `create`), 철자 오타는 difflib. *0024 §Scope 갱신* |
 | [0027 네트워크 드라이버와 결과 바인딩](rfcs/0027-network-driver-and-result-binding.md) | `call`/`request`가 `NetworkDriver`(`--network fake\|http`) 뒤의 실제 아웃바운드 호출이 되고, `as <이름>`이 응답을 바인딩해 가드가 `status`로 분기한다 — 바인딩된 호출의 접속 실패는 예외가 아니라 값(`status` 0)이다. *0003 §Execution Model·0012 §G12.2·0014 갱신* |
+| [0028 산술 연산자 확장과 대안 가드](rfcs/0028-arithmetic-and-alternative-guards.md) | `*`/`/`가 `+`/`-`에 합류한다(정수, 절삭 나눗셈 — 0 나눗셈은 리터럴 0이 아닌 한 컴파일 에러가 아니라 `RunError`다), `when A` / `or B`는 가드 두 줄을 대안 가드로 승격한다 — `Condition` 문법의 연산자가 아니라 구조다. *0001 §노드 카탈로그/Guard·0014 §2·0015 §1 §4 갱신* |
 
 27편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
@@ -419,7 +420,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0027              RFC (0000은 Superseded, 나머지 27편은 Accepted)
+rfcs/0000~0028              RFC (0000은 Superseded, 나머지 28편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
