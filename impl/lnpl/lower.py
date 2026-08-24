@@ -536,11 +536,20 @@ def lower(decls, module_name):
     for decl in by_kind["entity"]:
         fields = []
         for line in decl.clauses.get("field", []):
-            if len(line.tokens) != 2:
-                raise LowerError("line %d: field must be `<name> <Type>`" % line.lineno)
-            fields.append({"name": line.tokens[0],
-                           "type": _resolve_type(line.tokens[1], refined_names,
-                                                 used_presets, line.lineno)})
+            if len(line.tokens) not in (2, 3):
+                raise LowerError(
+                    "line %d: field must be `<name> <Type>` or `<name> <Type> "
+                    "derived`" % line.lineno)
+            if len(line.tokens) == 3 and line.tokens[2] != "derived":
+                raise LowerError(
+                    "line %d: unknown field modifier %r — `derived` is the "
+                    "only one (issue #95)" % (line.lineno, line.tokens[2]))
+            field = {"name": line.tokens[0],
+                    "type": _resolve_type(line.tokens[1], refined_names,
+                                          used_presets, line.lineno)}
+            if len(line.tokens) == 3:
+                field["derived"] = True
+            fields.append(field)
         if not fields:
             raise LowerError("entity %s declares no fields" % decl.name)
         from .condition import PAYLOAD_NAMESPACE
@@ -720,6 +729,8 @@ def lower(decls, module_name):
                            mod.diagnostics, d.name)
         _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
                                      d.name, mod.diagnostics)
+        _check_derived_never_assigned(ctx.emitted, registry, d.name,
+                                      mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -1101,6 +1112,47 @@ def _check_event_source_mismatch(emitted, top_ids, event_sources, workflow_name,
             message="`emit %s` is not in the same guard scope as the `%s` "
                     "step its `on` source declares, so it can fire whether "
                     "or not that step ran. %s" % (eid, op, ORPHAN_HINT))
+
+
+def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics):
+    """`derived-never-assigned` (warning) — issue #95.
+
+    A `derived` field is server-computed, so a `create` step for an entity
+    that declares one is a lie unless something in this workflow actually
+    fills it. `set`/`format` both lower to an `Assignment` node carrying
+    `entity`/`target` (D5: no new verb), so checking for one is the same
+    "did the document say what it claims" scan `_check_event_source_mismatch`
+    already runs for `emit` — this is that check's field-level twin.
+
+    Deliberately workflow-scoped and order-blind: the field only needs to be
+    assigned *somewhere* in the workflow that creates it, not before the
+    `create` step specifically — RFC-0015 already refuses `set` on a row this
+    workflow never read, which is a stronger, separate guarantee than this
+    diagnostic is trying to add.
+    """
+    assigned = {(node["entity"], node["target"].rsplit(".", 1)[-1])
+               for node in emitted if node["kind"] == "Assignment"}
+    for step in emitted:
+        if step["kind"] != "RepositoryCall" or step.get("operation") != "create":
+            continue
+        entity = registry.get(step["entity"])
+        if entity is None:
+            continue
+        where = step.get("line")
+        where_str = ("line %d" % where) if where else workflow_name
+        for field in entity["fields"]:
+            if not field.get("derived"):
+                continue
+            if (entity["id"], field["name"]) in assigned:
+                continue
+            diagnostics.add(
+                code="derived-never-assigned",
+                where=where_str, subject="%s.%s" % (entity["id"], field["name"]),
+                line=where,
+                message="`create %s` never assigns %s's derived field %r — "
+                        "add a `set`/`format` step that fills it somewhere in "
+                        "this workflow" % (entity["name"], entity["name"],
+                                          field["name"]))
 
 
 def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,

@@ -49,6 +49,7 @@ CODES = (
     "aggregation-orphaned-list",    # RFC-0025  sum/count reads a RowSet no earlier unguarded `list` fills
     "event-source-mismatch",        # #98  `emit` and its declared `on <Entity> <op>` step are not in the same guard scope
     "event-source-orphaned",        # #98  `emit` fires, but its declared `on <Entity> <op>` step never runs in this workflow
+    "derived-never-assigned",       # #95  a `derived` field is `create`d, but no `set`/`format` in the workflow ever fills it
 )
 
 # code -> grade (#52). One question decides every row:
@@ -90,6 +91,9 @@ SEVERITY_OF = {
     # source declaration being descriptive only, same logic as
     # `declared-not-enforced`.
     "event-source-orphaned":      "info",
+    # #95: adding the missing `set`/`format` step removes this — same test as
+    # `unknown-verb`, `aggregation-orphaned-list`.
+    "derived-never-assigned":     "warning",
 }
 
 # How the runtime treats a declaration.

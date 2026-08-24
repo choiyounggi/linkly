@@ -1242,6 +1242,11 @@ def validate_effect(nodes, effect, payload, refinements):
     happens to declare first (issue #48, qa t1 F-6/S4). `lower` always writes an
     Entity node id here, so a miss means the IR bypassed the compiler — fail
     closed, like 부록 A.7 ⓐ upstream.
+
+    A `derived` field (issue #95) is excluded from the "must be present" half
+    of this check and rejected outright if the payload supplies it anyway — it
+    is server-computed, so the client sending one is mass-assignment, not a
+    completed form.
     """
     rule = effect.get("rule")
     if rule == "semantic-types":
@@ -1251,6 +1256,15 @@ def validate_effect(nodes, effect, payload, refinements):
             raise RunError("validation references undeclared entity %r"
                            % target)
         for field in entity.get("fields", []):
+            if field.get("derived"):
+                # issue #95: server-computed, so the payload must not name it
+                # at all — the trust-boundary inversion the brief's own
+                # `Order{total, placedAt}` regression reports.
+                if field["name"] in payload:
+                    raise RunError(
+                        "field %r is derived (server-computed) and must not "
+                        "be supplied in the payload" % field["name"])
+                continue
             if field["name"] not in payload:
                 raise RunError("missing required field %r" % field["name"])
             check_semantic_type(field["type"], payload[field["name"]],
@@ -1460,6 +1474,12 @@ def sample_payload(entities, refinements=None):
     payload = {}
     for entity in entities:
         for field in entity.get("fields", []):
+            if field.get("derived"):
+                # issue #95: the client can never send this, so the default
+                # fixture must not manufacture a value for it either — doing
+                # so would make every derived-field entity fail its own
+                # default-payload validation forever.
+                continue
             value = sample_for_type(field["type"], refinements)
             if value is not None:
                 payload[field["name"]] = value
