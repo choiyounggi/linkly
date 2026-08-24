@@ -144,6 +144,30 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    def begin(self):
+        """Open a transaction boundary spanning one workflow execution
+        (issue #79, RFC-0032). `interp.Interpreter.run_workflow` calls this
+        once, before its first step, and always closes it with exactly one
+        of `commit`/`rollback` before returning.
+
+        Default: no-op. A driver with no transactional notion of its own —
+        `interp.FakeRepository`, and any external SPI written before this
+        contract existed — satisfies it by doing nothing in all three of
+        `begin`/`commit`/`rollback`: the run still completes, its writes
+        just are not grouped into anything a failure could undo.
+        """
+        return None
+
+    def commit(self):
+        """Close the boundary `begin` opened, keeping every write made
+        since. Default: no-op (see `begin`)."""
+        return None
+
+    def rollback(self):
+        """Close the boundary `begin` opened, discarding every write made
+        since. Default: no-op (see `begin`)."""
+        return None
+
     def query_sorted(self, entity_id, field):
         """Every row for `entity_id`, ordered by `field` ascending, `row_key`
         (`repo_policy.row_key`) the tiebreaker for equal values (issue #99,
@@ -370,6 +394,13 @@ class SqliteRepositoryDriver(RepositoryDriver):
         resolved = self._resolve(path)
         self.path = str(resolved)
         is_new = not resolved.exists()
+        # issue #79: set before `begin()` ever runs, so every write path
+        # below has a flag to check from the first call. `_in_transaction`
+        # is "this execution wants a boundary"; `_sql_transaction_open` is
+        # "the literal SQL BEGIN has actually been issued" — kept apart
+        # because BEGIN is deferred to the first write (see `begin`).
+        self._in_transaction = False
+        self._sql_transaction_open = False
         try:
             self._conn = sqlite3.connect(self.path)
             self._conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
@@ -411,13 +442,76 @@ class SqliteRepositoryDriver(RepositoryDriver):
 
     def seed(self, rows):
         try:
+            self._ensure_sql_transaction()
             for entity_id, table in (rows or {}).items():
                 for key, row in table.items():
                     self._conn.execute(_INSERT_IF_ABSENT,
                                        (entity_id, key, _encode(row)))
-            self._conn.commit()
+            self._end_write()
         except sqlite3.Error as exc:
             raise DriverError("cannot seed the repository: %s" % exc) from exc
+
+    def begin(self):
+        """Issue #79, RFC-0032: request a transaction boundary spanning
+        this execution. The literal SQL `BEGIN` is deferred to the first
+        write (`_ensure_sql_transaction`, called from every write path
+        below) rather than issued here.
+
+        Why lazy: sqlite pins a deferred transaction's read snapshot at
+        its FIRST statement, read or write, for the transaction's whole
+        life — a second read inside the same open transaction still sees
+        the pre-transaction data even after another connection commits a
+        change, and a write attempted afterward is refused outright
+        (`OperationalError: database is locked`, regardless of which
+        table it touches — confirmed empirically, not merely documented
+        behavior). If `begin()` opened the transaction eagerly, the
+        workflow's very first *read* would pin that stale snapshot, and
+        the first write after any concurrent commit would hit that raw
+        engine error instead of this driver's own `_version` conflict
+        check (issue #92) ever running. Deferring `BEGIN` to the first
+        write keeps every read up to that point in ordinary autocommit
+        mode — always current — so the first write's conditional UPDATE
+        is what decides a conflict, on a fresh view, the same as before
+        this RFC per-op-committed every write individually."""
+        self._in_transaction = True
+
+    def commit(self):
+        try:
+            if self._sql_transaction_open:
+                self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot commit transaction: %s" % exc) from exc
+        finally:
+            self._in_transaction = False
+            self._sql_transaction_open = False
+
+    def rollback(self):
+        try:
+            if self._sql_transaction_open:
+                self._conn.rollback()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot roll back transaction: %s" % exc) from exc
+        finally:
+            self._in_transaction = False
+            self._sql_transaction_open = False
+
+    def _ensure_sql_transaction(self):
+        """Open the literal SQL transaction on the first write only, once
+        per execution (issue #79 — see `begin`'s docstring for why)."""
+        if self._in_transaction and not self._sql_transaction_open:
+            try:
+                self._conn.execute("BEGIN")
+            except sqlite3.Error as exc:
+                raise DriverError("cannot begin transaction: %s" % exc) from exc
+            self._sql_transaction_open = True
+
+    def _end_write(self):
+        """Close out the write statement(s) just issued: commit immediately,
+        unless a workflow-level transaction (`begin`) is holding the
+        connection open (issue #79) — then that boundary's own `commit`/
+        `rollback` decides this write's fate along with the rest of the run."""
+        if not self._in_transaction:
+            self._conn.commit()
 
     def execute(self, entity_id, operation, key):
         if operation in READ_OPS:
@@ -448,18 +542,26 @@ class SqliteRepositoryDriver(RepositoryDriver):
     def persist(self, entity_id, key, row):
         version = getattr(row, "observed_version", None)
         try:
+            self._ensure_sql_transaction()
             if version is None:
                 self._conn.execute(_UPDATE_ROW, (_encode(row), entity_id, key))
-                self._conn.commit()
+                self._end_write()
                 return
             cursor = self._conn.execute(
                 _UPDATE_ROW_VERSIONED, (_encode(row), entity_id, key, version))
             if cursor.rowcount == 0:
-                self._conn.rollback()
+                # issue #79: only roll back locally outside a workflow
+                # transaction. Inside one (`_in_transaction`), a local
+                # rollback here would discard every write this same
+                # execution already made — the execution boundary's own
+                # `rollback()` is what cleans up once this `DriverError`
+                # becomes a `RunError` and the run is decided failed.
+                if not self._in_transaction:
+                    self._conn.rollback()
                 raise DriverError(
                     "write conflict: row changed since read (%s %s)"
                     % (entity_id, key))
-            self._conn.commit()
+            self._end_write()
         except sqlite3.Error as exc:
             raise DriverError("cannot persist %s: %s" % (entity_id, exc)) from exc
 
@@ -479,11 +581,12 @@ class SqliteRepositoryDriver(RepositoryDriver):
         it.
         """
         try:
+            self._ensure_sql_transaction()
             self._conn.execute(
                 _INSERT_OUTBOX,
                 (emission["emission_id"], emission["event"],
                  _encode(emission["payload"]), int(time.time() * 1000)))
-            self._conn.commit()
+            self._end_write()
         except sqlite3.Error as exc:
             raise DriverError("cannot record emission %s: %s"
                               % (emission["emission_id"], exc)) from exc
@@ -574,9 +677,10 @@ class SqliteRepositoryDriver(RepositoryDriver):
 
     def _create(self, entity_id, key):
         try:
+            self._ensure_sql_transaction()
             self._conn.execute(_INSERT_ROW,
                                (entity_id, key, _encode({"id": key})))
-            self._conn.commit()
+            self._end_write()
         except sqlite3.IntegrityError as exc:
             # Byte-identical to FakeRepository's message: one shared contract
             # suite asserts this text against both drivers, and the rule it
@@ -596,13 +700,18 @@ class SqliteRepositoryDriver(RepositoryDriver):
         statement = _DELETE_ROW if operation == "delete" else _UPDATE_ROW
         try:
             if operation == "delete":
+                self._ensure_sql_transaction()
                 cursor = self._conn.execute(statement, (entity_id, key))
             else:
+                # The read stays outside the transaction (still autocommit,
+                # so still current) — only the write below opens it, per
+                # `begin`'s lazy-BEGIN rationale (issue #79).
                 current = self._read(entity_id, key)
+                self._ensure_sql_transaction()
                 cursor = self._conn.execute(
                     statement, (_encode(current if current is not None else {"id": key}),
                                 entity_id, key))
-            self._conn.commit()
+            self._end_write()
         except sqlite3.Error as exc:
             raise DriverError("cannot %s %s: %s" % (operation, entity_id, exc)) from exc
         return {"affected": cursor.rowcount if cursor.rowcount >= 0 else 0}

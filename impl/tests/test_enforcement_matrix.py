@@ -311,19 +311,21 @@ class TestDocumentValidity(unittest.TestCase):
 
     def test_negative_control_a_flipped_status_is_caught(self):
         # The defect this whole gate exists for: the document claiming that
-        # something unenforced is enforced.
+        # something unenforced is enforced. `policy parallel` stays
+        # unenforced after issue #79/RFC-0032 (only `rollback` was promoted),
+        # so it is still a valid target for this mutation.
         mutant = self.markdown.replace(
-            "| policy | rollback | unenforced | declared-not-enforced |",
-            "| policy | rollback | enforced | declared-not-enforced |")
+            "| policy | parallel | unenforced | declared-not-enforced |",
+            "| policy | parallel | enforced | declared-not-enforced |")
         self.assertNotEqual(mutant, self.markdown, "the mutation did not apply")
         errors = document_validity_errors(mutant)
         self.assertTrue(errors, "check 3 did not notice a flipped status")
-        self.assertIn("rollback", str(errors))
+        self.assertIn("parallel", str(errors))
 
     def test_negative_control_a_flipped_status_leaves_coverage_green(self):
         mutant = self.markdown.replace(
-            "| policy | rollback | unenforced | declared-not-enforced |",
-            "| policy | rollback | enforced | declared-not-enforced |")
+            "| policy | parallel | unenforced | declared-not-enforced |",
+            "| policy | parallel | enforced | declared-not-enforced |")
         self.assertEqual(document_coverage_errors(mutant), [])
 
     def test_negative_control_an_unknown_status_word_is_caught(self):
@@ -481,13 +483,14 @@ class TestPathDependentEnforcement(unittest.TestCase):
 
         self.assertIn("--jwt-secret-env", row)
 
-    def test_rollback_still_reports_nothing_to_compensate(self):
-        """A real store arrived in #25; a transaction boundary did not. This
-        row must not drift toward `enforced` on the strength of the store."""
+    def test_rollback_is_now_enforced_by_the_execution_boundary(self):
+        """issue #79/RFC-0032: `run_workflow` now opens one transaction per
+        execution (commit on success, rollback otherwise), so there is
+        something to compensate again — this row moved off `unenforced`."""
         status, reason = ENFORCEMENT[("policy", "rollback")]
 
-        self.assertEqual("unenforced", status)
-        self.assertIn("compensate", reason)
+        self.assertEqual("enforced", status)
+        self.assertIn("transaction", reason.lower())
 
 
 class TestDiagnosticCodeTable(unittest.TestCase):

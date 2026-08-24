@@ -121,14 +121,16 @@ ENFORCEMENT = {
         (ENFORCED, "run_workflow re-runs a failed step while its effects are idempotent"),
     ("policy", "timeout"):
         (ENFORCED, "a workflow deadline is computed, and exceeding it fails the run"),
-    # Still nothing to compensate after #25. A real store now exists, but the
-    # driver commits per operation and no workflow-wide transaction boundary
-    # was introduced — adding the boundary without compensation logic would
-    # make this row read `enforced` while a failed run left its earlier writes
-    # in place.
+    # issue #79, RFC-0032: `run_workflow` now opens one transaction per
+    # execution and rolls it back on any failure, so there is something to
+    # compensate again. The boundary is the whole execution, not a
+    # declared `Transaction` node (Phase 1 still has no syntax for one) —
+    # RFC-0032 narrows RFC-0003's Transaction-node contract to that scope
+    # for as long as the language has no other way to open one.
     ("policy", "rollback"):
-        (UNENFORCED, "Phase 1 has no Transaction boundary, so there is nothing "
-                     "to compensate; the #25 drivers commit per operation"),
+        (ENFORCED, "run_workflow opens a transaction before its first step "
+                   "and rolls it back on any failure, discarding every "
+                   "write (and outbox registration) that run made"),
     ("policy", "parallel"):
         (UNENFORCED, "parsed, but the execution plan never reads it"),
     # Issue #25 gave `jwt` a real issue/verify path, and the status still reads

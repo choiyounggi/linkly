@@ -21,7 +21,7 @@
 |------|------|--------------------------|
 | `policy retry` | **enforced** | run_workflow re-runs a failed step while its effects are idempotent |
 | `policy timeout` | **enforced** | a workflow deadline is computed, and exceeding it fails the run |
-| `policy rollback` | **unenforced** | Phase 1 has no Transaction boundary, so there is nothing to compensate; the #25 drivers commit per operation |
+| `policy rollback` | **enforced** | run_workflow opens a transaction before its first step and rolls it back on any failure, discarding every write (and outbox registration) that run made |
 | `policy parallel` | **unenforced** | parsed, but the execution plan never reads it |
 | `security jwt` | **unenforced** | the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md) |
 | `security role` | **unenforced** | the role is never checked against anything |

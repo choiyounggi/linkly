@@ -70,7 +70,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 |--------|------|--------|-----------|------|
 | policy | retry | enforced | — | `run_workflow`가 실패 스텝을 멱등인 동안 재실행한다 |
 | policy | timeout | enforced | — | 워크플로 데드라인을 계산하고 초과 시 실행을 실패시킨다 |
-| policy | rollback | unenforced | declared-not-enforced | Phase 1에 Transaction 경계가 없어 보상할 대상이 없다. #25의 드라이버는 연산 단위로 커밋한다 |
+| policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 롤백한다(issue #79, RFC-0032) |
 | policy | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
 | security | role | unenforced | declared-not-enforced | 역할을 무엇과도 대조하지 않는다 |
@@ -142,7 +142,6 @@ stderr로 출력하며, 형식은 `diagnostics.py`의 `format_lines()` 한 곳�
 | 남은 것 | 왜 |
 |---------|-----|
 | `redis` 실제 바인딩 | RFC-0003의 cache TTL이 주입된 **가상 시계** 단위라 프로세스를 넘으면 뜻이 없다. 영속 캐시는 새 프로세스의 시계 0에 대해 언제나 신선해 보인다 — 만료 계약이 거짓인 저장소가 된다 |
-| `policy rollback` | 워크플로 단위 트랜잭션 경계를 만들지 않았다. 보상 로직 없이 경계만 만들면 이 행이 `enforced`로 읽히면서 실패한 실행이 앞선 쓰기를 남긴다 |
 | `security role` / `security encrypt` | 역할 검사와 필드 암호화는 손대지 않았다 |
 | refresh 토큰·회전·폐기 목록 | 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다 |
 
