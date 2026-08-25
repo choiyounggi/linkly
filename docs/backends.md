@@ -249,6 +249,11 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 `hmac`/`hashlib`가 준다 — 여기서 쓴 것은 인코딩과 검증 체크리스트이지 암호
 알고리즘 구현이 아니다.
 
+**이슈 #119b로 확장됨.** `iss`는 더 이상 하드코딩이 아니다 — `--jwt-issuer`로
+기대 발급자를 지정할 수 있고, 미지정 시 기존 `"lnpl"`이 바이트 단위로 그대로
+남는다. RS256/ES256처럼 이 표 자체가 다른 알고리즘은 코어에 들어오지
+않는다 — §9 `lnpl.tokens` SPI가 그 경계다.
+
 ## 5. 이 구현이 하지 않는 것
 
 무엇이 남았는지 적지 않으면 남은 것이 된 것처럼 읽힌다.
@@ -382,6 +387,103 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 `DriverError`로 거부되는지를 단언한다. **`rollback`을 no-op으로 답하던
 드라이버는 이 TCK를 더 이상 통과하지 못한다.** `SqliteRepositoryDriver`가 이
 TCK로 검증되는 예는 `impl/tests/test_driver_contract.py::SqliteDriverTCKTest`다.
+
+## 9. SPI: 외부 토큰 프로바이더 등록 (이슈 #119b)
+
+이슈 #119가 지적한 대목: `security role <r>`을 집행하는 역할 클레임이
+내장 `hmac` 프로바이더의 자기 발급 토큰에서만 나오면 그건 자기 주장
+(self-asserted)이지 신원 근거가 아니다. 이 절이 그 경계를 코드로 어떻게
+여는지 적는다 — §8의 `lnpl.drivers`와 같은 형태다: 코어는 `lnpl.tokens`
+entry-points 그룹을 열어 두고, `open_token_provider`가 내장 이름(`hmac`)이
+아니면 그 그룹에서 이름으로 찾는다.
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.tokens"]
+oidc = "my_lnpl_oidc:make_provider"
+```
+
+`my_lnpl_oidc.make_provider`는 **인자 없이** 호출되어 `TokenProvider`를
+반환하는 콜러블이다 — `lnpl.drivers`의 `factory(<arg>)`(콜론 뒤 원문을
+받는 것)와 다르다: 서명 검증 키, JWKS 엔드포인트, 키 로테이션 같은 설정은
+패키지 자신의 몫이지, 이 CLI가 파싱해서 넘겨줄 문자열이 아니다(아래 D4
+참조). 패키지가 설치돼 있으면 `--token-provider oidc`가 그 팩토리를 찾아
+인자 없이 부른다.
+
+### 내장 이름은 섀도잉하면 거부된다
+
+`lnpl.drivers`의 `BuiltinShadowingTest`(§8)는 내장이 **조용히** 이긴다 —
+entry-points 조회 자체가 일어나지 않는다. `open_token_provider`는 다르게
+움직인다: `--token-provider hmac`을 부를 때 `lnpl.tokens`에 `hmac`이라는
+이름으로 등록된 entry-point가 있으면 **`TokenError`로 거부**하고 충돌한
+이름과 그 entry-point가 가리키는 모듈을 메시지에 싣는다(`test_token_spi.py`
+`BuiltinShadowingTest`). 토큰 신원은 `security role` 집행이 서는
+신뢰 근거이므로, 같은 이름을 등록한 패키지가 **조용히 이기거나 조용히
+지는 것 둘 다** 여기서는 받아들일 수 없는 결과다 — 그래서 드러나게 실패한다.
+
+### 미등록 이름의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 이름은 `ValueError`로 거부되며,
+메시지가 **받은 값**·**내장 목록**(`hmac`)·**그 순간 실제로 등록된
+entry-points 목록**(없으면 "none")을 함께 싣는다.
+
+### entry-point 로드 실패
+
+등록은 됐지만 그 값(`module:attr`)을 import할 수 없으면 `open_token_provider`는
+`ImportError`를 `DriverError`로 번역한다(원인 체인 보존) — §8과 같은
+"ONE ERROR TYPE OUT" 규칙.
+
+### TCK로 검증하기
+
+외부 프로바이더는 `lnpl.testing.TokenProviderTCK`를 상속해 자기 CI에서
+돌린다:
+
+```python
+import unittest
+from lnpl.testing import TokenProviderTCK
+
+class MyOidcProviderTCKTest(TokenProviderTCK, unittest.TestCase):
+    def make_provider(self):
+        return MyOidcProvider(...)
+
+    def make_foreign_issuer_provider(self):
+        return MyOidcProvider(..., issuer="somebody-else")
+```
+
+`TokenProviderTCK`는 `RepositoryDriverTCK`와 같은 순수 믹스인이다.
+D6(닫힌 목록, 7항목)을 단언한다: ① 유효 토큰 통과, ② 서명 위조 거부,
+③ `alg: none` 거부, ④ 기대와 다른 `iss` 거부, ⑤ `aud` 불일치 거부,
+⑥ 만료 거부, ⑦ allowlist 밖 alg 거부. ③·⑦이 핵심이다 — 토큰이 자기
+알고리즘을 고르게 두는 것이 `alg: none`과 RS256-공개키-를-HMAC-비밀로
+쓰는 혼동 공격이 노리는 지점이다(`drivers.py`의 `ACCEPTED_ALGS` 주석).
+내장 `HmacTokenProvider`가 이 TCK로 검증되는 예는
+`impl/tests/test_token_contract.py::HmacTokenProviderTCKTest`다.
+
+이슈 #115의 교훈이 그대로 적용된다: TCK 자신이 판별력을 갖는지 — 즉 틀린
+구현을 실제로 실패시키는지 — 를 참조 구현만으로는 증명하지 못한다.
+`impl/tests/test_token_contract.py`의 `_NoSignatureCheckProvider`(서명
+검증을 건너뛰는 프로바이더)가 그 음성 통제다: TCK의 서명-위조 케이스를
+단독 실행하면 이 프로바이더에서는 **실패**하고 `HmacTokenProvider`에서는
+**통과**한다 — 두 결과 모두 `testsRun == 1`을 동반해, 케이스가 조용히
+스킵된 것이 아님을 보장한다(`TokenTCKDiscriminatesTest`).
+
+### `--jwks-url`을 넣지 않은 이유 (D4)
+
+RS256/ES256 실구현이 실제 IdP를 상대하려면 대개 JWKS(JSON Web Key Set)
+엔드포인트에서 공개키를 조회하고, `kid`(key id) 클레임으로 여러 키 중
+하나를 고르고, 그 결과를 캐시하고, 만료·로테이션에 맞춰 다시 조회해야
+한다. 이 넷 — 조회·`kid` 선택·캐시·로테이션 — 은 그 자체로 하나의 작은
+서브시스템이고, 코어가 떠안으면 두 가지를 동시에 깬다: stdlib-only 원칙
+(HTTP 조회와 캐시 정책에 별도 의존이 필요해진다)과 D1이 그은 경계(RS256
+서명 검증 자체를 코어가 구현하지 않기로 한 이유와 같은 이유로, JWKS
+조회·캐시도 실구현 세부사항이다). 그래서 `--jwks-url` 플래그는 이번
+범위에 없다 — `lnpl.tokens` SPI로 등록하는 외부 패키지가 자기 설정으로
+그 넷을 소유한다. `open_token_provider`의 factory가 인자를 받지 않는
+것(위 "등록" 절)도 같은 결정의 결과다: 코어는 어떤 형태의 JWKS 설정
+문자열도 파싱하지 않는다.
 
 ## 참고
 

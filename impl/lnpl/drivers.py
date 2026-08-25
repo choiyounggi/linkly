@@ -67,6 +67,16 @@ BUSY_TIMEOUT_MS = 5000
 # HMAC-secret confusion both exploit.
 ACCEPTED_ALGS = ("HS256",)
 ISSUER = "lnpl"
+# issue #119b, D1/D8: the entry-points group an external package registers a
+# TokenProvider factory under (`[project.entry-points."lnpl.tokens"]` in its
+# own pyproject.toml — `docs/backends.md` has the example, same shape as
+# `lnpl.drivers` §8). The built-in name (`BUILTIN_TOKEN_PROVIDERS`, below) is
+# matched before this group is ever consulted, so a registered entry-point
+# can never shadow it — RS256/ES256 verification lives behind this SPI, not
+# in this module (D1: constant-time comparison and padding belong to
+# `cryptography`, not to code this repo maintains by hand).
+TOKENS_ENTRY_POINT_GROUP = "lnpl.tokens"
+BUILTIN_TOKEN_PROVIDERS = ("hmac",)
 # Bounded clock skew. RFC 7519 sanctions "a few minutes" at most; 60s is enough
 # for hosts that agree to within a minute and short enough that an expired
 # token does not keep working.
@@ -787,7 +797,7 @@ class HmacTokenProvider(TokenProvider):
     different name. `docs/backends.md` records that.
     """
 
-    def __init__(self, secret):
+    def __init__(self, secret, issuer=None):
         if isinstance(secret, str):
             secret = secret.encode("utf-8")
         # Measured in bytes, not characters: "é" * 16 is 16 characters and 32
@@ -796,6 +806,25 @@ class HmacTokenProvider(TokenProvider):
             raise TokenError(
                 "the JWT signing secret must be at least %d bytes, got %d"
                 % (MIN_SECRET_BYTES, len(secret)))
+        # issue #119b, D3: `issuer` replaces the module-level `ISSUER` hard-
+        # coding. `None` (the default, e.g. `--jwt-issuer` unset) keeps the
+        # pre-existing `"lnpl"` behavior byte-identical — the module constant
+        # stays the single source of that default. `""` is not "unset", it is
+        # an operator-supplied empty issuer, which can never match a real
+        # token's `iss` and is refused up front rather than accepted as a
+        # value that would silently reject every token at verify() time.
+        if issuer == "":
+            raise TokenError(
+                "--jwt-issuer must not be empty (omit it for the default %r)"
+                % ISSUER)
+        self._issuer = ISSUER if issuer is None else issuer
+        # Instance copy of the module allowlist (issue #119b, Task 01): still
+        # fixed at `("HS256",)` here, never widened by this task (D1 — RS256/
+        # ES256 live behind the `lnpl.tokens` SPI, not in this class). Reading
+        # `self._accepted_algs` rather than the module constant is what lets a
+        # `lnpl.tokens` SPI provider built on this same checklist carry its
+        # own allowlist without this method changing.
+        self._accepted_algs = ACCEPTED_ALGS
         self._secret = secret
 
     # -- contract ----------------------------------------------------------
@@ -806,8 +835,8 @@ class HmacTokenProvider(TokenProvider):
         # already-expiring token, and `or` would silently hand back the
         # 15-minute default instead.
         ttl_s = (DEFAULT_TTL_MS if ttl_ms is None else ttl_ms) // 1000
-        header = {"alg": ACCEPTED_ALGS[0], "typ": "JWT"}
-        claims = {"iss": ISSUER, "aud": audience, "sub": subject,
+        header = {"alg": self._accepted_algs[0], "typ": "JWT"}
+        claims = {"iss": self._issuer, "aud": audience, "sub": subject,
                   "jti": uuid.uuid4().hex, "iat": now, "nbf": now,
                   "exp": now + ttl_s}
         signing_input = "%s.%s" % (
@@ -828,22 +857,20 @@ class HmacTokenProvider(TokenProvider):
 
         header = _decode_json_segment(encoded_header, "header")
         alg = header.get("alg")
-        if alg not in ACCEPTED_ALGS:
+        if alg not in self._accepted_algs:
             raise TokenError("unaccepted alg %r (accepted: %s)"
-                             % (alg, ", ".join(ACCEPTED_ALGS)))
+                             % (alg, ", ".join(self._accepted_algs)))
 
-        expected = self._sign("%s.%s" % (encoded_header, encoded_claims))
-        if not hmac.compare_digest(expected, _b64u_decode(encoded_signature)):
-            raise TokenError("token signature does not verify")
+        self._verify_signature(encoded_header, encoded_claims, encoded_signature)
 
         if header.get("typ") != "JWT":
             raise TokenError("unexpected typ %r (expected 'JWT')"
                              % header.get("typ"))
 
         claims = _decode_json_segment(encoded_claims, "claims")
-        if claims.get("iss") != ISSUER:
+        if claims.get("iss") != self._issuer:
             raise TokenError("unexpected iss %r (expected %r)"
-                             % (claims.get("iss"), ISSUER))
+                             % (claims.get("iss"), self._issuer))
 
         declared = claims.get("aud")
         holds = declared if isinstance(declared, list) else [declared]
@@ -862,6 +889,19 @@ class HmacTokenProvider(TokenProvider):
         return claims
 
     # -- internals ---------------------------------------------------------
+
+    def _verify_signature(self, encoded_header, encoded_claims, encoded_signature):
+        """Isolated from `verify()`'s checklist as its own method (issue
+        #119b, Task 02) so `TokenProviderTCK`'s negative control
+        (`_NoSignatureCheckProvider`, `impl/tests/test_token_contract.py`)
+        can override exactly this one step and nothing else — the same shape
+        `RepositoryDriverTCK`'s `_NoOpRollbackDriver` uses against
+        `rollback()`. The call site in `verify()` did not move, so this is
+        not a checklist-order change: the algorithm is still settled first,
+        this still runs before any claim is trusted."""
+        expected = self._sign("%s.%s" % (encoded_header, encoded_claims))
+        if not hmac.compare_digest(expected, _b64u_decode(encoded_signature)):
+            raise TokenError("token signature does not verify")
 
     def _sign(self, signing_input):
         return hmac.new(self._secret, signing_input.encode("ascii"),
@@ -1079,6 +1119,77 @@ def open_repository(spec):
         "unknown backend %r (built-in: %s; registered entry-points: %s)"
         % (spec, ", ".join(BACKENDS),
            ", ".join(_registered_scheme_names()) or "none"))
+
+
+def _token_entry_points():
+    """Every entry-point registered under `lnpl.tokens` — same stdlib
+    version split `_driver_entry_points()` handles (`pyproject.toml`'s
+    declared floor is 3.9)."""
+    try:
+        return importlib_metadata.entry_points(group=TOKENS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            TOKENS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_token_provider_names():
+    return sorted(ep.name for ep in _token_entry_points())
+
+
+def open_token_provider(name, secret=None, issuer=None):
+    """`--token-provider`'s value -> a TokenProvider (issue #119b, Task 03).
+
+    `name` defaults to `"hmac"`, the built-in `HmacTokenProvider` — `secret`
+    and `issuer` are threaded straight to its constructor, so an unspecified
+    `name` together with the pre-existing `--jwt-secret-env`/`--jwt-issuer`
+    wiring is byte-identical to before this task (D3 held again here, one
+    layer up).
+
+    Beyond `"hmac"`, `name` is looked up in the `lnpl.tokens` entry-points
+    group (D1) — an external package registers `name = "module:factory"`
+    (`docs/backends.md` has the example) and `factory()` — no arguments,
+    unlike `open_repository`'s `factory(arg)`: a token provider's own
+    configuration (signing/verification keys, JWKS endpoint, key rotation —
+    D4) is that package's concern, not a string this CLI parses on its
+    behalf. D1 draws the line there deliberately: RS256/ES256 constant-time
+    comparison and padding are `cryptography`'s job, never reimplemented here.
+
+    D8 — a registered entry-point can never shadow the built-in name: unlike
+    `open_repository` (which lets the built-in check simply run first and
+    never look at a same-named entry-point at all), a `name="hmac"` request
+    actively checks for a colliding registration and refuses it outright,
+    naming the conflicting package. Token identity is the trust boundary
+    `security role` depends on (issue #119 A) — a same-named package silently
+    winning here is a worse outcome than a same-named package silently
+    losing, which is why this differs from the repository driver precedent.
+    """
+    entry_points = list(_token_entry_points())
+    if name == "hmac":
+        shadow = next((ep for ep in entry_points if ep.name == "hmac"), None)
+        if shadow is not None:
+            raise TokenError(
+                "entry-point %r (registered via %r) attempts to shadow the "
+                "built-in token provider %r; built-in names are reserved "
+                "(lnpl.tokens SPI, docs/backends.md)"
+                % (shadow.name, shadow.value, shadow.name))
+        if secret is None:
+            raise TokenError(
+                "the built-in \"hmac\" token provider needs a signing "
+                "secret (--jwt-secret-env)")
+        return HmacTokenProvider(secret, issuer=issuer)
+    for entry_point in entry_points:
+        if entry_point.name == name:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "token provider %r registered via entry-point %r failed "
+                    "to load: %s" % (name, entry_point.value, exc)) from exc
+            return factory()
+    raise ValueError(
+        "unknown token provider %r (built-in: %s; registered entry-points: %s)"
+        % (name, ", ".join(BUILTIN_TOKEN_PROVIDERS),
+           ", ".join(_registered_token_provider_names()) or "none"))
 
 
 def open_network(spec, endpoints=None, capabilities=None):
