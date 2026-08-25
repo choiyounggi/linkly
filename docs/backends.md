@@ -257,7 +257,8 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 |--------------|-----|
 | **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). 남은 이유는 다음 행뿐이다: 서버·드라이버 라이브러리가 이 계획을 세운 머신에 없다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — 실드라이버 자체는 #75(SPI 외부 공급)가 소유한다 |
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
-| **postgres / redis 서버 바인딩** | 이 계획을 세운 머신에 서버도 드라이버도 없었다(`psql`·`redis-server` 없음, `psycopg2`·`redis` 미설치). 통합 테스트로 뒷받침할 수 없는 바인딩은 주장일 뿐이다 |
+| **postgres / redis 서버 바인딩** | `psycopg2`/`redis` 자체는 이제 문제가 아니다(Testcontainers로 로컬에 서버를 띄울 수 있다) — 그 바인딩을 실을 `lnpl-postgres` 외부 레포와 그 레포의 Testcontainers CI가 아직 없다. 이슈 #115가 레포 안(TCK 강화) 절반만 완료했고, 이 절반은 후속 이슈로 등재돼 있다 |
+| **`FakeRepository`의 `rollback`** | 문서화된 no-op이다(`impl/lnpl/interp.py`의 `FakeRepository.begin` docstring: "on the Fake all three do nothing, so a failed run's writes … are not undone."). RFC-0032가 `policy rollback`을 enforced로 올렸지만 기본 백엔드(`--backend fake`)에서는 그 정책이 조용히 거짓이다 — 2583개 테스트의 기반을 바꾸는 변경이라 이슈 #115와 별도로 후속 이슈로 등재돼 있다 |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
 | **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
@@ -366,11 +367,18 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 
 `RepositoryDriverTCK`는 `unittest.TestCase`를 상속하지 않는 순수 믹스인이다
 — 구체 클래스가 `unittest.TestCase`와 다중 상속해야 한다. 검증 항목: 읽기·
-쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, `begin`/`commit`/
-`rollback`이 예외 없이 호출 가능한지(이슈 #79 — 기본 계약은 no-op을 허용하므로
-`rollback`이 실제로 되돌리는지는 단언하지 않는다), 그리고 읽은 행이
+쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, 그리고 읽은 행이
 `observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
-#92 — 이 속성이 없으면 이 케이스는 스킵된다). `SqliteRepositoryDriver`가 이
+#92 — 이 속성이 없으면 이 케이스는 스킵된다).
+
+**`begin`/`commit`/`rollback`(이슈 #79, RFC-0032) — 이슈 #115로 파괴적 변경됨.**
+전에는 셋이 예외 없이 순서대로 호출 가능한지만 확인했고, 기본 계약이 no-op을
+허용한다는 이유로 `rollback`이 실제로 되돌리는지는 단언하지 않았다. RFC-0032가
+`policy rollback`을 enforced로 올린 이상 그 관용은 계약 위반을 통과시키는
+구멍이었다 — 이제 TCK는 `rollback`이 트랜잭션 안에서 만든 행 쓰기와 아웃박스
+등록을 실제로 되돌리는지, 그리고 열린 트랜잭션 위의 두 번째 `begin`이
+`DriverError`로 거부되는지를 단언한다. **`rollback`을 no-op으로 답하던
+드라이버는 이 TCK를 더 이상 통과하지 못한다.** `SqliteRepositoryDriver`가 이
 TCK로 검증되는 예는 `impl/tests/test_driver_contract.py::SqliteDriverTCKTest`다.
 
 ## 참고

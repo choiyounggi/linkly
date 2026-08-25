@@ -35,12 +35,15 @@ does exactly this) — a driver author's `make_driver()` should open a new
 connection to a fixed-for-this-test location, not a fresh store each call,
 or that second call sees an empty store instead of the first handle's data.
 
-`begin`/`commit`/`rollback` (issue #79, RFC-0032) default to a no-op on the
-base `RepositoryDriver` — a driver with no transactional notion of its own
-satisfies the contract by doing nothing in all three. This TCK checks only
-that the three are callable in sequence without raising; it does not assert
-that `rollback` discards writes, since the contract explicitly allows the
-no-op answer.
+`begin`/`commit`/`rollback` (issue #79, RFC-0032) mark a transaction boundary
+spanning one workflow execution. RFC-0032 raised `policy rollback` to
+**enforced**: one workflow execution is one implicit transaction, and a
+failed run's writes must not survive it. This TCK asserts that directly —
+`rollback` must discard both the row writes and the outbox registrations
+made since the matching `begin`, and a second `begin` before the first is
+closed must be refused. A driver that answers `rollback` with a no-op
+(callable but inert) now fails these cases; it is no longer enough for the
+three to be merely callable without raising.
 
 The optimistic-version conflict (issue #92) is likewise not a required
 capability of every driver — the base contract's `execute`/`persist` never
@@ -160,10 +163,42 @@ class RepositoryDriverTCK:
         self.assertIsNotNone(
             self.driver.execute("widget", "read", "w-tx-commit"))
 
-    def test_begin_rollback_is_callable_in_sequence(self):
+    def test_rollback_discards_writes_made_inside_the_transaction(self):
         self.driver.begin()
         self.driver.execute("widget", "create", "w-tx-rollback")
-        self.driver.rollback()  # no visibility assertion — see module docstring
+
+        self.driver.rollback()
+
+        self.assertIsNone(
+            self.driver.execute("widget", "read", "w-tx-rollback"))
+
+    def test_rollback_discards_the_outbox_registration_made_with_it(self):
+        self.driver.begin()
+        self.driver.execute("widget", "create", "w-tx-outbox")
+        self.driver.record_emission({
+            "emission_id": "tx-outbox-1",
+            "event": "widget.created",
+            "payload": {"id": "w-tx-outbox"},
+        })
+        if self.driver.read_outbox("widget.created") == []:
+            self.skipTest(
+                "driver does not implement the outbox (record_emission "
+                "left nothing to read back)")
+        # reached here => there really was something for rollback to undo
+
+        self.driver.rollback()
+
+        self.assertIsNone(
+            self.driver.execute("widget", "read", "w-tx-outbox"))
+        self.assertEqual(self.driver.read_outbox("widget.created"), [])
+
+    def test_a_nested_begin_is_refused(self):
+        self.driver.begin()
+
+        with self.assertRaises(DriverError):
+            self.driver.begin()
+
+        self.driver.rollback()
 
     # -- optimistic version conflict (issue #92) ----------------------------
 

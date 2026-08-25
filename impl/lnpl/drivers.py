@@ -480,7 +480,18 @@ class SqliteRepositoryDriver(RepositoryDriver):
         write keeps every read up to that point in ordinary autocommit
         mode — always current — so the first write's conditional UPDATE
         is what decides a conflict, on a fresh view, the same as before
-        this RFC per-op-committed every write individually."""
+        this RFC per-op-committed every write individually.
+
+        A second `begin()` before this boundary is closed is refused
+        (`DriverError`): which `rollback` would then undo, and how far,
+        would otherwise depend on the driver, making `policy rollback`
+        drift from one implicit transaction per execution into something
+        driver-dependent."""
+        if self._in_transaction:
+            raise DriverError(
+                "begin() called while a transaction is already open — "
+                "nested transactions are not supported; commit() or "
+                "rollback() the open one first")
         self._in_transaction = True
 
     def commit(self):
