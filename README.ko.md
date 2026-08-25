@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 2599개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 2616개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 34편 — 32편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033은 `Draft`.** RFC-0007은
+**RFC 35편 — 32편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -250,8 +250,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0031 다중 파일 컴파일 단위](rfcs/0031-multi-file-compilation-unit.md) | 컴파일 단위가 파일 집합으로 확장된다 — `lnpl <cmd> <src...>`는 명시한 파일들을 인자 순서로 병합하고, `lnpl <cmd> <dir>`은 그 디렉터리의 `*.lnpl`을 파일명 정렬로 수집한다. 선언 이름은 전역 유일 — 서로 다른 파일에서 이름이 겹치면 거부하며 두 `<파일>:<줄>` 위치를 함께 병기한다. 문법·lexer는 불변이고, 소스 인자 1개는 바이트 동일하다. *0004 §Reference-level Specification(파이프라인 표 S1 행) 갱신* |
 | [0032 트랜잭션 경계와 rollback 집행](rfcs/0032-transaction-boundary-and-rollback-enforcement.md) | 워크플로 실행이 암묵적 트랜잭션 하나가 된다(명시적 `Transaction` IR 노드는 아직 없다) — 성공 시 commit, 실패 시 rollback(실패한 실행이 등록한 이벤트 emission 포함). `policy rollback`은 `unenforced`에서 `enforced`로 승격된다. *0003 §Execution Model·§Policy Enforcement·§Examples 갱신* |
 | [0033 선언 이름공간 — 디렉터리 스코프와 internal/ 가시성](rfcs/0033-namespace-directories.md) | *(Draft)* 하위 디렉터리를 가진 디렉터리가 네임스페이스 루트가 된다 — 1단계 하위 디렉터리 이름이 곧 그 안 선언들의 네임스페이스이고, 이름이 정확히 `internal`인 디렉터리는 가시성을 그 부모로 좁힌다. 문법 변경 0개, 전부 경로에서 유도. 선언 이름은 이제 전역이 아니라 네임스페이스 안에서만 유일하면 되고, 네임스페이스 없는(오늘의) 컴파일 단위는 바이트 동일이다. 실측이 먼저다(`docs/scale-pressure-measurement.md`): 엔티티 50개·명사 풀 10개에서 이름 충돌 40건. *0031 §Guide-level Explanation·§Reference-level Specification(`load_sources`) 갱신* |
+| [0034 NetworkCall 보상(compensation) 결정](rfcs/0034-network-call-compensation.md) | *(Draft)* `policy rollback`이 보호하는 트랜잭션 경계 밖의 `NetworkCall` 스텝을 어떻게 보상할지 결정한다 — 향후 도입될 `compensate` 절이 있으면 컴파일러의 `rollback-escapes-network` 경고(이슈 #112)를 침묵시키고, 없으면 그 경고가 기본으로 남는다. outbox 대안은 기각 — 비동기 호출은 `call ... as <이름>`의 동기 결과 바인딩(RFC-0027 §2, RFC-0030)을 만족할 수 없다. 결정만, 문법 변경은 아직 없다. |
 
-32편이 `Accepted`, 1편(`0033`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+32편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -308,7 +309,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2599 tests in 88.227s
+Ran 2616 tests in 88.227s
 OK
 ```
 

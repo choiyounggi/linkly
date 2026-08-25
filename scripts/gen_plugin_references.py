@@ -580,6 +580,10 @@ RFC_ROUTES = {
              "`internal/`이 가시성을 어떻게 좁히는지, 짧은 이름이 어느 "
              "순서로 해소되는지, `derive_id`가 네임스페이스를 왜 대부분의 "
              "골든 IR에 영향 없이 담는지", ()),
+    "0034": ("(Draft) `policy rollback`을 선언한 워크플로에 `call`/`request`를 "
+             "쓰고 싶다 — `rollback-escapes-network` 경고가 왜 나는지, "
+             "`compensate` 절이 그 경고를 어떻게 침묵시킬지, outbox 방식을 "
+             "왜 기각했는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")
