@@ -177,6 +177,12 @@ PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
 ARGUMENT_MECHANISMS = ("role", "encrypt")
 
+# issue #119, D2: the read-only `caller` scope's closed field vocabulary —
+# mirrors `interp.CALLER_NAMESPACE`/`caller_view`. No `roles` (plural), no
+# `contains` — a single role, same as `interp.caller_view` resolves.
+CALLER_NAMESPACE = "caller"
+CALLER_FIELDS = ("subject", "role")
+
 # `capability http <Name>` (issue #101 / RFC-0027): the outbound HTTP method
 # and auth-scheme vocabularies. Closed sets, widened only on demand (issue
 # text) — the same "add a table row, not a branch" shape as POLICY_NAMES etc.
@@ -1963,6 +1969,19 @@ class _Scope:
                        ", ".join(sorted(self.declared_fields)) or "none"))
             return self.declared_fields[field]
 
+        if binding == CALLER_NAMESPACE:
+            # issue #119: the caller scope has no Entity behind it — no field
+            # declaration to borrow a dimension from, so this reads like a
+            # network-result binding (resolved, and dimensionless, at
+            # runtime) rather than like a payload field.
+            if field not in CALLER_FIELDS:
+                raise LowerError(
+                    "workflow %s: %r names caller field %r, which does not "
+                    "exist (the caller scope has only: %s)"
+                    % (self.workflow_name, text, field,
+                       ", ".join(CALLER_FIELDS)))
+            return None
+
         if binding in self.network_bindings:
             # RFC-0027 §2/§4: a network result binding's shape is not
             # declared anywhere (a response body is not an Entity), so any
@@ -2228,6 +2247,16 @@ def _derive_assignment(step_id, line, registry):
             "line %d: %r assigns to the run's input, which is not state — "
             "assign to a row this workflow read (`<binding>.%s`)"
             % (line.lineno, text, field))
+    if binding == CALLER_NAMESPACE:
+        # issue #119, D4: same reasoning as `input` above — RFC-0015 §G15.2
+        # — but the state in question is the CALLER's identity, not this
+        # run's payload, so the message names that instead of repeating
+        # the input wording verbatim.
+        raise LowerError(
+            "line %d: %r assigns to the caller scope, which is not state "
+            "this workflow owns — it is the verified identity of who "
+            "called it, read-only (`<binding>.%s`)"
+            % (line.lineno, text, field))
 
     entity = None
     for ent in registry.values():
@@ -2282,6 +2311,14 @@ def _derive_format(step_id, line, registry):
         raise LowerError(
             "line %d: %r formats into the run's input, which is not state — "
             "format into a row this workflow read (`<binding>.%s`)"
+            % (line.lineno, text, field))
+    if binding == CALLER_NAMESPACE:
+        # issue #119, D4: see `_derive_assignment` — same reasoning, this
+        # function's own verb wording.
+        raise LowerError(
+            "line %d: %r formats into the caller scope, which is not state "
+            "this workflow owns — it is the verified identity of who "
+            "called it, read-only (`<binding>.%s`)"
             % (line.lineno, text, field))
 
     entity = None

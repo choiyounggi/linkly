@@ -45,7 +45,7 @@ from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, _slug, generate as generate_openapi
-from .serve import ServeError, build_routes, serve
+from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
                    resolve_schedule_triggers, _schedule_events)
 from .spec import SpecError, extract, run_manifest
@@ -1304,7 +1304,7 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 2
     except (LexError, ParseError, LowerError, SpecError, OpenApiError,
-            ServeError, KbError) as exc:
+            ServeError, KbError, WsgiConfigError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)
         return 2
     except RunError as exc:

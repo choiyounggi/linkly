@@ -308,6 +308,31 @@ def _entity_schema(entity, refined):
     return schema
 
 
+def _required_role(mechanisms):
+    """The `<r>` in this service's `security role <r>`, or `None` (issue
+    #119, D5/D12) — mirrors `wsgi._required_role`; kept local rather than
+    imported across modules for a two-line lookup over an already-parsed
+    list `wsgi.py` never hands this module."""
+    for mech in mechanisms:
+        if mech.startswith("role "):
+            return mech[len("role "):]
+    return None
+
+
+def _apply_role(op, con):
+    """D12: role requirements ride the `x-lnpl-roles` extension, not an
+    OAuth2 scope — a scope is something the CLIENT requests and the server
+    grants a subset of; `security role <r>` is a fixed server-side
+    requirement the client cannot negotiate, so modelling it as a scope
+    would have the contract assert something false."""
+    required_role = _required_role(con["mechanisms"])
+    if required_role is not None:
+        op["x-lnpl-roles"] = [required_role]
+        op["responses"]["403"] = {
+            "description": "the caller's verified role does not satisfy "
+                           "this service's `security role` requirement"}
+
+
 def _constraints(service, nodes):
     out = {"mechanisms": [], "retry": None, "timeout_ms": None,
            "response_slo_ms": None}
@@ -430,6 +455,7 @@ def _operation(wf, service, con, nodes, entities, refined):
     if "jwt" in con["mechanisms"]:
         op["security"] = [{"bearerAuth": []}]
         op["responses"]["401"] = {"description": "authentication failed"}
+    _apply_role(op, con)
     if con["response_slo_ms"] is not None:
         op["x-response-slo-ms"] = con["response_slo_ms"]
     if con["retry"] is not None:
@@ -465,6 +491,7 @@ def _get_single_operation(service, entity, con):
     if "jwt" in con["mechanisms"]:
         op["security"] = [{"bearerAuth": []}]
         op["responses"]["401"] = {"description": "authentication failed"}
+    _apply_role(op, con)
     return op
 
 
@@ -504,6 +531,7 @@ def _get_list_operation(service, entity, field, con):
     if "jwt" in con["mechanisms"]:
         op["security"] = [{"bearerAuth": []}]
         op["responses"]["401"] = {"description": "authentication failed"}
+    _apply_role(op, con)
     return op
 
 
@@ -532,4 +560,5 @@ def _events_operation(service, event, con):
     if "jwt" in con["mechanisms"]:
         op["security"] = [{"bearerAuth": []}]
         op["responses"]["401"] = {"description": "authentication failed"}
+    _apply_role(op, con)
     return op

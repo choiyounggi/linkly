@@ -373,7 +373,8 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
             if mode == "when":
                 alternatives = node.get("alternatives")
                 if not alternatives:
-                    if not _condition_holds(node.get("condition"), payload, bindings):
+                    if not _condition_holds(node.get("condition"), payload, bindings,
+                                            caller=interp.caller):
                         # Issue #83: a second, pure re-evaluation just to collect the
                         # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
                         # line above on purpose: that line is a mutation_check.py
@@ -382,7 +383,7 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                         # identical.
                         raw_evals = []
                         _condition_holds(node.get("condition"), payload, bindings,
-                                         collector=raw_evals)
+                                         collector=raw_evals, caller=interp.caller)
                         result["skipped"].append(_skip_record(
                             nodes, node,
                             evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
@@ -400,7 +401,8 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                     for text in texts:
                         term_evals = []
                         holds_per_text.append(_condition_holds(
-                            text, payload, bindings, collector=term_evals))
+                            text, payload, bindings, collector=term_evals,
+                            caller=interp.caller))
                         raw_evals.extend(term_evals)
                     if not any(holds_per_text):
                         result["skipped"].append(_skip_record(
@@ -431,7 +433,8 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                 # Whichever hits first causes termination; reason is logged separately.
                 rounds = 0
                 deadline = None if con["timeout_ms"] is None else interp.clock.now + con["timeout_ms"]
-                while not _condition_holds(node.get("condition"), payload, bindings):
+                while not _condition_holds(node.get("condition"), payload, bindings,
+                                           caller=interp.caller):
                     # Check both boundaries before iteration
                     if deadline is not None and interp.clock.now >= deadline:
                         interp.trace.log("WARN", "until loop hit deadline",
@@ -456,7 +459,7 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                     # evaluations does not change what already decided rounds==0.
                     raw_evals = []
                     _condition_holds(node.get("condition"), payload, bindings,
-                                     collector=raw_evals)
+                                     collector=raw_evals, caller=interp.caller)
                     result["skipped"].append(_skip_record(
                         nodes, node, rounds=0,
                         evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
@@ -524,7 +527,42 @@ def _skip_record(nodes, node, rounds=None, evaluations=None):
             "evaluations": evaluations if evaluations is not None else []}
 
 
-def resolve_reference(name, payload, bindings):
+CALLER_NAMESPACE = "caller"
+
+
+def caller_view(claims):
+    """Derive the read-only `caller` scope from verified token claims (issue
+    #119 A-2/A-3, D2/D3).
+
+    `claims` is `None` when the route carries no verified token (no
+    `token_provider` configured, or the route does not require auth) — the
+    whole scope is then `None`, distinct from a dict whose fields are merely
+    absent. `subject`/`role` are singular by design (D2): no `caller.roles`,
+    no `contains` operator.
+
+    Role resolution (D3): `role` (a string claim) wins outright when present,
+    valid or not — a malformed `role` claim does not fall back to `roles`.
+    Only when `role` is absent does `roles` apply, and only when it is a
+    list of exactly one string; zero, two-or-more, or wrong-typed elements
+    resolve to no role. Ambiguous is treated as absent, never as a guess.
+    """
+    if claims is None:
+        return None
+    subject = claims.get("sub")
+    if "role" in claims:
+        raw_role = claims["role"]
+        role = raw_role if isinstance(raw_role, str) else None
+    else:
+        roles = claims.get("roles")
+        if (isinstance(roles, list) and len(roles) == 1
+                and isinstance(roles[0], str)):
+            role = roles[0]
+        else:
+            role = None
+    return {"subject": subject, "role": role}
+
+
+def resolve_reference(name, payload, bindings, caller=None):
     """Resolve a condition/expectation `Reference` to a value (RFC-0012 §G12.1).
 
     Bare `stock` names an input payload field; qualified `product.stock` names a
@@ -539,10 +577,17 @@ def resolve_reference(name, payload, bindings):
     This is the ONE resolver. `_condition_holds` (guards) and `spec._expect_result`
     (assertions) both call it, which is what makes "guards and expect share one
     scope" a property of the code rather than a claim in a document.
+
+    `caller` (issue #119, optional, default `None`): the read-only scope
+    `caller_view` derived from this run's verified claims. `caller.subject`/
+    `caller.role` resolve the same way `input.*` does — a reserved namespace
+    checked before the general `bindings` lookup, never a bound row.
     """
     if "." not in name:
         return payload.get(name)
     binding, _, field = name.partition(".")
+    if binding == CALLER_NAMESPACE:
+        return None if caller is None else caller.get(field)
     if binding == PAYLOAD_NAMESPACE:
         # RFC-0015 §G15.2: `input.<field>` is the explicit spelling of the bare
         # form. It exists because the natural way to name an input field is the
@@ -556,7 +601,7 @@ def resolve_reference(name, payload, bindings):
     return row.get(field)
 
 
-def _condition_holds(condition, payload, bindings, collector=None):
+def _condition_holds(condition, payload, bindings, collector=None, caller=None):
     """Mode A condition evaluation: Presence + Comparison.
 
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
@@ -590,7 +635,7 @@ def _condition_holds(condition, payload, bindings, collector=None):
         return True
 
     if isinstance(cond, Presence):
-        raw = resolve_reference(cond.field, payload, bindings)
+        raw = resolve_reference(cond.field, payload, bindings, caller)
         holds = (raw is not None) if cond.kind == "exists" else (raw is None)
         if collector is not None:
             collector.append({"ref": cond.field, "value": raw, "op": cond.kind,
@@ -598,20 +643,20 @@ def _condition_holds(condition, payload, bindings, collector=None):
         return holds
 
     if isinstance(cond, Comparison):
-        return _comparison_holds(cond, condition, payload, bindings, collector)
+        return _comparison_holds(cond, condition, payload, bindings, collector, caller)
 
     if isinstance(cond, And):
         # Every term is evaluated, not short-circuited: the terms are pure, so
         # the result is the same, and a value fault in a later term must surface
         # in both modes rather than depending on where the run stopped reading.
-        results = [_comparison_holds(term, condition, payload, bindings, collector)
+        results = [_comparison_holds(term, condition, payload, bindings, collector, caller)
                    for term in cond.terms]
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
 
 
-def _comparison_holds(cmp_node, condition, payload, bindings, collector=None):
+def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, caller=None):
     """One `Comparison` against this scope. Unresolved reference -> False.
 
     `collector` (issue #83): see `_condition_holds`. `ref` is the left
@@ -620,8 +665,8 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None):
     evaluated here, unmasked (`_masked_evaluation` in `_flatten_items` masks a
     sensitive one before it reaches a skip record).
     """
-    left = eval_value(cmp_node.left, condition, payload, bindings)
-    right = eval_value(cmp_node.right, condition, payload, bindings)
+    left = eval_value(cmp_node.left, condition, payload, bindings, caller)
+    right = eval_value(cmp_node.right, condition, payload, bindings, caller)
     op = cmp_node.op
     if left is None or right is None:
         # A reference that names nothing behaves as it did before RFC-0015:
@@ -647,7 +692,7 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None):
     return holds
 
 
-def eval_value(value, condition, payload, bindings):
+def eval_value(value, condition, payload, bindings, caller=None):
     """A parsed `Value` -> int, or None when a reference resolves to nothing.
 
     RFC-0015 fixes the domain at signed 64-bit — the width mode B compiles to —
@@ -662,7 +707,7 @@ def eval_value(value, condition, payload, bindings):
     if isinstance(value, Lit):
         return value.value
     if isinstance(value, Ref):
-        raw = resolve_reference(value.name, payload, bindings)
+        raw = resolve_reference(value.name, payload, bindings, caller)
         if raw is None:
             return None
         if isinstance(raw, bool):
@@ -691,8 +736,8 @@ def eval_value(value, condition, payload, bindings):
         raise RunError(f"Cannot compare non-numeric {value.name}={raw!r} "
                        f"in condition {condition!r}")
     if isinstance(value, Arith):
-        left = eval_value(value.left, condition, payload, bindings)
-        right = eval_value(value.right, condition, payload, bindings)
+        left = eval_value(value.left, condition, payload, bindings, caller)
+        right = eval_value(value.right, condition, payload, bindings, caller)
         if left is None or right is None:
             return None
         if value.op == '+':
@@ -758,7 +803,7 @@ def eval_aggregate(agg, expression, rowsets):
     return total
 
 
-def eval_format(fmt, payload, bindings):
+def eval_format(fmt, payload, bindings, caller=None):
     """A parsed `FormatCall` -> str, or None when an argument reference
     resolves to nothing (issue #94) — the same "unresolved reference"
     contract `eval_value` uses for a `Value`, so the caller's existing
@@ -771,7 +816,7 @@ def eval_format(fmt, payload, bindings):
     """
     parts = []
     for ref in fmt.args:
-        raw = resolve_reference(ref.name, payload, bindings)
+        raw = resolve_reference(ref.name, payload, bindings, caller)
         if raw is None:
             return None
         parts.append(str(raw))
@@ -837,7 +882,7 @@ def _masked_evaluation(interp, entry):
 class Interpreter:
     def __init__(self, document, clock=None, repo_rows=None,
                  correlation_id="cid-0001", *, repository=None, cache=None,
-                 network=None):
+                 network=None, claims=None):
         """`repository`/`cache`/`network` bind the declared capabilities to a
         real backend (issue #25, #64); with none given, this builds exactly
         the in-memory set it always did.
@@ -847,11 +892,19 @@ class Interpreter:
         sites changes — and a stale positional call cannot silently bind a
         driver to `correlation_id`, which is the failure a middle insertion
         would have caused at every one of them.
+
+        `claims` (issue #119, keyword-only, default `None`): the verified
+        bearer token claims this request carried, or `None` when the route
+        has no token_provider/auth requirement. Derived once into
+        `self.caller` via `caller_view` — guards and assignments read
+        `caller.subject`/`caller.role` through the same resolver `input.*`
+        uses, never the raw claims dict.
         """
         self.doc = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.refinements = refinement_index(document)
         self.clock = clock or Clock()
+        self.caller = caller_view(claims)
         if repository is None:
             self.repo = FakeRepository(repo_rows)
         else:
@@ -1183,9 +1236,9 @@ class Interpreter:
                 # nothing" — an absent or empty RowSet is 0, not a fault.
                 value = eval_aggregate(rhs, effect["expression"], rowsets)
             elif isinstance(rhs, FormatCall):
-                value = eval_format(rhs, payload, bindings)
+                value = eval_format(rhs, payload, bindings, self.caller)
             else:
-                value = eval_value(rhs, effect["expression"], payload, bindings)
+                value = eval_value(rhs, effect["expression"], payload, bindings, self.caller)
             if value is None:
                 raise RunError(
                     "assignment %r cannot be evaluated: a reference in %r "

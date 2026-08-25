@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**2656 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**2706 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**34 RFCs — 32 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033 `Draft`.** RFC-0007 was formally
+**35 RFCs — 32 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/RFC-0035 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -298,6 +298,7 @@ suite is defined against.
 | [0031 Multi-File Compilation Unit](rfcs/0031-multi-file-compilation-unit.md) | A compilation unit becomes a set of files: `lnpl <cmd> <src...>` merges explicit files in argument order, `lnpl <cmd> <dir>` collects its `*.lnpl` filename-sorted. Declared names stay globally unique — a name repeated across files is rejected, naming both `<file>:<line>` locations. Grammar and the lexer are unchanged, and one source argument stays byte-identical. *Updates 0004 §Reference-level Specification (pipeline table, S1 row)* |
 | [0032 Transaction Boundary and Rollback Enforcement](rfcs/0032-transaction-boundary-and-rollback-enforcement.md) | Workflow execution becomes one implicit transaction (no explicit `Transaction` IR node yet): commit on success, rollback — including a failed run's registered event emissions — on any failure. `policy rollback` moves from `unenforced` to `enforced`. *Updates 0003 §Execution Model, §Policy Enforcement, §Examples* |
 | [0033 Namespace Directories](rfcs/0033-namespace-directories.md) | *(Draft)* A directory holding subdirectories becomes a namespace root: each first-level subdirectory names its declarations' namespace, and a directory literally named `internal/` restricts visibility to its parent — zero grammar changes, derived entirely from path. Declared names stay unique within a namespace rather than globally; a namespace-less compilation unit (today's shape) is byte-identical. Measured first (`docs/scale-pressure-measurement.md`): 40 name-collision events at 50 entities across a 10-noun pool. *Updates 0031 §Guide-level Explanation, §Reference-level Specification (`load_sources`)* |
+| [0035 Authorization Enforcement — Deferred Scope](rfcs/0035-authorization-enforcement-deferred-scope.md) | *(Draft)* Answers the three questions issue #119 left open once `security role` became real: workflow-level `security role` stays out for now (no measured need yet, revisit conditions stated); the `authorize` verb keeps its promoted `warning` grade with its (a)-vs-(b) final fate deferred to observed usage (criteria table included); `security encrypt` is decided for removal (its "driver-dependent" framing describes an always-empty set — zero external drivers exist), with migration guidance, actual removal scoped to a follow-up `tech-debt` issue. |
 
 Thirty-two are `Accepted`, one (`0033`) is `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
@@ -359,7 +360,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2656 tests in 78.509s
+Ran 2706 tests in 78.509s
 OK
 ```
 
