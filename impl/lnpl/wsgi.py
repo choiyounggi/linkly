@@ -40,6 +40,7 @@ from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
 from .parser import ParseError
 from .repo_policy import default_rows, event_emissions, repository_calls, row_key
+from .tracecontext import new_span_id, new_trace_id, parse_traceparent
 
 # M4: refuse to buffer more than this before reading a byte. The Fake-backend
 # dev server has no streaming consumer, so anything past 1 MiB is a mistake.
@@ -476,7 +477,7 @@ class LnplWsgiApp:
 
     def __init__(self, document, routes, repository_factory=None,
                  token_provider=None, network=None, clock=None,
-                 log_format="text", exporter=None):
+                 log_format="text", exporter=None, trust_incoming_trace=False):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
@@ -502,6 +503,48 @@ class LnplWsgiApp:
         # independent of `log_format`, so a caller can export traces while
         # staying on the default text access-log (or vice versa).
         self.exporter = exporter
+        # issue #107, D7: off by default. Off means an inbound `traceparent`
+        # is never adopted as this request's trace-id — a fresh one is
+        # always minted, and the inbound value is recorded only as a link.
+        # Naively inheriting a client-supplied sampled flag opens a
+        # denial-of-monitoring surface (W3C Trace Context, security
+        # considerations); this flag is the "configured trusted source"
+        # gate security-input-validation-at-trust-boundaries calls for.
+        self.trust_incoming_trace = trust_incoming_trace
+
+    def _resolve_trace_context(self, environ):
+        """issue #107: decide this request's `(trace_id, span_id, link,
+        tracestate, flags)` from an inbound `traceparent`/`tracestate`
+        header pair.
+
+        Never raises and never fails the request (D2) — a malformed or
+        untrusted `traceparent` just means a freshly minted trace-id, not a
+        rejection. `span_id` is always freshly generated: a received
+        `parent-id` names the caller's span, never ours (W3C §3.4).
+
+        D6/r1-F1: `flags` (trace-flags, e.g. the sampled bit) is propagated
+        verbatim ONLY when we actually adopt the inbound trace (trust on and
+        parsed). Every other case starts a trace-id of our own minting, so
+        the sampling decision is ours too — "01" (sampled), never inherited.
+        Naively inheriting an untrusted/unparsed value here would let an
+        unrelated caller's flags apply to a trace-id we generated.
+        """
+        raw = environ.get("HTTP_TRACEPARENT")
+        parsed = parse_traceparent(raw)
+
+        # D5, W3C MUST: tracestate is parsed/forwarded only alongside a
+        # successfully parsed traceparent; otherwise it is discarded, not
+        # merely ignored.
+        tracestate = environ.get("HTTP_TRACESTATE") if parsed is not None else None
+
+        if parsed is None:
+            return new_trace_id(), new_span_id(), None, tracestate, "01"
+
+        if not self.trust_incoming_trace:
+            link = {"trace_id": parsed["trace_id"], "parent_id": parsed["parent_id"]}
+            return new_trace_id(), new_span_id(), link, tracestate, "01"
+
+        return parsed["trace_id"], new_span_id(), None, tracestate, parsed["flags"]
 
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
@@ -565,6 +608,16 @@ class LnplWsgiApp:
             "skipped": log_sink.get("skipped", []),
             "diagnostics": log_sink.get("diagnostics", []),
         }
+        # issue #107, D3: trace_id/span_id sit alongside correlation_id, not
+        # in place of it. `None` (a non-workflow GET/SSE request, which never
+        # populates log_sink) omits the key — the pre-#107 golden line stays
+        # byte-identical.
+        trace_id = log_sink.get("trace_id")
+        if trace_id is not None:
+            line["trace_id"] = trace_id
+        span_id = log_sink.get("span_id")
+        if span_id is not None:
+            line["span_id"] = span_id
         print(json.dumps(line, ensure_ascii=False), file=sys.stderr)
 
     def _log_sse_then(self, generator, method, path, correlation_id, start_t,
@@ -671,7 +724,7 @@ class LnplWsgiApp:
             # No special case for an empty body: it runs as {} and a workflow
             # with a Validation effect rejects it through M7.
             payload = {}
-        return self._run(start_response, route["workflow"], payload,
+        return self._run(environ, start_response, route["workflow"], payload,
                          log_sink=log_sink)
 
     def _do_get(self, environ, start_response, path_info, query, raw_path):
@@ -866,13 +919,13 @@ class LnplWsgiApp:
             if repository is not None:
                 repository.close()
 
-    def _run(self, start_response, workflow_id, payload, log_sink=None):
+    def _run(self, environ, start_response, workflow_id, payload, log_sink=None):
         doc = self.document
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         factory = self.repository_factory
         repository = factory() if factory is not None else None
         try:
-            return self._respond(start_response, doc, workflow_id, payload,
+            return self._respond(environ, start_response, doc, workflow_id, payload,
                                  correlation_id, repository, log_sink=log_sink)
         finally:
             # A request that fails must still release its store, or the leak
@@ -880,12 +933,22 @@ class LnplWsgiApp:
             if repository is not None:
                 repository.close()
 
-    def _respond(self, start_response, doc, workflow_id, payload, correlation_id,
-                repository, log_sink=None):
+    def _respond(self, environ, start_response, doc, workflow_id, payload,
+                correlation_id, repository, log_sink=None):
         interp = Interpreter(doc, clock=self.clock,
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
                              network=self.network)
+        # issue #107: resolved exactly once per request, right where the
+        # Trace this request will use is built — trace_id/span_id/trace_link
+        # are a runtime-decided identity, D3's correlation_id stays separate
+        # and untouched alongside them on the same record.
+        trace_id, span_id, trace_link, tracestate, flags = self._resolve_trace_context(environ)
+        interp.trace.trace_id = trace_id
+        interp.trace.span_id = span_id
+        interp.trace.trace_link = trace_link
+        interp.trace.tracestate = tracestate
+        interp.trace.flags = flags
         try:
             result = interp.run_workflow(workflow_id, payload)
         except Exception:
@@ -898,7 +961,8 @@ class LnplWsgiApp:
             traceback.print_exc(file=sys.stderr)
             if log_sink is not None:                                 # issue #78
                 log_sink.update(correlation_id=correlation_id, workflow=workflow_id,
-                                skipped=[], diagnostics=to_records(interp.diagnostics))
+                                skipped=[], diagnostics=to_records(interp.diagnostics),
+                                trace_id=interp.trace.trace_id, span_id=interp.trace.span_id)
             if self.exporter is not None:                            # issue #78, D3
                 self.exporter.export(interp.trace.to_dict())
             return _json_response(start_response, 500,
@@ -911,7 +975,8 @@ class LnplWsgiApp:
         if log_sink is not None:                                     # issue #78
             log_sink.update(correlation_id=result["correlation_id"],
                             workflow=workflow_id, skipped=result["skipped"],
-                            diagnostics=to_records(interp.diagnostics))
+                            diagnostics=to_records(interp.diagnostics),
+                            trace_id=interp.trace.trace_id, span_id=interp.trace.span_id)
         if self.exporter is not None:                                 # issue #78, D3
             self.exporter.export(interp.trace.to_dict())
         if status == 200:                                            # M9
@@ -925,7 +990,8 @@ class LnplWsgiApp:
 
 
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
-                  network=None, clock=None, log_format="text", exporter=None):
+                  network=None, clock=None, log_format="text", exporter=None,
+                  trust_incoming_trace=False):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -942,7 +1008,8 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     return LnplWsgiApp(document, routes,
                        repository_factory=repository_factory,
                        token_provider=token_provider, network=network,
-                       clock=clock, log_format=log_format, exporter=exporter)
+                       clock=clock, log_format=log_format, exporter=exporter,
+                       trust_incoming_trace=trust_incoming_trace)
 
 
 # --------------------------------------------------------------------------

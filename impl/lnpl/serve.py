@@ -55,7 +55,7 @@ class _Server(socketserver.ThreadingMixIn, WSGIServer):
 
 def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
           token_provider=None, network=None, clock=None, log_format="text",
-          exporter=None):
+          exporter=None, trust_incoming_trace=False):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -76,7 +76,8 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     """
     app = make_wsgi_app(document, repository_factory=repository_factory,
                         token_provider=token_provider, network=network,
-                        clock=clock, log_format=log_format, exporter=exporter)
+                        clock=clock, log_format=log_format, exporter=exporter,
+                        trust_incoming_trace=trust_incoming_trace)
     server = _Server((host, port), _WSGIRequestHandler)
     server.set_app(app)
     return server
