@@ -8,6 +8,8 @@
   파일 하나에서 파일 집합으로 확장됨에 따라 그 서술을 개정한다. RFC-0004의
   다른 어떤 절도 아직 이 행을 갱신하지 않았으므로 연쇄 갱신 지목 대상은
   RFC-0004 하나뿐이다(RFC-0007 §2.2 규칙 5).
+- Updated-by: RFC-0033 (§Guide-level Explanation, §Reference-level
+  Specification > 로더: `load_sources(paths)`)
 
 번호가 0031인 이유: 0030까지 점유됐다(RFC-0030). RFC-0007 §3은 번호 재사용을
 금지한다.
@@ -40,6 +42,12 @@ CLI 아홉 서브커맨드, `.lnpl` 저장 직후 도는 진단 훅
 한다(§Reference-level Specification).
 
 ## Guide-level Explanation
+
+> **Updated by RFC-0033**: 아래 "선언 이름은 전역에서 유일해야 한다 —
+> 이름공간이나 가시성 규칙은 없다"는 하위 디렉터리가 없는 컴파일 단위(이
+> 절 그대로)에 한정된다. 하위 디렉터리가 있는 레이아웃("네임스페이스
+> 루트")에서는 RFC-0033 §Guide-level Explanation이 이긴다 — 이름은
+> 네임스페이스 내에서만 유일하면 된다.
 
 여러 `.lnpl` 파일로 서비스 하나를 구성하려면, 파일들을 CLI에 나열하거나
 디렉터리 하나를 준다:
@@ -74,6 +82,11 @@ compile error: duplicate declaration 'Bookmark': first declared at a.lnpl:3, aga
 ## Reference-level Specification
 
 ### 로더: `impl/lnpl/lower.py::load_sources(paths)`
+
+> **Updated by RFC-0033**: 아래 중복 선언 검사는 하위 디렉터리가 없는
+> 컴파일 단위(이 절 그대로, `decl.namespace is None`)에 한정된다.
+> 네임스페이스 루트 레이아웃에서는 RFC-0033 §Reference-level Specification
+> > "중복 선언 검사 — 네임스페이스 내 유일로 완화"가 이긴다.
 
 ```python
 def load_sources(paths):
