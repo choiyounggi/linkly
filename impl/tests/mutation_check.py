@@ -63,12 +63,13 @@ MUTATIONS = [
      "lnpl/interp.py",
      "        if ttl_ms is None:\n            raise RunError",
      "        if False:\n            raise RunError"),
-    # Re-anchored 2026-08-05: RFC-0012 added the execution scope, so
-    # `_condition_holds` takes the bindings as a third argument and the old
+    # Re-anchored 2026-08-25: issue #119 added the `caller` scope, so this
+    # control-flow call now also passes `caller=interp.caller` and the old
     # anchor's text no longer exists in the file.
     ("Guard: ignore `when` and always run the guarded item",
      "lnpl/interp.py",
-     'if not _condition_holds(node.get("condition"), payload, bindings):',
+     'if not _condition_holds(node.get("condition"), payload, bindings,\n'
+     '                                            caller=interp.caller):',
      "if False:"),
     # RFC-0012 / issue #37. The guard must read the row a completed read bound,
     # not the input payload. Reverting the qualified branch to a payload lookup

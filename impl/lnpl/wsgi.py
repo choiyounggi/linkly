@@ -34,7 +34,8 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
                       TokenError, _is_url_literal, audience_for_path,
                       open_repository)
 from .diagnostics import format_lines, to_records
-from .interp import Interpreter, mask_payload, open_clock, refinement_index
+from .interp import (Interpreter, caller_view, mask_payload, open_clock,
+                     refinement_index)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
@@ -242,8 +243,19 @@ def _parse_limit(raw):
     return int(raw)
 
 
+def _required_role(mechanisms):
+    """The `<r>` in this service's `security role <r>`, or `None` (issue
+    #119, D5) — `_parse_security_line` stores it as the plain string
+    `"role <r>"`, the same shape `"jwt"` already is."""
+    for mech in mechanisms:
+        if mech.startswith("role "):
+            return mech[len("role "):]
+    return None
+
+
 def build_routes(document):
-    """{path: {"kind": ..., "auth": bool, ...}} for every served path.
+    """{path: {"kind": ..., "auth": bool, "role": str|None, ...}} for every
+    served path.
 
     Three kinds (issue #99 adds the last two to the original workflow-only
     table):
@@ -277,10 +289,13 @@ def build_routes(document):
         if service["kind"] != "Service":
             continue
         auth = False
+        role = None
         for cid in service.get("constraints", []):
             node = nodes.get(cid)
             if node is not None and node["kind"] == "Security":
-                auth = "jwt" in node.get("mechanisms", [])
+                mechanisms = node.get("mechanisms", [])
+                auth = "jwt" in mechanisms
+                role = _required_role(mechanisms)
         svc_slug = _slug(service["name"])
         entity_ids = set()
         event_ids = set()
@@ -288,24 +303,28 @@ def build_routes(document):
             child = nodes[cid]
             if child["kind"] == "Workflow":
                 path = "/%s/%s" % (svc_slug, _slug(child["name"]))
-                routes[path] = {"kind": "workflow", "workflow": cid, "auth": auth}
+                routes[path] = {"kind": "workflow", "workflow": cid, "auth": auth,
+                               "role": role}
                 entity_ids.update(eid for eid, _op in repository_calls(document, cid))
                 event_ids.update(event_emissions(document, cid))
             elif child["kind"] == "Expose":
                 entity = nodes[child["entity"]]
                 list_path = "/%s/%s" % (svc_slug, _slug(entity["name"]))
                 routes[list_path] = {"kind": "get-list", "entity": child["entity"],
-                                     "field": child["field"], "auth": auth}
+                                     "field": child["field"], "auth": auth,
+                                     "role": role}
         for eid in entity_ids:
             entity = nodes[eid]
             single_path = "/%s/%s/{id}" % (svc_slug, _slug(entity["name"]))
-            routes[single_path] = {"kind": "get-single", "entity": eid, "auth": auth}
+            routes[single_path] = {"kind": "get-single", "entity": eid, "auth": auth,
+                                   "role": role}
         for eid in event_ids:
             event = nodes[eid]
             if not event.get("subscribe"):
                 continue
             events_path = "/%s/events/%s" % (svc_slug, _slug(event["name"]))
-            routes[events_path] = {"kind": "sse-subscribe", "event": eid, "auth": auth}
+            routes[events_path] = {"kind": "sse-subscribe", "event": eid, "auth": auth,
+                                   "role": role}
     contract = set(generate(document)["paths"])
     if set(routes) != contract:
         raise ServeError("served paths %r do not match the OpenAPI contract %r"
@@ -395,12 +414,18 @@ def build_schedule_routes(document, triggers=None):
     for eid, (wid, service) in triggers.items():
         event = nodes[eid]
         auth = False
+        role = None
         for cid in service.get("constraints", []):
             node = nodes.get(cid)
             if node is not None and node["kind"] == "Security":
-                auth = "jwt" in node.get("mechanisms", [])
+                mechanisms = node.get("mechanisms", [])
+                auth = "jwt" in mechanisms
+                role = _required_role(mechanisms)
         path = "/-/schedules/%s" % _slug(event["name"])
-        routes[path] = {"kind": "workflow", "workflow": wid, "auth": auth}
+        # issue #119: mirrors `auth` above — a `security role` service's
+        # trigger route is not a side door around its own role requirement.
+        routes[path] = {"kind": "workflow", "workflow": wid, "auth": auth,
+                        "role": role}
     return routes
 
 
@@ -428,6 +453,7 @@ _TITLES = {
     "method-not-allowed": "method not allowed",
     "auth-missing": "authorization required",
     "auth-invalid": "authorization token rejected",
+    "forbidden": "the caller's role does not permit this",
     "body-too-large": "request body too large",
     "body-unreadable": "request body is not a JSON object",
     "deadline-exceeded": "workflow deadline exceeded",
@@ -640,24 +666,78 @@ class LnplWsgiApp:
                                      "no OpenAPI path %r" % raw_path))
 
     def _check_auth(self, environ, start_response, route, path_info):
-        """`None` when this route's auth requirement is satisfied; otherwise
-        the already-built 401 WSGI response. issue #99, D5: GET reuses this
-        SAME check a POST workflow route already used — no new judgment
-        invented for the read surface."""
+        """`(claims, None)` when this route's auth requirement is satisfied;
+        `(None, response)` otherwise, where `response` is the already-built
+        401 WSGI response. issue #99, D5: GET reuses this SAME check a POST
+        workflow route already used — no new judgment invented for the read
+        surface.
+
+        issue #119: a two-tuple, not a single value doubling as both claims
+        and failure signal — `claims` can legitimately be `{}` (a verified
+        token that carries no extra claims), and an empty dict is falsy, so
+        collapsing "auth passed with no claims" and "auth failed" onto one
+        `None`-checked return would read a rejected token as a pass. Failure
+        is always the second slot; callers branch on that, never on whether
+        `claims` is truthy.
+        """
         if not route["auth"]:
-            return None
+            return None, None
         header = environ.get("HTTP_AUTHORIZATION")
         if header is None:                                          # M3
-            return _json_response(start_response, 401,
+            return None, _json_response(start_response, 401,
                                   problem(401, "auth-missing",
                                          "the service declares `security jwt`; "
                                          "send an Authorization header"))
         if self.token_provider is not None:                          # M3a
-            return self._token_accepted(start_response, header, path_info)
-        return None
+            claims, response = self._token_accepted(
+                start_response, header, path_info)
+            if response is not None:
+                return None, response
+            response = self._role_accepted(start_response, route, claims)   # M3b
+            if response is not None:
+                return None, response
+            return claims, None
+        return None, None
+
+    def _role_accepted(self, start_response, route, claims):
+        """`None` when this route's `security role` requirement (if any) is
+        satisfied by the verified token's role; otherwise the 403 response
+        (issue #119, D5/D8/D9 — M3b, ordered strictly after M3a: a request
+        never gets here without a token that already verified).
+
+        D5 (deny by default): no role claim, or a role claim that does not
+        exactly match, are the SAME outcome — 403. `caller_view` already
+        collapses "absent"/"ambiguous" to `None` (D3); comparing against
+        `None` here would let a required role of `None` (impossible — a
+        route only reaches this with `route["role"]` truthy) accidentally
+        pass a caller with no role, so the `required` guard above is what
+        makes that unreachable, not a coincidence of the comparison.
+
+        D8: the response body does not say which role was required — a 403
+        page is exactly the reconnaissance surface `problem`'s existing
+        401 case (`auth-invalid`) already declines to feed. The specifics go
+        to stderr against a correlation id, the same shape `_token_accepted`
+        already uses for M3a.
+        """
+        required = route.get("role")
+        if not required:
+            return None
+        actual = caller_view(claims)
+        actual_role = actual["role"] if actual is not None else None
+        if actual_role == required:
+            return None
+        correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        print("serve: role rejected (correlation_id=%s): required %r, got %r"
+              % (correlation_id, required, actual_role), file=sys.stderr)
+        return _json_response(start_response, 403,
+                              problem(403, "forbidden",
+                                     "the caller's role does not satisfy this "
+                                     "service's `security role` requirement",
+                                     correlation_id=correlation_id))
 
     def _token_accepted(self, start_response, header, path_info):
-        """`None` when the bearer token passes; otherwise the 401 response.
+        """`(claims, None)` when the bearer token passes; `(None, response)`
+        when it doesn't — see `_check_auth` for why this is a tuple.
 
         The response says only that the token was rejected. Which check failed
         — signature, audience, expiry — is exactly the feedback someone tuning
@@ -667,19 +747,20 @@ class LnplWsgiApp:
         scheme, _, token = header.partition(" ")
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         detail = None
+        claims = None
         if scheme.lower() != "bearer" or not token.strip():
             detail = "authorization scheme is not Bearer"
         else:
             try:
-                self.token_provider.verify(
+                claims = self.token_provider.verify(
                     token.strip(), audience_for_path(path_info))
             except (TokenError, ValueError) as exc:
                 detail = str(exc)
         if detail is None:
-            return None
+            return claims, None
         print("serve: token rejected (correlation_id=%s): %s"
               % (correlation_id, detail), file=sys.stderr)
-        return _json_response(start_response, 401,
+        return None, _json_response(start_response, 401,
                               problem(401, "auth-invalid",
                                      "the bearer token was not accepted",
                                      correlation_id=correlation_id))
@@ -696,7 +777,7 @@ class LnplWsgiApp:
                                   problem(405, "method-not-allowed",
                                          "only GET is served at %s" % raw_path),
                                   headers=(("Allow", "GET"),))
-        auth_result = self._check_auth(environ, start_response, route, path_info)
+        claims, auth_result = self._check_auth(environ, start_response, route, path_info)
         if auth_result is not None:
             return auth_result
         try:
@@ -725,7 +806,7 @@ class LnplWsgiApp:
             # with a Validation effect rejects it through M7.
             payload = {}
         return self._run(environ, start_response, route["workflow"], payload,
-                         log_sink=log_sink)
+                         claims=claims, log_sink=log_sink)
 
     def _do_get(self, environ, start_response, path_info, query, raw_path):
         """issue #99: single-row GET (auto, D1) and list GET (opt-in via
@@ -740,7 +821,7 @@ class LnplWsgiApp:
             template = "/%s/%s/{id}" % (segments[1], segments[2])
             route = self.routes.get(template)
             if route is not None and route.get("kind") == "get-single":
-                auth_result = self._check_auth(environ, start_response, route, path_info)
+                _, auth_result = self._check_auth(environ, start_response, route, path_info)
                 if auth_result is not None:
                     return auth_result
                 return self._get_single(start_response, route, segments[3])
@@ -750,7 +831,7 @@ class LnplWsgiApp:
             # tried first and unchanged, this is a fallback, not a rewrite.
             events_route = self.routes.get(path_info)
             if events_route is not None and events_route.get("kind") == "sse-subscribe":
-                auth_result = self._check_auth(environ, start_response, events_route, path_info)
+                _, auth_result = self._check_auth(environ, start_response, events_route, path_info)
                 if auth_result is not None:
                     return auth_result
                 return self._subscribe(environ, start_response, events_route)
@@ -759,7 +840,7 @@ class LnplWsgiApp:
                                          "no OpenAPI path %r" % raw_path))
         route = self.routes.get(path_info)
         if route is not None and route.get("kind") == "get-list":
-            auth_result = self._check_auth(environ, start_response, route, path_info)
+            _, auth_result = self._check_auth(environ, start_response, route, path_info)
             if auth_result is not None:
                 return auth_result
             return self._get_list(start_response, route, query)
@@ -919,14 +1000,16 @@ class LnplWsgiApp:
             if repository is not None:
                 repository.close()
 
-    def _run(self, environ, start_response, workflow_id, payload, log_sink=None):
+    def _run(self, environ, start_response, workflow_id, payload, claims=None,
+            log_sink=None):
         doc = self.document
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         factory = self.repository_factory
         repository = factory() if factory is not None else None
         try:
             return self._respond(environ, start_response, doc, workflow_id, payload,
-                                 correlation_id, repository, log_sink=log_sink)
+                                 correlation_id, repository, claims=claims,
+                                 log_sink=log_sink)
         finally:
             # A request that fails must still release its store, or the leak
             # is one connection per failed request.
@@ -934,11 +1017,11 @@ class LnplWsgiApp:
                 repository.close()
 
     def _respond(self, environ, start_response, doc, workflow_id, payload,
-                correlation_id, repository, log_sink=None):
+                correlation_id, repository, claims=None, log_sink=None):
         interp = Interpreter(doc, clock=self.clock,
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
-                             network=self.network)
+                             network=self.network, claims=claims)
         # issue #107: resolved exactly once per request, right where the
         # Trace this request will use is built — trace_id/span_id/trace_link
         # are a runtime-decided identity, D3's correlation_id stays separate
@@ -1002,9 +1085,25 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     issue #81, D1: the schedule-trigger routes are merged in AFTER
     `build_routes`'s own OpenAPI-contract assertion, so they can never make
     that assertion fail — see `build_schedule_routes`.
+
+    issue #119, D6: a `security role` declared with no `token_provider`
+    configured is presence-checking dressed up as RBAC — the role can never
+    be read off a token that is never verified, so every request to that
+    route would either 401 (if `security jwt` also applies) or silently
+    carry no role and 403 forever. Refusing at construction, before any
+    request is served, is the same "failed launch, not a failed request"
+    posture `WsgiConfigError` already exists for.
     """
     routes = build_routes(document)
     routes.update(build_schedule_routes(document))
+    if token_provider is None:
+        gated = sorted({path for path, route in routes.items() if route.get("role")})
+        if gated:
+            raise WsgiConfigError(
+                "%d route(s) declare `security role` but no token_provider "
+                "is configured — a role can never be read off a token that "
+                "is never verified: %s. Configure `--jwt-secret-env` (or "
+                "pass token_provider=... directly)" % (len(gated), gated[0]))
     return LnplWsgiApp(document, routes,
                        repository_factory=repository_factory,
                        token_provider=token_provider, network=network,

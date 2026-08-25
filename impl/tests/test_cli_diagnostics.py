@@ -290,8 +290,11 @@ class TestRunMergesBothProducers(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("authorization-not-verified", err)
         self.assertIn("admin", err)
+        # issue #119, D10: `authorization-not-verified` graded `warning`
+        # (not `info`) now that `security role` gives an author a real fix —
+        # move the `authorize` verb to a declaration.
         self.assertEqual(err.strip().splitlines()[-1],
-                         "1 info, 0 warning(s), 0 error(s)")
+                         "0 info, 1 warning(s), 0 error(s)")
 
     def test_run_reports_compile_time_and_run_time_findings_together(self):
         path = self._write("both.lnpl", BOTH_PRODUCERS)
@@ -302,8 +305,12 @@ class TestRunMergesBothProducers(unittest.TestCase):
         self.assertIn("authorization-not-verified", err)   # run time
         # One report, one summary — not two reports stapled together.
         self.assertEqual(err.count("warning(s)"), 1)
+        # issue #119, D10: `authorization-not-verified` moved to `warning`,
+        # so this module's 3 findings split 1 info (`declared-not-enforced`
+        # for `security jwt`) / 2 warning (`unknown-verb` for `generate`,
+        # `authorization-not-verified`) instead of 2 info / 1 warning.
         self.assertEqual(err.strip().splitlines()[-1],
-                         "2 info, 1 warning(s), 0 error(s)")
+                         "1 info, 2 warning(s), 0 error(s)")
 
     def test_compile_of_the_same_module_omits_only_the_runtime_finding(self):
         path = self._write("both.lnpl", BOTH_PRODUCERS)

@@ -74,7 +74,12 @@ SEVERITY_OF = {
     "unknown-entity":             "warning",
     "declared-not-enforced":      "info",
     "declared-measured-only":     "info",
-    "authorization-not-verified": "info",
+    # issue #119, D10: `warning`, not `info` — Task 03 gave `security role` a
+    # real enforcement path, so an author who wrote `authorize` now HAS an
+    # edit that removes this: drop the verb, add `security role <r>` to the
+    # service instead. The RFC-0021 test ("does editing the program make this
+    # go away?") answers yes now, where before Batch A it answered no.
+    "authorization-not-verified": "warning",
     "guard-skipped-steps":        "warning",
     "guard-orphaned-steps":       "warning",
     # #55: no edit to the program removes this one. Mode B specialises at build
@@ -157,8 +162,15 @@ ENFORCEMENT = {
         (UNENFORCED, "the default path issues and verifies nothing; "
                      "`lnpl serve --jwt-secret-env NAME` verifies the bearer "
                      "token per request (docs/serving.md M3a, docs/backends.md)"),
+    # issue #119, D6/D9: unlike `jwt` above, `role` has no live weak path to
+    # name — a `security role` declaration that serves at all is checked,
+    # because D6 refuses to even start `serve` without a token_provider
+    # configured (`WsgiConfigError` -> rc 2). What is left once launch
+    # succeeds is a single behaviour, not two paths to pick the weaker of.
     ("security", "role"):
-        (UNENFORCED, "the role is never checked against anything"),
+        (ENFORCED, "every route the declaring service owns requires the "
+                   "verified token's role to exactly match `<r>`; mismatch "
+                   "or absence is 403 `forbidden` (docs/serving.md M3b)"),
     ("security", "encrypt"):
         (UNENFORCED, "the field is not encrypted (Password masking is a separate, type-driven behaviour)"),
     ("performance", "response"):

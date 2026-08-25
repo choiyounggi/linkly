@@ -584,6 +584,11 @@ RFC_ROUTES = {
              "쓰고 싶다 — `rollback-escapes-network` 경고가 왜 나는지, "
              "`compensate` 절이 그 경고를 어떻게 침묵시킬지, outbox 방식을 "
              "왜 기각했는지", ()),
+    "0035": ("(Draft) 워크플로마다 다른 `security role`을 왜 아직 못 쓰는지, "
+             "`authorize` 동사가 왜 아직 선언과 연결되지 않았는지, "
+             "`security encrypt`를 계속 써도 되는지 궁금하다 — 셋 다 이슈 "
+             "#119가 미결로 남긴 질문이고, 이 RFC가 지금은 안 하는 이유와 "
+             "재검토 조건을 적는다", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

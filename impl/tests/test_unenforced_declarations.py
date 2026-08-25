@@ -310,19 +310,25 @@ class TestBoundaries(unittest.TestCase):
         self.assertEqual(sorted(d.where for d in diags),
                          ["security.billing", "security.login"])
 
-    def test_role_carries_its_head_token_as_the_subject(self):
-        # `role admin` and `role owner` are the same declaration for enforcement
-        # purposes; the subject names the mechanism, not the argument.
+    def test_an_argument_mechanism_carries_its_head_token_as_the_subject(self):
+        # `encrypt password` and `encrypt secret` are the same declaration for
+        # enforcement purposes; the subject names the mechanism, not the
+        # argument. `role` used to be this test's example — issue #119 gave it
+        # real enforcement, so it no longer contributes a `declared-not-
+        # enforced` diagnostic at all (see the `rollback` precedent above);
+        # `encrypt` is `security`'s other ARGUMENT_MECHANISMS entry and is
+        # still unenforced, so it now carries this case.
         source = """
 entity User
     field
         id UUID
+        password Password
 service LoginService
     security
-        role admin
+        encrypt password
 """
         diags = declaration_diagnostics(compile_module(source))
-        self.assertEqual([d.subject for d in diags], ["security role"])
+        self.assertEqual([d.subject for d in diags], ["security encrypt"])
 
 
 class TestAuthorizationIsRecordedNeverChecked(unittest.TestCase):
@@ -335,7 +341,7 @@ class TestAuthorizationIsRecordedNeverChecked(unittest.TestCase):
         self.assertEqual(diags[0].code, "authorization-not-verified")
         self.assertEqual(diags[0].subject, "admin")
         self.assertEqual(diags[0].where, "wf.login.step.1.authz")
-        self.assertEqual(diags[0].severity, "info")   # #52
+        self.assertEqual(diags[0].severity, "warning")   # #52, promoted by #119 D10
         # And it did not block anything — which is exactly the problem.
         self.assertEqual(result["status"], "completed")
 

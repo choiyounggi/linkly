@@ -62,6 +62,7 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M2 | 경로는 있으나 메서드 ≠ POST | 405 + `Allow: POST` | `method-not-allowed` |
 | M3 | 서비스가 `security jwt` 선언 ∧ `Authorization` 헤더 부재 | 401 | `auth-missing` |
 | M3a | 토큰 프로바이더 설정됨(`--jwt-secret-env`) ∧ 토큰 검증 실패 | 401 | `auth-invalid` |
+| M3b | 토큰 검증 성공(M3a 통과) ∧ 서비스가 `security role <r>` 선언 ∧ 검증된 역할이 `<r>`과 불일치(또는 부재) | 403 | `forbidden` |
 | M4 | `Content-Length` > 1 MiB | 413 | `body-too-large` |
 | M5 | body가 JSON 파싱 실패, 또는 object가 아님 | 400 | `body-unreadable` |
 | M6 | 실행 실패 ∧ `failure_reason`이 `deadline`으로 시작 | 504 | `deadline-exceeded` |
@@ -93,6 +94,31 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 `detail`(사람용)이 아니라 `code`(안정 계약)로 분기한다. 200 본문은
 `lnpl run --json`의 `result`와 같은 dict다 — `bindings`는 마스킹을 거친 값이며
 (#43 계약) Password 계열 원문은 어떤 응답에도 실리지 않는다.
+
+### 인가 — 신뢰 모델과 게이트 범위 (이슈 #119)
+
+토큰 검증(M3/M3a)을 통과했어도 검증된 역할이 `security role <r>`과 다르면
+403 `forbidden`이다(매핑표 M3b, Task 04) — 401은 "너를 모르겠다", 403은
+"너를 알지만 안 된다"는 서로 다른 판정이므로 순서도 M3a 다음으로 고정된다.
+403 본문에는 어느 역할이 필요했는지 싣지 않는다 — 그 정보는 correlation id와
+함께 서버 stderr로만 나간다(M3a가 이미 쓰는 것과 같은 판단).
+
+**신뢰 모델.** `security role <r>`이 집행하는 역할은 이 서버가 검증한 토큰의
+`role`(또는 원소 1개짜리 `roles`) 클레임에서 읽는다. 그 토큰은 지금은
+`lnpl token`이 **자기 발급**한다 — 외부 IdP(issuer)가 서명한 것이 아니라,
+같은 서비스가 발급과 검증을 모두 하는 자기 주장(self-asserted)이다. 그래서
+이 집행은 t119b(외부 IdP: `--jwt-issuer`, RS256/ES256, `lnpl.tokens` SPI)가
+들어오기 전까지는 **dev/테스트 신뢰 모델**이다 — "이 역할 클레임을 누가 왜
+믿어도 되는가"라는 질문에 아직 제3자의 답이 없다. 프로덕션에서 이 신뢰
+경계를 넘기려면 t119b가 필요하다.
+
+**게이트 범위 — 행위(action) 대 객체(object).** `security role <r>`은
+**행위 게이트**다: "이 역할을 가진 호출자가 이 라우트를 실행해도 되는가"만
+묻는다. "42번 주문이 이 호출자의 것인가" 같은 **객체(소유권/테넌시) 게이트**는
+linkly에 **없다** — 행위 게이트를 통과했다고 객체 게이트까지 통과한 것이
+아니다(둘은 서로를 함의하지 않는다). 소유권이 필요한 워크플로(예: "본인
+주문만 취소")는 이 서비스 수준 역할 게이트만으로는 안전하지 않다 — 워크플로
+자체가 가드로 그 조건을 검사해야 한다.
 
 어댑터 계약·백엔드 선택·jwt 검증 체크리스트의 정본은 `docs/backends.md`다.
 
