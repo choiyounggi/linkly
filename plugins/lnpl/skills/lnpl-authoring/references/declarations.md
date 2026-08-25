@@ -53,3 +53,4 @@
 | `derived-never-assigned` | **warning** |
 | `declared-not-bound` | **info** |
 | `stored-row-shape-mismatch` | **warning** |
+| `rollback-escapes-network` | **warning** |

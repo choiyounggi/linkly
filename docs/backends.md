@@ -259,6 +259,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
 | **postgres / redis 서버 바인딩** | `psycopg2`/`redis` 자체는 이제 문제가 아니다(Testcontainers로 로컬에 서버를 띄울 수 있다) — 그 바인딩을 실을 `lnpl-postgres` 외부 레포와 그 레포의 Testcontainers CI가 아직 없다. 이슈 #115가 레포 안(TCK 강화) 절반만 완료했고, 이 절반은 후속 이슈로 등재돼 있다 |
 | **`FakeRepository`의 `rollback`** | 문서화된 no-op이다(`impl/lnpl/interp.py`의 `FakeRepository.begin` docstring: "on the Fake all three do nothing, so a failed run's writes … are not undone."). RFC-0032가 `policy rollback`을 enforced로 올렸지만 기본 백엔드(`--backend fake`)에서는 그 정책이 조용히 거짓이다 — 2583개 테스트의 기반을 바꾸는 변경이라 이슈 #115와 별도로 후속 이슈로 등재돼 있다 |
+| **트랜잭션 경계 밖 `NetworkCall`의 보상** | `policy rollback`은 저장소 쓰기만 되돌린다(RFC-0032 §Open Questions ②) — `call`/`request`는 이미 나간 뒤라 되돌아가지 않는다. 컴파일러는 그 워크플로마다 `rollback-escapes-network`(warning, 이슈 #112)로 **신고만** 한다. 보상 방식은 RFC-0034(Draft)가 결정했고 구현은 후속(Batch B) |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
 | **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |

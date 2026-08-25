@@ -248,7 +248,7 @@ All three roadmap phases are complete.
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**34 RFCs — 32 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033 `Draft`.** RFC-0007 was formally
+**35 RFCs — 32 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -298,8 +298,9 @@ suite is defined against.
 | [0031 Multi-File Compilation Unit](rfcs/0031-multi-file-compilation-unit.md) | A compilation unit becomes a set of files: `lnpl <cmd> <src...>` merges explicit files in argument order, `lnpl <cmd> <dir>` collects its `*.lnpl` filename-sorted. Declared names stay globally unique — a name repeated across files is rejected, naming both `<file>:<line>` locations. Grammar and the lexer are unchanged, and one source argument stays byte-identical. *Updates 0004 §Reference-level Specification (pipeline table, S1 row)* |
 | [0032 Transaction Boundary and Rollback Enforcement](rfcs/0032-transaction-boundary-and-rollback-enforcement.md) | Workflow execution becomes one implicit transaction (no explicit `Transaction` IR node yet): commit on success, rollback — including a failed run's registered event emissions — on any failure. `policy rollback` moves from `unenforced` to `enforced`. *Updates 0003 §Execution Model, §Policy Enforcement, §Examples* |
 | [0033 Namespace Directories](rfcs/0033-namespace-directories.md) | *(Draft)* A directory holding subdirectories becomes a namespace root: each first-level subdirectory names its declarations' namespace, and a directory literally named `internal/` restricts visibility to its parent — zero grammar changes, derived entirely from path. Declared names stay unique within a namespace rather than globally; a namespace-less compilation unit (today's shape) is byte-identical. Measured first (`docs/scale-pressure-measurement.md`): 40 name-collision events at 50 entities across a 10-noun pool. *Updates 0031 §Guide-level Explanation, §Reference-level Specification (`load_sources`)* |
+| [0034 NetworkCall Compensation](rfcs/0034-network-call-compensation.md) | *(Draft)* Decides how to compensate a `NetworkCall` step outside the transaction boundary `policy rollback` protects: a future `compensate` clause silences the compiler's `rollback-escapes-network` warning (issue #112) when present, and stays the reported default otherwise. Rejects the outbox alternative — an async call cannot satisfy `call ... as <name>`'s synchronous result binding (RFC-0027 §2, RFC-0030). Decision only; no grammar changes yet. |
 
-Thirty-two are `Accepted`, one (`0033`) is `Draft`; 0000 is superseded by 0007, which was itself formally
+Thirty-two are `Accepted`, two (`0033`, `0034`) are `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**

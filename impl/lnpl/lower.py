@@ -826,6 +826,10 @@ def lower(decls, module_name):
             owner_of[id(d)] = last_service
 
     # ---- Service nodes (+ their constraints, emitted later) ----
+    # #112: which services declare `policy rollback`, keyed by `id(d)` so
+    # `owner_of` (above) can answer "does this workflow's service claim
+    # rollback?" for `_check_rollback_escapes_network` below.
+    rollback_services = set()
     service_nodes, constraint_nodes = [], []
     for d in by_kind["service"]:
         sid = derive_id(d.name, "Service")
@@ -834,6 +838,8 @@ def lower(decls, module_name):
         if "policy" in d.clauses:
             pid = ".".join([KIND_PREFIX["Policy"]] + segs)
             rules = [_parse_policy_line(l.tokens, l.lineno) for l in d.clauses["policy"]]
+            if any(r["name"] == "rollback" for r in rules):
+                rollback_services.add(id(d))
             constraint_nodes.append(_node("Policy", pid, rules=rules))
             constraints.append(pid)
             _declaration_diagnostics(
@@ -989,6 +995,13 @@ def lower(decls, module_name):
                                      d.name, mod.diagnostics)
         _check_derived_never_assigned(ctx.emitted, registry, d.name,
                                       mod.diagnostics)
+        # #112: `owner_of` (RFC-0002 A.2 R2) names the owning service, if
+        # any; `rollback_services` (built above, service loop runs first)
+        # says whether that service declared `policy rollback`.
+        owner = owner_of.get(id(d))
+        has_rollback = owner is not None and id(owner) in rollback_services
+        _check_rollback_escapes_network(ctx.emitted, d.name, has_rollback,
+                                        mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -1450,6 +1463,40 @@ def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics)
                         "add a `set`/`format` step that fills it somewhere in "
                         "this workflow" % (entity["name"], entity["name"],
                                           field["name"]))
+
+
+def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagnostics):
+    """`rollback-escapes-network` (warning) — issue #112.
+
+    RFC-0032 opens one transaction per `run_workflow` execution and rolls it
+    back on failure, but that only undoes the writes (and outbox
+    registrations) the transaction actually owns — a `NetworkCall` step is
+    outside it. A workflow whose service declares `policy rollback` reads as
+    "this undoes itself on failure," and a `call`/`request` step in it makes
+    that a lie: the call already happened by the time anything rolls back,
+    and nothing undoes it.
+
+    `has_rollback` is decided once by the caller from `owner_of` (RFC-0002
+    A.2 R2) before this runs, so a workflow with no owning service is never
+    checked here — with no `policy` block there is no "rollback" claim to
+    contradict. One diagnostic per `NetworkCall` step (not one per
+    workflow): each is a separate step an author has to either move or wrap,
+    so collapsing them into one line would hide the rest.
+    """
+    if not has_rollback:
+        return
+    for step in emitted:
+        if step["kind"] != "NetworkCall":
+            continue
+        line = step.get("line")
+        where_str = ("line %d" % line) if line else workflow_name
+        subject = "call %s" % step.get("target", "unspecified")
+        diagnostics.add(
+            code="rollback-escapes-network",
+            where=where_str, subject=subject, line=line,
+            message="workflow %s declares 'policy rollback', but step "
+                    "`%s` leaves the transaction boundary — a rollback "
+                    "cannot undo it" % (workflow_name, subject))
 
 
 def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,

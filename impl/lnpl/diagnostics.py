@@ -52,6 +52,7 @@ CODES = (
     "derived-never-assigned",       # #95  a `derived` field is `create`d, but no `set`/`format` in the workflow ever fills it
     "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
     "stored-row-shape-mismatch",    # #85  a read/find row is missing a declared field, or has the wrong type
+    "rollback-escapes-network",     # #112 `policy rollback`'s service has a workflow step whose NetworkCall sits outside the transaction boundary
 )
 
 # code -> grade (#52). One question decides every row:
@@ -108,6 +109,13 @@ SEVERITY_OF = {
     # but it is still an edit that makes the diagnostic go away, so `warning`
     # (RFC-0021's data-side reading of the same question).
     "stored-row-shape-mismatch": "warning",
+    # #112: RFC-0021's question, answered the same way as `unknown-verb` —
+    # moving the `call`/`request` off the workflow that declares `policy
+    # rollback`, or dropping the policy, removes this. The program is what
+    # has to change, so `warning`, not `declared-not-enforced`'s `info`
+    # (that code covers a fact the platform states about *itself*; this one
+    # is about the *program's* shape).
+    "rollback-escapes-network":  "warning",
 }
 
 # How the runtime treats a declaration.
