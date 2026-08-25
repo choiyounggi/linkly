@@ -21,7 +21,7 @@
 |------|------|--------------------------|
 | `policy retry` | **enforced** | run_workflow re-runs a failed step while its effects are idempotent |
 | `policy timeout` | **enforced** | a workflow deadline is computed, and exceeding it fails the run |
-| `policy rollback` | **unenforced** | Phase 1 has no Transaction boundary, so there is nothing to compensate; the #25 drivers commit per operation |
+| `policy rollback` | **enforced** | run_workflow opens a transaction before its first step and rolls it back on any failure, discarding every write (and outbox registration) that run made |
 | `policy parallel` | **unenforced** | parsed, but the execution plan never reads it |
 | `security jwt` | **unenforced** | the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md) |
 | `security role` | **unenforced** | the role is never checked against anything |
@@ -31,7 +31,7 @@
 | `performance parallel` | **unenforced** | parsed, but the execution plan never reads it |
 | `performance prefetch` | **unenforced** | parsed, but the execution plan never reads it |
 | `performance batch` | **unenforced** | parsed, but the execution plan never reads it |
-| `event schedule` | **unenforced** | no scheduler runs it; the declaration reaches the IR and the OpenAPI schedule metadata only — issue #26 (the serving layer) owns the executor |
+| `event schedule` | **unenforced** | by default nothing calls it; `lnpl trigger --schedule NAME` and `POST /-/schedules/<slug>` (`lnpl serve`) run the linked workflow on demand, but only when an external scheduler (cron/systemd — see `lnpl schedules`) is configured to call one of them (issue #81) |
 
 ## 진단 코드
 
@@ -52,3 +52,4 @@
 | `event-source-orphaned` | **info** |
 | `derived-never-assigned` | **warning** |
 | `declared-not-bound` | **info** |
+| `stored-row-shape-mismatch` | **warning** |

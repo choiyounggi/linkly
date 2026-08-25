@@ -435,7 +435,12 @@ class TestScheduleTrigger(unittest.TestCase):
             self.compile_fails("daily at %s UTC" % at, "time of day")
 
     def test_the_declaration_reports_that_nothing_runs_it(self):
-        """t3 F-2's real complaint was silence, not absence."""
+        """t3 F-2's real complaint was silence, not absence. issue #81 gave
+        the declaration a real trigger surface, so the message now names it
+        instead of naming #26 (the issue that used to own "nobody built
+        this yet") — but the core complaint (nothing calls it BY DEFAULT)
+        still has to survive, or the diagnostic would be a false all-clear.
+        """
         mod = lower(parse(SCHEDULE_EVENT), "rollup")
         subjects = [d.subject for d in mod.diagnostics.all()]
         self.assertIn("event schedule", subjects)
@@ -445,7 +450,8 @@ class TestScheduleTrigger(unittest.TestCase):
         # #52: a legitimate schedule declaration is `info` — the platform
         # stating what it does, not a mistake the author can edit away.
         self.assertEqual(diag.severity, "info")
-        self.assertIn("#26", diag.message)
+        self.assertIn("lnpl trigger", diag.message)
+        self.assertIn("default", diag.message)
 
     def test_negative_control_a_document_without_a_schedule_is_silent(self):
         mod = lower(parse("capability postgres\n\nentity Order\n    field\n"

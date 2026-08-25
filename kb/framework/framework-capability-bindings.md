@@ -29,4 +29,8 @@ Optimizer)가 한다. 선언은 무엇이 필요한지만 말한다.
 - **버전을 요구할 때만 적는다.** `capability postgres 16`. 적지 않으면 플랫폼이 고른다 —
   불필요한 핀은 배포 유연성만 깎는다.
 - **capability는 pool 계약을 함께 가져온다.** 커넥션 획득은 operation당 1회, 다른 자원
-  획득 전 반환. 중첩 획득은 pool 만석 시점에 데드락이다.
+  획득 전 반환. 중첩 획득은 pool 만석 시점에 데드락이다. 이 pool 계약은
+  RFC-0003(`rfcs/0003-runtime.md`)의 설계 계약이며, Phase 1 런타임은 이를 강제하지
+  않는다(unenforced) — `docs/ENFORCEMENT-MATRIX.md` 참조. 현재 드라이버
+  (`impl/lnpl/drivers.py`)는 operation당 단일 연결이고 bounded pool도 fail-fast도
+  없다 — 위 권고는 설계 방향의 서술이지 지금 집행되는 제약이 아니다.

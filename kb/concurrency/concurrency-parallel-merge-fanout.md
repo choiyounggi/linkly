@@ -30,3 +30,7 @@ sources:
   구조적 병렬은 그것을 문법적으로 불가능하게 한다.
 - **같은 capability pool을 여러 분기가 동시에 잡지 않는지 본다.** pool은 bounded이고
   고갈 시 fail-fast다 — 분기 수가 pool 크기를 넘으면 병렬화가 오히려 실패를 만든다.
+  이 pool 계약은 RFC-0003(`rfcs/0003-runtime.md`)의 설계 계약이며, Phase 1 런타임은
+  이를 강제하지 않는다(unenforced) — `docs/ENFORCEMENT-MATRIX.md` 참조. 현재
+  드라이버(`impl/lnpl/drivers.py`)에는 bounded pool도 fail-fast도 없다 — 위 점검은
+  설계 방향의 서술이지 지금 집행되는 제약이 아니다.

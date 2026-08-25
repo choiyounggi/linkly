@@ -163,17 +163,20 @@ def run_cli_usage_error(argv):
 class TestGoldenScenarioDiagnostics(unittest.TestCase):
     """`examples/login.lnpl` carries three unknown verbs and three declarations."""
 
-    def test_compile_reports_all_six_and_still_succeeds(self):
+    def test_compile_reports_all_five_and_still_succeeds(self):
+        # issue #79/RFC-0032: `policy rollback` moved to enforced, so the
+        # golden's three unknown verbs + two remaining unenforced/measured
+        # declarations (jwt, response) add up to five, not six.
         rc, out, err = run_cli_split(["compile", LOGIN])
         self.assertEqual(rc, 0)
         self.assertEqual(err.count("unknown-verb"), 3)
-        self.assertEqual(err.count("declared-not-enforced"), 2)
+        self.assertEqual(err.count("declared-not-enforced"), 1)
         self.assertEqual(err.count("declared-measured-only"), 1)
 
     def test_compile_ends_with_the_summary_line(self):
         _, _, err = run_cli_split(["compile", LOGIN])
         self.assertEqual(err.strip().splitlines()[-1],
-                         "3 info, 3 warning(s), 0 error(s)")
+                         "2 info, 3 warning(s), 0 error(s)")
 
     def test_compile_names_each_out_of_lexicon_verb(self):
         _, _, err = run_cli_split(["compile", LOGIN])
@@ -182,14 +185,16 @@ class TestGoldenScenarioDiagnostics(unittest.TestCase):
 
     def test_compile_names_each_unenforced_declaration(self):
         _, _, err = run_cli_split(["compile", LOGIN])
-        for declaration in ("security jwt", "policy rollback", "performance response"):
+        for declaration in ("security jwt", "performance response"):
             self.assertIn(declaration, err)
 
     def test_compile_does_not_report_the_enforced_declarations(self):
-        # `retry`, `timeout` and `cache` are genuinely enforced; naming them
-        # would be a false alarm and would make the report worthless.
+        # `retry`, `timeout`, `rollback` and `cache` are genuinely enforced;
+        # naming them would be a false alarm and would make the report
+        # worthless.
         _, _, err = run_cli_split(["compile", LOGIN])
-        for enforced in ("policy retry", "policy timeout", "performance cache"):
+        for enforced in ("policy retry", "policy timeout", "policy rollback",
+                         "performance cache"):
             self.assertNotIn(enforced, err)
 
     def test_stdout_stays_a_parseable_ir_document(self):
@@ -366,8 +371,10 @@ class TestStrictExitGate(unittest.TestCase):
         rc, out, err = run_cli_split(["compile", LOGIN, "--strict"])
         self.assertEqual(rc, 2)
         self.assertEqual(err.count("unknown-verb"), 3)
+        # issue #79/RFC-0032: `policy rollback` moved to enforced, so the
+        # golden's info count dropped from three to two.
         self.assertEqual(err.strip().splitlines()[-1],
-                         "3 info, 3 warning(s), 0 error(s)")
+                         "2 info, 3 warning(s), 0 error(s)")
         # The artifact on stdout is still the artifact.
         self.assertEqual(json.loads(out)["module"], "login")
 
@@ -739,8 +746,10 @@ class TestUnaffectedBehaviour(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("no workflow to run", err)
         self.assertIn("security jwt", err)
-        self.assertIn("policy rollback", err)
-        self.assertIn("2 info, 0 warning(s), 0 error(s)", err)
+        # issue #79/RFC-0032: `policy rollback` is enforced now, so a service
+        # declaring it alongside `jwt` reports only the jwt fact.
+        self.assertNotIn("policy rollback", err)
+        self.assertIn("1 info, 0 warning(s), 0 error(s)", err)
 
     def test_compile_reports_the_same_module_that_run_could_not_execute(self):
         source = os.path.join(TMP, "no-workflow.lnpl")
@@ -749,7 +758,7 @@ class TestUnaffectedBehaviour(unittest.TestCase):
         rc, _, err = run_cli_split(["compile", source])
         self.assertEqual(rc, 0)
         self.assertIn("security jwt", err)
-        self.assertIn("policy rollback", err)
+        self.assertNotIn("policy rollback", err)
 
     def test_a_missing_source_file_still_raises(self):
         # Pinning the pre-existing contract: the CLI does not swallow this into

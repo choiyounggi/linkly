@@ -1,6 +1,7 @@
 """`python3 -m lnpl` — compile and run LNPL sources.
 
-    lnpl compile <src.lnpl> [-o out.lir.json]   parse + lower, emit IR
+    lnpl compile <src.lnpl>... [-o out.lir.json]   parse + lower, emit IR
+    lnpl compile <dir>                             *.lnpl in the dir, filename order (#77)
     lnpl run <src.lnpl> [--payload file.json]   compile then execute (mode A)
     lnpl run <src.lnpl> --backend sqlite:s.db   ... against a real store (#25)
     lnpl token <src.lnpl> --path /s/w ...       issue a bearer token (#25)
@@ -17,11 +18,11 @@ from .drivers import (DriverError, HmacTokenProvider, TokenError,
                       audience_for_path, open_network, open_repository,
                       _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
-                     refinement_index, sample_payload)
+                     refinement_index, row_shape_mismatches, sample_payload)
 from .lexer import LexError
-from .lower import LowerError, lower
-from .parser import ParseError, parse
-from .repo_policy import default_rows
+from .lower import LowerError, load_sources, lower
+from .parser import ParseError
+from .repo_policy import default_rows, row_key
 from .backend import (BackendError, build as build_native, condition_field_names,
                       ran_step_indices, restore_skips, run_binary,
                       validation_effect_steps)
@@ -43,8 +44,10 @@ def _parse_fields(specs):
 from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
-from .openapi import OpenApiError, generate as generate_openapi
+from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, build_routes, serve
+from .wsgi import (ExporterError, open_exporter, open_log_format,
+                   resolve_schedule_triggers, _schedule_events)
 from .spec import SpecError, extract, run_manifest
 
 
@@ -52,16 +55,38 @@ def _entities(doc):
     return [n for n in doc["nodes"] if n["kind"] == "Entity"]
 
 
-def compile_source(path):
-    return _compile(path)[0]
+def compile_source(paths):
+    return _compile(paths)[0]
 
 
-def _compile(path):
-    """Returns (ir_document, decls, module_name, diagnostics)."""
-    with open(path, encoding="utf-8") as fh:
-        source = fh.read()
-    module_name = os.path.splitext(os.path.basename(path))[0]
-    decls = parse(source)
+def _module_name(paths):
+    """RFC-0031: one file -> its basename (byte-identical to before this RFC);
+    one directory -> the directory's basename; several explicit files -> the
+    first one's basename (merge order is already deterministic, so its first
+    element names the module)."""
+    if len(paths) == 1 and os.path.isdir(paths[0]):
+        return os.path.basename(os.path.normpath(paths[0]))
+    return os.path.splitext(os.path.basename(paths[0]))[0]
+
+
+def _source_display(paths):
+    """One path as-is; several joined for a message (`--workflow` errors, the
+    `serve` announce line) — nothing before this RFC ever saw a list here."""
+    return paths[0] if len(paths) == 1 else ", ".join(paths)
+
+
+def _compile(paths):
+    """paths: [str], or (shorthand) a bare str for one path — file paths, or
+    a single directory (RFC-0031). Every pre-RFC-0031 caller of this and
+    `compile_source` passes a bare str; normalized once, here, so
+    `_module_name` and `load_sources` both see a list.
+
+    Returns (ir_document, decls, module_name, diagnostics).
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    decls = load_sources(paths)
+    module_name = _module_name(paths)
     module = lower(decls, module_name)
     return module.to_document(), decls, module_name, module.diagnostics
 
@@ -171,6 +196,27 @@ def _select_workflow(requested, source, workflows):
     return requested
 
 
+class ScheduleSelectionError(Exception):
+    """`--schedule` named an id this module declares no schedule event for."""
+
+
+def _select_schedule_event(requested, source, events):
+    """The schedule Event id `lnpl trigger --schedule` names, or a rejection
+    that lists the candidates — mirrors `_select_workflow` (issue #81, D2):
+    the derived node id (`event.daily.rollup`), validated at the boundary,
+    one message naming every candidate. Unlike `--workflow`, there is no
+    "first one" default (a cron entry has to name the schedule it means)
+    and no empty-`requested` case to handle: `--schedule` is `required=True`
+    in argparse, so `cmd_trigger` never reaches this with one.
+    """
+    ids = [n["id"] for n in events]
+    if requested not in ids:
+        raise ScheduleSelectionError(
+            "error: --schedule %r is not a schedule event of %s (valid: %s)"
+            % (requested, source, ", ".join(ids)))
+    return requested
+
+
 def cmd_run(args):
     doc, _, _, diagnostics = _compile(args.source)
     if args.payload:
@@ -186,7 +232,7 @@ def cmd_run(args):
         # declaration is unenforced either way, so the report still goes out.
         _emit_diagnostics(diagnostics)
         return 1
-    target = _select_workflow(args.workflow, args.source, workflows)
+    target = _select_workflow(args.workflow, _source_display(args.source), workflows)
 
     rows = _repo_rows(doc, payload, target, empty=args.no_row)
     repository = _open_backend(getattr(args, "backend", "fake"))
@@ -277,6 +323,149 @@ def _print_human(result, interp):
             print("  %-5s %s" % (entry["level"], entry["message"]))
 
 
+def cmd_trigger(args):
+    """`lnpl trigger <source...> --schedule <event-id>` (issue #81, D2): an
+    external scheduler (cron/systemd) calls this directly — no `serve`
+    socket, no built-in cron loop (the design this issue explicitly
+    rejected). Same mode-A execution `cmd_run` already runs; the only
+    difference from `run` is that the workflow is chosen by the declared
+    schedule event's linkage (`resolve_schedule_triggers`, wsgi.py, D1)
+    rather than by `--workflow`. Success is rc 0; a failed run (RunError, or
+    `result["status"] != "completed"`) is rc != 0 — the same "0 or not" a
+    cron entry already branches on for every other command.
+    """
+    doc, _, _, diagnostics = _compile(args.source)
+    events = _schedule_events(doc)
+    if not events:
+        print("no `on schedule` event to trigger", file=sys.stderr)
+        _emit_diagnostics(diagnostics)
+        return 1
+    target_event = _select_schedule_event(
+        args.schedule, _source_display(args.source), events)
+    event_node = next(n for n in events if n["id"] == target_event)
+    triggers = resolve_schedule_triggers(doc, events=[event_node])
+    target, _service = triggers[target_event]
+
+    if args.payload:
+        with open(args.payload, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    else:
+        payload = sample_payload(_entities(doc), refinement_index(doc))
+
+    rows = _repo_rows(doc, payload, target)
+    repository = _open_backend(getattr(args, "backend", "fake"))
+    if repository is _REJECTED:
+        return 2
+    network_spec = getattr(args, "network", "fake")
+    resolved = _open_endpoints(doc, getattr(args, "endpoint", None), network_spec)
+    if resolved is _REJECTED:
+        return 2
+    endpoints, capabilities = resolved
+    network = _open_network(network_spec, endpoints=endpoints,
+                            capabilities=capabilities)
+    if network is _REJECTED:
+        return 2
+    clock = _open_clock(getattr(args, "clock", "virtual"))
+    if clock is _REJECTED:
+        return 2
+    try:
+        interp = Interpreter(doc, repo_rows=rows, repository=repository,
+                             network=network, clock=clock)
+        result = interp.run_workflow(target, payload)
+        diagnostics.extend(interp.diagnostics)
+        _print_human(result, interp)
+        _emit_diagnostics(diagnostics)
+        return _strict_rc(args, 0 if result["status"] == "completed" else 1,
+                          diagnostics)
+    finally:
+        if repository is not None:
+            repository.close()
+        if network is not None:
+            network.close()
+
+
+# `every` -> a function of (hour, minute) -> the crontab 5-field expression.
+# A closed table (issue #81, D3), the same size as `lexer.SCHEDULE_RECURRENCES`
+# it mirrors: RFC-0016 accepts only `daily` today, and each new recurrence
+# RFC-0016 admits gets exactly one new row here, never a guessed mapping.
+_CRONTAB_EXPR = {
+    "daily": lambda hh, mm: "%d %d * * *" % (mm, hh),
+}
+
+_GENERATED_HEADER = (
+    "# generated by `lnpl schedules` from %s — do not hand-edit; re-run the "
+    "command instead (issue #81, D3)"
+)
+
+
+def _crontab_snippet(entry, event_name, trigger_cmd):
+    hh, mm = (int(p) for p in entry["at"].split(":"))
+    expr = _CRONTAB_EXPR[entry["every"]](hh, mm)
+    # SCHEDULE_ZONES is fixed to ("UTC",) — RFC-0016 accepts no other zone —
+    # so the assumption below is always true today, stated rather than
+    # silently relied on.
+    return ("# %s: %s at %s %s (assumes the cron daemon's clock is %s)\n"
+            "%s %s"
+            % (event_name, entry["every"], entry["at"], entry["zone"],
+               entry["zone"], expr, trigger_cmd))
+
+
+def _systemd_snippet(entry, event_name, slug, trigger_cmd):
+    hh, mm = entry["at"].split(":")
+    return (
+        "# %s.timer\n"
+        "[Unit]\n"
+        "Description=lnpl schedule trigger: %s (RFC-0016)\n\n"
+        "[Timer]\n"
+        "OnCalendar=*-*-* %s:%s:00 %s\n"
+        "Persistent=true\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n\n"
+        "# %s.service\n"
+        "[Unit]\n"
+        "Description=lnpl trigger: %s\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=%s\n"
+        % (slug, event_name, hh, mm, entry["zone"], slug, event_name, trigger_cmd))
+
+
+def cmd_schedules(args):
+    """`lnpl schedules <source...> --format crontab|systemd` (issue #81,
+    D3): every declared `on schedule` trigger, rendered as the external
+    scheduler snippet that calls `lnpl trigger` — consumes
+    `x-lnpl-schedules` (`openapi.generate`'s existing metadata, not
+    regenerated here) rather than re-deriving the schedule fields.
+    """
+    doc, _, _, diagnostics = _compile(args.source)
+    schedules = generate_openapi(doc).get("x-lnpl-schedules", [])
+    if not schedules:
+        print("no `on schedule` event declared in %s" % _source_display(args.source),
+             file=sys.stderr)
+        _emit_diagnostics(diagnostics)
+        return 1
+    nodes = {n["id"]: n for n in doc["nodes"]}
+    source_args = " ".join(args.source)
+    blocks = [_GENERATED_HEADER % _source_display(args.source)]
+    for entry in schedules:
+        event = nodes[entry["event"]]
+        trigger_cmd = "lnpl trigger %s --schedule %s" % (source_args, entry["event"])
+        if args.format == "crontab":
+            blocks.append(_crontab_snippet(entry, event["name"], trigger_cmd))
+        else:
+            blocks.append(_systemd_snippet(entry, event["name"], _slug(event["name"]),
+                                           trigger_cmd))
+    text = "\n\n".join(blocks) + "\n"
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print("wrote %s (%d schedule(s))" % (args.output, len(schedules)))
+    else:
+        sys.stdout.write(text)
+    _emit_diagnostics(diagnostics)
+    return 0
+
+
 def cmd_spec(args):
     # The diagnostics matter most here: `spec` is the command whose job is
     # verification, so a step that derives no Effect (#36) is exactly what its
@@ -286,7 +475,8 @@ def cmd_spec(args):
     _emit_diagnostics(diagnostics)
     manifest = extract(decls, module_name)
     if not manifest["cases"]:
-        print("no `spec` block found in %s" % args.source, file=sys.stderr)
+        print("no `spec` block found in %s" % _source_display(args.source),
+             file=sys.stderr)
         return 1
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
@@ -354,15 +544,22 @@ def cmd_serve(args):
                             capabilities=capabilities)
     if network is _REJECTED:
         return 2
+    log_format = _open_log_format(getattr(args, "log_format", "text"))
+    if log_format is _REJECTED:
+        return 2
+    exporter = _open_trace_exporter(getattr(args, "trace_exporter", None))
+    if exporter is _REJECTED:
+        return 2
 
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     server = serve(doc, args.host, args.port, repository_factory=factory,
-                   token_provider=token_provider, network=network)
+                   token_provider=token_provider, network=network,
+                   log_format=log_format, exporter=exporter)
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
     print("serving %s on http://%s:%d (mode A, backend=%s, jwt=%s)"
-          % (args.source, host, port,
+          % (_source_display(args.source), host, port,
              "fake" if backend == "fake" else backend.split(":", 1)[0],
              "verified" if token_provider is not None else "presence-checked"),
           flush=True)
@@ -426,6 +623,45 @@ def cmd_outbox_ack(args):
         return 1
     finally:
         repository.close()
+
+
+def cmd_db_check(args):
+    """`lnpl db check <source...> --backend sqlite:...` — every stored row of
+    every declared entity, checked against its declaration (issue #85).
+    JSON on stdout — `[]` and rc 0 when every row matches, the mismatched
+    rows (never a value, D2) and rc 1 when at least one does not — for an
+    external backfill tool to consume and re-run this against, rather than
+    this reading the DB one `run` at a time.
+    """
+    doc = compile_source(args.source)
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: db check needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no rows to check",
+              file=sys.stderr)
+        return 2
+    refinements = refinement_index(doc)
+    findings = []
+    try:
+        for entity_node in _entities(doc):
+            try:
+                rows = repository.query(entity_node["id"])
+            except DriverError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 1
+            for row in rows:
+                for mismatch in row_shape_mismatches(entity_node, row, refinements):
+                    findings.append({"entity": entity_node["name"],
+                                     "row_key": row_key(entity_node["id"], row),
+                                     "field": mismatch["field"],
+                                     "expected_type": mismatch["expected_type"],
+                                     "kind": mismatch["kind"]})
+    finally:
+        repository.close()
+    sys.stdout.write(json.dumps(findings, indent=2, ensure_ascii=False) + "\n")
+    return 1 if findings else 0
 
 
 # Distinguishes "the operator asked for the default in-memory store" (None,
@@ -556,6 +792,26 @@ def _open_clock(spec):
         return _REJECTED
 
 
+def _open_log_format(spec):
+    """`--log-format`'s value -> itself validated, `_REJECTED` on a bad
+    selector (issue #78 — the `_open_clock` selector shape mirrored)."""
+    try:
+        return open_log_format(spec)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _open_trace_exporter(spec):
+    """`--trace-exporter`'s value -> a TraceExporter, None for unset,
+    `_REJECTED` on a bad selector or a load failure (issue #78)."""
+    try:
+        return open_exporter(spec)
+    except (ValueError, ExporterError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
 def _token_provider(secret_env):
     """`--jwt-secret-env`'s value -> a provider, None when unset, `_REJECTED`
     when the named variable is missing or too short.
@@ -630,7 +886,7 @@ def cmd_build(args):
     if not workflows:
         print("no workflow to build", file=sys.stderr)
         return 1
-    target = _select_workflow(args.workflow, args.source, workflows)
+    target = _select_workflow(args.workflow, _source_display(args.source), workflows)
     # Issue #55 (r1 N-3): say where this build's Validation outcome came from,
     # BEFORE the `--field` check below can end the command with rc 2. That is the
     # exact path the misreading took — `--field slug=1` on a refinement-bearing
@@ -719,7 +975,7 @@ def cmd_diff(args):
     if not workflows:
         print("no workflow to compare", file=sys.stderr)
         return 1
-    target = _select_workflow(args.workflow, args.source, workflows)
+    target = _select_workflow(args.workflow, _source_display(args.source), workflows)
     if args.payload:
         with open(args.payload, encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -801,14 +1057,20 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     c = sub.add_parser("compile", help="parse and lower to Semantic IR")
-    c.add_argument("source")
+    c.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     c.add_argument("-o", "--output")
     c.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     c.set_defaults(func=cmd_compile)
 
     r = sub.add_parser("run", help="compile then execute (interpreter mode A)")
-    r.add_argument("source")
+    r.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     r.add_argument("--payload", help="JSON file with the workflow input")
     r.add_argument("--workflow", help="workflow node id (default: the first one)")
     r.add_argument("--json", action="store_true", help="emit result and trace as JSON")
@@ -823,8 +1085,49 @@ def main(argv=None):
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
     r.set_defaults(func=cmd_run)
 
+    tg = sub.add_parser("trigger",
+                        help="run a declared `on schedule` event's linked "
+                             "workflow (interpreter mode A) — the entry "
+                             "point an external scheduler calls; no "
+                             "built-in cron (issue #81)")
+    tg.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
+    tg.add_argument("--schedule", required=True, metavar="EVENT-ID",
+                    help="the schedule event's node id (e.g. "
+                         "event.daily.rollup) — see `lnpl schedules` for "
+                         "the id each declared `on schedule` event derives")
+    tg.add_argument("--payload", help="JSON file with the workflow input")
+    tg.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
+    tg.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    tg.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
+                    help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME>, --endpoint wins)")
+    tg.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
+    tg.add_argument("--strict", nargs="?", const="info", default=None,
+                     type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
+    tg.set_defaults(func=cmd_trigger)
+
+    sc = sub.add_parser("schedules",
+                        help="render every declared `on schedule` event as "
+                             "an external-scheduler snippet that calls "
+                             "`lnpl trigger` (issue #81)")
+    sc.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
+    sc.add_argument("--format", choices=("crontab", "systemd"), default="crontab",
+                    help="snippet shape: `crontab` (default, a 5-field line "
+                         "per schedule) or `systemd` (a .timer + .service "
+                         "unit pair per schedule)")
+    sc.add_argument("-o", "--output", help="write the snippet to this path")
+    sc.set_defaults(func=cmd_schedules)
+
     sp = sub.add_parser("spec", help="extract `spec` blocks as a test manifest")
-    sp.add_argument("source")
+    sp.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     sp.add_argument("-o", "--output", help="write the manifest to this path")
     sp.add_argument("--run", action="store_true", help="execute the manifest")
     sp.add_argument("--strict", nargs="?", const="info", default=None,
@@ -832,14 +1135,20 @@ def main(argv=None):
     sp.set_defaults(func=cmd_spec)
 
     oa = sub.add_parser("openapi", help="generate an OpenAPI 3.1 document from the IR")
-    oa.add_argument("source")
+    oa.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     oa.add_argument("-o", "--output")
     oa.set_defaults(func=cmd_openapi)
 
     sv = sub.add_parser("serve",
                         help="serve workflows over HTTP at the OpenAPI paths "
                              "(interpreter mode A, fake backend)")
-    sv.add_argument("source")
+    sv.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     sv.add_argument("--host", default="127.0.0.1",
                     help="bind address (default: 127.0.0.1 — loopback only)")
     sv.add_argument("--port", type=int, default=8080,
@@ -854,11 +1163,24 @@ def main(argv=None):
                          "the bearer token; omitted, the header is only checked "
                          "for presence. The value is never read from the "
                          "command line.")
+    sv.add_argument("--log-format", default="text",
+                    help="access-log line shape: `text` (default, silent — no "
+                         "access log) or `json` (one JSON Line per request to "
+                         "stderr: correlation_id/method/path/workflow/status/"
+                         "duration_ms/skipped/diagnostics)")
+    sv.add_argument("--trace-exporter", default=None, metavar="NAME",
+                    help="export each completed request's Trace: built-in "
+                         "`stderr-json`, or a name registered under the "
+                         "`lnpl.exporters` entry-points group; omitted, "
+                         "nothing is exported (independent of --log-format)")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",
                         help="issue a bearer token for one served path (#25)")
-    tk.add_argument("source")
+    tk.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     tk.add_argument("--path", required=True, metavar="PATH",
                     help="the served path the token is for, e.g. /shop/checkout")
     tk.add_argument("--subject", required=True,
@@ -895,8 +1217,29 @@ def main(argv=None):
                           "already-delivered seq is a no-op success")
     oba.set_defaults(func=cmd_outbox_ack)
 
+    db = sub.add_parser("db",
+                        help="inspect a persistent store against the "
+                             "declared schema (issue #85)")
+    db_sub = db.add_subparsers(dest="db_cmd", required=True)
+
+    dbc = db_sub.add_parser("check",
+                            help="scan every stored row against the "
+                                 "declared entities; print mismatches as "
+                                 "JSON, rc 1 iff any (rc 0 clean)")
+    dbc.add_argument("source", nargs="+",
+                     help="one or more .lnpl files (merged in the given "
+                          "order), or a single directory (its *.lnpl, "
+                          "filename-sorted — RFC-0031, issue #77)")
+    dbc.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="a persistent capability backend, e.g. "
+                          "sqlite:./store.db (`fake` has no rows to check)")
+    dbc.set_defaults(func=cmd_db_check)
+
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
-    bd.add_argument("source")
+    bd.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     bd.add_argument("--workflow")
     bd.add_argument("--workdir", default=".claude/tmp/lnpl-build")
     bd.add_argument("--run", action="store_true")
@@ -917,7 +1260,10 @@ def main(argv=None):
     bd.set_defaults(func=cmd_build)
 
     df = sub.add_parser("diff", help="differential check: mode A vs mode B")
-    df.add_argument("source")
+    df.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     df.add_argument("--workflow")
     df.add_argument("--workdir", default=".claude/tmp/lnpl-diff")
     df.add_argument("--payload", help="JSON file with the workflow input")
@@ -932,7 +1278,10 @@ def main(argv=None):
     kbp.set_defaults(func=cmd_kb)
 
     ag = sub.add_parser("agents", help="run the RFC-0006 agent cycle over a source")
-    ag.add_argument("source")
+    ag.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
     ag.add_argument("--root", default=None, help="KB root")
     ag.add_argument("-o", "--output", help="write the resulting IR here")
     ag.set_defaults(func=cmd_agents)
@@ -940,10 +1289,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         return args.func(args)
-    except WorkflowSelectionError as exc:
+    except (WorkflowSelectionError, ScheduleSelectionError) as exc:
         # Operator error, like a mistyped --field: rc 2, message already carries
         # the candidates, and no "compile error:" prefix — nothing failed to
-        # compile (issue #50).
+        # compile (issue #50; issue #81 D2 for --schedule).
         print(str(exc), file=sys.stderr)
         return 2
     except (LexError, ParseError, LowerError, SpecError, OpenApiError,

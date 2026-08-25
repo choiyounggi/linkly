@@ -55,7 +55,8 @@ lnpl token <src>.lnpl --path /shop/checkout --subject alice \
 |----|-----|
 | `--backend fake` | **기본값.** 인메모리, 실행마다 새로. 이 이슈 이전과 바이트 동일하게 동작한다 |
 | `--backend sqlite:<path>` | 파일에 남는 실제 저장소 |
-| 그 밖의 값 | rc 2. 받은 토큰과 **허용 집합**을 함께 출력한다 — 추론하지 않는다 |
+| `--backend <scheme>:<arg>` (등록된 경우) | `lnpl.drivers` entry-points에 등록된 외부 드라이버 — §8 SPI |
+| 그 밖의 값(미등록) | rc 2. 받은 토큰과 **내장 + 등록된 entry-points 허용 집합**을 함께 출력한다 — 추론하지 않는다 |
 
 기본이 `fake`인 것은 비파괴 원칙이다. 이미 출하된 표면을 조이는 것은 파괴적
 변경이고, 새 기능은 **선택했을 때만** 켜진다.
@@ -255,13 +256,11 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | 하지 않는 것 | 왜 |
 |--------------|-----|
 | **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). 남은 이유는 다음 행뿐이다: 서버·드라이버 라이브러리가 이 계획을 세운 머신에 없다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — 실드라이버 자체는 #75(SPI 외부 공급)가 소유한다 |
-| **워크플로 단위 트랜잭션 경계** | 드라이버는 **연산마다 커밋**한다. 경계만 만들고 보상 로직이 없으면 `policy rollback`이 집행되는 것처럼 읽히면서, 실패한 실행이 앞선 쓰기를 남긴다 |
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
 | **postgres / redis 서버 바인딩** | 이 계획을 세운 머신에 서버도 드라이버도 없었다(`psql`·`redis-server` 없음, `psycopg2`·`redis` 미설치). 통합 테스트로 뒷받침할 수 없는 바인딩은 주장일 뿐이다 |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
 | **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
-| **아웃박스와 워크플로 트랜잭션 경계의 결합(#79)** | 실패한 실행이 emit한 행이 롤백 없이 남는다 — 결합 규칙 자체가 아직 없어 명시적으로 이월했다 |
 
 ## 6. 차동 검증과의 관계
 
@@ -306,6 +305,73 @@ status completed
 여기서 **닫히지 않은 것**(RFC-0022 표 3): `lnpl` 없이 바이너리만 실행하면 스킵은
 여전히 침묵하고, `build`에는 `--json`도 `--strict`도 없어서 mode B 스킵을 CI에서
 기계 판독하거나 게이트할 수단이 없다.
+
+## 8. SPI: 외부 드라이버 등록 (이슈 #75)
+
+§5가 이미 말했듯 postgres/redis 실드라이버는 코어가 소유하지 않는다 — 계약과
+TCK만 코어에 있고, 실제 바인딩은 외부 패키지가 **자기 CI에서 실 서버로**
+검증한다("통합 테스트 없는 바인딩 금지"). 이 절은 그 경계가 코드로 어떻게
+드러나는지를 적는다: 코어는 `lnpl.drivers` entry-points 그룹을 열어 두고,
+`open_repository`가 내장 두 스킴(`fake`/`sqlite`)에서 실패하면 그 그룹에서
+스킴명으로 찾는다.
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.drivers"]
+postgres = "my_lnpl_postgres:make_driver"
+```
+
+`my_lnpl_postgres.make_driver`는 `<arg>`(콜론 뒤 원문 그대로) 하나를 받아
+`RepositoryDriver`를 반환하는 콜러블이다. 패키지가 설치돼 있으면
+`--backend postgres:<dsn>`이 그 팩토리를 찾아 부른다 — 코어 쪽에 이 스킴에 대한
+if문이 하나도 없다.
+
+### 내장 스킴은 절대 가려지지 않는다
+
+`open_repository`는 `fake`/`sqlite`를 entry-points 조회보다 **먼저** 검사한다.
+어떤 패키지가 `lnpl.drivers`에 `sqlite`나 `fake`라는 이름으로 등록해도
+그 등록은 결코 조회되지 않는다 — 내장이 섀도잉당하는 경로 자체가 없다
+(`test_driver_spi.py::BuiltinShadowingTest`).
+
+### 미등록 스킴의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 스킴은 rc 2로 거부되며, 메시지가
+**받은 값**·**내장 목록**·**그 순간 실제로 등록된 entry-points 목록**(없으면
+"none")을 함께 싣는다 — 오탈자와 "패키지를 설치하지 않았다"를 같은 메시지로
+구분할 수 있게.
+
+### entry-point 로드 실패
+
+등록은 됐지만 그 값(`module:attr`)을 import할 수 없는 경우 —
+예를 들어 패키지가 제거됐는데 등록 메타데이터만 남은 경우 — `open_repository`는
+`ImportError`를 그대로 흘려보내지 않고 `DriverError`로 번역한다(원인 체인
+보존). 이 모듈의 "ONE ERROR TYPE OUT" 규칙이 entry-points 경로에도 그대로
+적용된다는 뜻이다.
+
+### TCK로 검증하기
+
+외부 드라이버는 `lnpl.testing.RepositoryDriverTCK`를 상속해 자기 CI에서 돌린다:
+
+```python
+import unittest
+from lnpl.testing import RepositoryDriverTCK
+
+class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
+    def make_driver(self):
+        return MyPostgresDriver(dsn=TEST_DSN)
+```
+
+`RepositoryDriverTCK`는 `unittest.TestCase`를 상속하지 않는 순수 믹스인이다
+— 구체 클래스가 `unittest.TestCase`와 다중 상속해야 한다. 검증 항목: 읽기·
+쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, `begin`/`commit`/
+`rollback`이 예외 없이 호출 가능한지(이슈 #79 — 기본 계약은 no-op을 허용하므로
+`rollback`이 실제로 되돌리는지는 단언하지 않는다), 그리고 읽은 행이
+`observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
+#92 — 이 속성이 없으면 이 케이스는 스킵된다). `SqliteRepositoryDriver`가 이
+TCK로 검증되는 예는 `impl/tests/test_driver_contract.py::SqliteDriverTCKTest`다.
 
 ## 참고
 

@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 2467개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 2583개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 31편 — 30편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
+**RFC 33편 — 32편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -247,8 +247,10 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0028 산술 연산자 확장과 대안 가드](rfcs/0028-arithmetic-and-alternative-guards.md) | `*`/`/`가 `+`/`-`에 합류한다(정수, 절삭 나눗셈 — 0 나눗셈은 리터럴 0이 아닌 한 컴파일 에러가 아니라 `RunError`다), `when A` / `or B`는 가드 두 줄을 대안 가드로 승격한다 — `Condition` 문법의 연산자가 아니라 구조다. *0001 §노드 카탈로그/Guard·0014 §2·0015 §1 §4 갱신* |
 | [0029 Clock 계약과 `--clock real` 바인딩](rfcs/0029-clock-contract-and-real-binding.md) | `timeout`/`retry`/`CacheAccess`가 이미 공유하던 시간 소스를 Clock 계약으로 이름 붙이고, 두 번째 바인딩을 더한다 — `--clock real`은 `CacheAccess` TTL을 실제 벽시계 경과에 묶는다. 기본 virtual 바인딩과, `--clock`을 아예 받지 않는 `diff`/`spec`은 바뀌지 않는다. *0003 §Execution Model 갱신* |
 | [0030 `create` 결과 바인딩과 payload 시드](rfcs/0030-create-result-binding-and-payload-seed.md) | `create <명사> as <이름>`이 RFC-0027의 결과 바인딩 표기를 확장해 생성 행에 `set`/`format`/`respond`를 쓸 수 있게 한다. 별개로, `as` 유무와 무관하게 생성 행이 payload의 동명 비-`derived` 필드로 시드된다 — "뼈대 행" 갭의 해소. `as` 없는 `create`는 컴파일 표면에서 이전과 바이트 동일하다(`result` 필드도, 새 스코프 편입도 없다). *0012 §G12.2·§G12.5 갱신* |
+| [0031 다중 파일 컴파일 단위](rfcs/0031-multi-file-compilation-unit.md) | 컴파일 단위가 파일 집합으로 확장된다 — `lnpl <cmd> <src...>`는 명시한 파일들을 인자 순서로 병합하고, `lnpl <cmd> <dir>`은 그 디렉터리의 `*.lnpl`을 파일명 정렬로 수집한다. 선언 이름은 전역 유일 — 서로 다른 파일에서 이름이 겹치면 거부하며 두 `<파일>:<줄>` 위치를 함께 병기한다. 문법·lexer는 불변이고, 소스 인자 1개는 바이트 동일하다. *0004 §Reference-level Specification(파이프라인 표 S1 행) 갱신* |
+| [0032 트랜잭션 경계와 rollback 집행](rfcs/0032-transaction-boundary-and-rollback-enforcement.md) | 워크플로 실행이 암묵적 트랜잭션 하나가 된다(명시적 `Transaction` IR 노드는 아직 없다) — 성공 시 commit, 실패 시 rollback(실패한 실행이 등록한 이벤트 emission 포함). `policy rollback`은 `unenforced`에서 `enforced`로 승격된다. *0003 §Execution Model·§Policy Enforcement·§Examples 갱신* |
 
-27편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+32편이 `Accepted`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -305,7 +307,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2467 tests in 86.226s
+Ran 2583 tests in 88.227s
 OK
 ```
 
@@ -422,7 +424,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0029              RFC (0000은 Superseded, 나머지 29편은 Accepted)
+rfcs/0000~0032              RFC (0000은 Superseded, 나머지 29편은 Accepted)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR

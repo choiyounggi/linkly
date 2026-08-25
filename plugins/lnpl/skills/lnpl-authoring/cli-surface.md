@@ -42,6 +42,50 @@ lnpl --version
 `wf.get.report`). 도출 규칙은 [references/naming.md](references/naming.md)에 있고,
 잘못된 id를 주면 유효한 id 전부가 에러에 나열된다.
 
+### `trigger` — `on schedule` 이벤트의 연결 워크플로를 실행 (인터프리터, 모드 A, 이슈 #81)
+
+```
+lnpl trigger <src>.lnpl --schedule event.daily.rollup
+```
+
+`event ... on schedule`은 내장 크론이 없다(RFC-0016) — `serve` 소켓 없이 외부
+스케줄러(cron/systemd)가 직접 부르는 일회성 진입점이 이 서브커맨드다.
+실행 자체는 `run`과 같은 모드 A다.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--schedule` | 필수. **스케줄 이벤트 노드 id**(`GetReport`가 아니라 `event.daily.rollup`). 이 모듈이 선언한 `on schedule` 이벤트가 아니면 유효한 id 전부와 함께 rc 2로 거부된다 |
+| `--payload` | `run`과 같다 |
+| `--backend` | `run`과 같다 |
+| `--network` | `run`과 같다 |
+| `--endpoint` | `run`과 같다 |
+| `--clock` | `run`과 같다 |
+| `--strict` | `run`과 같다 |
+
+**연결 규칙.** 스케줄 이벤트는 IR에서 어떤 워크플로에도 속하지 않는다 —
+워크플로가 이미 쓰는 "가장 가까이 앞선 `service` 선언" 규칙(RFC-0002 A.2 R2)을
+그대로 적용해, 그 서비스의 워크플로 자식 하나를 target으로 고른다. 정확히
+하나가 아니면(0개 또는 2개 이상) rc 2로 거부된다 — 추측하지 않는다. 실행
+성공은 rc 0, 실패(`status != completed` 또는 런타임 에러)는 rc ≠ 0 — cron이
+그대로 판정에 쓸 수 있다. `lnpl serve`도 같은 연결로 `POST
+/-/schedules/<event-slug>` 라우트를 만든다 — 정본은 `docs/serving.md`.
+
+### `schedules` — `on schedule` 이벤트를 외부 스케줄러 스니펫으로 (이슈 #81)
+
+```
+lnpl schedules <src>.lnpl --format crontab
+lnpl schedules <src>.lnpl --format systemd
+```
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--format` | `crontab`(기본, 5필드 한 줄) 또는 `systemd`(`.timer`+`.service` 쌍) |
+| `-o` / `--output` | 스니펫을 파일로 |
+
+OpenAPI `x-lnpl-schedules` 메타데이터(기존 생성물)를 소비해 `lnpl trigger`를
+부르는 스니펫을 만든다 — 스니펫 자체도 생성물이고, 출력 헤더가 손편집
+대상이 아님을 밝힌다. 선언된 `on schedule` 이벤트가 없으면 rc 1.
+
 ### `spec` — `spec` 블록을 테스트 매니페스트로
 
 | 플래그 | 뜻 |
@@ -70,6 +114,8 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--network` | `run`과 같다. 이슈 #101 전에는 `serve`에 이 플래그 자체가 없어서 모든 요청이 `fake` 드라이버로 나갔다 |
 | `--endpoint` | `run`과 같다 — `--network http`에서 소켓을 바인드하기 전에 검사한다(백엔드·jwt 시크릿과 같은 자리). 이슈 #101 |
 | `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |
+| `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics). 이슈 #78 |
+| `--trace-exporter` | 완료된 요청의 Trace를 내보낼 대상. 내장 `stderr-json`, 또는 `lnpl.exporters` entry-points 그룹에 등록된 이름. 안 주면 아무것도 내보내지 않음 — `--log-format`과 독립. 이슈 #78 |
 
 각 워크플로가 `POST /<service-slug>/<workflow-slug>`에서 실행된다. 상태코드
 매핑표(200/400/401/404/405/413/500/504)의 정본과 계약 한계(Fake 백엔드,
@@ -127,6 +173,32 @@ JSON Lines로 stdout에 찍는다. 한 줄이 `{"seq", "emission_id", "event", "
 
 스키마·drain/ack 의미론의 정본과 외부 릴레이(cron/systemd/k8s CronJob이
 drain→publish→ack 루프를 소유) 위임 구도는 `docs/backends.md`.
+
+### `db check` — 저장된 행을 선언과 대조 (이슈 #85)
+
+```
+lnpl db check <source...> --backend sqlite:<path>
+```
+
+일반 JSON blob 테이블은 스키마를 검증하지 않는다 — entity 선언이 필드를
+추가하거나 타입을 바꾼 뒤에도 그 전에 쓰인 행은 조용히 옛 모양 그대로
+읽힌다. `db check`는 선언된 모든 entity의 저장된 모든 행을 훑어 그 정합을
+확인한다: 선언 필드가 행에 없으면(missing) 또는 있어도 타입이 안 맞으면
+(type), stdout에 JSON 배열로 나열한다. 값은 절대 싣지 않는다 — 항목마다
+`entity`/`row_key`/`field`/`expected_type`/`kind`뿐이다.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--backend` | 필수. `sqlite:<path>`만 유효 — `fake`는 영속 저장소가 없어 거부(rc 2) |
+
+정합한 DB는 `[]`와 rc 0. 불일치가 하나라도 있으면 rc 1. 백필 자체는 이
+커맨드의 일이 아니다 — 이 JSON을 소비해 실제로 고치는 것은 외부 도구고,
+고침이 끝났는지는 `db check`를 다시 돌려 확인한다.
+
+`read`/`find`가 돌려주는 행에도 같은 판단이 실시간으로 걸린다 —
+`stored-row-shape-mismatch`(warning), 아래 "진단은 어디를 가리키나" 참고.
+`db check`는 그 실시간 진단과 같은 판단 로직(`interp.row_shape_mismatches`,
+`check_semantic_type` 재사용)을 전체 저장소에 훑어 적용한 것뿐이다.
 
 ### `build` — 네이티브 바이너리로 컴파일 (모드 B)
 
@@ -203,7 +275,9 @@ status completed
 
 진단에는 등급이 있다(이슈 #52). `warning`은 프로그램을 고치면 사라지는 것이고
 (`unknown-verb`, `unknown-entity`, `guard-skipped-steps`, `guard-orphaned-steps`,
-`aggregation-orphaned-list`, `event-source-mismatch`, `derived-never-assigned`), `info`는 고쳐도 사라지지 않는
+`aggregation-orphaned-list`, `event-source-mismatch`, `derived-never-assigned`,
+`stored-row-shape-mismatch`(이 하나는 프로그램이 아니라 데이터를 고치면
+사라진다 — 이슈 #85)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`).
@@ -224,6 +298,10 @@ status completed
   런타임(`interp.py`) 진단이라 `lnpl compile`에는 나오지 않고 `lnpl run`(또는
   인터프리터를 직접 돈 경로)에서만 관측된다 — `compile`이 인터프리터를 돌리지
   않는 것은 RFC-0024가 바꾸지 않았다.
+- `stored-row-shape-mismatch`도 같은 모양(노드 id + `(line N)`)이지만 노드
+  id가 선언이 아니라 그 `RepositoryCall` Effect의 id다 — `authorization-not-
+  verified`와 마찬가지로 런타임 진단이라 `lnpl run`에서만 관측되고, `lnpl
+  compile`에는 나오지 않는다 (이슈 #85).
 - **mode B 두 진단**(`guard-skipped-steps`, `validation-sample-derived`)은
   **워크플로 id**만 갖는다 — 그 표면에는 가드 노드 id가 없다(rfcs/0022 표 1).
   RFC-0024가 손대지 않은 범위다.

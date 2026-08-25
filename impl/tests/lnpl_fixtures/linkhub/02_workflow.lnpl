@@ -1,0 +1,41 @@
+# linkhub 분할 픽스처, 2/2 (RFC-0031 Examples). 01_entity.lnpl과 짝 — 둘을
+# 합치면 examples/linkhub.lnpl과 선언이 정확히 같다. 손대지 말 것.
+
+workflow SaveBookmark
+    validate input
+    pipeline persist
+        create bookmark
+        cache bookmark
+        emit bookmarkSaved
+    spec
+        given
+            empty repository
+        when
+            saveBookmark
+        expect
+            completed
+            effects complete
+            rows Bookmark 1
+            cache written
+    spec
+        given
+            input.url not-a-url
+        when
+            saveBookmark
+        expect
+            failed
+            effects complete
+            error reason does not match URL's pattern
+
+workflow GetBookmark
+    validate input
+    find bookmark
+    spec
+        given
+            empty repository
+        when
+            getBookmark
+        expect
+            failed
+            effects complete
+            rows Bookmark 0

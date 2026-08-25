@@ -70,7 +70,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 |--------|------|--------|-----------|------|
 | policy | retry | enforced | — | `run_workflow`가 실패 스텝을 멱등인 동안 재실행한다 |
 | policy | timeout | enforced | — | 워크플로 데드라인을 계산하고 초과 시 실행을 실패시킨다 |
-| policy | rollback | unenforced | declared-not-enforced | Phase 1에 Transaction 경계가 없어 보상할 대상이 없다. #25의 드라이버는 연산 단위로 커밋한다 |
+| policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 롤백한다(issue #79, RFC-0032) |
 | policy | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
 | security | role | unenforced | declared-not-enforced | 역할을 무엇과도 대조하지 않는다 |
@@ -80,7 +80,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | performance | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | performance | prefetch | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | performance | batch | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
-| event | schedule | unenforced | declared-not-enforced | 스케줄러가 없다. 선언은 IR과 OpenAPI 스케줄 메타데이터까지만 도달한다 — 실행기는 이슈 #26(서빙 계층)이 소유한다 (RFC-0016) |
+| event | schedule | unenforced | declared-not-enforced | 기본 경로(선언만)는 아무것도 부르지 않는다. `lnpl trigger --schedule NAME`과 `POST /-/schedules/<slug>`(`lnpl serve`)가 요청 시 연결된 워크플로를 실행한다 — 단 cron/systemd 같은 외부 스케줄러가 그중 하나를 부르도록 구성돼 있어야 한다(issue #81, `lnpl schedules`가 그 스니펫을 생성한다) |
 
 `enforced` 행의 진단 코드 셀이 `—`인 것은 값이 빠진 것이 아니라 **진단을 내지
 않는다는 뜻**이다. 집행되는 선언까지 경고하면 보고 전체가 정보를 잃는다.
@@ -95,6 +95,10 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 그래서 status는 **가장 약한 경로**(기본값)를 말하고, 집행되는 경로는 `근거` 칸이
 이름으로 지목한다. 한 칸에 하나의 status만 적고 경로를 감추면 두 경로 중 하나에
 대해서는 반드시 거짓이 된다.
+
+`event schedule`도 같은 이유로 `unenforced`다(issue #81) — 컴파일러는 운영자가
+`lnpl trigger`나 `/-/schedules/<slug>`를 실제로 cron/systemd에 연결했는지 알
+방법이 없고, 연결하지 않으면 선언은 여전히 아무것도 실행하지 않는다.
 
 ## C. 진단 코드
 
@@ -113,6 +117,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | event-source-orphaned | info | `on`-소스 이벤트를 `emit`하는 워크플로에 그 소스가 지목하는 `<op> <entity>` 스텝이 아예 없을 때 (issue #98) | 컴파일 타임 — lowering |
 | derived-never-assigned | warning | `derived` 필드를 가진 entity에 `create` 스텝이 있는데, 그 필드를 채우는 `set`/`format`이 같은 워크플로 안에 하나도 없을 때 (issue #95) | 컴파일 타임 — lowering |
 | declared-not-bound | info | `call`/`request`의 target이 URL 리터럴이 아닌 논리명인데, 그 이름을 선언한 `capability http`가 모듈에 없을 때 (issue #101) — method POST·인증 없음으로 그대로 실행된다 | 컴파일 타임 — lowering |
+| stored-row-shape-mismatch | warning | `read`/`find`가 돌려준 행에 entity가 선언한 필드가 없거나(missing), 있어도 선언된 타입과 맞지 않을 때(type) — 값은 절대 싣지 않는다 (issue #85) | 런타임 — 인터프리터 |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -120,7 +125,8 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 질문은 하나다(RFC-0021): **프로그램을 고치면 이 진단이 사라지는가.** 사라지면
 `warning`(`unknown-verb` · `unknown-entity` · `guard-skipped-steps` ·
 `guard-orphaned-steps` · `aggregation-orphaned-list` · `event-source-mismatch` ·
-`derived-never-assigned`),
+`derived-never-assigned` · `stored-row-shape-mismatch`(프로그램이 아니라
+데이터를 고치면 사라진다는 점만 다르다 — 이슈 #85, RFC-0021 질문의 데이터판)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만
@@ -142,7 +148,6 @@ stderr로 출력하며, 형식은 `diagnostics.py`의 `format_lines()` 한 곳�
 | 남은 것 | 왜 |
 |---------|-----|
 | `redis` 실제 바인딩 | RFC-0003의 cache TTL이 주입된 **가상 시계** 단위라 프로세스를 넘으면 뜻이 없다. 영속 캐시는 새 프로세스의 시계 0에 대해 언제나 신선해 보인다 — 만료 계약이 거짓인 저장소가 된다 |
-| `policy rollback` | 워크플로 단위 트랜잭션 경계를 만들지 않았다. 보상 로직 없이 경계만 만들면 이 행이 `enforced`로 읽히면서 실패한 실행이 앞선 쓰기를 남긴다 |
 | `security role` / `security encrypt` | 역할 검사와 필드 암호화는 손대지 않았다 |
 | refresh 토큰·회전·폐기 목록 | 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다 |
 

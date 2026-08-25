@@ -51,6 +51,7 @@ CODES = (
     "event-source-orphaned",        # #98  `emit` fires, but its declared `on <Entity> <op>` step never runs in this workflow
     "derived-never-assigned",       # #95  a `derived` field is `create`d, but no `set`/`format` in the workflow ever fills it
     "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
+    "stored-row-shape-mismatch",    # #85  a read/find row is missing a declared field, or has the wrong type
 )
 
 # code -> grade (#52). One question decides every row:
@@ -102,6 +103,11 @@ SEVERITY_OF = {
     # same "the program is correct, the platform is stating what it does
     # with it" case `declared-not-enforced` already covers.
     "declared-not-bound":         "info",
+    # #85: backfilling the stored row (adding the missing field, or fixing
+    # its type) removes this — the data needs to change, not the program,
+    # but it is still an edit that makes the diagnostic go away, so `warning`
+    # (RFC-0021's data-side reading of the same question).
+    "stored-row-shape-mismatch": "warning",
 }
 
 # How the runtime treats a declaration.
@@ -121,14 +127,16 @@ ENFORCEMENT = {
         (ENFORCED, "run_workflow re-runs a failed step while its effects are idempotent"),
     ("policy", "timeout"):
         (ENFORCED, "a workflow deadline is computed, and exceeding it fails the run"),
-    # Still nothing to compensate after #25. A real store now exists, but the
-    # driver commits per operation and no workflow-wide transaction boundary
-    # was introduced — adding the boundary without compensation logic would
-    # make this row read `enforced` while a failed run left its earlier writes
-    # in place.
+    # issue #79, RFC-0032: `run_workflow` now opens one transaction per
+    # execution and rolls it back on any failure, so there is something to
+    # compensate again. The boundary is the whole execution, not a
+    # declared `Transaction` node (Phase 1 still has no syntax for one) —
+    # RFC-0032 narrows RFC-0003's Transaction-node contract to that scope
+    # for as long as the language has no other way to open one.
     ("policy", "rollback"):
-        (UNENFORCED, "Phase 1 has no Transaction boundary, so there is nothing "
-                     "to compensate; the #25 drivers commit per operation"),
+        (ENFORCED, "run_workflow opens a transaction before its first step "
+                   "and rolls it back on any failure, discarding every "
+                   "write (and outbox registration) that run made"),
     ("policy", "parallel"):
         (UNENFORCED, "parsed, but the execution plan never reads it"),
     # Issue #25 gave `jwt` a real issue/verify path, and the status still reads
@@ -155,14 +163,22 @@ ENFORCEMENT = {
         (UNENFORCED, "parsed, but the execution plan never reads it"),
     ("performance", "batch"):
         (UNENFORCED, "parsed, but the execution plan never reads it"),
-    # RFC-0016. A schedule trigger is a real declaration with a real artifact —
-    # it reaches the IR and the OpenAPI schedule metadata — and nothing fires
-    # it. Saying that out loud is the whole difference between this and
-    # `performance batch`, which t3 F-2 found parsing into silence.
+    # RFC-0016 + issue #81. A schedule trigger is a real declaration with a
+    # real artifact — it reaches the IR and the OpenAPI schedule metadata —
+    # and still stays UNENFORCED for the same reason `security jwt` does
+    # (`TestPathDependentEnforcement` in test_enforcement_matrix.py): this
+    # diagnostic is emitted at COMPILE time, which cannot know whether an
+    # operator ever configured an external scheduler to call the trigger
+    # surface issue #81 built. The default (compile, then do nothing else)
+    # still runs no workflow; naming the path that does is what keeps the
+    # status honest instead of a promise the default cannot keep.
     ("event", "schedule"):
-        (UNENFORCED, "no scheduler runs it; the declaration reaches the IR and "
-                     "the OpenAPI schedule metadata only — issue #26 (the "
-                     "serving layer) owns the executor"),
+        (UNENFORCED, "by default nothing calls it; `lnpl trigger --schedule "
+                     "NAME` and `POST /-/schedules/<slug>` (`lnpl serve`) "
+                     "run the linked workflow on demand, but only when an "
+                     "external scheduler (cron/systemd — see `lnpl "
+                     "schedules`) is configured to call one of them "
+                     "(issue #81)"),
 }
 
 

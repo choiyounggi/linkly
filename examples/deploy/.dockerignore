@@ -1,0 +1,7 @@
+# Build context for this Dockerfile is examples/deploy/ itself (see the
+# `docker build` command in the Dockerfile header) — this keeps that context
+# free of local/editor cruft. The actual source (impl/, examples/) comes in
+# through the "repo" named build context, not this directory.
+.DS_Store
+__pycache__/
+*.pyc

@@ -1,10 +1,13 @@
 """Declared but not enforced does not pass in silence (issue #38).
 
-`security jwt`, `role admin`, `policy rollback` and `performance response` all
-parse, all reach the IR, and all reads as a promise the platform keeps. None of
-them is enforced: `_constraints()` collects `mechanisms` and no execution path
-ever reads it, `rollback` has no Transaction boundary to compensate at, and the
-response budget is measured and reported but never blocks a run.
+`security jwt`, `role admin` and `performance response` parse, all reach the
+IR, and all read as a promise the platform keeps. None of them is enforced:
+`_constraints()` collects `mechanisms` and no execution path ever reads it,
+and the response budget is measured and reported but never blocks a run.
+`policy rollback` used to belong to this list too, for the same "nothing to
+compensate at" reason — issue #79/RFC-0032 closed that gap (workflow
+execution is now an implicit transaction boundary), so `rollback` moved to
+the enforced list beside `retry`/`timeout` and no longer reports here.
 
 That gap is issue #25 and the roadmap. Making it *visible* is this file's
 subject, so what is pinned here is the reporting — including the negative half,
@@ -188,7 +191,9 @@ class TestUnenforcedDeclarationsAreReported(unittest.TestCase):
         # "warn about every declaration" implementation fails right here.
         self.assertEqual(declaration_diagnostics(compile_module(ONLY_ENFORCED)), [])
 
-    def test_rollback_is_reported_even_though_retry_beside_it_is_not(self):
+    def test_rollback_is_no_longer_reported_now_that_it_is_enforced(self):
+        """issue #79/RFC-0032: `rollback` joined `retry`/`timeout` on the
+        enforced side — a service declaring all three gets no diagnostic."""
         source = """
 entity User
     field
@@ -202,8 +207,7 @@ workflow Login
     validate input
 """
         diags = declaration_diagnostics(compile_module(source))
-        self.assertEqual([d.subject for d in diags], ["policy rollback"])
-        self.assertEqual(diags[0].where, "policy.login")
+        self.assertEqual(diags, [])
 
 
 class TestGoldenScenario(unittest.TestCase):
@@ -211,20 +215,21 @@ class TestGoldenScenario(unittest.TestCase):
         with open(GOLDEN_LNPL, encoding="utf-8") as fh:
             self.mod = lower(parse(fh.read()), "login")
 
-    def test_reports_exactly_the_three_unenforced_declarations(self):
+    def test_reports_exactly_the_two_unenforced_declarations(self):
+        # issue #79/RFC-0032: `policy rollback` moved to enforced, so the
+        # golden's three declared-but-not-enforced facts became two.
         subjects = sorted(d.subject for d in declaration_diagnostics(self.mod))
-        self.assertEqual(subjects,
-                         ["performance response", "policy rollback", "security jwt"])
+        self.assertEqual(subjects, ["performance response", "security jwt"])
 
     def test_the_enforced_declarations_of_the_golden_are_not_reported(self):
         subjects = [d.subject for d in declaration_diagnostics(self.mod)]
-        for enforced in ("performance cache", "policy retry", "policy timeout"):
+        for enforced in ("performance cache", "policy retry", "policy timeout",
+                         "policy rollback"):
             self.assertNotIn(enforced, subjects)
 
     def test_each_code_appears_where_expected(self):
         by_code = {d.subject: d.code for d in declaration_diagnostics(self.mod)}
         self.assertEqual(by_code["security jwt"], "declared-not-enforced")
-        self.assertEqual(by_code["policy rollback"], "declared-not-enforced")
         self.assertEqual(by_code["performance response"], "declared-measured-only")
 
     def test_the_golden_ir_is_unchanged(self):
@@ -292,10 +297,10 @@ class TestBoundaries(unittest.TestCase):
 
     def test_declarations_are_reported_when_there_is_no_workflow_at_all(self):
         # An unenforced declaration is a static fact about the declaration; it
-        # does not need a step to have run, or to exist.
+        # does not need a step to have run, or to exist. `rollback` (issue
+        # #79/RFC-0032, now enforced) no longer contributes one.
         diags = declaration_diagnostics(compile_module(DECLARED_BUT_NO_WORKFLOW))
-        self.assertEqual(sorted(d.subject for d in diags),
-                         ["policy rollback", "security jwt"])
+        self.assertEqual([d.subject for d in diags], ["security jwt"])
 
     def test_the_same_mechanism_in_two_services_is_reported_twice(self):
         diags = declaration_diagnostics(compile_module(TWO_SERVICES_SAME_MECHANISM))
