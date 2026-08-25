@@ -554,7 +554,8 @@ def cmd_serve(args):
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     server = serve(doc, args.host, args.port, repository_factory=factory,
                    token_provider=token_provider, network=network,
-                   log_format=log_format, exporter=exporter)
+                   log_format=log_format, exporter=exporter,
+                   trust_incoming_trace=getattr(args, "trust_incoming_trace", False))
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -1173,6 +1174,13 @@ def main(argv=None):
                          "`stderr-json`, or a name registered under the "
                          "`lnpl.exporters` entry-points group; omitted, "
                          "nothing is exported (independent of --log-format)")
+    sv.add_argument("--trust-incoming-trace", action="store_true",
+                    help="adopt an inbound `traceparent` header's trace-id "
+                         "for this request (default: off). Off means a "
+                         "malformed OR untrusted inbound traceparent never "
+                         "changes the request's own trace-id: a new one is "
+                         "always minted, and the inbound value is recorded "
+                         "only as a link, never adopted outright")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",

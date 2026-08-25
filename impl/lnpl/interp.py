@@ -21,6 +21,7 @@ from .diagnostics import Diagnostics
 from .drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
 from .refinements import BASE_CATEGORY
 from .repo_policy import binding_name, row_key
+from .tracecontext import format_traceparent, new_span_id
 from .types import SEMANTIC_TYPES
 
 IDEMPOTENT_OPS = {
@@ -284,6 +285,19 @@ class Trace:
         self.root: "Span | None" = None
         self.logs = []
         self.metrics = []      # (name, labels, value)
+        # issue #107: `None` by default — a non-HTTP run (`lnpl run`) never
+        # sets these, so its `to_dict()` stays byte-identical to before this
+        # issue. `LnplWsgiApp` populates them once per request (D3:
+        # correlation_id stays the separate, pre-existing run identifier;
+        # these are the distributed-trace identity linked on the same record).
+        self.trace_id = None
+        self.span_id = None
+        self.trace_link = None
+        self.tracestate = None
+        # r1-F1: trace-flags (D6 — preserved when propagated, "01" when we
+        # mint a fresh trace of our own). Outbound-injection-only, like
+        # tracestate: never surfaced in `to_dict()`.
+        self.flags = None
 
     def log(self, level, message, **fields):
         self.logs.append({"level": level, "message": message,
@@ -299,10 +313,22 @@ class Trace:
         self.metrics.append((name, labels, value))
 
     def to_dict(self):
-        return {"correlation_id": self.correlation_id,
-                "span": self.root.to_dict() if self.root else None,
-                "metrics": [{"name": n, "labels": l, "value": v} for n, l, v in self.metrics],
-                "logs": self.logs}
+        out = {"correlation_id": self.correlation_id,
+               "span": self.root.to_dict() if self.root else None,
+               "metrics": [{"name": n, "labels": l, "value": v} for n, l, v in self.metrics],
+               "logs": self.logs}
+        # issue #107: keys added only when set, so a non-HTTP run's
+        # to_dict() (trace_id/span_id/trace_link/tracestate all `None`)
+        # stays byte-identical to the pre-#107 golden output.
+        if self.trace_id is not None:
+            out["trace_id"] = self.trace_id
+        if self.span_id is not None:
+            out["span_id"] = self.span_id
+        if self.trace_link is not None:
+            out["links"] = self.trace_link
+        # D10: tracestate is a vendor extension with PII risk — never surfaced
+        # in to_dict(), even when set.
+        return out
 
 
 class _CreatedRow(dict):
@@ -1322,9 +1348,29 @@ class Interpreter:
             # no-op (backward compatibility, golden silence).
             remaining_ms = ((deadline - self.clock.now) if deadline is not None
                             else DEFAULT_NETWORK_TIMEOUT_MS)
+            # issue #107, D6/D11: trace-id is invariant for this run;
+            # parent-id becomes THIS step's span id, so a downstream service
+            # sees the call site, not the workflow root. A non-HTTP run
+            # (`lnpl run`) never populates `self.trace.trace_id` (it stays
+            # `None`), so no header is sent there — only `LnplWsgiApp`
+            # requests carry one.
+            trace_id = self.trace.trace_id
+            trace_headers = None
+            if trace_id is not None:
+                span_id = child.attrs.get("span_id")
+                if span_id is None:
+                    span_id = new_span_id()
+                    child.attrs["span_id"] = span_id
+                # r1-F1/D6: propagate the flags _resolve_trace_context
+                # already decided (inherited on adoption, "01" when we
+                # minted the trace ourselves) rather than defaulting here.
+                flags = self.trace.flags or "01"
+                trace_headers = {"traceparent": format_traceparent(trace_id, span_id, flags)}
+                if self.trace.tracestate is not None:
+                    trace_headers["tracestate"] = self.trace.tracestate
             try:
                 status, body = self.network.call(effect["target"], payload,
-                                                  remaining_ms)
+                                                  remaining_ms, trace_headers)
             except DriverError as exc:
                 if effect.get("result"):
                     # RFC-0027 §3, D3: a bound call's transport failure is a

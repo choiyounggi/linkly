@@ -259,9 +259,18 @@ class NetworkDriver:
     """The `NetworkCall` effect's adapter contract (RFC-0027 §1, issue #64).
 
     Reference implementation: `FakeNetworkDriver` (deterministic, no I/O).
+
+    issue #107, D11: `call` takes an optional `trace_headers` — a
+    `{header-name: value}` mapping the runtime builds (W3C `traceparent`,
+    verbatim `tracestate`). It defaults to `None`, so every pre-existing
+    caller is unaffected. As of this extension there are zero external
+    `NetworkDriver` implementations in the wild (issue #115), so widening
+    the contract now is safe. D8: these are observation headers, a runtime
+    output, never author-declared — a driver applies them AFTER any
+    capability-declared headers, so the runtime value always wins.
     """
 
-    def call(self, target, payload, timeout_ms):
+    def call(self, target, payload, timeout_ms, trace_headers=None):
         """Call `target` once.
 
         -> (status: int, body: dict). A response was received for every
@@ -884,8 +893,13 @@ class FakeNetworkDriver(NetworkDriver):
 
     def __init__(self, stubs=None):
         self.stubs = dict(stubs or {})
+        # issue #107: every call recorded, trace headers included — the
+        # unit-test-facing way to assert what the runtime sent.
+        self.received = []
 
-    def call(self, target, payload, timeout_ms):
+    def call(self, target, payload, timeout_ms, trace_headers=None):
+        self.received.append({"target": target, "payload": payload,
+                              "trace_headers": dict(trace_headers or {})})
         return self.stubs.get(target, (200, {}))
 
     def close(self):
@@ -942,7 +956,7 @@ class HttpNetworkDriver(NetworkDriver):
         headers = dict(cap["headers"]) if cap else {}
         return url, method, headers
 
-    def call(self, target, payload, timeout_ms):
+    def call(self, target, payload, timeout_ms, trace_headers=None):
         import http.client
         import urllib.parse
 
@@ -967,6 +981,10 @@ class HttpNetworkDriver(NetworkDriver):
         if method != "GET":
             body = json.dumps(payload).encode("utf-8")
             headers = dict(headers, **{"Content-Type": "application/json"})
+        # issue #107, D8: trace headers are merged in LAST, after any
+        # capability-declared headers — the runtime's observation headers
+        # always win over an author's declaration, never the reverse.
+        headers.update(trace_headers or {})
         try:
             conn = http.client.HTTPSConnection(
                 parts.hostname, parts.port, timeout=timeout_ms / 1000
