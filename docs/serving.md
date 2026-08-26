@@ -10,7 +10,10 @@
 그 SAME callable을 진짜 WSGI 호스트(gunicorn)에 넘긴다 — 두 경로가 실행하는
 코드는 하나뿐이라 서로 어긋날 수 없다(아래 "공유 계약" 절). TLS 종단·graceful
 shutdown·워커 관리는 이 모듈이 아니라 그 호스트(+ nginx 같은 리버스 프록시)의
-책임이다 — `lnpl serve`/`wsgi.py` 어느 쪽도 시그널 핸들러를 두지 않는다.
+책임이다 — 이슈 #110부터 `lnpl serve`(`serve.serve()`)가 SIGTERM 핸들러
+하나를 둔다(아래 "운영 표면" 절), 그러나 그 핸들러가 하는 일은 `/-/readyz`를
+503으로 뒤집는 것뿐이다. 연결 드레이닝·실제 종료는 여전히 이 모듈의 책임이
+아니다 — `build_app()`/gunicorn 경로는 이 핸들러가 없고 그대로다.
 
 ```
 lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
@@ -62,10 +65,12 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M2 | 경로는 있으나 메서드 ≠ POST | 405 + `Allow: POST` | `method-not-allowed` |
 | M3 | 서비스가 `security jwt` 선언 ∧ `Authorization` 헤더 부재 | 401 | `auth-missing` |
 | M3a | 토큰 프로바이더 설정됨(`--jwt-secret-env`) ∧ 토큰 검증 실패 | 401 | `auth-invalid` |
+| M3b | 토큰 검증 성공(M3a 통과) ∧ 서비스가 `security role <r>` 선언 ∧ 검증된 역할이 `<r>`과 불일치(또는 부재) | 403 | `forbidden` |
 | M4 | `Content-Length` > 1 MiB | 413 | `body-too-large` |
 | M5 | body가 JSON 파싱 실패, 또는 object가 아님 | 400 | `body-unreadable` |
 | M6 | 실행 실패 ∧ `failure_reason`이 `deadline`으로 시작 | 504 | `deadline-exceeded` |
 | M7 | 실행 실패 ∧ 실패 스텝의 효과에 `Validation` 포함 | 400 | `validation-failed` |
+| M8a | 실행 실패 ∧ 저장소 create가 기존 키와 충돌(`failure_kind == "conflict"`, 이슈 #113) | 409 | `conflict` |
 | M8 | 실행 실패 (그 외 전부) | 500 | `workflow-failed` |
 | M9 | `status == completed` — 가드 거부 포함 | 200 | — |
 | M10 | GET 단건: 경로는 있으나 행이 없음(부재 또는 백엔드 미설정) | 404 | `not-found` |
@@ -94,7 +99,115 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 `lnpl run --json`의 `result`와 같은 dict다 — `bindings`는 마스킹을 거친 값이며
 (#43 계약) Password 계열 원문은 어떤 응답에도 실리지 않는다.
 
+### 인가 — 신뢰 모델과 게이트 범위 (이슈 #119)
+
+토큰 검증(M3/M3a)을 통과했어도 검증된 역할이 `security role <r>`과 다르면
+403 `forbidden`이다(매핑표 M3b, Task 04) — 401은 "너를 모르겠다", 403은
+"너를 알지만 안 된다"는 서로 다른 판정이므로 순서도 M3a 다음으로 고정된다.
+403 본문에는 어느 역할이 필요했는지 싣지 않는다 — 그 정보는 correlation id와
+함께 서버 stderr로만 나간다(M3a가 이미 쓰는 것과 같은 판단).
+
+**신뢰 모델 (t119b로 갱신됨).** `security role <r>`이 집행하는 역할은 이
+서버가 검증한 토큰의 `role`(또는 원소 1개짜리 `roles`) 클레임에서 읽는다.
+그 신뢰 근거는 이제 검증자가 무엇으로 구성됐는지에 달렸다:
+
+- **내장 `hmac` 프로바이더만 쓰면(`--token-provider` 미지정, 기본값)**
+  여전히 **자기 주장(self-asserted)**이다 — `lnpl token`이 같은 서비스에서
+  발급과 검증을 모두 한다. `--jwt-issuer`로 기대 `iss`를 하드코딩된
+  `"lnpl"`에서 바꿀 수는 있지만(t119b, D3), 서명 검증 자체는 여전히 대칭키
+  HS256이고 그 키를 쥔 쪽이 곧 발급자다 — **SPI가 열렸다는 것과 외부 IdP가
+  실제로 붙었다는 것은 다르다.** 내장 프로바이더만으로는 "이 역할 클레임을
+  누가 왜 믿어도 되는가"라는 질문에 여전히 제3자의 답이 없다.
+- **`lnpl.tokens` SPI로 등록된 프로바이더를 `--token-provider <name>`으로
+  선택하면**(예: RS256/ES256으로 Keycloak·Auth0·사내 IdP의 서명을 검증하는
+  외부 패키지) 신원 근거가 외부로 옮겨간다 — 그 IdP만 아는 개인키로 서명한
+  토큰만 통과하고, linkly는 공개키로 검증만 한다. RS256/ES256 자체는 코어에
+  없다(t119b, D1) — 상수시간 비교와 패딩을 손으로 구현하는 위험을 피하려고
+  `cryptography` 기반 외부 패키지에 위임했다. 코어가 소유하는 것은 계약
+  (`TokenProvider`)과 그 계약을 검증하는 `TokenProviderTCK`뿐이다
+  (`docs/backends.md`).
+
+프로덕션에서 self-asserted 신뢰 경계를 실제로 넘으려면 `lnpl.tokens` SPI
+구현체(외부 패키지)가 필요하다 — t119b는 그 SPI 경계와 TCK만 낸다.
+
+**게이트 범위 — 행위(action) 대 객체(object).** `security role <r>`은
+**행위 게이트**다: "이 역할을 가진 호출자가 이 라우트를 실행해도 되는가"만
+묻는다. "42번 주문이 이 호출자의 것인가" 같은 **객체(소유권/테넌시) 게이트**는
+linkly에 **없다** — 행위 게이트를 통과했다고 객체 게이트까지 통과한 것이
+아니다(둘은 서로를 함의하지 않는다). 소유권이 필요한 워크플로(예: "본인
+주문만 취소")는 이 서비스 수준 역할 게이트만으로는 안전하지 않다 — 워크플로
+자체가 가드로 그 조건을 검사해야 한다.
+
 어댑터 계약·백엔드 선택·jwt 검증 체크리스트의 정본은 `docs/backends.md`다.
+
+## 멱등성 — `Idempotency-Key` (이슈 #113)
+
+`POST /<service-slug>/<workflow-slug>` 요청에 `Idempotency-Key` 헤더가
+있으면 `(workflow_id, key)`가 그 실행을 한 번만 하게 만든다. **성공이든
+실패든** 첫 실행의 상태코드+바디를 그대로 저장하고, 같은 키의 재요청은
+그 저장된 응답을 재생한다 — 워크플로를 다시 돌리지 않는다(Stripe 계약과
+같다: "saving the resulting status code and body of the first request ...
+regardless of whether it succeeds or fails"). 진짜 재시도를 원하는
+클라이언트는 새 키를 쓴다 — 같은 키가 막히는 것은 계약이지 버그가 아니다.
+
+**`Idempotency-Key`는 RFC가 아니다.** 이 헤더의 IETF draft는 만료되어
+표준이 되지 못했다 — Stripe·여러 결제 API가 정착시킨 업계 관행일 뿐,
+linkly가 따르는 규범 문서는 없다.
+
+| # | 관측 조건 | HTTP | error `code` |
+|---|-----------|------|--------------|
+| M17 | 같은 키로 이미 실행 중(다른 요청이 아직 안 끝남) | 409 | `idempotency-in-progress` |
+
+재생(replay)은 새 판정 행이 아니다 — 저장된 첫 실행의 상태코드·바디를
+그대로 돌려줄 뿐이다(200이었으면 200, 409 `conflict`였으면 409
+`conflict`, 그대로).
+
+**설계 (r1 — 최초 계획의 결함을 바로잡음)**: 이슈 #113 본문이 "기록을
+워크플로 트랜잭션 안에서 쓴다"와 "실패도 재생한다"를 함께 요구했는데, 이
+둘은 양립하지 않는다 — `run_workflow`(`interp.py`)는 실패 시
+`self.repo.rollback()`을 **무조건** 부르고(`policy rollback` 선언 여부와
+무관하다 — 그 선언은 로그 한 줄만 켠다, 아래 참고), 확정 기록을 그
+트랜잭션 안에 두면 롤백이 그것도 되돌려 키가 `in-progress`에 **영구히**
+갇힌다. 그래서 3단계로 나눈다:
+
+1. 요청 도착 시 `(workflow_id, key)`를 `in-progress`로 INSERT하고 **즉시
+   커밋**한다 — 동시에 온 같은 키 요청이 이걸 보고 409를 낸다.
+2. `run_workflow`가 **자기 트랜잭션**에서 커밋/롤백한다. 멱등성 행은 그
+   경계 밖이라 영향받지 않는다.
+3. `run_workflow`가 반환한 뒤, 최종 상태코드+바디를 **별도 문장으로**
+   upsert한다.
+
+**남는 간극**: 1단계와 3단계 사이에 프로세스가 죽으면 그 키는
+`in-progress`에 남아 그 사이 동안은 재시도도 막힌다(409가 계속 나간다).
+복구 수단은 `--idempotency-ttl`(기본 24h)뿐이다 — TTL이 지나면 그 키는
+새 미스로 취급된다. 이 창을 없는 척하지 않는다: 짧지만 실재한다.
+
+`--backend fake`에서는 요청마다 빈 저장소가 새로 시딩되므로 클레임을 남길
+곳이 없다 — 이 기능은 **비활성**이고, 서버 기동 시 stderr에 경고를 한 번
+낸다. `Idempotency-Key` 헤더를 보내도 조용히 무시되고 매 요청이 그대로
+실행된다(이 백엔드에서 결과가 요청 간에 남지 않는 것과 같은 이유).
+
+## `ETag` / `If-Match` (이슈 #113)
+
+`GET /<service-slug>/<entity-slug>/{id}` 응답은 `_version` 기반 **약한**
+검증자(`W/"<n>"`)를 `ETag`로 싣는다 — 약한 이유는 마스킹을 거친 JSON
+바디가 모든 코드 경로에서 바이트 동일함을 이 서버가 보장하지 않기
+때문이다(RFC 9110 §8.8.1, 정직한 선택).
+
+상태 변경 워크플로(`POST`)에 `If-Match`가 있으면, 그 워크플로가 **처음
+`read`하는 엔티티**의 저장된 버전과 비교한다 — 워크플로 엔드포인트에는
+REST의 PUT/PATCH가 갖는 단일 대상 리소스가 없어서, 이전 GET의 ETag가
+나온 그 행을 기준으로 삼는다. 불일치 → 412. 조건을 걸 대상이 없으면(읽는
+스텝이 없거나, 드라이버가 `observed_version`을 안 낸다 — `fake` 백엔드가
+그렇다, D12와 같은 옵트인) 검사를 건너뛴다 — 강제하지 않는다.
+
+| # | 관측 조건 | HTTP | error `code` |
+|---|-----------|------|--------------|
+| M18 | `If-Match` 값이 이 서버가 낸 ETag 형식이 아님(형식 오류) | 400 | `precondition-invalid` |
+| M19 | `If-Match`가 있고 조건을 걸 행이 있는데, 저장된 버전과 불일치 | 412 | `precondition-failed` |
+
+`If-Match`가 없으면 현행 그대로다(회귀 없음). `If-None-Match`/304는
+범위 밖이다 — 이슈가 요구하지 않는다.
 
 ## 스케줄 트리거 (이슈 #81)
 
@@ -132,12 +245,16 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   출하한 그대로다. `--backend sqlite:<path>`를 주면 요청마다 자기 연결을 열고
   닫는 실제 영속 저장소가 되며, **요청 간에 상태가 남는다**. 계약은
   `docs/backends.md`.
-- **401의 뜻은 프로바이더 설정 여부에 달렸다.** `--jwt-secret-env` 없이 띄우면
-  `Authorization` 헤더의 **존재 검사만**이다(presence-checked, not verified) —
-  아무 값이나 통과한다. 주고 띄우면 M3a가 살아나 서명·`exp`/`nbf`(60초 leeway)·
-  `iss`/`aud`/`typ`를 전부 검증하고, 실패는 401 `auth-invalid`다. 어느 검사가
-  깨졌는지는 응답에 싣지 않는다 — 위조를 다듬는 쪽이 원하는 피드백이라서,
-  correlation id와 함께 서버 stderr로 나간다. 토큰은 `lnpl token`이 발급한다.
+- **401의 뜻은 프로바이더 설정 여부에 달렸다.** `--jwt-secret-env`도
+  `--token-provider`도 없이 띄우면 `Authorization` 헤더의 **존재 검사만**이다
+  (presence-checked, not verified) — 아무 값이나 통과한다. 주고 띄우면 M3a가
+  살아나 서명·`exp`/`nbf`(60초 leeway)·`iss`/`aud`/`typ`를 전부 검증하고,
+  실패는 401 `auth-invalid`다. 어느 검사가 깨졌는지는 응답에 싣지 않는다 —
+  위조를 다듬는 쪽이 원하는 피드백이라서, correlation id와 함께 서버
+  stderr로 나간다. 내장 `hmac` 프로바이더용 토큰은 `lnpl token`이 발급한다
+  (`--jwt-issuer`로 기대 `iss`를 바꿀 수 있다, 이슈 #119b); `--token-provider`
+  로 선택한 외부 SPI 프로바이더의 토큰은 그 프로바이더가 검증하는 실제 IdP가
+  발급한다 — `lnpl token`은 여전히 내장 `hmac`만 발급한다.
 - **내장 스케줄러(크론 루프)는 없다** — 이 서버는 어떤 타이머도 자체적으로
   돌리지 않는다. `event ... on schedule`이 선언한 시각/주기를 실제로 지키는
   것은 여전히 운영자가 붙이는 외부 스케줄러(cron/systemd)의 몫이다 — 아래
@@ -165,7 +282,8 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 - 종료(dev 서버): SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. 워커 스레드는 데몬이라
   진행 중 요청을 기다리지 않는다. **graceful shutdown·TLS 종단·워커 풀
   관리는 dev 서버의 책임이 아니다** — 아래 "운영 배치" 절의 WSGI 호스트가
-  가진다(D4).
+  가진다(D4). 이슈 #110: SIGTERM은 `/-/readyz`를 즉시 503으로 뒤집을 뿐,
+  이 판단을 바꾸지 않는다 — 아래 "운영 표면" 절.
 - SSE 구독(#103)은 스레드-퍼-요청/워커 모델에서 특히 무겁다 — 연결이 열려
   있는 한 그 워커를 계속 점유한다. `wsgi.SSE_POLL_INTERVAL_S`(기본 0.2s)로
   `lnpl_outbox`를 폴링하고, `wsgi.SSE_IDLE_TIMEOUT_S`(기본 30s) 동안 새 행이
@@ -174,6 +292,111 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   이름을 재수출하지만, 실제로 루프가 읽는 모듈 전역은 `lnpl.wsgi`의 것이다 —
   테스트에서 값을 줄이려면 `wsgi.SSE_POLL_INTERVAL_S`를 패치해야 한다.)
 - 요청별 진단(가드 스킵 등)은 CLI와 같은 채널인 stderr로 나간다.
+
+## 운영 표면 — `/-/healthz` / `/-/readyz` / `/-/metrics` (이슈 #110)
+
+이슈 #87이 컨테이너(`examples/deploy/Dockerfile`)까지 만들어 뒀지만 붙일
+k8s 프로브가 없었다 — 롤링 업데이트 중 아직 준비되지 않은 파드로 트래픽이
+갔다. 세 경로 모두 `impl/lnpl/wsgi.py`의 `build_ops_routes`/
+`build_metrics_route`가 만들고, `make_wsgi_app`이 `build_routes`의
+집합-동일성 대조(위 "상태코드 매핑표" 절 D1과 같은 종류의 계약, `set(routes)
+== contract`) **뒤에** `routes.update(...)`로 합류시킨다 — `/-/schedules/...`
+(이슈 #81)가 이미 세운 바로 그 자리, 그 방식이다. **`/-/` 경로는 그
+대조에서 제외된다**(테스트로 고정, `impl/tests/test_ops_surface.py`) —
+OpenAPI가 규정하는 경로 집합에 들어간 적이 없으니 대조가 "빠뜨렸다"고
+읽으면 안 되고, 애초에 이 대조가 보는 대상이 아니라는 뜻이다.
+
+**셋 다 인증이 면제된다** — 어느 서비스가 `security jwt`/`security role`을
+선언했더라도 토큰 없이 접근 가능하다. kubelet의 liveness/readiness 프로브는
+`Authorization` 헤더를 들고 오지 않으므로, 여기 401/403을 물리면 그
+서비스가 있는 파드는 영원히 unready가 된다.
+
+### `/-/healthz` — liveness
+
+프로세스가 살아 있고 이 문서가 로드됐는지만 본다. **저장소도 네트워크도
+만지지 않는다** — 검사가 100 자체로 끝나며, `repository_factory`를 단 한
+번도 호출하지 않는다(`impl/tests/test_ops_surface.py`가 기록형 드라이버로
+호출 카운트 0을 단언한다). liveness에 백엔드 검사를 넣지 않는 이유는
+검색 자료가 반복해 경고하는 실패 모드다: DB가 30초 죽으면 liveness가 그때
+같이 죽고, k8s는 그 파드를 재시작한다 — 그러나 재시작은 DB를 못 고치고
+다운타임만 하나 더 만든다. 백엔드 가용성은 아래 readyz의 몫이다.
+
+SIGTERM을 받아도 `/-/healthz`는 **영향받지 않는다** — 종료 중인 파드를
+liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
+
+### `/-/readyz` — readiness
+
+닫힌 목록 넷만 본다(임의로 늘리지 않는다):
+
+1. 라우팅↔OpenAPI 대조 통과 여부 — `build_routes`가 기동 시 이미 판정했다
+   (실패했다면 `ServeError`로 애초에 뜨지 못했으므로, 이 앱이 존재한다는
+   사실 자체가 통과의 증거다).
+2. 영속 백엔드(`--backend sqlite:...`)가 설정돼 있으면 커넥션을 1회
+   획득·해제한다.
+3. `--jwt-secret-env`가 지정돼 있으면 그 환경변수가 **지금도** 설정돼
+   있는지 — 기동 시 검증(`cli.cmd_serve`)과 별개로, 매 프로브마다 다시
+   읽는다(프로세스가 떠 있는 동안 그 변수가 사라지는 드문 드리프트도
+   다음 프로브가 잡는다).
+4. `--network http`를 썼으면 논리명 endpoint 매핑이 전부 해소돼 있는지 —
+   (1)과 같은 이유로, 기동 시 이미 판정된 사실을 노출한다.
+
+SIGTERM은 이 넷보다 **먼저** 본다 — 받는 즉시 나머지 검사 없이 503이다.
+전부 통과하면 200 `{"status": "ok"}`; 하나라도 깨졌으면 503 +
+`application/problem+json`(`code: "not-ready"`)에 **깨진 검사 이름**을
+`checks`로 싣는다. 401/403(위 M3/M3a/M3b)과 반대 판단이다 — readyz는
+운영자용이지 공격면이 아니므로, 어느 검사가 깨졌는지 감추지 않는다.
+
+```jsonc
+// 예: 백엔드 커넥션 획득 실패 + jwt-secret-env 미설정, 둘 다
+{"title": "the server is not ready to receive traffic", "status": 503,
+ "code": "not-ready",
+ "detail": "readiness check(s) failed: repository, jwt-secret-env",
+ "checks": ["repository", "jwt-secret-env"]}
+```
+
+**liveness와 readiness를 절대 섞지 않는다.** 재시작이 답인 실패(프로세스가
+망가짐)는 healthz로, 트래픽만 끊으면 되는 실패(백엔드/설정 드리프트)는
+readyz로 간다 — 둘을 하나로 합치면 트래픽 차단이면 충분한 상황에서
+재시작이 나가거나, 재시작이 필요한 상황에서 트래픽만 계속 흘러들어간다.
+
+### `/-/metrics` — RED 시그널 (`--metrics`, 기본 off)
+
+`--metrics` 없이 띄우면 `/-/metrics`는 라우팅 테이블에 아예 없다 — **404다,
+"비활성" 본문이 아니다**. 켜면 Prometheus 텍스트 노출 형식(`# HELP`/`# TYPE`
+포함)으로 RED 3종을 낸다:
+
+| 메트릭 | 종류 | 라벨 |
+|---|---|---|
+| `lnpl_workflow_runs_total` | counter | `service`, `workflow`, `status` |
+| `lnpl_workflow_duration_seconds` | histogram | `service`, `workflow` |
+| `lnpl_step_failures_total` | counter | `service`, `workflow`, `step`, `kind` |
+
+**카디널리티 계약(D8).** 위 라벨 값은 전부 컴파일 시점에 알려진, 작고 닫힌
+집합의 이름이다 — 서비스/워크플로/스텝 선언 이름, 그리고 `completed`/
+`failed`나 매핑표의 `code`처럼 작은 고정 열거값. **`correlation_id`,
+엔티티 id, payload 값은 라벨이 될 수 없다** — 무한 카디널리티는 Prometheus
+자체를 무너뜨린다. 이건 새 규칙이 아니라 이미 있던 것의 승격이다:
+`interp.Trace.metric`의 라벨 allowlist(`{module, service, workflow, step,
+kind}`, RFC-0003)가 소스에서부터 이 계약을 막아 왔고, 이 issue의 세 지표는
+전부 그 allowlist 안의 라벨만 쓴다(새 라벨 축 없음). allowlist를 벗어난
+라벨은 여전히 `RunError`다 — 이 issue가 그 판단을 바꾸지 않는다.
+
+**적재 위치(D9).** `interp.Trace.metrics`(요청마다 새로 생기는 배열,
+`--trace-exporter`/이슈 #78 계약)는 건드리지 않는다. 그 옆에서, 요청이
+끝날 때(`LnplWsgiApp._respond`) 이미 계산된 `result`를 읽어 **프로세스
+수준**(`wsgi.MetricsRegistry`, 요청 간에 살아남는다)에 더한다 — 두 채널은
+서로 독립이라 한쪽을 껐다고 다른 쪽이 달라지지 않는다. 갱신은
+`threading.Lock`으로 보호한다(D10) — dev 서버는 스레드-퍼-요청이라 락 없는
+`+=`는 동시 요청 아래서 갱신을 잃는다.
+
+**`lnpl serve`/`serve.serve()` 전용.** `--metrics`와 readyz 검사 ③(살아있는
+`--jwt-secret-env` 재확인)은 지금은 `lnpl serve` 경로에만 있다 —
+`build_app()`(운영 배치, gunicorn)의 환경 변수 표(아래 "운영 배치" 절)에는
+아직 대응 항목이 없다. `--trust-incoming-trace`(이슈 #107)가 이미 세운
+같은 전례다: `serve()`에 새 플래그가 늘 때마다 자동으로 `build_app()`의
+env-var 표면까지 넓히지 않는다. `/-/healthz`/`/-/readyz` 자체는 `build_app()`
+경로에서도 그대로 뜬다 — 둘 다 `make_wsgi_app()` 안에서 무조건 합류하는
+`build_ops_routes`가 만들기 때문이다(위).
 
 ## 관측 — `--log-format` / `TraceExporter` (이슈 #78)
 

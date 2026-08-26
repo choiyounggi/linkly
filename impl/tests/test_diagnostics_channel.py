@@ -40,7 +40,7 @@ class TestSeverityLadder(unittest.TestCase):
         # Neither direction may drift: a code with no grade cannot be built,
         # and a grade for a retired code is a row nothing reaches.
         self.assertEqual(set(SEVERITY_OF), set(CODES))
-        self.assertEqual(len(SEVERITY_OF), 14)
+        self.assertEqual(len(SEVERITY_OF), 15)
 
     def test_each_code_carries_its_assigned_grade(self):
         # Spelled out one by one rather than looped: this table *is* the
@@ -53,7 +53,7 @@ class TestSeverityLadder(unittest.TestCase):
         self.assertEqual(SEVERITY_OF["derived-never-assigned"], "warning")
         self.assertEqual(SEVERITY_OF["declared-not-enforced"], "info")
         self.assertEqual(SEVERITY_OF["declared-measured-only"], "info")
-        self.assertEqual(SEVERITY_OF["authorization-not-verified"], "info")
+        self.assertEqual(SEVERITY_OF["authorization-not-verified"], "warning")
         self.assertEqual(SEVERITY_OF["validation-sample-derived"], "info")
         self.assertEqual(SEVERITY_OF["event-source-orphaned"], "info")
         self.assertEqual(SEVERITY_OF["declared-not-bound"], "info")
@@ -110,7 +110,7 @@ class TestDiagnosticRecord(unittest.TestCase):
     def test_every_declared_code_is_constructible_and_graded(self):
         # The closed set is the contract; a code in CODES that the record
         # rejects would be a contract nobody can honour.
-        self.assertEqual(len(CODES), 14)
+        self.assertEqual(len(CODES), 15)
         for code in CODES:
             self.assertEqual(_diag(code=code).code, code)
             self.assertEqual(_diag(code=code).severity, SEVERITY_OF[code])
@@ -307,8 +307,9 @@ class TestEnforcementMatrix(unittest.TestCase):
         # `policy rollback` was the fourth example at #38's writing; issue
         # #79/RFC-0032 backed it with real enforcement (the execution
         # boundary), so it now lives in the enforced test below instead.
+        # `security role` was the second example; issue #119's service-level
+        # gate (403 on mismatch/absence) backed it too, same move.
         self.assertEqual(ENFORCEMENT[("security", "jwt")][0], "unenforced")
-        self.assertEqual(ENFORCEMENT[("security", "role")][0], "unenforced")
         self.assertEqual(ENFORCEMENT[("performance", "response")][0], "measured")
 
     def test_genuinely_enforced_declarations_are_marked_enforced(self):
@@ -318,6 +319,7 @@ class TestEnforcementMatrix(unittest.TestCase):
         self.assertEqual(ENFORCEMENT[("policy", "timeout")][0], "enforced")
         self.assertEqual(ENFORCEMENT[("policy", "rollback")][0], "enforced")
         self.assertEqual(ENFORCEMENT[("performance", "cache")][0], "enforced")
+        self.assertEqual(ENFORCEMENT[("security", "role")][0], "enforced")
 
 
 if __name__ == "__main__":

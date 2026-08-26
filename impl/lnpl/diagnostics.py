@@ -52,6 +52,7 @@ CODES = (
     "derived-never-assigned",       # #95  a `derived` field is `create`d, but no `set`/`format` in the workflow ever fills it
     "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
     "stored-row-shape-mismatch",    # #85  a read/find row is missing a declared field, or has the wrong type
+    "rollback-escapes-network",     # #112 `policy rollback`'s service has a workflow step whose NetworkCall sits outside the transaction boundary
 )
 
 # code -> grade (#52). One question decides every row:
@@ -73,7 +74,12 @@ SEVERITY_OF = {
     "unknown-entity":             "warning",
     "declared-not-enforced":      "info",
     "declared-measured-only":     "info",
-    "authorization-not-verified": "info",
+    # issue #119, D10: `warning`, not `info` — Task 03 gave `security role` a
+    # real enforcement path, so an author who wrote `authorize` now HAS an
+    # edit that removes this: drop the verb, add `security role <r>` to the
+    # service instead. The RFC-0021 test ("does editing the program make this
+    # go away?") answers yes now, where before Batch A it answered no.
+    "authorization-not-verified": "warning",
     "guard-skipped-steps":        "warning",
     "guard-orphaned-steps":       "warning",
     # #55: no edit to the program removes this one. Mode B specialises at build
@@ -108,6 +114,13 @@ SEVERITY_OF = {
     # but it is still an edit that makes the diagnostic go away, so `warning`
     # (RFC-0021's data-side reading of the same question).
     "stored-row-shape-mismatch": "warning",
+    # #112: RFC-0021's question, answered the same way as `unknown-verb` —
+    # moving the `call`/`request` off the workflow that declares `policy
+    # rollback`, or dropping the policy, removes this. The program is what
+    # has to change, so `warning`, not `declared-not-enforced`'s `info`
+    # (that code covers a fact the platform states about *itself*; this one
+    # is about the *program's* shape).
+    "rollback-escapes-network":  "warning",
 }
 
 # How the runtime treats a declaration.
@@ -149,8 +162,15 @@ ENFORCEMENT = {
         (UNENFORCED, "the default path issues and verifies nothing; "
                      "`lnpl serve --jwt-secret-env NAME` verifies the bearer "
                      "token per request (docs/serving.md M3a, docs/backends.md)"),
+    # issue #119, D6/D9: unlike `jwt` above, `role` has no live weak path to
+    # name — a `security role` declaration that serves at all is checked,
+    # because D6 refuses to even start `serve` without a token_provider
+    # configured (`WsgiConfigError` -> rc 2). What is left once launch
+    # succeeds is a single behaviour, not two paths to pick the weaker of.
     ("security", "role"):
-        (UNENFORCED, "the role is never checked against anything"),
+        (ENFORCED, "every route the declaring service owns requires the "
+                   "verified token's role to exactly match `<r>`; mismatch "
+                   "or absence is 403 `forbidden` (docs/serving.md M3b)"),
     ("security", "encrypt"):
         (UNENFORCED, "the field is not encrypted (Password masking is a separate, type-driven behaviour)"),
     ("performance", "response"):

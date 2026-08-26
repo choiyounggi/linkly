@@ -25,6 +25,7 @@ import http.client
 import json
 import os
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
@@ -34,16 +35,25 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
                       TokenError, _is_url_literal, audience_for_path,
                       open_repository)
 from .diagnostics import format_lines, to_records
-from .interp import Interpreter, mask_payload, open_clock, refinement_index
+from .interp import (Interpreter, caller_view, mask_payload, open_clock,
+                     refinement_index)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
 from .parser import ParseError
 from .repo_policy import default_rows, event_emissions, repository_calls, row_key
+from .tracecontext import new_span_id, new_trace_id, parse_traceparent
 
 # M4: refuse to buffer more than this before reading a byte. The Fake-backend
 # dev server has no streaming consumer, so anything past 1 MiB is a mistake.
 MAX_BODY_BYTES = 1 << 20
+
+# issue #113, D10: how long a `(workflow_id, key)` claim survives before a
+# repeat becomes a fresh miss instead of a replay/409. Unbounded retention
+# would grow `lnpl_idempotency` forever; a client relying on idempotency
+# past this window has already exceeded what Stripe's own contract
+# promises (24h) and needs a new key anyway.
+DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
 
 # issue #99, D3: the cursor page-size ceiling. `limit` outside [1, MAX_LIMIT]
 # is a 400 (`limit-invalid`), not a silent clamp — a client that asked for
@@ -68,6 +78,33 @@ SSE_IDLE_TIMEOUT_S = 30.0
 # "json" emits one JSON Line per request to stderr, the same operational
 # channel every other line here already uses.
 LOG_FORMATS = ("text", "json")
+
+
+def _etag_value(version):
+    """`_version` -> the weak validator this server issues (issue #113,
+    D12). Weak (`W/`), not strong: nothing here promises the masked JSON
+    body a client reads back is byte-identical across every code path that
+    can produce it, and a weak validator only claims semantic equivalence."""
+    return 'W/"%d"' % version
+
+
+def _parse_if_match(value):
+    """The inverse of `_etag_value` -> the version an `If-Match` header
+    claims, or `None` when the value is not this server's own ETag shape.
+    `*` and multi-value `If-Match` lists (RFC 9110 §13.1.1) are not
+    produced by this server's own GET, so neither is accepted here --
+    a value this parser rejects is treated as malformed (D13's boundary),
+    not silently matched or ignored.
+    """
+    text = value.strip()
+    if text.startswith("W/"):
+        text = text[2:]
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return None
+    digits = text[1:-1]
+    if not digits.isdigit():
+        return None
+    return int(digits)
 
 
 def open_log_format(spec):
@@ -101,6 +138,125 @@ class StderrJsonExporter(TraceExporter):
 
     def export(self, trace_dict):
         print(json.dumps(trace_dict, ensure_ascii=False), file=sys.stderr)
+
+
+# issue #110, D7: the histogram boundaries `lnpl_workflow_duration_seconds`
+# uses (seconds) — the widely-used Prometheus client default bucket set,
+# reused rather than invented (out of scope: bucket tuning, per the brief).
+_DURATION_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75,
+                    1.0, 2.5, 5.0, 7.5, 10.0)
+
+
+def _label_value(value):
+    """A Prometheus exposition-format label value: a double-quoted string
+    with `\\`/`"`/newline escaped (the format's own escaping rules)."""
+    escaped = (str(value).replace("\\", "\\\\")
+              .replace('"', '\\"').replace("\n", "\\n"))
+    return '"%s"' % escaped
+
+
+class MetricsRegistry:
+    """issue #110, D7/D9/D10: the process-level RED registry `--metrics`
+    exposes at `/-/metrics`.
+
+    D9: lives ALONGSIDE `Trace.metrics`, not instead of it. That array is
+    the per-request `--trace-exporter` (#78) contract and is neither read
+    from nor written to here — this registry is populated by reading a
+    COMPLETED request's already-computed `result` (`_respond`), so removing
+    `--trace-exporter` support later could never affect this registry, and
+    vice versa.
+
+    D10: `wsgi` is one thread per request (`_Server(ThreadingMixIn, ...)`,
+    serve.py), so every update goes through `_lock` — an unprotected `+=`
+    here would lose updates under concurrent requests.
+
+    D7's three: `lnpl_workflow_runs_total{service,workflow,status}`
+    (counter), `lnpl_workflow_duration_seconds{service,workflow}`
+    (histogram), `lnpl_step_failures_total{service,workflow,step,kind}`
+    (counter) — every label already inside `Trace.metric`'s own allowlist
+    (D7: no new label axis).
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._runs_total = {}            # (service, workflow, status) -> int
+        self._step_failures_total = {}   # (service, workflow, step, kind) -> int
+        # Cumulative bucket counts (Prometheus convention: bucket[i] counts
+        # every observation <= its bound, so rendering needs no further
+        # summation) + running sum/count for `_sum`/`_count`.
+        self._duration_buckets = {}      # (service, workflow) -> [int, ...]
+        self._duration_sum = {}          # (service, workflow) -> float
+        self._duration_count = {}        # (service, workflow) -> int
+
+    def record_run(self, service, workflow, status, duration_s):
+        key = (service, workflow, status)
+        dkey = (service, workflow)
+        with self._lock:
+            self._runs_total[key] = self._runs_total.get(key, 0) + 1
+            buckets = self._duration_buckets.setdefault(
+                dkey, [0] * len(_DURATION_BUCKETS))
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                if duration_s <= bound:
+                    buckets[i] += 1
+            self._duration_sum[dkey] = self._duration_sum.get(dkey, 0.0) + duration_s
+            self._duration_count[dkey] = self._duration_count.get(dkey, 0) + 1
+
+    def record_step_failure(self, service, workflow, step, kind):
+        key = (service, workflow, step, kind)
+        with self._lock:
+            self._step_failures_total[key] = self._step_failures_total.get(key, 0) + 1
+
+    def render(self):
+        """-> Prometheus text exposition format (D7's RED 3). A stable sort
+        over every series so the same registry state always renders the
+        same text — a scraper (and a test) can parse this, not just count
+        lines."""
+        with self._lock:
+            runs = dict(self._runs_total)
+            failures = dict(self._step_failures_total)
+            buckets = {k: list(v) for k, v in self._duration_buckets.items()}
+            sums = dict(self._duration_sum)
+            counts = dict(self._duration_count)
+        lines = [
+            "# HELP lnpl_workflow_runs_total Total workflow runs, by outcome.",
+            "# TYPE lnpl_workflow_runs_total counter",
+        ]
+        for service, workflow, status in sorted(runs):
+            lines.append(
+                "lnpl_workflow_runs_total{service=%s,workflow=%s,status=%s} %d"
+                % (_label_value(service), _label_value(workflow),
+                   _label_value(status), runs[(service, workflow, status)]))
+        lines += [
+            "# HELP lnpl_workflow_duration_seconds Workflow run duration, in seconds.",
+            "# TYPE lnpl_workflow_duration_seconds histogram",
+        ]
+        for service, workflow in sorted(buckets):
+            dkey = (service, workflow)
+            bucket_counts = buckets[dkey]
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                lines.append(
+                    "lnpl_workflow_duration_seconds_bucket{service=%s,workflow=%s,le=%s} %d"
+                    % (_label_value(service), _label_value(workflow),
+                       _label_value(repr(bound)), bucket_counts[i]))
+            lines.append(
+                'lnpl_workflow_duration_seconds_bucket{service=%s,workflow=%s,le="+Inf"} %d'
+                % (_label_value(service), _label_value(workflow), counts[dkey]))
+            lines.append(
+                "lnpl_workflow_duration_seconds_sum{service=%s,workflow=%s} %s"
+                % (_label_value(service), _label_value(workflow), repr(sums[dkey])))
+            lines.append(
+                "lnpl_workflow_duration_seconds_count{service=%s,workflow=%s} %d"
+                % (_label_value(service), _label_value(workflow), counts[dkey]))
+        lines += [
+            "# HELP lnpl_step_failures_total Total step failures, by classification.",
+            "# TYPE lnpl_step_failures_total counter",
+        ]
+        for service, workflow, step, kind in sorted(failures):
+            lines.append(
+                "lnpl_step_failures_total{service=%s,workflow=%s,step=%s,kind=%s} %d"
+                % (_label_value(service), _label_value(workflow), _label_value(step),
+                   _label_value(kind), failures[(service, workflow, step, kind)]))
+        return "\n".join(lines) + "\n"
 
 
 # issue #78: the entry-points group an external package registers a
@@ -241,8 +397,19 @@ def _parse_limit(raw):
     return int(raw)
 
 
+def _required_role(mechanisms):
+    """The `<r>` in this service's `security role <r>`, or `None` (issue
+    #119, D5) — `_parse_security_line` stores it as the plain string
+    `"role <r>"`, the same shape `"jwt"` already is."""
+    for mech in mechanisms:
+        if mech.startswith("role "):
+            return mech[len("role "):]
+    return None
+
+
 def build_routes(document):
-    """{path: {"kind": ..., "auth": bool, ...}} for every served path.
+    """{path: {"kind": ..., "auth": bool, "role": str|None, ...}} for every
+    served path.
 
     Three kinds (issue #99 adds the last two to the original workflow-only
     table):
@@ -276,10 +443,13 @@ def build_routes(document):
         if service["kind"] != "Service":
             continue
         auth = False
+        role = None
         for cid in service.get("constraints", []):
             node = nodes.get(cid)
             if node is not None and node["kind"] == "Security":
-                auth = "jwt" in node.get("mechanisms", [])
+                mechanisms = node.get("mechanisms", [])
+                auth = "jwt" in mechanisms
+                role = _required_role(mechanisms)
         svc_slug = _slug(service["name"])
         entity_ids = set()
         event_ids = set()
@@ -287,24 +457,28 @@ def build_routes(document):
             child = nodes[cid]
             if child["kind"] == "Workflow":
                 path = "/%s/%s" % (svc_slug, _slug(child["name"]))
-                routes[path] = {"kind": "workflow", "workflow": cid, "auth": auth}
+                routes[path] = {"kind": "workflow", "workflow": cid, "auth": auth,
+                               "role": role}
                 entity_ids.update(eid for eid, _op in repository_calls(document, cid))
                 event_ids.update(event_emissions(document, cid))
             elif child["kind"] == "Expose":
                 entity = nodes[child["entity"]]
                 list_path = "/%s/%s" % (svc_slug, _slug(entity["name"]))
                 routes[list_path] = {"kind": "get-list", "entity": child["entity"],
-                                     "field": child["field"], "auth": auth}
+                                     "field": child["field"], "auth": auth,
+                                     "role": role}
         for eid in entity_ids:
             entity = nodes[eid]
             single_path = "/%s/%s/{id}" % (svc_slug, _slug(entity["name"]))
-            routes[single_path] = {"kind": "get-single", "entity": eid, "auth": auth}
+            routes[single_path] = {"kind": "get-single", "entity": eid, "auth": auth,
+                                   "role": role}
         for eid in event_ids:
             event = nodes[eid]
             if not event.get("subscribe"):
                 continue
             events_path = "/%s/events/%s" % (svc_slug, _slug(event["name"]))
-            routes[events_path] = {"kind": "sse-subscribe", "event": eid, "auth": auth}
+            routes[events_path] = {"kind": "sse-subscribe", "event": eid, "auth": auth,
+                                   "role": role}
     contract = set(generate(document)["paths"])
     if set(routes) != contract:
         raise ServeError("served paths %r do not match the OpenAPI contract %r"
@@ -394,13 +568,64 @@ def build_schedule_routes(document, triggers=None):
     for eid, (wid, service) in triggers.items():
         event = nodes[eid]
         auth = False
+        role = None
         for cid in service.get("constraints", []):
             node = nodes.get(cid)
             if node is not None and node["kind"] == "Security":
-                auth = "jwt" in node.get("mechanisms", [])
+                mechanisms = node.get("mechanisms", [])
+                auth = "jwt" in mechanisms
+                role = _required_role(mechanisms)
         path = "/-/schedules/%s" % _slug(event["name"])
-        routes[path] = {"kind": "workflow", "workflow": wid, "auth": auth}
+        # issue #119: mirrors `auth` above — a `security role` service's
+        # trigger route is not a side door around its own role requirement.
+        routes[path] = {"kind": "workflow", "workflow": wid, "auth": auth,
+                        "role": role}
     return routes
+
+
+def build_ops_routes(document):
+    """`/-/healthz`/`/-/readyz` (issue #110, D1) — the SAME out-of-band
+    pattern `build_schedule_routes` established: merged into `routes` via
+    `update()` AFTER `build_routes`'s own `set(routes) == contract`
+    assertion, so an ops path can never trip that assertion for any
+    document (`document` itself is unused here, kept only so every route
+    builder `make_wsgi_app` calls shares one call shape).
+
+    `"auth": False, "role": None` on both, unconditionally — not derived
+    from any service's own `security` declaration (D2). A kubelet's
+    liveness/readiness probe never carries a bearer token; gating either
+    path on auth would leave every pod permanently unready.
+    """
+    return {
+        "/-/healthz": {"kind": "ops-health", "auth": False, "role": None},
+        "/-/readyz": {"kind": "ops-ready", "auth": False, "role": None},
+    }
+
+
+def build_metrics_route(document):
+    """`/-/metrics` (issue #110, D1/D6) — same out-of-band merge pattern as
+    `build_ops_routes`, kept as its OWN builder rather than folded into it:
+    `make_wsgi_app` only calls this one when `--metrics` is on, so off, the
+    route is never created at all and the path 404s exactly like any other
+    undeclared path — no special-cased "metrics disabled" response.
+    """
+    return {"/-/metrics": {"kind": "ops-metrics", "auth": False, "role": None}}
+
+
+def _workflow_service_names(document):
+    """workflow node id -> the owning service's declared `name` (issue
+    #110, D7's `service` label) — the SAME parent/child walk `build_routes`
+    already does to build that workflow's own route path, reused here only
+    for the label value, not a route."""
+    nodes = {n["id"]: n for n in document["nodes"]}
+    names = {}
+    for node in document["nodes"]:
+        if node["kind"] != "Service":
+            continue
+        for cid in node.get("children", []):
+            if nodes[cid]["kind"] == "Workflow":
+                names[cid] = node["name"]
+    return names
 
 
 # The post-run mapping rows, in decision order. M6 is decided before M7: a
@@ -419,6 +644,8 @@ def map_result(result):
     for entry in result["steps"]:
         if entry["step"] == failed and "Validation" in entry.get("effects", ()):
             return 400, "validation-failed"               # M7
+    if result.get("failure_kind") == "conflict":
+        return 409, "conflict"                            # M8a
     return 500, "workflow-failed"                         # M8
 
 
@@ -427,6 +654,11 @@ _TITLES = {
     "method-not-allowed": "method not allowed",
     "auth-missing": "authorization required",
     "auth-invalid": "authorization token rejected",
+    "forbidden": "the caller's role does not permit this",
+    "conflict": "the request conflicts with the current state of the target resource",
+    "idempotency-in-progress": "a request with this Idempotency-Key is already running",
+    "precondition-failed": "the If-Match version no longer matches the stored row",
+    "precondition-invalid": "the If-Match header value is not a recognized ETag",
     "body-too-large": "request body too large",
     "body-unreadable": "request body is not a JSON object",
     "deadline-exceeded": "workflow deadline exceeded",
@@ -435,6 +667,7 @@ _TITLES = {
     "cursor-invalid": "the `after` cursor could not be used",
     "limit-invalid": "the `limit` query parameter is out of range",
     "read-failed": "repository read failed",
+    "not-ready": "the server is not ready to receive traffic",
 }
 
 
@@ -476,10 +709,15 @@ class LnplWsgiApp:
 
     def __init__(self, document, routes, repository_factory=None,
                  token_provider=None, network=None, clock=None,
-                 log_format="text", exporter=None):
+                 log_format="text", exporter=None, trust_incoming_trace=False,
+                 jwt_secret_env=None, metrics_registry=None,
+                 idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
+        # issue #110, D7: workflow node id -> owning service name, computed
+        # once (not per-request) for the metrics labels `_respond` records.
+        self._workflow_service_names = _workflow_service_names(document)
         # A factory, not a driver: each request opens its own store and closes
         # it, so a connection is never shared across threads/workers. The
         # provider is the opposite — one immutable object, safe to read from
@@ -502,6 +740,80 @@ class LnplWsgiApp:
         # independent of `log_format`, so a caller can export traces while
         # staying on the default text access-log (or vice versa).
         self.exporter = exporter
+        # issue #107, D7: off by default. Off means an inbound `traceparent`
+        # is never adopted as this request's trace-id — a fresh one is
+        # always minted, and the inbound value is recorded only as a link.
+        # Naively inheriting a client-supplied sampled flag opens a
+        # denial-of-monitoring surface (W3C Trace Context, security
+        # considerations); this flag is the "configured trusted source"
+        # gate security-input-validation-at-trust-boundaries calls for.
+        self.trust_incoming_trace = trust_incoming_trace
+        # issue #110, D4 check 3: the NAME of the env var `--jwt-secret-env`
+        # named, not its value — `_readyz_broken` re-reads `os.environ` at
+        # request time, independent of `cli.cmd_serve`'s own startup-time
+        # validation, so a variable removed from a still-running process's
+        # environment is caught by the next readiness probe rather than
+        # never observed again. `None` (default) means the flag was not
+        # given — nothing to check.
+        self.jwt_secret_env = jwt_secret_env
+        # issue #110, D6/D9: `None` (default, `--metrics` off) means
+        # `/-/metrics` was never even added to `routes` — off is a plain
+        # 404, not a "disabled" response this attribute would gate. Set,
+        # it is the process-level `MetricsRegistry` `_respond` records
+        # into and `_metrics` renders from.
+        self.metrics = metrics_registry
+        # issue #110, D11: process-level, set only by a SIGTERM handler
+        # (serve.py) that does no I/O in the handler itself. `/-/readyz`
+        # reads this and nothing else decides it; `/-/healthz` never reads
+        # it (liveness must stay 200 through a graceful shutdown).
+        self.shutting_down = False
+        # issue #113, D10/D11: how long a claimed `Idempotency-Key` survives
+        # (`SqliteRepositoryDriver.idempotency_begin`). `None` factory means
+        # the `fake` backend -- it reseeds an empty store every request, so
+        # no claim could ever outlive the request that made it (D11); warn
+        # once at startup rather than staying silently inert.
+        self.idempotency_ttl_ms = idempotency_ttl_ms
+        if repository_factory is None:
+            print(
+                "lnpl serve: Idempotency-Key support is disabled -- the "
+                "`fake` backend seeds a fresh in-memory store per request, "
+                "so there is nowhere to durably record a claim (issue "
+                "#113, D11). Use --backend sqlite:<path> to enable it.",
+                file=sys.stderr)
+
+    def _resolve_trace_context(self, environ):
+        """issue #107: decide this request's `(trace_id, span_id, link,
+        tracestate, flags)` from an inbound `traceparent`/`tracestate`
+        header pair.
+
+        Never raises and never fails the request (D2) — a malformed or
+        untrusted `traceparent` just means a freshly minted trace-id, not a
+        rejection. `span_id` is always freshly generated: a received
+        `parent-id` names the caller's span, never ours (W3C §3.4).
+
+        D6/r1-F1: `flags` (trace-flags, e.g. the sampled bit) is propagated
+        verbatim ONLY when we actually adopt the inbound trace (trust on and
+        parsed). Every other case starts a trace-id of our own minting, so
+        the sampling decision is ours too — "01" (sampled), never inherited.
+        Naively inheriting an untrusted/unparsed value here would let an
+        unrelated caller's flags apply to a trace-id we generated.
+        """
+        raw = environ.get("HTTP_TRACEPARENT")
+        parsed = parse_traceparent(raw)
+
+        # D5, W3C MUST: tracestate is parsed/forwarded only alongside a
+        # successfully parsed traceparent; otherwise it is discarded, not
+        # merely ignored.
+        tracestate = environ.get("HTTP_TRACESTATE") if parsed is not None else None
+
+        if parsed is None:
+            return new_trace_id(), new_span_id(), None, tracestate, "01"
+
+        if not self.trust_incoming_trace:
+            link = {"trace_id": parsed["trace_id"], "parent_id": parsed["parent_id"]}
+            return new_trace_id(), new_span_id(), link, tracestate, "01"
+
+        return parsed["trace_id"], new_span_id(), None, tracestate, parsed["flags"]
 
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
@@ -565,6 +877,16 @@ class LnplWsgiApp:
             "skipped": log_sink.get("skipped", []),
             "diagnostics": log_sink.get("diagnostics", []),
         }
+        # issue #107, D3: trace_id/span_id sit alongside correlation_id, not
+        # in place of it. `None` (a non-workflow GET/SSE request, which never
+        # populates log_sink) omits the key — the pre-#107 golden line stays
+        # byte-identical.
+        trace_id = log_sink.get("trace_id")
+        if trace_id is not None:
+            line["trace_id"] = trace_id
+        span_id = log_sink.get("span_id")
+        if span_id is not None:
+            line["span_id"] = span_id
         print(json.dumps(line, ensure_ascii=False), file=sys.stderr)
 
     def _log_sse_then(self, generator, method, path, correlation_id, start_t,
@@ -587,24 +909,78 @@ class LnplWsgiApp:
                                      "no OpenAPI path %r" % raw_path))
 
     def _check_auth(self, environ, start_response, route, path_info):
-        """`None` when this route's auth requirement is satisfied; otherwise
-        the already-built 401 WSGI response. issue #99, D5: GET reuses this
-        SAME check a POST workflow route already used — no new judgment
-        invented for the read surface."""
+        """`(claims, None)` when this route's auth requirement is satisfied;
+        `(None, response)` otherwise, where `response` is the already-built
+        401 WSGI response. issue #99, D5: GET reuses this SAME check a POST
+        workflow route already used — no new judgment invented for the read
+        surface.
+
+        issue #119: a two-tuple, not a single value doubling as both claims
+        and failure signal — `claims` can legitimately be `{}` (a verified
+        token that carries no extra claims), and an empty dict is falsy, so
+        collapsing "auth passed with no claims" and "auth failed" onto one
+        `None`-checked return would read a rejected token as a pass. Failure
+        is always the second slot; callers branch on that, never on whether
+        `claims` is truthy.
+        """
         if not route["auth"]:
-            return None
+            return None, None
         header = environ.get("HTTP_AUTHORIZATION")
         if header is None:                                          # M3
-            return _json_response(start_response, 401,
+            return None, _json_response(start_response, 401,
                                   problem(401, "auth-missing",
                                          "the service declares `security jwt`; "
                                          "send an Authorization header"))
         if self.token_provider is not None:                          # M3a
-            return self._token_accepted(start_response, header, path_info)
-        return None
+            claims, response = self._token_accepted(
+                start_response, header, path_info)
+            if response is not None:
+                return None, response
+            response = self._role_accepted(start_response, route, claims)   # M3b
+            if response is not None:
+                return None, response
+            return claims, None
+        return None, None
+
+    def _role_accepted(self, start_response, route, claims):
+        """`None` when this route's `security role` requirement (if any) is
+        satisfied by the verified token's role; otherwise the 403 response
+        (issue #119, D5/D8/D9 — M3b, ordered strictly after M3a: a request
+        never gets here without a token that already verified).
+
+        D5 (deny by default): no role claim, or a role claim that does not
+        exactly match, are the SAME outcome — 403. `caller_view` already
+        collapses "absent"/"ambiguous" to `None` (D3); comparing against
+        `None` here would let a required role of `None` (impossible — a
+        route only reaches this with `route["role"]` truthy) accidentally
+        pass a caller with no role, so the `required` guard above is what
+        makes that unreachable, not a coincidence of the comparison.
+
+        D8: the response body does not say which role was required — a 403
+        page is exactly the reconnaissance surface `problem`'s existing
+        401 case (`auth-invalid`) already declines to feed. The specifics go
+        to stderr against a correlation id, the same shape `_token_accepted`
+        already uses for M3a.
+        """
+        required = route.get("role")
+        if not required:
+            return None
+        actual = caller_view(claims)
+        actual_role = actual["role"] if actual is not None else None
+        if actual_role == required:
+            return None
+        correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        print("serve: role rejected (correlation_id=%s): required %r, got %r"
+              % (correlation_id, required, actual_role), file=sys.stderr)
+        return _json_response(start_response, 403,
+                              problem(403, "forbidden",
+                                     "the caller's role does not satisfy this "
+                                     "service's `security role` requirement",
+                                     correlation_id=correlation_id))
 
     def _token_accepted(self, start_response, header, path_info):
-        """`None` when the bearer token passes; otherwise the 401 response.
+        """`(claims, None)` when the bearer token passes; `(None, response)`
+        when it doesn't — see `_check_auth` for why this is a tuple.
 
         The response says only that the token was rejected. Which check failed
         — signature, audience, expiry — is exactly the feedback someone tuning
@@ -614,19 +990,20 @@ class LnplWsgiApp:
         scheme, _, token = header.partition(" ")
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         detail = None
+        claims = None
         if scheme.lower() != "bearer" or not token.strip():
             detail = "authorization scheme is not Bearer"
         else:
             try:
-                self.token_provider.verify(
+                claims = self.token_provider.verify(
                     token.strip(), audience_for_path(path_info))
             except (TokenError, ValueError) as exc:
                 detail = str(exc)
         if detail is None:
-            return None
+            return claims, None
         print("serve: token rejected (correlation_id=%s): %s"
               % (correlation_id, detail), file=sys.stderr)
-        return _json_response(start_response, 401,
+        return None, _json_response(start_response, 401,
                               problem(401, "auth-invalid",
                                      "the bearer token was not accepted",
                                      correlation_id=correlation_id))
@@ -643,7 +1020,7 @@ class LnplWsgiApp:
                                   problem(405, "method-not-allowed",
                                          "only GET is served at %s" % raw_path),
                                   headers=(("Allow", "GET"),))
-        auth_result = self._check_auth(environ, start_response, route, path_info)
+        claims, auth_result = self._check_auth(environ, start_response, route, path_info)
         if auth_result is not None:
             return auth_result
         try:
@@ -671,8 +1048,16 @@ class LnplWsgiApp:
             # No special case for an empty body: it runs as {} and a workflow
             # with a Validation effect rejects it through M7.
             payload = {}
-        return self._run(start_response, route["workflow"], payload,
-                         log_sink=log_sink)
+        # issue #113, D8/D9: absent by default -- a request with no header
+        # takes the exact pre-#113 path through `_run`/`_respond` (D9
+        # regression: byte-identical when no key is sent).
+        idempotency_key = environ.get("HTTP_IDEMPOTENCY_KEY")
+        # issue #113, D13: absent by default -- current behavior unchanged
+        # when no client sends it.
+        if_match = environ.get("HTTP_IF_MATCH")
+        return self._run(environ, start_response, route["workflow"], payload,
+                         claims=claims, log_sink=log_sink,
+                         idempotency_key=idempotency_key, if_match=if_match)
 
     def _do_get(self, environ, start_response, path_info, query, raw_path):
         """issue #99: single-row GET (auto, D1) and list GET (opt-in via
@@ -687,7 +1072,7 @@ class LnplWsgiApp:
             template = "/%s/%s/{id}" % (segments[1], segments[2])
             route = self.routes.get(template)
             if route is not None and route.get("kind") == "get-single":
-                auth_result = self._check_auth(environ, start_response, route, path_info)
+                _, auth_result = self._check_auth(environ, start_response, route, path_info)
                 if auth_result is not None:
                     return auth_result
                 return self._get_single(start_response, route, segments[3])
@@ -697,7 +1082,7 @@ class LnplWsgiApp:
             # tried first and unchanged, this is a fallback, not a rewrite.
             events_route = self.routes.get(path_info)
             if events_route is not None and events_route.get("kind") == "sse-subscribe":
-                auth_result = self._check_auth(environ, start_response, events_route, path_info)
+                _, auth_result = self._check_auth(environ, start_response, events_route, path_info)
                 if auth_result is not None:
                     return auth_result
                 return self._subscribe(environ, start_response, events_route)
@@ -706,10 +1091,20 @@ class LnplWsgiApp:
                                          "no OpenAPI path %r" % raw_path))
         route = self.routes.get(path_info)
         if route is not None and route.get("kind") == "get-list":
-            auth_result = self._check_auth(environ, start_response, route, path_info)
+            _, auth_result = self._check_auth(environ, start_response, route, path_info)
             if auth_result is not None:
                 return auth_result
             return self._get_list(start_response, route, query)
+        if route is not None and route.get("kind") in (
+                "ops-health", "ops-ready", "ops-metrics"):
+            _, auth_result = self._check_auth(environ, start_response, route, path_info)
+            if auth_result is not None:
+                return auth_result
+            if route["kind"] == "ops-health":
+                return self._healthz(start_response)
+            if route["kind"] == "ops-ready":
+                return self._readyz(start_response)
+            return self._metrics(start_response)
         if route is not None:                                        # M2
             return _json_response(start_response, 405,
                                   problem(405, "method-not-allowed",
@@ -746,7 +1141,14 @@ class LnplWsgiApp:
                                   problem(404, "not-found", "no such row"))
         entity_node = self.nodes[entity_id]
         masked = mask_payload(row, _entity_view(self.document, entity_node))
-        return _json_response(start_response, 200, masked, content_type="application/json")
+        # issue #113, D12: opt-in on the SAME `observed_version` attribute
+        # `persist()`'s conditional write already reads (drivers.py) --
+        # `FakeRepository` never sets it, so the `fake` backend never
+        # issues an ETag (nothing to condition a later If-Match on).
+        version = getattr(row, "observed_version", None)
+        headers = () if version is None else (("ETag", _etag_value(version)),)
+        return _json_response(start_response, 200, masked,
+                              content_type="application/json", headers=headers)
 
     def _get_list(self, start_response, route, query):
         entity_id, field = route["entity"], route["field"]
@@ -790,6 +1192,82 @@ class LnplWsgiApp:
         return _json_response(start_response, 200,
                               {"items": items, "next": next_cursor},
                               content_type="application/json")
+
+    def _healthz(self, start_response):
+        """issue #110, D3: liveness. The process is running and this
+        document loaded — nothing else. No repository, no network: a
+        liveness probe that touches a backend turns a transient outage into
+        a pod-restart storm that cannot fix the backend and only adds
+        downtime (the search-cited failure mode D3 exists to avoid)."""
+        return _json_response(start_response, 200, {"status": "ok"},
+                              content_type="application/json")
+
+    def _readyz(self, start_response):
+        """issue #110, D4/D5/D11: readiness. Shutdown (D11) is checked
+        first and short-circuits the rest — a server told to drain has
+        nothing left worth probing. Otherwise the closed list of four
+        (`_readyz_broken`). 503 + problem+json naming every broken check:
+        unlike 401/403 this is operator-facing, not attacker-facing, so
+        D5 does not withhold the specifics the way M3a/M3b do.
+        """
+        if self.shutting_down:
+            return _json_response(start_response, 503,
+                                  problem(503, "not-ready",
+                                         "the server received SIGTERM and is "
+                                         "shutting down",
+                                         checks=["shutting-down"]))
+        broken = self._readyz_broken()
+        if broken:
+            return _json_response(start_response, 503,
+                                  problem(503, "not-ready",
+                                         "readiness check(s) failed: %s"
+                                         % ", ".join(broken),
+                                         checks=broken))
+        return _json_response(start_response, 200, {"status": "ok"},
+                              content_type="application/json")
+
+    def _readyz_broken(self):
+        """issue #110, D4's closed list of four, by name — extending this
+        list is a decision (D4 says so explicitly), not a one-line patch:
+
+          1. routing<->OpenAPI contract  — `build_routes` already asserted
+             this at construction time (`ServeError` otherwise); this
+             object exists only because it passed, so there is nothing left
+             to check here.
+          2. persistent backend reachable — acquire and release one
+             connection.
+          3. `--jwt-secret-env`'s named variable is still present.
+          4. `--network http`'s logical-name endpoint mapping is resolved
+             — like (1), `_resolve_network` already asserted this at
+             construction time (`WsgiConfigError` otherwise).
+
+        Returns the broken ones' names, in the order above; empty means
+        ready.
+        """
+        broken = []
+        if self.repository_factory is not None:
+            try:
+                repository = self.repository_factory()
+            except DriverError:
+                broken.append("repository")
+            else:
+                repository.close()
+        if self.jwt_secret_env and not os.environ.get(self.jwt_secret_env):
+            broken.append("jwt-secret-env")
+        return broken
+
+    def _metrics(self, start_response):
+        """issue #110, D6/D7: only reachable when `--metrics` is on — the
+        route itself does not exist otherwise (`make_wsgi_app` never merges
+        in `build_metrics_route`'s dict), so off is a plain 404 upstream of
+        this method, not a branch inside it. Prometheus text exposition
+        format, rendered from the process-level registry (D9) — no
+        auth (D2), same as healthz/readyz."""
+        payload = self.metrics.render().encode("utf-8")
+        headers = [("Content-Type", "text/plain; version=0.0.4; charset=utf-8"),
+                  ("Content-Length", str(len(payload)))]
+        start_response(_status_line(200), headers)
+        return [payload]
 
     def _last_event_id(self, environ, start_response):
         """`Last-Event-ID` header -> the outbox seq to resume after (issue
@@ -866,39 +1344,142 @@ class LnplWsgiApp:
             if repository is not None:
                 repository.close()
 
-    def _run(self, start_response, workflow_id, payload, log_sink=None):
+    def _run(self, environ, start_response, workflow_id, payload, claims=None,
+            log_sink=None, idempotency_key=None, if_match=None):
         doc = self.document
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         factory = self.repository_factory
         repository = factory() if factory is not None else None
         try:
-            return self._respond(start_response, doc, workflow_id, payload,
-                                 correlation_id, repository, log_sink=log_sink)
+            return self._respond(environ, start_response, doc, workflow_id, payload,
+                                 correlation_id, repository, claims=claims,
+                                 log_sink=log_sink, idempotency_key=idempotency_key,
+                                 if_match=if_match)
         finally:
             # A request that fails must still release its store, or the leak
             # is one connection per failed request.
             if repository is not None:
                 repository.close()
 
-    def _respond(self, start_response, doc, workflow_id, payload, correlation_id,
-                repository, log_sink=None):
+    def _check_if_match(self, doc, workflow_id, payload, repository, if_match,
+                        correlation_id):
+        """`None` when the request may proceed; otherwise `(status, body)`
+        for the 400/412 response to send instead of running the workflow
+        (issue #113, D13).
+
+        Conditions against the FIRST entity the workflow reads
+        (`repo_policy.repository_calls`, declared order) -- the workflow
+        endpoint has no single targeted resource the way a REST PUT/PATCH
+        does, so the row a prior GET's ETag came from is the one this
+        checks. A workflow with no `read` step, or a driver/row with no
+        `observed_version` (D12's same opt-in), has nothing to condition
+        on -- skipped, not enforced, matching D12's "no version, no ETag"
+        the other direction.
+        """
+        claimed_version = _parse_if_match(if_match)
+        if claimed_version is None:
+            return 400, problem(400, "precondition-invalid",
+                                "If-Match %r is not a recognized ETag" % if_match,
+                                correlation_id=correlation_id)
+        if repository is None:
+            return None
+        reads = [entity for entity, op in repository_calls(doc, workflow_id)
+                if op == "read"]
+        if not reads:
+            return None
+        entity_id = reads[0]
+        try:
+            row = repository.execute(entity_id, "read",
+                                     row_key(entity_id, payload))
+        except DriverError:
+            # Let the workflow's own read surface this the normal way
+            # (M8/M14) instead of a second, earlier translation of it.
+            return None
+        observed = getattr(row, "observed_version", None) if row is not None else None
+        if observed is None:
+            return None
+        if observed != claimed_version:
+            return 412, problem(412, "precondition-failed",
+                                "the row has changed since If-Match's version "
+                                "was read", correlation_id=correlation_id)
+        return None
+
+    def _respond(self, environ, start_response, doc, workflow_id, payload,
+                correlation_id, repository, claims=None, log_sink=None,
+                idempotency_key=None, if_match=None):
+        # issue #113, D8/D9/D11: opt-in on the repository object, the same
+        # `getattr` idiom D12's ETag opt-in uses -- covers "no backend at
+        # all" (fake -> `repository is None`) and "a backend that never
+        # implemented it" in one check, no special-casing either.
+        claim = (idempotency_key is not None and repository is not None
+                and hasattr(repository, "idempotency_begin"))
+        if claim:
+            now_ms = int(time.time() * 1000)
+            claim_status, stored = repository.idempotency_begin(
+                workflow_id, idempotency_key, now_ms, self.idempotency_ttl_ms)
+            if claim_status == "in-progress":                       # D8
+                return _json_response(
+                    start_response, 409,
+                    problem(409, "idempotency-in-progress",
+                           "a request with this Idempotency-Key is already running",
+                           correlation_id=correlation_id))
+            if claim_status == "done":                              # D7: replay
+                http_status, body = stored
+                content_type = ("application/json" if http_status == 200
+                                else "application/problem+json")
+                return _json_response(start_response, http_status, body,
+                                      content_type=content_type)
+            # claim_status == "started": this call just claimed the key --
+            # run the workflow below and finalize its outcome before returning.
+        if if_match is not None:
+            precondition = self._check_if_match(doc, workflow_id, payload,
+                                                repository, if_match, correlation_id)
+            if precondition is not None:
+                precondition_status, precondition_body = precondition
+                if claim:
+                    # A precondition failure is as deterministic an outcome
+                    # as any workflow result -- the same stale If-Match
+                    # against the same key should keep replaying it, not
+                    # get stuck at `in-progress` until the TTL clears it.
+                    repository.idempotency_finish(workflow_id, idempotency_key,
+                                                  precondition_status, precondition_body)
+                return _json_response(start_response, precondition_status,
+                                      precondition_body)
         interp = Interpreter(doc, clock=self.clock,
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
-                             network=self.network)
+                             network=self.network, claims=claims)
+        # issue #107: resolved exactly once per request, right where the
+        # Trace this request will use is built — trace_id/span_id/trace_link
+        # are a runtime-decided identity, D3's correlation_id stays separate
+        # and untouched alongside them on the same record.
+        trace_id, span_id, trace_link, tracestate, flags = self._resolve_trace_context(environ)
+        interp.trace.trace_id = trace_id
+        interp.trace.span_id = span_id
+        interp.trace.trace_link = trace_link
+        interp.trace.tracestate = tracestate
+        interp.trace.flags = flags
         try:
             result = interp.run_workflow(workflow_id, payload)
         except Exception:
             # run_workflow reports expected failures in `result`; an escape is
             # a server fault. The body stays generic (no internals) — the
             # correlation id is the handle to the stderr log.
+            #
+            # issue #113: a claim made above is deliberately left
+            # `in-progress` on this path -- an escaped exception means the
+            # workflow's own fate (did it commit, roll back, or crash mid-
+            # write?) is genuinely unknown, so recording ANY definite
+            # outcome here would risk replaying a wrong one. The claim
+            # self-heals via the TTL (D10); see docs/serving.md.
             import traceback
             print("serve: internal error (correlation_id=%s)" % correlation_id,
                   file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             if log_sink is not None:                                 # issue #78
                 log_sink.update(correlation_id=correlation_id, workflow=workflow_id,
-                                skipped=[], diagnostics=to_records(interp.diagnostics))
+                                skipped=[], diagnostics=to_records(interp.diagnostics),
+                                trace_id=interp.trace.trace_id, span_id=interp.trace.span_id)
             if self.exporter is not None:                            # issue #78, D3
                 self.exporter.export(interp.trace.to_dict())
             return _json_response(start_response, 500,
@@ -908,24 +1489,45 @@ class LnplWsgiApp:
         for line in format_lines(interp.diagnostics):
             print(line, file=sys.stderr)
         status, code = map_result(result)
+        if self.metrics is not None:                                  # issue #110, D7/D9
+            service_name = self._workflow_service_names.get(workflow_id, "")
+            wf_name = self.nodes[workflow_id]["name"]
+            self.metrics.record_run(service_name, wf_name, result["status"],
+                                    result["duration_ms"] / 1000.0)
+            if result["status"] != "completed" and result.get("failed_step"):
+                self.metrics.record_step_failure(service_name, wf_name,
+                                                 result["failed_step"], code)
         if log_sink is not None:                                     # issue #78
             log_sink.update(correlation_id=result["correlation_id"],
                             workflow=workflow_id, skipped=result["skipped"],
-                            diagnostics=to_records(interp.diagnostics))
+                            diagnostics=to_records(interp.diagnostics),
+                            trace_id=interp.trace.trace_id, span_id=interp.trace.span_id)
         if self.exporter is not None:                                 # issue #78, D3
             self.exporter.export(interp.trace.to_dict())
         if status == 200:                                            # M9
-            return _json_response(start_response, 200, result,
-                                  content_type="application/json")
-        return _json_response(start_response, status,
-                              problem(status, code, result["failure_reason"],
-                                     correlation_id=result["correlation_id"],
-                                     failed_step=result["failed_step"],
-                                     skipped=result["skipped"]))     # M6/M7/M8
+            body = result
+            content_type = "application/json"
+        else:
+            body = problem(status, code, result["failure_reason"],
+                          correlation_id=result["correlation_id"],
+                          failed_step=result["failed_step"],
+                          skipped=result["skipped"])                # M6/M7/M8
+            content_type = "application/problem+json"
+        if claim:
+            # issue #113, D7/r1: a SEPARATE statement, after `run_workflow`
+            # returned and its own transaction already closed -- see
+            # `idempotency_finish`'s docstring for why this can never be
+            # inside that boundary. Runs for a completed AND a failed run
+            # alike: Stripe replays "the resulting status code and body...
+            # regardless of whether it succeeds or fails."
+            repository.idempotency_finish(workflow_id, idempotency_key, status, body)
+        return _json_response(start_response, status, body, content_type=content_type)
 
 
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
-                  network=None, clock=None, log_format="text", exporter=None):
+                  network=None, clock=None, log_format="text", exporter=None,
+                  trust_incoming_trace=False, jwt_secret_env=None, metrics=False,
+                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -936,13 +1538,43 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     issue #81, D1: the schedule-trigger routes are merged in AFTER
     `build_routes`'s own OpenAPI-contract assertion, so they can never make
     that assertion fail — see `build_schedule_routes`.
+
+    issue #119, D6: a `security role` declared with no `token_provider`
+    configured is presence-checking dressed up as RBAC — the role can never
+    be read off a token that is never verified, so every request to that
+    route would either 401 (if `security jwt` also applies) or silently
+    carry no role and 403 forever. Refusing at construction, before any
+    request is served, is the same "failed launch, not a failed request"
+    posture `WsgiConfigError` already exists for.
     """
     routes = build_routes(document)
     routes.update(build_schedule_routes(document))
+    # issue #110, D1: same reason schedule routes are merged in AFTER the
+    # contract assertion, not before — `/-/healthz`/`/-/readyz` are not an
+    # OpenAPI operation, so folding them into `build_routes`'s own dict
+    # would fail `set(routes) == contract` for every document.
+    routes.update(build_ops_routes(document))
+    # issue #110, D6: `/-/metrics` is only ever created when `--metrics` is
+    # on — off, this call never happens, so the path is undeclared and
+    # 404s the same way any other undeclared path does.
+    if metrics:
+        routes.update(build_metrics_route(document))
+    if token_provider is None:
+        gated = sorted({path for path, route in routes.items() if route.get("role")})
+        if gated:
+            raise WsgiConfigError(
+                "%d route(s) declare `security role` but no token_provider "
+                "is configured — a role can never be read off a token that "
+                "is never verified: %s. Configure `--jwt-secret-env` (or "
+                "pass token_provider=... directly)" % (len(gated), gated[0]))
     return LnplWsgiApp(document, routes,
                        repository_factory=repository_factory,
                        token_provider=token_provider, network=network,
-                       clock=clock, log_format=log_format, exporter=exporter)
+                       clock=clock, log_format=log_format, exporter=exporter,
+                       trust_incoming_trace=trust_incoming_trace,
+                       jwt_secret_env=jwt_secret_env,
+                       metrics_registry=MetricsRegistry() if metrics else None,
+                       idempotency_ttl_ms=idempotency_ttl_ms)
 
 
 # --------------------------------------------------------------------------
@@ -1037,7 +1669,8 @@ def _resolve_network(document, endpoints):
 
 
 def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
-              endpoints=None, log_format=None, trace_exporter=None):
+              endpoints=None, log_format=None, trace_exporter=None,
+              idempotency_ttl_s=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
 
@@ -1057,6 +1690,10 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
       trace_exporter LNPL_TRACE_EXPORTER  built-in `stderr-json`, an
                                            `lnpl.exporters` entry-point name,
                                            or unset (default: no exporting)
+      idempotency_ttl_s LNPL_IDEMPOTENCY_TTL_S  seconds an `Idempotency-Key`
+                                           claim is honored before a repeat
+                                           becomes a fresh miss (issue #113,
+                                           D10); default 86400 (24h)
 
     A `sources`/`backend`/`jwt_secret_env`/`clock`/`log_format`/
     `trace_exporter`/network target that cannot be resolved raises
@@ -1126,7 +1763,19 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     except (ValueError, ExporterError) as exc:
         raise WsgiConfigError(str(exc)) from exc
 
+    if idempotency_ttl_s is None:
+        idempotency_ttl_s = os.environ.get("LNPL_IDEMPOTENCY_TTL_S")
+    try:
+        idempotency_ttl_ms = (DEFAULT_IDEMPOTENCY_TTL_MS
+                              if idempotency_ttl_s is None
+                              else int(idempotency_ttl_s) * 1000)
+    except ValueError as exc:
+        raise WsgiConfigError(
+            "LNPL_IDEMPOTENCY_TTL_S %r is not an integer number of seconds"
+            % idempotency_ttl_s) from exc
+
     return make_wsgi_app(document, repository_factory=repository_factory,
                          token_provider=token_provider, network=network,
                          clock=clock_obj, log_format=log_format,
-                         exporter=exporter)
+                         exporter=exporter,
+                         idempotency_ttl_ms=idempotency_ttl_ms)

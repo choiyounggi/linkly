@@ -177,6 +177,12 @@ PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
 ARGUMENT_MECHANISMS = ("role", "encrypt")
 
+# issue #119, D2: the read-only `caller` scope's closed field vocabulary —
+# mirrors `interp.CALLER_NAMESPACE`/`caller_view`. No `roles` (plural), no
+# `contains` — a single role, same as `interp.caller_view` resolves.
+CALLER_NAMESPACE = "caller"
+CALLER_FIELDS = ("subject", "role")
+
 # `capability http <Name>` (issue #101 / RFC-0027): the outbound HTTP method
 # and auth-scheme vocabularies. Closed sets, widened only on demand (issue
 # text) — the same "add a table row, not a branch" shape as POLICY_NAMES etc.
@@ -826,6 +832,10 @@ def lower(decls, module_name):
             owner_of[id(d)] = last_service
 
     # ---- Service nodes (+ their constraints, emitted later) ----
+    # #112: which services declare `policy rollback`, keyed by `id(d)` so
+    # `owner_of` (above) can answer "does this workflow's service claim
+    # rollback?" for `_check_rollback_escapes_network` below.
+    rollback_services = set()
     service_nodes, constraint_nodes = [], []
     for d in by_kind["service"]:
         sid = derive_id(d.name, "Service")
@@ -834,6 +844,8 @@ def lower(decls, module_name):
         if "policy" in d.clauses:
             pid = ".".join([KIND_PREFIX["Policy"]] + segs)
             rules = [_parse_policy_line(l.tokens, l.lineno) for l in d.clauses["policy"]]
+            if any(r["name"] == "rollback" for r in rules):
+                rollback_services.add(id(d))
             constraint_nodes.append(_node("Policy", pid, rules=rules))
             constraints.append(pid)
             _declaration_diagnostics(
@@ -989,6 +1001,13 @@ def lower(decls, module_name):
                                      d.name, mod.diagnostics)
         _check_derived_never_assigned(ctx.emitted, registry, d.name,
                                       mod.diagnostics)
+        # #112: `owner_of` (RFC-0002 A.2 R2) names the owning service, if
+        # any; `rollback_services` (built above, service loop runs first)
+        # says whether that service declared `policy rollback`.
+        owner = owner_of.get(id(d))
+        has_rollback = owner is not None and id(owner) in rollback_services
+        _check_rollback_escapes_network(ctx.emitted, d.name, has_rollback,
+                                        mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -1450,6 +1469,40 @@ def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics)
                         "add a `set`/`format` step that fills it somewhere in "
                         "this workflow" % (entity["name"], entity["name"],
                                           field["name"]))
+
+
+def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagnostics):
+    """`rollback-escapes-network` (warning) — issue #112.
+
+    RFC-0032 opens one transaction per `run_workflow` execution and rolls it
+    back on failure, but that only undoes the writes (and outbox
+    registrations) the transaction actually owns — a `NetworkCall` step is
+    outside it. A workflow whose service declares `policy rollback` reads as
+    "this undoes itself on failure," and a `call`/`request` step in it makes
+    that a lie: the call already happened by the time anything rolls back,
+    and nothing undoes it.
+
+    `has_rollback` is decided once by the caller from `owner_of` (RFC-0002
+    A.2 R2) before this runs, so a workflow with no owning service is never
+    checked here — with no `policy` block there is no "rollback" claim to
+    contradict. One diagnostic per `NetworkCall` step (not one per
+    workflow): each is a separate step an author has to either move or wrap,
+    so collapsing them into one line would hide the rest.
+    """
+    if not has_rollback:
+        return
+    for step in emitted:
+        if step["kind"] != "NetworkCall":
+            continue
+        line = step.get("line")
+        where_str = ("line %d" % line) if line else workflow_name
+        subject = "call %s" % step.get("target", "unspecified")
+        diagnostics.add(
+            code="rollback-escapes-network",
+            where=where_str, subject=subject, line=line,
+            message="workflow %s declares 'policy rollback', but step "
+                    "`%s` leaves the transaction boundary — a rollback "
+                    "cannot undo it" % (workflow_name, subject))
 
 
 def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
@@ -1963,6 +2016,19 @@ class _Scope:
                        ", ".join(sorted(self.declared_fields)) or "none"))
             return self.declared_fields[field]
 
+        if binding == CALLER_NAMESPACE:
+            # issue #119: the caller scope has no Entity behind it — no field
+            # declaration to borrow a dimension from, so this reads like a
+            # network-result binding (resolved, and dimensionless, at
+            # runtime) rather than like a payload field.
+            if field not in CALLER_FIELDS:
+                raise LowerError(
+                    "workflow %s: %r names caller field %r, which does not "
+                    "exist (the caller scope has only: %s)"
+                    % (self.workflow_name, text, field,
+                       ", ".join(CALLER_FIELDS)))
+            return None
+
         if binding in self.network_bindings:
             # RFC-0027 §2/§4: a network result binding's shape is not
             # declared anywhere (a response body is not an Entity), so any
@@ -2228,6 +2294,16 @@ def _derive_assignment(step_id, line, registry):
             "line %d: %r assigns to the run's input, which is not state — "
             "assign to a row this workflow read (`<binding>.%s`)"
             % (line.lineno, text, field))
+    if binding == CALLER_NAMESPACE:
+        # issue #119, D4: same reasoning as `input` above — RFC-0015 §G15.2
+        # — but the state in question is the CALLER's identity, not this
+        # run's payload, so the message names that instead of repeating
+        # the input wording verbatim.
+        raise LowerError(
+            "line %d: %r assigns to the caller scope, which is not state "
+            "this workflow owns — it is the verified identity of who "
+            "called it, read-only (`<binding>.%s`)"
+            % (line.lineno, text, field))
 
     entity = None
     for ent in registry.values():
@@ -2282,6 +2358,14 @@ def _derive_format(step_id, line, registry):
         raise LowerError(
             "line %d: %r formats into the run's input, which is not state — "
             "format into a row this workflow read (`<binding>.%s`)"
+            % (line.lineno, text, field))
+    if binding == CALLER_NAMESPACE:
+        # issue #119, D4: see `_derive_assignment` — same reasoning, this
+        # function's own verb wording.
+        raise LowerError(
+            "line %d: %r formats into the caller scope, which is not state "
+            "this workflow owns — it is the verified identity of who "
+            "called it, read-only (`<binding>.%s`)"
             % (line.lineno, text, field))
 
     entity = None

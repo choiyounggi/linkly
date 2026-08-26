@@ -166,6 +166,99 @@ class SqliteDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
         return driver
 
 
+class _NoOpRollbackDriver(SqliteRepositoryDriver):
+    """Negative control (`testing/quality/harness-reverse-controls`) — this
+    is a driver the rollback TCK case must NOT pass. `begin`/`commit` are
+    inherited unchanged; `rollback` is deliberately made inert, the exact
+    shape RFC-0032 forbids now that `policy rollback` is enforced."""
+
+    def rollback(self):
+        pass
+
+
+class _InertOutboxDriver(SqliteRepositoryDriver):
+    """Positive-control fixture for the outbox-rollback case's own skip
+    branch (review r1, F1): rows roll back correctly here — only the
+    outbox is inert. `record_emission` is a silent no-op (the same shape
+    `RepositoryDriver.record_emission`'s reference implementation,
+    `interp.FakeRepository`, already answers with) and `read_outbox`
+    always reports empty, so the case must detect "nothing to read back"
+    and skip rather than assert `== []` against a store that was never
+    written to in the first place."""
+
+    def record_emission(self, emission):
+        return None
+
+    def read_outbox(self, event, after_seq=0):
+        return []
+
+
+def _run_one_tck_case(driver_factory, case_name):
+    """Run exactly one `RepositoryDriverTCK` method, in isolation, against a
+    driver built by `driver_factory`, and return the `unittest.TestResult`."""
+
+    class _OneCase(RepositoryDriverTCK, unittest.TestCase):
+        def make_driver(self):
+            return driver_factory()
+
+    result = unittest.TestResult()
+    _OneCase(case_name).run(result)
+    return result
+
+
+class RollbackTCKDiscriminatesTest(unittest.TestCase):
+    """`harness-reverse-controls` §1: before citing "the rollback TCK case
+    catches a no-op rollback", require that it actually does — run it
+    against a driver known to be wrong (negative control) and a driver
+    known to be right (positive control), and assert the opposite verdicts.
+    Both controls also assert `testsRun == 1` (§5): a control that silently
+    collected zero tests would report "no failures" for the wrong reason.
+    """
+
+    CASE = "test_rollback_discards_writes_made_inside_the_transaction"
+
+    def test_the_case_fails_against_a_no_op_rollback_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "noop-store.db")
+
+        result = _run_one_tck_case(lambda: _NoOpRollbackDriver(path),
+                                    self.CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 1)
+
+    def test_the_case_passes_against_the_real_sqlite_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "sqlite-store.db")
+
+        result = _run_one_tck_case(lambda: SqliteRepositoryDriver(path),
+                                    self.CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+    def test_the_outbox_case_skips_rather_than_passes_vacuously_when_inert(self):
+        # review r1, F1: before this fix, the outbox-rollback case's skip
+        # branch (`except NotImplementedError`) never fired against a driver
+        # whose outbox is silently inert (rows roll back fine, the outbox
+        # just never held anything) — `read_outbox(...) == []` then passed
+        # for the wrong reason. This proves the fix actually turned that
+        # vacuous pass into a real skip.
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "inert-outbox-store.db")
+
+        result = _run_one_tck_case(
+            lambda: _InertOutboxDriver(path),
+            "test_rollback_discards_the_outbox_registration_made_with_it")
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.skipped), 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+
 class SharedContractTest(ContractTestCase):
     """The assertions that must hold identically on every driver."""
 

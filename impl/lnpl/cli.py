@@ -14,8 +14,8 @@ import sys
 
 from . import __version__
 from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
-from .drivers import (DriverError, HmacTokenProvider, TokenError,
-                      audience_for_path, open_network, open_repository,
+from .drivers import (DriverError, TokenError, audience_for_path,
+                      open_network, open_repository, open_token_provider,
                       _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
@@ -45,7 +45,7 @@ from .agents import run_cycle
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, _slug, generate as generate_openapi
-from .serve import ServeError, build_routes, serve
+from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
                    resolve_schedule_triggers, _schedule_events)
 from .spec import SpecError, extract, run_manifest
@@ -532,7 +532,9 @@ def cmd_serve(args):
         return 2
     if probe is not None:
         probe.close()
-    token_provider = _token_provider(getattr(args, "jwt_secret_env", None))
+    token_provider = _token_provider(getattr(args, "jwt_secret_env", None),
+                                     getattr(args, "jwt_issuer", None),
+                                     getattr(args, "token_provider", None))
     if token_provider is _REJECTED:
         return 2
     network_spec = getattr(args, "network", "fake")
@@ -552,9 +554,15 @@ def cmd_serve(args):
         return 2
 
     factory = None if backend == "fake" else (lambda: open_repository(backend))
+    idempotency_ttl_s = getattr(args, "idempotency_ttl", None)
     server = serve(doc, args.host, args.port, repository_factory=factory,
                    token_provider=token_provider, network=network,
-                   log_format=log_format, exporter=exporter)
+                   log_format=log_format, exporter=exporter,
+                   trust_incoming_trace=getattr(args, "trust_incoming_trace", False),
+                   jwt_secret_env=getattr(args, "jwt_secret_env", None),
+                   metrics=getattr(args, "metrics", False),
+                   idempotency_ttl_ms=(None if idempotency_ttl_s is None
+                                       else idempotency_ttl_s * 1000))
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -812,27 +820,44 @@ def _open_trace_exporter(spec):
         return _REJECTED
 
 
-def _token_provider(secret_env):
+def _token_provider(secret_env, issuer=None, provider_name=None):
     """`--jwt-secret-env`'s value -> a provider, None when unset, `_REJECTED`
-    when the named variable is missing or too short.
+    when the named variable is missing or too short (or the selected
+    provider itself is misconfigured).
 
     The variable's NAME is what the operator passes and what any message
     quotes; the value is read here and never printed, logged, or put in an
     exception. Validated before the workflow starts for the same reason the
     store is: a secret discovered missing mid-request is an incident, and one
     discovered at startup is a failed launch.
+
+    `issuer` is `--jwt-issuer`'s value (issue #119b, D3): the `iss` this
+    provider expects a verified token to carry. `None` (the flag omitted)
+    keeps the pre-existing `"lnpl"` default byte-identical; an explicit value
+    lets the operator point verification at an external IdP's issuer string.
+
+    `provider_name` is `--token-provider`'s value (issue #119b, Task 03):
+    `None` (the default — every call from `cmd_token` passes nothing here)
+    or `"hmac"` selects the built-in HMAC provider below, unchanged; any
+    other name is resolved through `open_token_provider`'s `lnpl.tokens`
+    entry-points lookup, which does not need `--jwt-secret-env` at all — an
+    external provider's own key material is its own concern (D4).
     """
-    if secret_env is None:
-        return None
-    secret = os.environ.get(secret_env)
-    if not secret:
-        print("error: %s is not set in the environment" % secret_env,
-              file=sys.stderr)
-        return _REJECTED
+    name = provider_name or "hmac"
+    secret = None
+    if name == "hmac":
+        if secret_env is None:
+            return None
+        secret = os.environ.get(secret_env)
+        if not secret:
+            print("error: %s is not set in the environment" % secret_env,
+                  file=sys.stderr)
+            return _REJECTED
     try:
-        return HmacTokenProvider(secret)
-    except TokenError as exc:
-        print("error: %s (from %s)" % (exc, secret_env), file=sys.stderr)
+        return open_token_provider(name, secret=secret, issuer=issuer)
+    except (ValueError, DriverError, TokenError) as exc:
+        detail = "%s (from %s)" % (exc, secret_env) if secret_env else str(exc)
+        print("error: %s" % detail, file=sys.stderr)
         return _REJECTED
 
 
@@ -851,7 +876,7 @@ def cmd_token(args):
         print("error: --path %r is not served (valid: %s)"
               % (args.path, ", ".join(sorted(routes))), file=sys.stderr)
         return 2
-    provider = _token_provider(args.secret_env)
+    provider = _token_provider(args.secret_env, getattr(args, "jwt_issuer", None))
     if provider is _REJECTED:
         return 2
     try:
@@ -1163,6 +1188,23 @@ def main(argv=None):
                          "the bearer token; omitted, the header is only checked "
                          "for presence. The value is never read from the "
                          "command line.")
+    sv.add_argument("--jwt-issuer", default=None, metavar="ISS",
+                    help="expected `iss` claim a verified token must carry "
+                         "(issue #119b). Omitted, defaults to the built-in "
+                         "signer's own issuer, `\"lnpl\"` — byte-identical to "
+                         "the pre-#119b behavior. Only takes effect together "
+                         "with --jwt-secret-env; this does not add RS256/ES256 "
+                         "verification of a real external IdP's signature — "
+                         "that is `lnpl.tokens` SPI territory (docs/backends.md).")
+    sv.add_argument("--token-provider", default=None, metavar="NAME",
+                    help="`security jwt` verifier to use (issue #119b): "
+                         "built-in `hmac` (default — reads --jwt-secret-env/"
+                         "--jwt-issuer, unchanged from before this flag "
+                         "existed) or a name registered under the "
+                         "`lnpl.tokens` entry-points group for RS256/ES256 "
+                         "verification against a real external IdP "
+                         "(docs/backends.md). A registered name cannot "
+                         "shadow `hmac`.")
     sv.add_argument("--log-format", default="text",
                     help="access-log line shape: `text` (default, silent — no "
                          "access log) or `json` (one JSON Line per request to "
@@ -1173,6 +1215,23 @@ def main(argv=None):
                          "`stderr-json`, or a name registered under the "
                          "`lnpl.exporters` entry-points group; omitted, "
                          "nothing is exported (independent of --log-format)")
+    sv.add_argument("--trust-incoming-trace", action="store_true",
+                    help="adopt an inbound `traceparent` header's trace-id "
+                         "for this request (default: off). Off means a "
+                         "malformed OR untrusted inbound traceparent never "
+                         "changes the request's own trace-id: a new one is "
+                         "always minted, and the inbound value is recorded "
+                         "only as a link, never adopted outright")
+    sv.add_argument("--metrics", action="store_true",
+                    help="expose `/-/metrics` (Prometheus text format: "
+                         "workflow run/duration/step-failure RED signals). "
+                         "Default: off — the path itself does not exist "
+                         "and 404s")
+    sv.add_argument("--idempotency-ttl", type=int, default=None, metavar="SECONDS",
+                    help="how long an `Idempotency-Key` claim is honored "
+                         "before a repeat becomes a fresh miss (issue #113, "
+                         "D10); default 86400 (24h). No effect on --backend "
+                         "fake, which cannot durably record a claim (D11)")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",
@@ -1188,6 +1247,11 @@ def main(argv=None):
     tk.add_argument("--secret-env", required=True, metavar="NAME",
                     help="name of the environment variable holding the HS256 "
                          "signing secret (never the secret itself)")
+    tk.add_argument("--jwt-issuer", default=None, metavar="ISS",
+                    help="`iss` claim to mint into the token (issue #119b). "
+                         "Omitted, defaults to \"lnpl\" — byte-identical to "
+                         "the pre-#119b behavior. Set this to match a `serve "
+                         "--jwt-issuer` value under test.")
     tk.add_argument("--ttl", default="15m",
                     help="access-token lifetime (default: 15m)")
     tk.set_defaults(func=cmd_token)
@@ -1296,7 +1360,7 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 2
     except (LexError, ParseError, LowerError, SpecError, OpenApiError,
-            ServeError, KbError) as exc:
+            ServeError, KbError, WsgiConfigError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)
         return 2
     except RunError as exc:

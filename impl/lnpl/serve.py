@@ -15,6 +15,7 @@ The status-code mapping table (M1-M9) is normative in docs/serving.md, next
 to the same table's GET/SSE rows (M10-M16, issues #99/#103).
 """
 
+import signal
 import socketserver
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 
@@ -53,9 +54,25 @@ class _Server(socketserver.ThreadingMixIn, WSGIServer):
     daemon_threads = True
 
 
+def _install_sigterm_handler(app):
+    """issue #110, D11: SIGTERM flips `/-/readyz` to 503 and nothing else —
+    connection draining/actual shutdown stays the WSGI host's job (this
+    module's own module docstring, D4: "this module never gained a signal
+    handler for that", a judgment this keeps rather than reverses). The
+    handler does no I/O — signal context — it only sets a flag
+    `LnplWsgiApp._readyz` already reads; `/-/healthz` never reads it, so
+    liveness stays 200 through a graceful shutdown (a pod k8s would
+    otherwise restart mid-drain for no reason).
+    """
+    def _on_sigterm(signum, frame):
+        app.shutting_down = True
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+
 def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
           token_provider=None, network=None, clock=None, log_format="text",
-          exporter=None):
+          exporter=None, trust_incoming_trace=False, jwt_secret_env=None,
+          metrics=False, idempotency_ttl_ms=None):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -74,9 +91,16 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     (issue #78) is a `TraceExporter` every completed workflow run's Trace is
     handed to; omitted, nothing is exported — independent of `log_format`.
     """
+    kwargs = {}
+    if idempotency_ttl_ms is not None:
+        kwargs["idempotency_ttl_ms"] = idempotency_ttl_ms
     app = make_wsgi_app(document, repository_factory=repository_factory,
                         token_provider=token_provider, network=network,
-                        clock=clock, log_format=log_format, exporter=exporter)
+                        clock=clock, log_format=log_format, exporter=exporter,
+                        trust_incoming_trace=trust_incoming_trace,
+                        jwt_secret_env=jwt_secret_env, metrics=metrics,
+                        **kwargs)
+    _install_sigterm_handler(app)
     server = _Server((host, port), _WSGIRequestHandler)
     server.set_app(app)
     return server

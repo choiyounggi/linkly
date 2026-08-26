@@ -67,6 +67,17 @@ def superseded_numbers():
             if rfc_lint.status_of(read(p)) == "Superseded"]
 
 
+def accepted_numbers():
+    """`Accepted` 상태인 RFC들 — 판정은 rfc_lint 가 한다.
+
+    `total - len(superseded_numbers())`가 아니다: 그 뺄셈은 Superseded가
+    아닌 RFC를 전부 Accepted로 셌다. Draft RFC가 하나도 없던 동안은 우연히
+    맞았을 뿐이고, RFC-0033(첫 Draft)이 그 우연을 깬다.
+    """
+    return [os.path.basename(p)[:4] for p in rfc_paths()
+            if rfc_lint.status_of(read(p)) == "Accepted"]
+
+
 def marketplace_plugin_names():
     import json
     with open(os.path.join(REPO, ".claude-plugin", "marketplace.json"),
@@ -106,7 +117,7 @@ class RfcCountClaimTest(unittest.TestCase):
 
     def test_both_readmes_state_the_real_rfc_counts(self):
         total = len(rfc_numbers())
-        accepted = total - len(superseded_numbers())
+        accepted = len(accepted_numbers())
         self.assertGreater(total, 0, "rfcs/ 를 하나도 찾지 못했다 — 공허한 통과다")
         for path, pattern in (
                 (EN, r"\*\*(\d+) RFCs — (\d+) `Accepted`"),
@@ -118,6 +129,24 @@ class RfcCountClaimTest(unittest.TestCase):
                                  (total, accepted),
                                  "%s 의 RFC 수 주장이 rfcs/ 와 다르다"
                                  % os.path.basename(path))
+
+    def test_a_draft_rfc_is_excluded_from_the_accepted_count(self):
+        """회귀: `accepted = total - superseded`로 되돌아가면, Superseded가
+        아닌 Draft RFC가 Accepted로 잘못 세어진다 — Draft가 하나도 없던
+        동안은 우연히 맞았을 뿐이다(RFC-0033 전까지)."""
+        draft_numbers = [os.path.basename(p)[:4] for p in rfc_paths()
+                          if rfc_lint.status_of(read(p)) == "Draft"]
+        self.assertGreater(
+            len(draft_numbers), 0,
+            "이 회귀가 잡으려는 상황(Draft RFC 존재)이 지금 레포에 없다 "
+            "— Draft가 0개면 이 테스트는 공허하게 통과한다")
+        accepted = accepted_numbers()
+        for number in draft_numbers:
+            with self.subTest(rfc=number):
+                self.assertNotIn(
+                    number, accepted,
+                    "Draft RFC %s가 Accepted 집계에 들어갔다 — "
+                    "`total - superseded` 식으로 되돌아간 회귀다" % number)
 
 
 class TableCompletenessTest(unittest.TestCase):

@@ -43,5 +43,8 @@
 | RFC-0030 `create` 결과 바인딩과 payload 시드 | `create <명사> as <이름>`로 생성 직후 그 행에 `set`/`format`/`respond`를 쓰고 싶다 — payload 동명 필드가 `derived` 제외하고 왜 `as` 유무와 무관하게 시드되는지, `as` 없는 `create`는 정확히 무엇이 바이트 동일한지 | `rfcs/0030-create-result-binding-and-payload-seed.md` |
 | RFC-0031 다중 파일 컴파일 단위 | 서비스 하나를 여러 `.lnpl` 파일로 나누고 싶다 — 파일을 여러 개 주거나 디렉터리를 줄 때 병합 순서가 무엇으로 정해지는지, 이름이 겹치면 왜 두 파일:줄이 함께 나오는지, 파일 하나만 줄 때 왜 여전히 바이트 동일한지 | `rfcs/0031-multi-file-compilation-unit.md` |
 | RFC-0032 실행-스코프 트랜잭션 경계와 `policy rollback` 집행 승격 | `policy rollback`이 실패한 실행의 쓰기를 정말 되돌리는지, 그 경계가 어디까지인지 — 명시적 `Transaction` 노드 없이 워크플로 실행 전체가 왜 암묵적 트랜잭션 하나가 되는지, `emit`으로 등록한 outbox 행이 그 롤백에 왜 같이 묶이는지 | `rfcs/0032-transaction-boundary-and-rollback-enforcement.md` |
+| RFC-0033 선언 이름공간 — 디렉터리 스코프와 `internal/` 가시성 | (Draft) 서로 다른 도메인 디렉터리에서 같은 엔티티 이름(`Order` 등)을 쓰고 싶다 — 디렉터리가 어떻게 네임스페이스가 되는지, `internal/`이 가시성을 어떻게 좁히는지, 짧은 이름이 어느 순서로 해소되는지, `derive_id`가 네임스페이스를 왜 대부분의 골든 IR에 영향 없이 담는지 | `rfcs/0033-namespace-directories.md` |
+| RFC-0034 NetworkCall 보상(compensation) 방식 결정 — `compensate` 절 + `rollback-escapes-network` | (Draft) `policy rollback`을 선언한 워크플로에 `call`/`request`를 쓰고 싶다 — `rollback-escapes-network` 경고가 왜 나는지, `compensate` 절이 그 경고를 어떻게 침묵시킬지, outbox 방식을 왜 기각했는지 | `rfcs/0034-network-call-compensation.md` |
+| RFC-0035 인가 집행의 유보된 범위 — 워크플로 수준 role, `authorize`의 운명, `security encrypt` | (Draft) 워크플로마다 다른 `security role`을 왜 아직 못 쓰는지, `authorize` 동사가 왜 아직 선언과 연결되지 않았는지, `security encrypt`를 계속 써도 되는지 궁금하다 — 셋 다 이슈 #119가 미결로 남긴 질문이고, 이 RFC가 지금은 안 하는 이유와 재검토 조건을 적는다 | `rfcs/0035-authorization-enforcement-deferred-scope.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

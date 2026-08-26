@@ -67,6 +67,16 @@ BUSY_TIMEOUT_MS = 5000
 # HMAC-secret confusion both exploit.
 ACCEPTED_ALGS = ("HS256",)
 ISSUER = "lnpl"
+# issue #119b, D1/D8: the entry-points group an external package registers a
+# TokenProvider factory under (`[project.entry-points."lnpl.tokens"]` in its
+# own pyproject.toml — `docs/backends.md` has the example, same shape as
+# `lnpl.drivers` §8). The built-in name (`BUILTIN_TOKEN_PROVIDERS`, below) is
+# matched before this group is ever consulted, so a registered entry-point
+# can never shadow it — RS256/ES256 verification lives behind this SPI, not
+# in this module (D1: constant-time comparison and padding belong to
+# `cryptography`, not to code this repo maintains by hand).
+TOKENS_ENTRY_POINT_GROUP = "lnpl.tokens"
+BUILTIN_TOKEN_PROVIDERS = ("hmac",)
 # Bounded clock skew. RFC 7519 sanctions "a few minutes" at most; 60s is enough
 # for hosts that agree to within a minute and short enough that an expired
 # token does not keep working.
@@ -89,6 +99,11 @@ class DriverError(Exception):
 
 class TokenError(DriverError):
     """A token could not be issued, or failed verification."""
+
+
+class ConflictError(DriverError):
+    """A write collided with existing state. Not retryable: retrying the same
+    non-idempotent effect only reproduces the same conflict."""
 
 
 # --------------------------------------------------------------------------
@@ -259,9 +274,18 @@ class NetworkDriver:
     """The `NetworkCall` effect's adapter contract (RFC-0027 §1, issue #64).
 
     Reference implementation: `FakeNetworkDriver` (deterministic, no I/O).
+
+    issue #107, D11: `call` takes an optional `trace_headers` — a
+    `{header-name: value}` mapping the runtime builds (W3C `traceparent`,
+    verbatim `tracestate`). It defaults to `None`, so every pre-existing
+    caller is unaffected. As of this extension there are zero external
+    `NetworkDriver` implementations in the wild (issue #115), so widening
+    the contract now is safe. D8: these are observation headers, a runtime
+    output, never author-declared — a driver applies them AFTER any
+    capability-declared headers, so the runtime value always wins.
     """
 
-    def call(self, target, payload, timeout_ms):
+    def call(self, target, payload, timeout_ms, trace_headers=None):
         """Call `target` once.
 
         -> (status: int, body: dict). A response was received for every
@@ -367,6 +391,41 @@ _SELECT_OUTBOX_SINCE = ("SELECT seq, emission_id, event, payload, created_at "
 _MARK_DELIVERED = ("UPDATE lnpl_outbox SET delivered_at = ? "
                    "WHERE seq = ? AND delivered_at IS NULL")
 
+# issue #113, r1: `(workflow_id, key)` claims a slot the moment a request
+# with that `Idempotency-Key` arrives -- INSERTed and committed immediately,
+# so a genuinely concurrent second request with the same key sees it right
+# away (`idempotency_begin` below). The final disposition (`http_status`/
+# `body`) is written by a SEPARATE statement, AFTER `run_workflow` returns,
+# deliberately outside that execution's own commit/rollback boundary: the
+# plan first had this row's whole lifecycle living inside that boundary, but
+# `run_workflow` calls `self.repo.rollback()` unconditionally on any failure
+# (`interp.py`), and a rollback there would undo the finalizing UPDATE and
+# revert the row to `in-progress` forever -- worse than not having the
+# feature. `status` is `in-progress` or `done`; `done` is what a later
+# request replays regardless of whether the run it recorded succeeded or
+# failed (Stripe's contract: a same-key retry gets back the SAME result,
+# never a second execution).
+_CREATE_IDEMPOTENCY_TABLE = """
+CREATE TABLE IF NOT EXISTS lnpl_idempotency (
+    key         TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    http_status INTEGER,
+    body        TEXT,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (workflow_id, key)
+)
+"""
+_SELECT_IDEMPOTENCY = ("SELECT status, http_status, body, created_at "
+                       "FROM lnpl_idempotency WHERE workflow_id = ? AND key = ?")
+_INSERT_IDEMPOTENCY_IN_PROGRESS = (
+    "INSERT INTO lnpl_idempotency (key, workflow_id, status, created_at) "
+    "VALUES (?, ?, 'in-progress', ?)")
+_UPDATE_IDEMPOTENCY_DONE = (
+    "UPDATE lnpl_idempotency SET status = 'done', http_status = ?, body = ? "
+    "WHERE workflow_id = ? AND key = ?")
+_DELETE_IDEMPOTENCY = "DELETE FROM lnpl_idempotency WHERE workflow_id = ? AND key = ?"
+
 
 def _encode(row):
     return json.dumps(row, ensure_ascii=False, sort_keys=True)
@@ -417,6 +476,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
                 self._conn.execute("PRAGMA synchronous = NORMAL")
             self._conn.execute(_CREATE_TABLE)
             self._conn.execute(_CREATE_OUTBOX_TABLE)
+            self._conn.execute(_CREATE_IDEMPOTENCY_TABLE)
             self._conn.commit()
         except sqlite3.Error as exc:
             raise DriverError("cannot open the sqlite store at %r: %s"
@@ -480,7 +540,18 @@ class SqliteRepositoryDriver(RepositoryDriver):
         write keeps every read up to that point in ordinary autocommit
         mode — always current — so the first write's conditional UPDATE
         is what decides a conflict, on a fresh view, the same as before
-        this RFC per-op-committed every write individually."""
+        this RFC per-op-committed every write individually.
+
+        A second `begin()` before this boundary is closed is refused
+        (`DriverError`): which `rollback` would then undo, and how far,
+        would otherwise depend on the driver, making `policy rollback`
+        drift from one implicit transaction per execution into something
+        driver-dependent."""
+        if self._in_transaction:
+            raise DriverError(
+                "begin() called while a transaction is already open — "
+                "nested transactions are not supported; commit() or "
+                "rollback() the open one first")
         self._in_transaction = True
 
     def commit(self):
@@ -520,6 +591,71 @@ class SqliteRepositoryDriver(RepositoryDriver):
         `rollback` decides this write's fate along with the rest of the run."""
         if not self._in_transaction:
             self._conn.commit()
+
+    def idempotency_begin(self, workflow_id, key, now_ms, ttl_ms):
+        """Claim `(workflow_id, key)` -- issue #113, r1. Two outcomes ask the
+        caller to run nothing: `("in-progress", None)` (someone else owns
+        this key right now -- 409) or `("done", (http_status, body))` (a
+        prior run already finished -- replay it, whether it succeeded or
+        failed). `("started", None)` means this call just claimed the key
+        and the caller should run the workflow.
+
+        Every statement here is its own immediately-committed write,
+        deliberately outside `begin`/`commit`/`rollback` above: a concurrent
+        request with the same key must see the claim the instant it lands,
+        long before `run_workflow` ever calls `begin()`.
+        """
+        try:
+            row = self._conn.execute(_SELECT_IDEMPOTENCY,
+                                     (workflow_id, key)).fetchone()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot read idempotency key %r: %s"
+                              % (key, exc)) from exc
+        if row is not None:
+            status, http_status, body, created_at = row
+            if now_ms - created_at < ttl_ms:
+                if status == "in-progress":
+                    return "in-progress", None
+                return "done", (http_status,
+                                json.loads(body) if body is not None else None)
+            # D10: past its TTL -- clear it and fall through to claim fresh,
+            # the same as if this key had never been used.
+            try:
+                self._conn.execute(_DELETE_IDEMPOTENCY, (workflow_id, key))
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                raise DriverError(
+                    "cannot clear expired idempotency key %r: %s"
+                    % (key, exc)) from exc
+        try:
+            self._conn.execute(_INSERT_IDEMPOTENCY_IN_PROGRESS,
+                               (key, workflow_id, now_ms))
+            self._conn.commit()
+            return "started", None
+        except sqlite3.IntegrityError:
+            # Lost a race with a concurrent claim between the SELECT above
+            # and this INSERT -- the other request owns the key now.
+            return "in-progress", None
+        except sqlite3.Error as exc:
+            raise DriverError("cannot claim idempotency key %r: %s"
+                              % (key, exc)) from exc
+
+    def idempotency_finish(self, workflow_id, key, http_status, body):
+        """Record the final disposition -- a SEPARATE statement, issued
+        AFTER `run_workflow` returns (issue #113, r1). Deliberately outside
+        that execution's own commit/rollback boundary: `run_workflow` calls
+        `self.repo.rollback()` unconditionally on any failure, and writing
+        this finalize step INSIDE that boundary would have a failed run's
+        rollback undo it too -- reverting the row to `in-progress` forever,
+        which blocks every future retry instead of replaying the failure
+        (docs/serving.md's idempotency section)."""
+        try:
+            self._conn.execute(_UPDATE_IDEMPOTENCY_DONE,
+                               (http_status, json.dumps(body), workflow_id, key))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot record idempotency result for %r: %s"
+                              % (key, exc)) from exc
 
     def execute(self, entity_id, operation, key):
         if operation in READ_OPS:
@@ -694,8 +830,8 @@ class SqliteRepositoryDriver(RepositoryDriver):
             # suite asserts this text against both drivers, and the rule it
             # guards — never retry a non-idempotent effect — is only testable
             # while a create can actually fail.
-            raise DriverError("repository create conflicts: %s already exists"
-                              % entity_id) from exc
+            raise ConflictError("repository create conflicts: %s already exists"
+                                % entity_id) from exc
         except sqlite3.Error as exc:
             raise DriverError("cannot create %s: %s" % (entity_id, exc)) from exc
         return {"affected": 1}
@@ -767,7 +903,7 @@ class HmacTokenProvider(TokenProvider):
     different name. `docs/backends.md` records that.
     """
 
-    def __init__(self, secret):
+    def __init__(self, secret, issuer=None):
         if isinstance(secret, str):
             secret = secret.encode("utf-8")
         # Measured in bytes, not characters: "é" * 16 is 16 characters and 32
@@ -776,6 +912,25 @@ class HmacTokenProvider(TokenProvider):
             raise TokenError(
                 "the JWT signing secret must be at least %d bytes, got %d"
                 % (MIN_SECRET_BYTES, len(secret)))
+        # issue #119b, D3: `issuer` replaces the module-level `ISSUER` hard-
+        # coding. `None` (the default, e.g. `--jwt-issuer` unset) keeps the
+        # pre-existing `"lnpl"` behavior byte-identical — the module constant
+        # stays the single source of that default. `""` is not "unset", it is
+        # an operator-supplied empty issuer, which can never match a real
+        # token's `iss` and is refused up front rather than accepted as a
+        # value that would silently reject every token at verify() time.
+        if issuer == "":
+            raise TokenError(
+                "--jwt-issuer must not be empty (omit it for the default %r)"
+                % ISSUER)
+        self._issuer = ISSUER if issuer is None else issuer
+        # Instance copy of the module allowlist (issue #119b, Task 01): still
+        # fixed at `("HS256",)` here, never widened by this task (D1 — RS256/
+        # ES256 live behind the `lnpl.tokens` SPI, not in this class). Reading
+        # `self._accepted_algs` rather than the module constant is what lets a
+        # `lnpl.tokens` SPI provider built on this same checklist carry its
+        # own allowlist without this method changing.
+        self._accepted_algs = ACCEPTED_ALGS
         self._secret = secret
 
     # -- contract ----------------------------------------------------------
@@ -786,8 +941,8 @@ class HmacTokenProvider(TokenProvider):
         # already-expiring token, and `or` would silently hand back the
         # 15-minute default instead.
         ttl_s = (DEFAULT_TTL_MS if ttl_ms is None else ttl_ms) // 1000
-        header = {"alg": ACCEPTED_ALGS[0], "typ": "JWT"}
-        claims = {"iss": ISSUER, "aud": audience, "sub": subject,
+        header = {"alg": self._accepted_algs[0], "typ": "JWT"}
+        claims = {"iss": self._issuer, "aud": audience, "sub": subject,
                   "jti": uuid.uuid4().hex, "iat": now, "nbf": now,
                   "exp": now + ttl_s}
         signing_input = "%s.%s" % (
@@ -808,22 +963,20 @@ class HmacTokenProvider(TokenProvider):
 
         header = _decode_json_segment(encoded_header, "header")
         alg = header.get("alg")
-        if alg not in ACCEPTED_ALGS:
+        if alg not in self._accepted_algs:
             raise TokenError("unaccepted alg %r (accepted: %s)"
-                             % (alg, ", ".join(ACCEPTED_ALGS)))
+                             % (alg, ", ".join(self._accepted_algs)))
 
-        expected = self._sign("%s.%s" % (encoded_header, encoded_claims))
-        if not hmac.compare_digest(expected, _b64u_decode(encoded_signature)):
-            raise TokenError("token signature does not verify")
+        self._verify_signature(encoded_header, encoded_claims, encoded_signature)
 
         if header.get("typ") != "JWT":
             raise TokenError("unexpected typ %r (expected 'JWT')"
                              % header.get("typ"))
 
         claims = _decode_json_segment(encoded_claims, "claims")
-        if claims.get("iss") != ISSUER:
+        if claims.get("iss") != self._issuer:
             raise TokenError("unexpected iss %r (expected %r)"
-                             % (claims.get("iss"), ISSUER))
+                             % (claims.get("iss"), self._issuer))
 
         declared = claims.get("aud")
         holds = declared if isinstance(declared, list) else [declared]
@@ -842,6 +995,19 @@ class HmacTokenProvider(TokenProvider):
         return claims
 
     # -- internals ---------------------------------------------------------
+
+    def _verify_signature(self, encoded_header, encoded_claims, encoded_signature):
+        """Isolated from `verify()`'s checklist as its own method (issue
+        #119b, Task 02) so `TokenProviderTCK`'s negative control
+        (`_NoSignatureCheckProvider`, `impl/tests/test_token_contract.py`)
+        can override exactly this one step and nothing else — the same shape
+        `RepositoryDriverTCK`'s `_NoOpRollbackDriver` uses against
+        `rollback()`. The call site in `verify()` did not move, so this is
+        not a checklist-order change: the algorithm is still settled first,
+        this still runs before any claim is trusted."""
+        expected = self._sign("%s.%s" % (encoded_header, encoded_claims))
+        if not hmac.compare_digest(expected, _b64u_decode(encoded_signature)):
+            raise TokenError("token signature does not verify")
 
     def _sign(self, signing_input):
         return hmac.new(self._secret, signing_input.encode("ascii"),
@@ -884,8 +1050,13 @@ class FakeNetworkDriver(NetworkDriver):
 
     def __init__(self, stubs=None):
         self.stubs = dict(stubs or {})
+        # issue #107: every call recorded, trace headers included — the
+        # unit-test-facing way to assert what the runtime sent.
+        self.received = []
 
-    def call(self, target, payload, timeout_ms):
+    def call(self, target, payload, timeout_ms, trace_headers=None):
+        self.received.append({"target": target, "payload": payload,
+                              "trace_headers": dict(trace_headers or {})})
         return self.stubs.get(target, (200, {}))
 
     def close(self):
@@ -942,7 +1113,7 @@ class HttpNetworkDriver(NetworkDriver):
         headers = dict(cap["headers"]) if cap else {}
         return url, method, headers
 
-    def call(self, target, payload, timeout_ms):
+    def call(self, target, payload, timeout_ms, trace_headers=None):
         import http.client
         import urllib.parse
 
@@ -967,6 +1138,10 @@ class HttpNetworkDriver(NetworkDriver):
         if method != "GET":
             body = json.dumps(payload).encode("utf-8")
             headers = dict(headers, **{"Content-Type": "application/json"})
+        # issue #107, D8: trace headers are merged in LAST, after any
+        # capability-declared headers — the runtime's observation headers
+        # always win over an author's declaration, never the reverse.
+        headers.update(trace_headers or {})
         try:
             conn = http.client.HTTPSConnection(
                 parts.hostname, parts.port, timeout=timeout_ms / 1000
@@ -1050,6 +1225,77 @@ def open_repository(spec):
         "unknown backend %r (built-in: %s; registered entry-points: %s)"
         % (spec, ", ".join(BACKENDS),
            ", ".join(_registered_scheme_names()) or "none"))
+
+
+def _token_entry_points():
+    """Every entry-point registered under `lnpl.tokens` — same stdlib
+    version split `_driver_entry_points()` handles (`pyproject.toml`'s
+    declared floor is 3.9)."""
+    try:
+        return importlib_metadata.entry_points(group=TOKENS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            TOKENS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_token_provider_names():
+    return sorted(ep.name for ep in _token_entry_points())
+
+
+def open_token_provider(name, secret=None, issuer=None):
+    """`--token-provider`'s value -> a TokenProvider (issue #119b, Task 03).
+
+    `name` defaults to `"hmac"`, the built-in `HmacTokenProvider` — `secret`
+    and `issuer` are threaded straight to its constructor, so an unspecified
+    `name` together with the pre-existing `--jwt-secret-env`/`--jwt-issuer`
+    wiring is byte-identical to before this task (D3 held again here, one
+    layer up).
+
+    Beyond `"hmac"`, `name` is looked up in the `lnpl.tokens` entry-points
+    group (D1) — an external package registers `name = "module:factory"`
+    (`docs/backends.md` has the example) and `factory()` — no arguments,
+    unlike `open_repository`'s `factory(arg)`: a token provider's own
+    configuration (signing/verification keys, JWKS endpoint, key rotation —
+    D4) is that package's concern, not a string this CLI parses on its
+    behalf. D1 draws the line there deliberately: RS256/ES256 constant-time
+    comparison and padding are `cryptography`'s job, never reimplemented here.
+
+    D8 — a registered entry-point can never shadow the built-in name: unlike
+    `open_repository` (which lets the built-in check simply run first and
+    never look at a same-named entry-point at all), a `name="hmac"` request
+    actively checks for a colliding registration and refuses it outright,
+    naming the conflicting package. Token identity is the trust boundary
+    `security role` depends on (issue #119 A) — a same-named package silently
+    winning here is a worse outcome than a same-named package silently
+    losing, which is why this differs from the repository driver precedent.
+    """
+    entry_points = list(_token_entry_points())
+    if name == "hmac":
+        shadow = next((ep for ep in entry_points if ep.name == "hmac"), None)
+        if shadow is not None:
+            raise TokenError(
+                "entry-point %r (registered via %r) attempts to shadow the "
+                "built-in token provider %r; built-in names are reserved "
+                "(lnpl.tokens SPI, docs/backends.md)"
+                % (shadow.name, shadow.value, shadow.name))
+        if secret is None:
+            raise TokenError(
+                "the built-in \"hmac\" token provider needs a signing "
+                "secret (--jwt-secret-env)")
+        return HmacTokenProvider(secret, issuer=issuer)
+    for entry_point in entry_points:
+        if entry_point.name == name:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "token provider %r registered via entry-point %r failed "
+                    "to load: %s" % (name, entry_point.value, exc)) from exc
+            return factory()
+    raise ValueError(
+        "unknown token provider %r (built-in: %s; registered entry-points: %s)"
+        % (name, ", ".join(BUILTIN_TOKEN_PROVIDERS),
+           ", ".join(_registered_token_provider_names()) or "none"))
 
 
 def open_network(spec, endpoints=None, capabilities=None):

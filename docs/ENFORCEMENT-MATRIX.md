@@ -73,7 +73,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 롤백한다(issue #79, RFC-0032) |
 | policy | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
-| security | role | unenforced | declared-not-enforced | 역할을 무엇과도 대조하지 않는다 |
+| security | role | enforced | — | 이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`(docs/serving.md M3b). `jwt`와 달리 "약한 경로"가 없다 — `security role`을 선언하고도 `serve`가 뜬다면 token_provider 없이는 기동 자체가 rc 2로 거부되기 때문이다(D6) |
 | security | encrypt | unenforced | declared-not-enforced | 필드를 암호화하지 않는다. Password 마스킹은 타입이 하는 별개 동작이다 |
 | performance | response | measured | declared-measured-only | 실행마다 측정·보고하지만 예산 초과 실행을 차단하지 않는다 |
 | performance | cache | enforced | — | 모든 CacheAccess set이 쓰는 TTL 예산을 소유한다 |
@@ -108,7 +108,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | unknown-entity | warning | 스텝 객체가 선언된 entity 중 어느 것과도(소문자 연결형·필드명) 매칭되지 않는데, 모듈이 entity를 정확히 1개 선언해 그 하나로 조용히 해석될 때 (issue #91) | 컴파일 타임 — lowering |
 | declared-not-enforced | info | §B에서 status가 `unenforced`인 선언이 있을 때 | 컴파일 타임 — lowering |
 | declared-measured-only | info | §B에서 status가 `measured`인 선언이 있을 때 | 컴파일 타임 — lowering |
-| authorization-not-verified | info | Authorization Effect가 실제로 실행됐을 때 | 런타임 — 인터프리터 |
+| authorization-not-verified | warning | Authorization Effect가 실제로 실행됐을 때 | 런타임 — 인터프리터 |
 | guard-skipped-steps | warning | 가드가 false여서 선언된 스텝이 실행되지 않았을 때 | 런타임 — 인터프리터 |
 | guard-orphaned-steps | warning | 가드 조건이 참조한 엔티티를, 그 가드 뒤의 비가드 스텝이 읽거나 쓸 때 (RFC-0023) | 컴파일 타임 — lowering |
 | validation-sample-derived | info | mode B 빌드가 Validation 결과를 파생 sample payload로 확정했을 때 | 컴파일 타임 — mode B 빌드 |
@@ -118,6 +118,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | derived-never-assigned | warning | `derived` 필드를 가진 entity에 `create` 스텝이 있는데, 그 필드를 채우는 `set`/`format`이 같은 워크플로 안에 하나도 없을 때 (issue #95) | 컴파일 타임 — lowering |
 | declared-not-bound | info | `call`/`request`의 target이 URL 리터럴이 아닌 논리명인데, 그 이름을 선언한 `capability http`가 모듈에 없을 때 (issue #101) — method POST·인증 없음으로 그대로 실행된다 | 컴파일 타임 — lowering |
 | stored-row-shape-mismatch | warning | `read`/`find`가 돌려준 행에 entity가 선언한 필드가 없거나(missing), 있어도 선언된 타입과 맞지 않을 때(type) — 값은 절대 싣지 않는다 (issue #85) | 런타임 — 인터프리터 |
+| rollback-escapes-network | warning | `policy rollback`을 선언한 서비스가 소유한 워크플로에 `call`/`request`(NetworkCall) 스텝이 있을 때 — 저장소 트랜잭션 밖이라 rollback이 되돌리지 못한다. 스텝마다 한 건씩 (issue #112) | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -126,7 +127,9 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 `warning`(`unknown-verb` · `unknown-entity` · `guard-skipped-steps` ·
 `guard-orphaned-steps` · `aggregation-orphaned-list` · `event-source-mismatch` ·
 `derived-never-assigned` · `stored-row-shape-mismatch`(프로그램이 아니라
-데이터를 고치면 사라진다는 점만 다르다 — 이슈 #85, RFC-0021 질문의 데이터판)),
+데이터를 고치면 사라진다는 점만 다르다 — 이슈 #85, RFC-0021 질문의 데이터판) ·
+`rollback-escapes-network`(호출을 경계 밖으로 옮기거나 `rollback`을 떼면
+사라진다 — 이슈 #112)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만
@@ -148,7 +151,7 @@ stderr로 출력하며, 형식은 `diagnostics.py`의 `format_lines()` 한 곳�
 | 남은 것 | 왜 |
 |---------|-----|
 | `redis` 실제 바인딩 | RFC-0003의 cache TTL이 주입된 **가상 시계** 단위라 프로세스를 넘으면 뜻이 없다. 영속 캐시는 새 프로세스의 시계 0에 대해 언제나 신선해 보인다 — 만료 계약이 거짓인 저장소가 된다 |
-| `security role` / `security encrypt` | 역할 검사와 필드 암호화는 손대지 않았다 |
+| `security encrypt` | 필드 암호화는 손대지 않았다. `security role`은 issue #119가 이후 집행으로 옮겼다 |
 | refresh 토큰·회전·폐기 목록 | 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다 |
 
 표의 status를 고치는 것만으로 집행이 생기지는 않는다. 정본은 코드이므로

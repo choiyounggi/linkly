@@ -24,7 +24,7 @@
 | `policy rollback` | **enforced** | run_workflow opens a transaction before its first step and rolls it back on any failure, discarding every write (and outbox registration) that run made |
 | `policy parallel` | **unenforced** | parsed, but the execution plan never reads it |
 | `security jwt` | **unenforced** | the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md) |
-| `security role` | **unenforced** | the role is never checked against anything |
+| `security role` | **enforced** | every route the declaring service owns requires the verified token's role to exactly match `<r>`; mismatch or absence is 403 `forbidden` (docs/serving.md M3b) |
 | `security encrypt` | **unenforced** | the field is not encrypted (Password masking is a separate, type-driven behaviour) |
 | `performance response` | **measured** | measured and reported per run, but an over-budget run is not blocked |
 | `performance cache` | **enforced** | owns the TTL budget every CacheAccess set is written with |
@@ -43,7 +43,7 @@
 | `unknown-entity` | **warning** |
 | `declared-not-enforced` | **info** |
 | `declared-measured-only` | **info** |
-| `authorization-not-verified` | **info** |
+| `authorization-not-verified` | **warning** |
 | `guard-skipped-steps` | **warning** |
 | `guard-orphaned-steps` | **warning** |
 | `validation-sample-derived` | **info** |
@@ -53,3 +53,4 @@
 | `derived-never-assigned` | **warning** |
 | `declared-not-bound` | **info** |
 | `stored-row-shape-mismatch` | **warning** |
+| `rollback-escapes-network` | **warning** |
