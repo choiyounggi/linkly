@@ -29,12 +29,15 @@ def compile_file(path):
 
 
 def result_stub(status="completed", failed_step=None, failure_reason=None,
-                steps=(), skipped=()):
+                steps=(), skipped=(), failure_kind=None):
     """A `run_workflow` result with only the keys `map_result` reads."""
-    return {"status": status, "failed_step": failed_step,
-            "failure_reason": failure_reason, "steps": list(steps),
-            "skipped": list(skipped), "bindings": {}, "duration_ms": 5,
-            "correlation_id": "cid-test"}
+    result = {"status": status, "failed_step": failed_step,
+              "failure_reason": failure_reason, "steps": list(steps),
+              "skipped": list(skipped), "bindings": {}, "duration_ms": 5,
+              "correlation_id": "cid-test"}
+    if failure_kind is not None:
+        result["failure_kind"] = failure_kind
+    return result
 
 
 class MapResultTest(unittest.TestCase):
@@ -53,6 +56,7 @@ class MapResultTest(unittest.TestCase):
     def test_m6_deadline_after_step_maps_to_504(self):
         result = result_stub(status="failed", failed_step="update",
                              failure_reason="deadline exceeded after step 'update'",
+                             failure_kind="deadline",
                              steps=[{"step": "update", "effects": ["RepositoryCall"]}])
         self.assertEqual((504, "deadline-exceeded"), map_result(result))
 
@@ -62,6 +66,7 @@ class MapResultTest(unittest.TestCase):
         result = result_stub(
             status="failed", failed_step="validate input",
             failure_reason="deadline exhausted before step 'validate input'",
+            failure_kind="deadline",
             steps=[{"step": "validate input", "effects": ["Validation"]}])
         self.assertEqual((504, "deadline-exceeded"), map_result(result))
 

@@ -80,6 +80,7 @@ class MapResultConflictTest(unittest.TestCase):
         deadline_result = result_stub(
             status="failed", failed_step="update",
             failure_reason="deadline exceeded after step 'update'",
+            failure_kind="deadline",
             steps=[{"step": "update", "effects": ["RepositoryCall"]}])
         self.assertEqual((504, "deadline-exceeded"), map_result(deadline_result))
 

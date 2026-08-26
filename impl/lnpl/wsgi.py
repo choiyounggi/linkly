@@ -630,15 +630,15 @@ def _workflow_service_names(document):
 
 # The post-run mapping rows, in decision order. M6 is decided before M7: a
 # deadline that lands on a validation step ("deadline exhausted before step
-# 'validate input'") is a timeout, not a payload rejection. The prefix is
-# pinned to interp.py's two message forms ("deadline exceeded after step %r",
-# "deadline exhausted before step %r") — the result carries no typed failure
-# class, and the runner contract is consume-only here.
+# 'validate input'") is a timeout, not a payload rejection. issue #128: M6
+# reads the typed `failure_kind` interp.py's two deadline sites both set,
+# same as M8a's conflict check below — not a match against
+# `failure_reason`'s wording, which is free to reword without breaking this.
 def map_result(result):
     """`run_workflow` result -> (http status, error code or None)."""
     if result["status"] == "completed":
         return 200, None                                  # M9 — skipped[] rides the body
-    if (result["failure_reason"] or "").startswith("deadline"):
+    if result.get("failure_kind") == "deadline":
         return 504, "deadline-exceeded"                   # M6
     failed = result["failed_step"]
     for entry in result["steps"]:

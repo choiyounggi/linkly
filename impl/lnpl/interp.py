@@ -1153,17 +1153,21 @@ class Interpreter:
                     # never the exception — so the failure's TYPE has to ride
                     # along as a field, not be re-derived by matching against
                     # `failure_reason`'s wording (that is M6's mistake, issue
-                    # #113 forbids repeating it). Two carriers, one per raise
-                    # site: `__cause__` is the original `DriverError` a real
-                    # driver's `raise RunError(...) from exc` chained;
-                    # `failure_kind` is the attribute `FakeRepository` sets on
-                    # a bare `RunError` it raises directly (it is not a
-                    # `RepositoryDriver`, so it never chains a `DriverError`).
-                    # Neither is present on a failure this feature does not
-                    # know about.
-                    if (isinstance(last_error.__cause__, ConflictError)
-                            or getattr(last_error, "failure_kind", None) == "conflict"):
+                    # #113/#128 forbid repeating it). Two carriers, one per
+                    # raise site: `__cause__` is the original `DriverError` a
+                    # real driver's `raise RunError(...) from exc` chained
+                    # (currently only ever a `ConflictError`); `failure_kind`
+                    # is the attribute a bare `RunError` carries when raised
+                    # directly — `FakeRepository`'s create-conflict (D2) and
+                    # `_run_step`'s deadline-exhausted raise (issue #128) both
+                    # set it. Neither carrier is present on a failure this
+                    # feature does not know about.
+                    if isinstance(last_error.__cause__, ConflictError):
                         result["failure_kind"] = "conflict"
+                    else:
+                        kind = getattr(last_error, "failure_kind", None)
+                        if kind is not None:
+                            result["failure_kind"] = kind
                     self.trace.log("ERROR", "step failed",
                                    step=step["name"], reason=str(last_error))
                     break
@@ -1172,6 +1176,7 @@ class Interpreter:
                     result["failed_step"] = step["name"]
                     result["failure_reason"] = ("deadline exceeded after step %r"
                                                 % step["name"])
+                    result["failure_kind"] = "deadline"
                     self.trace.log("ERROR", "deadline exceeded",
                                    step=step["name"], deadline_ms=con["timeout_ms"])
                     break
@@ -1250,7 +1255,9 @@ class Interpreter:
 
     def _run_step(self, step, span, con, payload, deadline, bindings, rowsets):
         if deadline is not None and self.clock.now >= deadline:
-            raise RunError("deadline exhausted before step %r" % step["name"])
+            exhausted = RunError("deadline exhausted before step %r" % step["name"])
+            exhausted.failure_kind = "deadline"
+            raise exhausted
         for child_id in step.get("children", []):
             effect = self.nodes[child_id]
             self._run_effect(effect, span, con, payload, bindings, rowsets, deadline)
