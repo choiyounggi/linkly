@@ -48,6 +48,13 @@ from .tracecontext import new_span_id, new_trace_id, parse_traceparent
 # dev server has no streaming consumer, so anything past 1 MiB is a mistake.
 MAX_BODY_BYTES = 1 << 20
 
+# issue #113, D10: how long a `(workflow_id, key)` claim survives before a
+# repeat becomes a fresh miss instead of a replay/409. Unbounded retention
+# would grow `lnpl_idempotency` forever; a client relying on idempotency
+# past this window has already exceeded what Stripe's own contract
+# promises (24h) and needs a new key anyway.
+DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
+
 # issue #99, D3: the cursor page-size ceiling. `limit` outside [1, MAX_LIMIT]
 # is a 400 (`limit-invalid`), not a silent clamp — a client that asked for
 # 1,000,000 rows gets a refusal that names the ceiling, not a page it never
@@ -71,6 +78,33 @@ SSE_IDLE_TIMEOUT_S = 30.0
 # "json" emits one JSON Line per request to stderr, the same operational
 # channel every other line here already uses.
 LOG_FORMATS = ("text", "json")
+
+
+def _etag_value(version):
+    """`_version` -> the weak validator this server issues (issue #113,
+    D12). Weak (`W/`), not strong: nothing here promises the masked JSON
+    body a client reads back is byte-identical across every code path that
+    can produce it, and a weak validator only claims semantic equivalence."""
+    return 'W/"%d"' % version
+
+
+def _parse_if_match(value):
+    """The inverse of `_etag_value` -> the version an `If-Match` header
+    claims, or `None` when the value is not this server's own ETag shape.
+    `*` and multi-value `If-Match` lists (RFC 9110 §13.1.1) are not
+    produced by this server's own GET, so neither is accepted here --
+    a value this parser rejects is treated as malformed (D13's boundary),
+    not silently matched or ignored.
+    """
+    text = value.strip()
+    if text.startswith("W/"):
+        text = text[2:]
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return None
+    digits = text[1:-1]
+    if not digits.isdigit():
+        return None
+    return int(digits)
 
 
 def open_log_format(spec):
@@ -610,6 +644,8 @@ def map_result(result):
     for entry in result["steps"]:
         if entry["step"] == failed and "Validation" in entry.get("effects", ()):
             return 400, "validation-failed"               # M7
+    if result.get("failure_kind") == "conflict":
+        return 409, "conflict"                            # M8a
     return 500, "workflow-failed"                         # M8
 
 
@@ -619,6 +655,10 @@ _TITLES = {
     "auth-missing": "authorization required",
     "auth-invalid": "authorization token rejected",
     "forbidden": "the caller's role does not permit this",
+    "conflict": "the request conflicts with the current state of the target resource",
+    "idempotency-in-progress": "a request with this Idempotency-Key is already running",
+    "precondition-failed": "the If-Match version no longer matches the stored row",
+    "precondition-invalid": "the If-Match header value is not a recognized ETag",
     "body-too-large": "request body too large",
     "body-unreadable": "request body is not a JSON object",
     "deadline-exceeded": "workflow deadline exceeded",
@@ -670,7 +710,8 @@ class LnplWsgiApp:
     def __init__(self, document, routes, repository_factory=None,
                  token_provider=None, network=None, clock=None,
                  log_format="text", exporter=None, trust_incoming_trace=False,
-                 jwt_secret_env=None, metrics_registry=None):
+                 jwt_secret_env=None, metrics_registry=None,
+                 idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
@@ -726,6 +767,19 @@ class LnplWsgiApp:
         # reads this and nothing else decides it; `/-/healthz` never reads
         # it (liveness must stay 200 through a graceful shutdown).
         self.shutting_down = False
+        # issue #113, D10/D11: how long a claimed `Idempotency-Key` survives
+        # (`SqliteRepositoryDriver.idempotency_begin`). `None` factory means
+        # the `fake` backend -- it reseeds an empty store every request, so
+        # no claim could ever outlive the request that made it (D11); warn
+        # once at startup rather than staying silently inert.
+        self.idempotency_ttl_ms = idempotency_ttl_ms
+        if repository_factory is None:
+            print(
+                "lnpl serve: Idempotency-Key support is disabled -- the "
+                "`fake` backend seeds a fresh in-memory store per request, "
+                "so there is nowhere to durably record a claim (issue "
+                "#113, D11). Use --backend sqlite:<path> to enable it.",
+                file=sys.stderr)
 
     def _resolve_trace_context(self, environ):
         """issue #107: decide this request's `(trace_id, span_id, link,
@@ -994,8 +1048,16 @@ class LnplWsgiApp:
             # No special case for an empty body: it runs as {} and a workflow
             # with a Validation effect rejects it through M7.
             payload = {}
+        # issue #113, D8/D9: absent by default -- a request with no header
+        # takes the exact pre-#113 path through `_run`/`_respond` (D9
+        # regression: byte-identical when no key is sent).
+        idempotency_key = environ.get("HTTP_IDEMPOTENCY_KEY")
+        # issue #113, D13: absent by default -- current behavior unchanged
+        # when no client sends it.
+        if_match = environ.get("HTTP_IF_MATCH")
         return self._run(environ, start_response, route["workflow"], payload,
-                         claims=claims, log_sink=log_sink)
+                         claims=claims, log_sink=log_sink,
+                         idempotency_key=idempotency_key, if_match=if_match)
 
     def _do_get(self, environ, start_response, path_info, query, raw_path):
         """issue #99: single-row GET (auto, D1) and list GET (opt-in via
@@ -1079,7 +1141,14 @@ class LnplWsgiApp:
                                   problem(404, "not-found", "no such row"))
         entity_node = self.nodes[entity_id]
         masked = mask_payload(row, _entity_view(self.document, entity_node))
-        return _json_response(start_response, 200, masked, content_type="application/json")
+        # issue #113, D12: opt-in on the SAME `observed_version` attribute
+        # `persist()`'s conditional write already reads (drivers.py) --
+        # `FakeRepository` never sets it, so the `fake` backend never
+        # issues an ETag (nothing to condition a later If-Match on).
+        version = getattr(row, "observed_version", None)
+        headers = () if version is None else (("ETag", _etag_value(version)),)
+        return _json_response(start_response, 200, masked,
+                              content_type="application/json", headers=headers)
 
     def _get_list(self, start_response, route, query):
         entity_id, field = route["entity"], route["field"]
@@ -1276,7 +1345,7 @@ class LnplWsgiApp:
                 repository.close()
 
     def _run(self, environ, start_response, workflow_id, payload, claims=None,
-            log_sink=None):
+            log_sink=None, idempotency_key=None, if_match=None):
         doc = self.document
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         factory = self.repository_factory
@@ -1284,15 +1353,98 @@ class LnplWsgiApp:
         try:
             return self._respond(environ, start_response, doc, workflow_id, payload,
                                  correlation_id, repository, claims=claims,
-                                 log_sink=log_sink)
+                                 log_sink=log_sink, idempotency_key=idempotency_key,
+                                 if_match=if_match)
         finally:
             # A request that fails must still release its store, or the leak
             # is one connection per failed request.
             if repository is not None:
                 repository.close()
 
+    def _check_if_match(self, doc, workflow_id, payload, repository, if_match,
+                        correlation_id):
+        """`None` when the request may proceed; otherwise `(status, body)`
+        for the 400/412 response to send instead of running the workflow
+        (issue #113, D13).
+
+        Conditions against the FIRST entity the workflow reads
+        (`repo_policy.repository_calls`, declared order) -- the workflow
+        endpoint has no single targeted resource the way a REST PUT/PATCH
+        does, so the row a prior GET's ETag came from is the one this
+        checks. A workflow with no `read` step, or a driver/row with no
+        `observed_version` (D12's same opt-in), has nothing to condition
+        on -- skipped, not enforced, matching D12's "no version, no ETag"
+        the other direction.
+        """
+        claimed_version = _parse_if_match(if_match)
+        if claimed_version is None:
+            return 400, problem(400, "precondition-invalid",
+                                "If-Match %r is not a recognized ETag" % if_match,
+                                correlation_id=correlation_id)
+        if repository is None:
+            return None
+        reads = [entity for entity, op in repository_calls(doc, workflow_id)
+                if op == "read"]
+        if not reads:
+            return None
+        entity_id = reads[0]
+        try:
+            row = repository.execute(entity_id, "read",
+                                     row_key(entity_id, payload))
+        except DriverError:
+            # Let the workflow's own read surface this the normal way
+            # (M8/M14) instead of a second, earlier translation of it.
+            return None
+        observed = getattr(row, "observed_version", None) if row is not None else None
+        if observed is None:
+            return None
+        if observed != claimed_version:
+            return 412, problem(412, "precondition-failed",
+                                "the row has changed since If-Match's version "
+                                "was read", correlation_id=correlation_id)
+        return None
+
     def _respond(self, environ, start_response, doc, workflow_id, payload,
-                correlation_id, repository, claims=None, log_sink=None):
+                correlation_id, repository, claims=None, log_sink=None,
+                idempotency_key=None, if_match=None):
+        # issue #113, D8/D9/D11: opt-in on the repository object, the same
+        # `getattr` idiom D12's ETag opt-in uses -- covers "no backend at
+        # all" (fake -> `repository is None`) and "a backend that never
+        # implemented it" in one check, no special-casing either.
+        claim = (idempotency_key is not None and repository is not None
+                and hasattr(repository, "idempotency_begin"))
+        if claim:
+            now_ms = int(time.time() * 1000)
+            claim_status, stored = repository.idempotency_begin(
+                workflow_id, idempotency_key, now_ms, self.idempotency_ttl_ms)
+            if claim_status == "in-progress":                       # D8
+                return _json_response(
+                    start_response, 409,
+                    problem(409, "idempotency-in-progress",
+                           "a request with this Idempotency-Key is already running",
+                           correlation_id=correlation_id))
+            if claim_status == "done":                              # D7: replay
+                http_status, body = stored
+                content_type = ("application/json" if http_status == 200
+                                else "application/problem+json")
+                return _json_response(start_response, http_status, body,
+                                      content_type=content_type)
+            # claim_status == "started": this call just claimed the key --
+            # run the workflow below and finalize its outcome before returning.
+        if if_match is not None:
+            precondition = self._check_if_match(doc, workflow_id, payload,
+                                                repository, if_match, correlation_id)
+            if precondition is not None:
+                precondition_status, precondition_body = precondition
+                if claim:
+                    # A precondition failure is as deterministic an outcome
+                    # as any workflow result -- the same stale If-Match
+                    # against the same key should keep replaying it, not
+                    # get stuck at `in-progress` until the TTL clears it.
+                    repository.idempotency_finish(workflow_id, idempotency_key,
+                                                  precondition_status, precondition_body)
+                return _json_response(start_response, precondition_status,
+                                      precondition_body)
         interp = Interpreter(doc, clock=self.clock,
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
@@ -1313,6 +1465,13 @@ class LnplWsgiApp:
             # run_workflow reports expected failures in `result`; an escape is
             # a server fault. The body stays generic (no internals) — the
             # correlation id is the handle to the stderr log.
+            #
+            # issue #113: a claim made above is deliberately left
+            # `in-progress` on this path -- an escaped exception means the
+            # workflow's own fate (did it commit, roll back, or crash mid-
+            # write?) is genuinely unknown, so recording ANY definite
+            # outcome here would risk replaying a wrong one. The claim
+            # self-heals via the TTL (D10); see docs/serving.md.
             import traceback
             print("serve: internal error (correlation_id=%s)" % correlation_id,
                   file=sys.stderr)
@@ -1346,18 +1505,29 @@ class LnplWsgiApp:
         if self.exporter is not None:                                 # issue #78, D3
             self.exporter.export(interp.trace.to_dict())
         if status == 200:                                            # M9
-            return _json_response(start_response, 200, result,
-                                  content_type="application/json")
-        return _json_response(start_response, status,
-                              problem(status, code, result["failure_reason"],
-                                     correlation_id=result["correlation_id"],
-                                     failed_step=result["failed_step"],
-                                     skipped=result["skipped"]))     # M6/M7/M8
+            body = result
+            content_type = "application/json"
+        else:
+            body = problem(status, code, result["failure_reason"],
+                          correlation_id=result["correlation_id"],
+                          failed_step=result["failed_step"],
+                          skipped=result["skipped"])                # M6/M7/M8
+            content_type = "application/problem+json"
+        if claim:
+            # issue #113, D7/r1: a SEPARATE statement, after `run_workflow`
+            # returned and its own transaction already closed -- see
+            # `idempotency_finish`'s docstring for why this can never be
+            # inside that boundary. Runs for a completed AND a failed run
+            # alike: Stripe replays "the resulting status code and body...
+            # regardless of whether it succeeds or fails."
+            repository.idempotency_finish(workflow_id, idempotency_key, status, body)
+        return _json_response(start_response, status, body, content_type=content_type)
 
 
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
                   network=None, clock=None, log_format="text", exporter=None,
-                  trust_incoming_trace=False, jwt_secret_env=None, metrics=False):
+                  trust_incoming_trace=False, jwt_secret_env=None, metrics=False,
+                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -1403,7 +1573,8 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                        clock=clock, log_format=log_format, exporter=exporter,
                        trust_incoming_trace=trust_incoming_trace,
                        jwt_secret_env=jwt_secret_env,
-                       metrics_registry=MetricsRegistry() if metrics else None)
+                       metrics_registry=MetricsRegistry() if metrics else None,
+                       idempotency_ttl_ms=idempotency_ttl_ms)
 
 
 # --------------------------------------------------------------------------
@@ -1498,7 +1669,8 @@ def _resolve_network(document, endpoints):
 
 
 def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
-              endpoints=None, log_format=None, trace_exporter=None):
+              endpoints=None, log_format=None, trace_exporter=None,
+              idempotency_ttl_s=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
 
@@ -1518,6 +1690,10 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
       trace_exporter LNPL_TRACE_EXPORTER  built-in `stderr-json`, an
                                            `lnpl.exporters` entry-point name,
                                            or unset (default: no exporting)
+      idempotency_ttl_s LNPL_IDEMPOTENCY_TTL_S  seconds an `Idempotency-Key`
+                                           claim is honored before a repeat
+                                           becomes a fresh miss (issue #113,
+                                           D10); default 86400 (24h)
 
     A `sources`/`backend`/`jwt_secret_env`/`clock`/`log_format`/
     `trace_exporter`/network target that cannot be resolved raises
@@ -1587,7 +1763,19 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     except (ValueError, ExporterError) as exc:
         raise WsgiConfigError(str(exc)) from exc
 
+    if idempotency_ttl_s is None:
+        idempotency_ttl_s = os.environ.get("LNPL_IDEMPOTENCY_TTL_S")
+    try:
+        idempotency_ttl_ms = (DEFAULT_IDEMPOTENCY_TTL_MS
+                              if idempotency_ttl_s is None
+                              else int(idempotency_ttl_s) * 1000)
+    except ValueError as exc:
+        raise WsgiConfigError(
+            "LNPL_IDEMPOTENCY_TTL_S %r is not an integer number of seconds"
+            % idempotency_ttl_s) from exc
+
     return make_wsgi_app(document, repository_factory=repository_factory,
                          token_provider=token_provider, network=network,
                          clock=clock_obj, log_format=log_format,
-                         exporter=exporter)
+                         exporter=exporter,
+                         idempotency_ttl_ms=idempotency_ttl_ms)

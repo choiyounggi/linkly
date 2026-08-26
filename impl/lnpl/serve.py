@@ -72,7 +72,7 @@ def _install_sigterm_handler(app):
 def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
           token_provider=None, network=None, clock=None, log_format="text",
           exporter=None, trust_incoming_trace=False, jwt_secret_env=None,
-          metrics=False):
+          metrics=False, idempotency_ttl_ms=None):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -91,11 +91,15 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     (issue #78) is a `TraceExporter` every completed workflow run's Trace is
     handed to; omitted, nothing is exported — independent of `log_format`.
     """
+    kwargs = {}
+    if idempotency_ttl_ms is not None:
+        kwargs["idempotency_ttl_ms"] = idempotency_ttl_ms
     app = make_wsgi_app(document, repository_factory=repository_factory,
                         token_provider=token_provider, network=network,
                         clock=clock, log_format=log_format, exporter=exporter,
                         trust_incoming_trace=trust_incoming_trace,
-                        jwt_secret_env=jwt_secret_env, metrics=metrics)
+                        jwt_secret_env=jwt_secret_env, metrics=metrics,
+                        **kwargs)
     _install_sigterm_handler(app)
     server = _Server((host, port), _WSGIRequestHandler)
     server.set_app(app)

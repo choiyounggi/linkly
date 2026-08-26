@@ -554,12 +554,15 @@ def cmd_serve(args):
         return 2
 
     factory = None if backend == "fake" else (lambda: open_repository(backend))
+    idempotency_ttl_s = getattr(args, "idempotency_ttl", None)
     server = serve(doc, args.host, args.port, repository_factory=factory,
                    token_provider=token_provider, network=network,
                    log_format=log_format, exporter=exporter,
                    trust_incoming_trace=getattr(args, "trust_incoming_trace", False),
                    jwt_secret_env=getattr(args, "jwt_secret_env", None),
-                   metrics=getattr(args, "metrics", False))
+                   metrics=getattr(args, "metrics", False),
+                   idempotency_ttl_ms=(None if idempotency_ttl_s is None
+                                       else idempotency_ttl_s * 1000))
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -1224,6 +1227,11 @@ def main(argv=None):
                          "workflow run/duration/step-failure RED signals). "
                          "Default: off — the path itself does not exist "
                          "and 404s")
+    sv.add_argument("--idempotency-ttl", type=int, default=None, metavar="SECONDS",
+                    help="how long an `Idempotency-Key` claim is honored "
+                         "before a repeat becomes a fresh miss (issue #113, "
+                         "D10); default 86400 (24h). No effect on --backend "
+                         "fake, which cannot durably record a claim (D11)")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",
