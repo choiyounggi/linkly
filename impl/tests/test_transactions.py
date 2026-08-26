@@ -9,10 +9,9 @@ execution: commit on `status == "completed"`, rollback on anything else.
 
 `TransactionBoundaryTest` reuses `ContractTestCase` from
 `test_driver_contract.py` — the same "one scenario, two drivers" harness —
-because the claim under test is asymmetric by design: sqlite actually
-discards a failed run's writes, while the Fake's `begin`/`commit`/`rollback`
-stay no-op (RFC-0032 §Reference-level Specification, "드라이버 계약") and so
-does NOT roll anything back. Both are the contract, not a bug in one of them.
+to prove both backends agree: sqlite and the Fake each discard a failed
+run's writes (issue #120 fixed the Fake's `begin`/`commit`/`rollback`,
+previously a no-op — `docs/backends.md` §5).
 """
 
 import unittest
@@ -105,10 +104,10 @@ class TransactionBoundaryTest(ContractTestCase):
         self.assertIsNone(repository.execute(
             "entity.product", "read", "entity.product#x-1"))
 
-    def test_fake_backend_keeps_the_first_write_by_its_no_op_contract(self):
-        """경계: Fake의 `begin`/`commit`/`rollback`은 no-op이다(RFC-0032) —
-        같은 실패에서도 이미 쓰인 첫 write는 그대로 남는다. 이것은 계약
-        위반이 아니라 D2가 명시한 설계다."""
+    def test_fake_backend_discards_the_first_write_when_the_second_fails(self):
+        """에러 (issue #120): sqlite와 대칭 — Fake의 `begin`/`commit`/`rollback`도
+        이제 no-op이 아니므로, 같은 실패에서 첫 write(`create product`)가
+        더 이상 남지 않는다."""
         repository = self._repository("fake")
         payload = {"id": "x-1"}
         repository.seed({"entity.order": {"entity.order#x-1": {"id": "x-1"}}})
@@ -117,7 +116,7 @@ class TransactionBoundaryTest(ContractTestCase):
                                  repository=repository)
 
         self.assertEqual(result["status"], "failed")
-        self.assertIsNotNone(repository.execute(
+        self.assertIsNone(repository.execute(
             "entity.product", "read", "entity.product#x-1"))
 
     def test_a_zero_write_workflow_still_opens_and_closes_the_boundary(self):
