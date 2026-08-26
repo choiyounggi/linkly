@@ -14,6 +14,17 @@ Files that fail to compile at all (LowerError/parse error) are QA probes for
 unrelated failure axes (bad policy names, guard/spec grammar, type
 mismatches, undeclared events — none of them naming a resolution ambiguity)
 and are recorded, not asserted on: they never reach entity resolution.
+
+Two of those uncompiled files are pinned rather than left to that silent
+bucket, the same way H-rc1/H-rc2 are pinned in `hits`: issue #127 removed
+`security encrypt` from the closed vocabulary, so both payment-refund QA
+fixtures (`qa/cases/...` and `qa/rerun/cases/...`, which still declare
+`encrypt cardNumber` — qa/ is read-only, per #127's user decision) now fail
+to compile for a reason this sweep would otherwise absorb without comment.
+Without the pin, the two fixtures would silently drift into "uncompiled"
+the moment the vocabulary shrank and the suite would stay green while
+quietly covering less — exactly the failure mode this file's own docstring
+above warns against for `unknown-entity`.
 """
 
 import glob
@@ -38,6 +49,22 @@ EXPECTED_HITS = {
                  "probe-c1.lnpl"): ["DailyReport"],
     os.path.join(REPO, "qa", "rerun", "cases", "batch-report", "probes",
                  "probe-c2.lnpl"): ["orders"],
+}
+
+# issue #127: the two payment-refund QA fixtures are EXPECTED to newly land
+# in `uncompiled` now that `security encrypt` is gone from the vocabulary —
+# qa/ is read-only (user decision, r1), so the fixtures themselves are not
+# migrated. Each maps to why, so a future reader does not mistake this for
+# an unrelated grammar failure.
+EXPECTED_UNCOMPILED = {
+    os.path.join(REPO, "qa", "cases", "payment-refund",
+                 "payment-refund.lnpl"):
+        "declares `encrypt cardNumber` (2026-08-05 run); #127 removed "
+        "`security encrypt` from the vocabulary and qa/ is read-only",
+    os.path.join(REPO, "qa", "rerun", "cases", "payment-refund",
+                 "payment-refund.lnpl"):
+        "declares `encrypt cardNumber` (rerun r2); #127 removed "
+        "`security encrypt` from the vocabulary and qa/ is read-only",
 }
 
 
@@ -88,6 +115,16 @@ class TestCorpusSweep(unittest.TestCase):
         self.assertEqual(len(clean) + len(hits) + len(uncompiled), len(CORPUS))
         self.assertGreater(len(clean), 0)
         self.assertEqual(set(hits), set(EXPECTED_HITS))
+
+    def test_the_payment_refund_fixtures_are_uncompiled_for_the_pinned_reason(self):
+        # issue #127: proves these two land in `uncompiled` (not `clean` or
+        # `hits`, and not silently absent from the corpus) — and stays red
+        # if either fixture is later migrated or removed without updating
+        # this registration.
+        _clean, _hits, uncompiled = _sweep()
+        for path in EXPECTED_UNCOMPILED:
+            self.assertIn(path, CORPUS, path)
+            self.assertIn(path, uncompiled, path)
 
 
 if __name__ == "__main__":

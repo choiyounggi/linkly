@@ -1,5 +1,7 @@
 # 00 — 환경·기준점 (r2 재측정)
 
+> 2026-08-26: 이 기록은 `security encrypt` 어휘 제거(#127) 이전의 실행이다.
+
 - 날짜: 2026-08-07 (KST)
 - 기준 commit: `6d84bd6f9f41e4978f916ee191ab4216cf591da9` (main 머지 — #43~#50 구현, RFC-0014~0017)
 - 원 실측 대조 기준: commit 713a4cb, 2026-08-05 (`qa/cases/payment-refund/`)

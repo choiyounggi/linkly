@@ -8,9 +8,16 @@ bodies are copies of the committed qa/cases fixtures (qa/ is read-only), the
 spec blocks are the ones the probes tried and had to abandon — and require
 them to run as three independent, all-green cases each.
 
-One deliberate deviation from the probes' first attempts, measured:
+Deliberate deviations from the probes' first attempts, measured:
 - step counts are the OBSERVED executed-step semantics the probes pinned
   (t4 evidence/08 시도 2: "steps 의미론은 관측 확정 — 실행된 스텝 수").
+- issue #127 (RFC-0035 §D3): t2's `security` block dropped `encrypt
+  cardNumber`. `encrypt` is no longer in the vocabulary at all, so the
+  line cannot compile; qa/'s own `payment-refund.lnpl` is read-only and
+  keeps it (a historical record), but this file's subject is the
+  3-scenario spec restoration, not `encrypt` itself, so the line is
+  dropped rather than migrated — `security jwt` alone still demonstrates
+  the same "an unenforced declaration compiles cleanly" property.
 
 Issue #54 closed the other one. This file used to say:
 
@@ -121,7 +128,6 @@ service PaymentService
         timeout 3s
     security
         jwt
-        encrypt cardNumber
 workflow Approval
     validate payment
     find payment
