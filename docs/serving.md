@@ -67,6 +67,7 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M5 | body가 JSON 파싱 실패, 또는 object가 아님 | 400 | `body-unreadable` |
 | M6 | 실행 실패 ∧ `failure_reason`이 `deadline`으로 시작 | 504 | `deadline-exceeded` |
 | M7 | 실행 실패 ∧ 실패 스텝의 효과에 `Validation` 포함 | 400 | `validation-failed` |
+| M8a | 실행 실패 ∧ 저장소 create가 기존 키와 충돌(`failure_kind == "conflict"`, 이슈 #113) | 409 | `conflict` |
 | M8 | 실행 실패 (그 외 전부) | 500 | `workflow-failed` |
 | M9 | `status == completed` — 가드 거부 포함 | 200 | — |
 | M10 | GET 단건: 경로는 있으나 행이 없음(부재 또는 백엔드 미설정) | 404 | `not-found` |
@@ -121,6 +122,75 @@ linkly에 **없다** — 행위 게이트를 통과했다고 객체 게이트까
 자체가 가드로 그 조건을 검사해야 한다.
 
 어댑터 계약·백엔드 선택·jwt 검증 체크리스트의 정본은 `docs/backends.md`다.
+
+## 멱등성 — `Idempotency-Key` (이슈 #113)
+
+`POST /<service-slug>/<workflow-slug>` 요청에 `Idempotency-Key` 헤더가
+있으면 `(workflow_id, key)`가 그 실행을 한 번만 하게 만든다. **성공이든
+실패든** 첫 실행의 상태코드+바디를 그대로 저장하고, 같은 키의 재요청은
+그 저장된 응답을 재생한다 — 워크플로를 다시 돌리지 않는다(Stripe 계약과
+같다: "saving the resulting status code and body of the first request ...
+regardless of whether it succeeds or fails"). 진짜 재시도를 원하는
+클라이언트는 새 키를 쓴다 — 같은 키가 막히는 것은 계약이지 버그가 아니다.
+
+**`Idempotency-Key`는 RFC가 아니다.** 이 헤더의 IETF draft는 만료되어
+표준이 되지 못했다 — Stripe·여러 결제 API가 정착시킨 업계 관행일 뿐,
+linkly가 따르는 규범 문서는 없다.
+
+| # | 관측 조건 | HTTP | error `code` |
+|---|-----------|------|--------------|
+| M17 | 같은 키로 이미 실행 중(다른 요청이 아직 안 끝남) | 409 | `idempotency-in-progress` |
+
+재생(replay)은 새 판정 행이 아니다 — 저장된 첫 실행의 상태코드·바디를
+그대로 돌려줄 뿐이다(200이었으면 200, 409 `conflict`였으면 409
+`conflict`, 그대로).
+
+**설계 (r1 — 최초 계획의 결함을 바로잡음)**: 이슈 #113 본문이 "기록을
+워크플로 트랜잭션 안에서 쓴다"와 "실패도 재생한다"를 함께 요구했는데, 이
+둘은 양립하지 않는다 — `run_workflow`(`interp.py`)는 실패 시
+`self.repo.rollback()`을 **무조건** 부르고(`policy rollback` 선언 여부와
+무관하다 — 그 선언은 로그 한 줄만 켠다, 아래 참고), 확정 기록을 그
+트랜잭션 안에 두면 롤백이 그것도 되돌려 키가 `in-progress`에 **영구히**
+갇힌다. 그래서 3단계로 나눈다:
+
+1. 요청 도착 시 `(workflow_id, key)`를 `in-progress`로 INSERT하고 **즉시
+   커밋**한다 — 동시에 온 같은 키 요청이 이걸 보고 409를 낸다.
+2. `run_workflow`가 **자기 트랜잭션**에서 커밋/롤백한다. 멱등성 행은 그
+   경계 밖이라 영향받지 않는다.
+3. `run_workflow`가 반환한 뒤, 최종 상태코드+바디를 **별도 문장으로**
+   upsert한다.
+
+**남는 간극**: 1단계와 3단계 사이에 프로세스가 죽으면 그 키는
+`in-progress`에 남아 그 사이 동안은 재시도도 막힌다(409가 계속 나간다).
+복구 수단은 `--idempotency-ttl`(기본 24h)뿐이다 — TTL이 지나면 그 키는
+새 미스로 취급된다. 이 창을 없는 척하지 않는다: 짧지만 실재한다.
+
+`--backend fake`에서는 요청마다 빈 저장소가 새로 시딩되므로 클레임을 남길
+곳이 없다 — 이 기능은 **비활성**이고, 서버 기동 시 stderr에 경고를 한 번
+낸다. `Idempotency-Key` 헤더를 보내도 조용히 무시되고 매 요청이 그대로
+실행된다(이 백엔드에서 결과가 요청 간에 남지 않는 것과 같은 이유).
+
+## `ETag` / `If-Match` (이슈 #113)
+
+`GET /<service-slug>/<entity-slug>/{id}` 응답은 `_version` 기반 **약한**
+검증자(`W/"<n>"`)를 `ETag`로 싣는다 — 약한 이유는 마스킹을 거친 JSON
+바디가 모든 코드 경로에서 바이트 동일함을 이 서버가 보장하지 않기
+때문이다(RFC 9110 §8.8.1, 정직한 선택).
+
+상태 변경 워크플로(`POST`)에 `If-Match`가 있으면, 그 워크플로가 **처음
+`read`하는 엔티티**의 저장된 버전과 비교한다 — 워크플로 엔드포인트에는
+REST의 PUT/PATCH가 갖는 단일 대상 리소스가 없어서, 이전 GET의 ETag가
+나온 그 행을 기준으로 삼는다. 불일치 → 412. 조건을 걸 대상이 없으면(읽는
+스텝이 없거나, 드라이버가 `observed_version`을 안 낸다 — `fake` 백엔드가
+그렇다, D12와 같은 옵트인) 검사를 건너뛴다 — 강제하지 않는다.
+
+| # | 관측 조건 | HTTP | error `code` |
+|---|-----------|------|--------------|
+| M18 | `If-Match` 값이 이 서버가 낸 ETag 형식이 아님(형식 오류) | 400 | `precondition-invalid` |
+| M19 | `If-Match`가 있고 조건을 걸 행이 있는데, 저장된 버전과 불일치 | 412 | `precondition-failed` |
+
+`If-Match`가 없으면 현행 그대로다(회귀 없음). `If-None-Match`/304는
+범위 밖이다 — 이슈가 요구하지 않는다.
 
 ## 스케줄 트리거 (이슈 #81)
 

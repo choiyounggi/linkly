@@ -161,9 +161,9 @@ class RealStoreServingTest(BackendServerTestCase):
                               {"Authorization": "Bearer anything"})
 
         self.assertEqual(200, first.status)
-        self.assertEqual(500, resp.status)
+        self.assertEqual(409, resp.status)          # issue #113, M8a
         body = json.loads(raw)
-        self.assertEqual("workflow-failed", body["code"])
+        self.assertEqual("conflict", body["code"])
         self.assertIn("create conflicts", body["detail"])
 
     def test_the_fake_backend_is_the_negative_control_for_that(self):
@@ -188,7 +188,7 @@ class RealStoreServingTest(BackendServerTestCase):
         self.post(port, SHORTEN_PATH, LINK_PAYLOAD,
                   {"Authorization": "Bearer anything"})
         self.post(port, SHORTEN_PATH, LINK_PAYLOAD,
-                  {"Authorization": "Bearer anything"})   # this one fails (500)
+                  {"Authorization": "Bearer anything"})   # this one fails (409)
 
         self.wait_until(lambda: len(self.closed) == 2,
                         "both requests to release their store")

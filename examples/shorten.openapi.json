@@ -18,6 +18,12 @@
           "400": {
             "description": "validation failed"
           },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
           "504": {
             "description": "the workflow deadline was exceeded"
           },
@@ -25,6 +31,26 @@
             "description": "authentication failed"
           }
         },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -66,6 +92,14 @@
                 "schema": {
                   "$ref": "#/components/schemas/Link"
                 }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
               }
             }
           },

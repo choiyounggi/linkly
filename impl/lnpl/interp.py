@@ -18,7 +18,8 @@ import time
 
 from .condition import PAYLOAD_NAMESPACE, guard_condition_text
 from .diagnostics import Diagnostics
-from .drivers import DEFAULT_NETWORK_TIMEOUT_MS, DriverError, FakeNetworkDriver
+from .drivers import (ConflictError, DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
+                      FakeNetworkDriver)
 from .refinements import BASE_CATEGORY
 from .repo_policy import binding_name, row_key
 from .tracecontext import format_traceparent, new_span_id
@@ -134,7 +135,17 @@ class FakeRepository:
                 # (entity, key), not per entity: that is what lets a workflow read one
                 # entity and create another (issue #35) while creating the same key
                 # twice still fails, keeping the retry rule testable.
-                raise RunError("repository create conflicts: %s already exists" % entity_id)
+                # issue #113, D2: called directly (as this class's own
+                # unit tests do), this stays a bare `RunError` -- `FakeRepository`
+                # is not a `RepositoryDriver`, so it never raises `DriverError`
+                # for `run_workflow` to translate. `failure_kind` rides as an
+                # attribute on the instance instead, read by `run_workflow`
+                # below the same way `__cause__` is read for a real driver's
+                # `ConflictError`.
+                conflict = RunError(
+                    "repository create conflicts: %s already exists" % entity_id)
+                conflict.failure_kind = "conflict"
+                raise conflict
             table[key] = {"id": key}
         return {"affected": 1}
 
@@ -1118,6 +1129,21 @@ class Interpreter:
                     result["status"] = "failed"
                     result["failed_step"] = step["name"]
                     result["failure_reason"] = str(last_error)
+                    # issue #113, D2: `map_result` (wsgi.py) sees only this dict,
+                    # never the exception — so the failure's TYPE has to ride
+                    # along as a field, not be re-derived by matching against
+                    # `failure_reason`'s wording (that is M6's mistake, issue
+                    # #113 forbids repeating it). Two carriers, one per raise
+                    # site: `__cause__` is the original `DriverError` a real
+                    # driver's `raise RunError(...) from exc` chained;
+                    # `failure_kind` is the attribute `FakeRepository` sets on
+                    # a bare `RunError` it raises directly (it is not a
+                    # `RepositoryDriver`, so it never chains a `DriverError`).
+                    # Neither is present on a failure this feature does not
+                    # know about.
+                    if (isinstance(last_error.__cause__, ConflictError)
+                            or getattr(last_error, "failure_kind", None) == "conflict"):
+                        result["failure_kind"] = "conflict"
                     self.trace.log("ERROR", "step failed",
                                    step=step["name"], reason=str(last_error))
                     break

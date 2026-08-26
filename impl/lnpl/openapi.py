@@ -440,8 +440,18 @@ def _operation(wf, service, con, nodes, entities, refined):
         "responses": {
             "200": {"description": "the workflow completed"},
             "400": {"description": "validation failed"},
+            "409": {"description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"},
+            "412": {"description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"},
             "504": {"description": "the workflow deadline was exceeded"},
         },
+        "parameters": [
+            {"name": "Idempotency-Key", "in": "header", "required": False,
+             "schema": {"type": "string"},
+             "description": "replay this workflow's prior response for the same key instead of running it again"},
+            {"name": "If-Match", "in": "header", "required": False,
+             "schema": {"type": "string"},
+             "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"},
+        ],
     }
     if response_schema is not None:
         op["responses"]["200"]["content"] = {
@@ -484,7 +494,12 @@ def _get_single_operation(service, entity, con):
             "200": {"description": "the row, masked",
                     "content": {"application/json": {
                         "schema": {"$ref": "#/components/schemas/%s"
-                                          % entity["name"]}}}},
+                                          % entity["name"]}}},
+                    "headers": {
+                        "ETag": {"schema": {"type": "string"},
+                                "description": "weak validator (W/\"<version>\"); "
+                                               "absent on a backend with no "
+                                               "row versioning -- issue #113, D12"}}},
             "404": {"description": "no such row"},
         },
     }

@@ -91,6 +91,11 @@ class TokenError(DriverError):
     """A token could not be issued, or failed verification."""
 
 
+class ConflictError(DriverError):
+    """A write collided with existing state. Not retryable: retrying the same
+    non-idempotent effect only reproduces the same conflict."""
+
+
 # --------------------------------------------------------------------------
 # The contracts
 # --------------------------------------------------------------------------
@@ -376,6 +381,41 @@ _SELECT_OUTBOX_SINCE = ("SELECT seq, emission_id, event, payload, created_at "
 _MARK_DELIVERED = ("UPDATE lnpl_outbox SET delivered_at = ? "
                    "WHERE seq = ? AND delivered_at IS NULL")
 
+# issue #113, r1: `(workflow_id, key)` claims a slot the moment a request
+# with that `Idempotency-Key` arrives -- INSERTed and committed immediately,
+# so a genuinely concurrent second request with the same key sees it right
+# away (`idempotency_begin` below). The final disposition (`http_status`/
+# `body`) is written by a SEPARATE statement, AFTER `run_workflow` returns,
+# deliberately outside that execution's own commit/rollback boundary: the
+# plan first had this row's whole lifecycle living inside that boundary, but
+# `run_workflow` calls `self.repo.rollback()` unconditionally on any failure
+# (`interp.py`), and a rollback there would undo the finalizing UPDATE and
+# revert the row to `in-progress` forever -- worse than not having the
+# feature. `status` is `in-progress` or `done`; `done` is what a later
+# request replays regardless of whether the run it recorded succeeded or
+# failed (Stripe's contract: a same-key retry gets back the SAME result,
+# never a second execution).
+_CREATE_IDEMPOTENCY_TABLE = """
+CREATE TABLE IF NOT EXISTS lnpl_idempotency (
+    key         TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    http_status INTEGER,
+    body        TEXT,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (workflow_id, key)
+)
+"""
+_SELECT_IDEMPOTENCY = ("SELECT status, http_status, body, created_at "
+                       "FROM lnpl_idempotency WHERE workflow_id = ? AND key = ?")
+_INSERT_IDEMPOTENCY_IN_PROGRESS = (
+    "INSERT INTO lnpl_idempotency (key, workflow_id, status, created_at) "
+    "VALUES (?, ?, 'in-progress', ?)")
+_UPDATE_IDEMPOTENCY_DONE = (
+    "UPDATE lnpl_idempotency SET status = 'done', http_status = ?, body = ? "
+    "WHERE workflow_id = ? AND key = ?")
+_DELETE_IDEMPOTENCY = "DELETE FROM lnpl_idempotency WHERE workflow_id = ? AND key = ?"
+
 
 def _encode(row):
     return json.dumps(row, ensure_ascii=False, sort_keys=True)
@@ -426,6 +466,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
                 self._conn.execute("PRAGMA synchronous = NORMAL")
             self._conn.execute(_CREATE_TABLE)
             self._conn.execute(_CREATE_OUTBOX_TABLE)
+            self._conn.execute(_CREATE_IDEMPOTENCY_TABLE)
             self._conn.commit()
         except sqlite3.Error as exc:
             raise DriverError("cannot open the sqlite store at %r: %s"
@@ -540,6 +581,71 @@ class SqliteRepositoryDriver(RepositoryDriver):
         `rollback` decides this write's fate along with the rest of the run."""
         if not self._in_transaction:
             self._conn.commit()
+
+    def idempotency_begin(self, workflow_id, key, now_ms, ttl_ms):
+        """Claim `(workflow_id, key)` -- issue #113, r1. Two outcomes ask the
+        caller to run nothing: `("in-progress", None)` (someone else owns
+        this key right now -- 409) or `("done", (http_status, body))` (a
+        prior run already finished -- replay it, whether it succeeded or
+        failed). `("started", None)` means this call just claimed the key
+        and the caller should run the workflow.
+
+        Every statement here is its own immediately-committed write,
+        deliberately outside `begin`/`commit`/`rollback` above: a concurrent
+        request with the same key must see the claim the instant it lands,
+        long before `run_workflow` ever calls `begin()`.
+        """
+        try:
+            row = self._conn.execute(_SELECT_IDEMPOTENCY,
+                                     (workflow_id, key)).fetchone()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot read idempotency key %r: %s"
+                              % (key, exc)) from exc
+        if row is not None:
+            status, http_status, body, created_at = row
+            if now_ms - created_at < ttl_ms:
+                if status == "in-progress":
+                    return "in-progress", None
+                return "done", (http_status,
+                                json.loads(body) if body is not None else None)
+            # D10: past its TTL -- clear it and fall through to claim fresh,
+            # the same as if this key had never been used.
+            try:
+                self._conn.execute(_DELETE_IDEMPOTENCY, (workflow_id, key))
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                raise DriverError(
+                    "cannot clear expired idempotency key %r: %s"
+                    % (key, exc)) from exc
+        try:
+            self._conn.execute(_INSERT_IDEMPOTENCY_IN_PROGRESS,
+                               (key, workflow_id, now_ms))
+            self._conn.commit()
+            return "started", None
+        except sqlite3.IntegrityError:
+            # Lost a race with a concurrent claim between the SELECT above
+            # and this INSERT -- the other request owns the key now.
+            return "in-progress", None
+        except sqlite3.Error as exc:
+            raise DriverError("cannot claim idempotency key %r: %s"
+                              % (key, exc)) from exc
+
+    def idempotency_finish(self, workflow_id, key, http_status, body):
+        """Record the final disposition -- a SEPARATE statement, issued
+        AFTER `run_workflow` returns (issue #113, r1). Deliberately outside
+        that execution's own commit/rollback boundary: `run_workflow` calls
+        `self.repo.rollback()` unconditionally on any failure, and writing
+        this finalize step INSIDE that boundary would have a failed run's
+        rollback undo it too -- reverting the row to `in-progress` forever,
+        which blocks every future retry instead of replaying the failure
+        (docs/serving.md's idempotency section)."""
+        try:
+            self._conn.execute(_UPDATE_IDEMPOTENCY_DONE,
+                               (http_status, json.dumps(body), workflow_id, key))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot record idempotency result for %r: %s"
+                              % (key, exc)) from exc
 
     def execute(self, entity_id, operation, key):
         if operation in READ_OPS:
@@ -714,8 +820,8 @@ class SqliteRepositoryDriver(RepositoryDriver):
             # suite asserts this text against both drivers, and the rule it
             # guards — never retry a non-idempotent effect — is only testable
             # while a create can actually fail.
-            raise DriverError("repository create conflicts: %s already exists"
-                              % entity_id) from exc
+            raise ConflictError("repository create conflicts: %s already exists"
+                                % entity_id) from exc
         except sqlite3.Error as exc:
             raise DriverError("cannot create %s: %s" % (entity_id, exc)) from exc
         return {"affected": 1}
