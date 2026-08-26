@@ -555,7 +555,9 @@ def cmd_serve(args):
     server = serve(doc, args.host, args.port, repository_factory=factory,
                    token_provider=token_provider, network=network,
                    log_format=log_format, exporter=exporter,
-                   trust_incoming_trace=getattr(args, "trust_incoming_trace", False))
+                   trust_incoming_trace=getattr(args, "trust_incoming_trace", False),
+                   jwt_secret_env=getattr(args, "jwt_secret_env", None),
+                   metrics=getattr(args, "metrics", False))
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -1181,6 +1183,11 @@ def main(argv=None):
                          "changes the request's own trace-id: a new one is "
                          "always minted, and the inbound value is recorded "
                          "only as a link, never adopted outright")
+    sv.add_argument("--metrics", action="store_true",
+                    help="expose `/-/metrics` (Prometheus text format: "
+                         "workflow run/duration/step-failure RED signals). "
+                         "Default: off — the path itself does not exist "
+                         "and 404s")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",

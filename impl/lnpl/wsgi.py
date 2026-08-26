@@ -25,6 +25,7 @@ import http.client
 import json
 import os
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
@@ -103,6 +104,125 @@ class StderrJsonExporter(TraceExporter):
 
     def export(self, trace_dict):
         print(json.dumps(trace_dict, ensure_ascii=False), file=sys.stderr)
+
+
+# issue #110, D7: the histogram boundaries `lnpl_workflow_duration_seconds`
+# uses (seconds) — the widely-used Prometheus client default bucket set,
+# reused rather than invented (out of scope: bucket tuning, per the brief).
+_DURATION_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75,
+                    1.0, 2.5, 5.0, 7.5, 10.0)
+
+
+def _label_value(value):
+    """A Prometheus exposition-format label value: a double-quoted string
+    with `\\`/`"`/newline escaped (the format's own escaping rules)."""
+    escaped = (str(value).replace("\\", "\\\\")
+              .replace('"', '\\"').replace("\n", "\\n"))
+    return '"%s"' % escaped
+
+
+class MetricsRegistry:
+    """issue #110, D7/D9/D10: the process-level RED registry `--metrics`
+    exposes at `/-/metrics`.
+
+    D9: lives ALONGSIDE `Trace.metrics`, not instead of it. That array is
+    the per-request `--trace-exporter` (#78) contract and is neither read
+    from nor written to here — this registry is populated by reading a
+    COMPLETED request's already-computed `result` (`_respond`), so removing
+    `--trace-exporter` support later could never affect this registry, and
+    vice versa.
+
+    D10: `wsgi` is one thread per request (`_Server(ThreadingMixIn, ...)`,
+    serve.py), so every update goes through `_lock` — an unprotected `+=`
+    here would lose updates under concurrent requests.
+
+    D7's three: `lnpl_workflow_runs_total{service,workflow,status}`
+    (counter), `lnpl_workflow_duration_seconds{service,workflow}`
+    (histogram), `lnpl_step_failures_total{service,workflow,step,kind}`
+    (counter) — every label already inside `Trace.metric`'s own allowlist
+    (D7: no new label axis).
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._runs_total = {}            # (service, workflow, status) -> int
+        self._step_failures_total = {}   # (service, workflow, step, kind) -> int
+        # Cumulative bucket counts (Prometheus convention: bucket[i] counts
+        # every observation <= its bound, so rendering needs no further
+        # summation) + running sum/count for `_sum`/`_count`.
+        self._duration_buckets = {}      # (service, workflow) -> [int, ...]
+        self._duration_sum = {}          # (service, workflow) -> float
+        self._duration_count = {}        # (service, workflow) -> int
+
+    def record_run(self, service, workflow, status, duration_s):
+        key = (service, workflow, status)
+        dkey = (service, workflow)
+        with self._lock:
+            self._runs_total[key] = self._runs_total.get(key, 0) + 1
+            buckets = self._duration_buckets.setdefault(
+                dkey, [0] * len(_DURATION_BUCKETS))
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                if duration_s <= bound:
+                    buckets[i] += 1
+            self._duration_sum[dkey] = self._duration_sum.get(dkey, 0.0) + duration_s
+            self._duration_count[dkey] = self._duration_count.get(dkey, 0) + 1
+
+    def record_step_failure(self, service, workflow, step, kind):
+        key = (service, workflow, step, kind)
+        with self._lock:
+            self._step_failures_total[key] = self._step_failures_total.get(key, 0) + 1
+
+    def render(self):
+        """-> Prometheus text exposition format (D7's RED 3). A stable sort
+        over every series so the same registry state always renders the
+        same text — a scraper (and a test) can parse this, not just count
+        lines."""
+        with self._lock:
+            runs = dict(self._runs_total)
+            failures = dict(self._step_failures_total)
+            buckets = {k: list(v) for k, v in self._duration_buckets.items()}
+            sums = dict(self._duration_sum)
+            counts = dict(self._duration_count)
+        lines = [
+            "# HELP lnpl_workflow_runs_total Total workflow runs, by outcome.",
+            "# TYPE lnpl_workflow_runs_total counter",
+        ]
+        for service, workflow, status in sorted(runs):
+            lines.append(
+                "lnpl_workflow_runs_total{service=%s,workflow=%s,status=%s} %d"
+                % (_label_value(service), _label_value(workflow),
+                   _label_value(status), runs[(service, workflow, status)]))
+        lines += [
+            "# HELP lnpl_workflow_duration_seconds Workflow run duration, in seconds.",
+            "# TYPE lnpl_workflow_duration_seconds histogram",
+        ]
+        for service, workflow in sorted(buckets):
+            dkey = (service, workflow)
+            bucket_counts = buckets[dkey]
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                lines.append(
+                    "lnpl_workflow_duration_seconds_bucket{service=%s,workflow=%s,le=%s} %d"
+                    % (_label_value(service), _label_value(workflow),
+                       _label_value(repr(bound)), bucket_counts[i]))
+            lines.append(
+                'lnpl_workflow_duration_seconds_bucket{service=%s,workflow=%s,le="+Inf"} %d'
+                % (_label_value(service), _label_value(workflow), counts[dkey]))
+            lines.append(
+                "lnpl_workflow_duration_seconds_sum{service=%s,workflow=%s} %s"
+                % (_label_value(service), _label_value(workflow), repr(sums[dkey])))
+            lines.append(
+                "lnpl_workflow_duration_seconds_count{service=%s,workflow=%s} %d"
+                % (_label_value(service), _label_value(workflow), counts[dkey]))
+        lines += [
+            "# HELP lnpl_step_failures_total Total step failures, by classification.",
+            "# TYPE lnpl_step_failures_total counter",
+        ]
+        for service, workflow, step, kind in sorted(failures):
+            lines.append(
+                "lnpl_step_failures_total{service=%s,workflow=%s,step=%s,kind=%s} %d"
+                % (_label_value(service), _label_value(workflow), _label_value(step),
+                   _label_value(kind), failures[(service, workflow, step, kind)]))
+        return "\n".join(lines) + "\n"
 
 
 # issue #78: the entry-points group an external package registers a
@@ -429,6 +549,51 @@ def build_schedule_routes(document, triggers=None):
     return routes
 
 
+def build_ops_routes(document):
+    """`/-/healthz`/`/-/readyz` (issue #110, D1) — the SAME out-of-band
+    pattern `build_schedule_routes` established: merged into `routes` via
+    `update()` AFTER `build_routes`'s own `set(routes) == contract`
+    assertion, so an ops path can never trip that assertion for any
+    document (`document` itself is unused here, kept only so every route
+    builder `make_wsgi_app` calls shares one call shape).
+
+    `"auth": False, "role": None` on both, unconditionally — not derived
+    from any service's own `security` declaration (D2). A kubelet's
+    liveness/readiness probe never carries a bearer token; gating either
+    path on auth would leave every pod permanently unready.
+    """
+    return {
+        "/-/healthz": {"kind": "ops-health", "auth": False, "role": None},
+        "/-/readyz": {"kind": "ops-ready", "auth": False, "role": None},
+    }
+
+
+def build_metrics_route(document):
+    """`/-/metrics` (issue #110, D1/D6) — same out-of-band merge pattern as
+    `build_ops_routes`, kept as its OWN builder rather than folded into it:
+    `make_wsgi_app` only calls this one when `--metrics` is on, so off, the
+    route is never created at all and the path 404s exactly like any other
+    undeclared path — no special-cased "metrics disabled" response.
+    """
+    return {"/-/metrics": {"kind": "ops-metrics", "auth": False, "role": None}}
+
+
+def _workflow_service_names(document):
+    """workflow node id -> the owning service's declared `name` (issue
+    #110, D7's `service` label) — the SAME parent/child walk `build_routes`
+    already does to build that workflow's own route path, reused here only
+    for the label value, not a route."""
+    nodes = {n["id"]: n for n in document["nodes"]}
+    names = {}
+    for node in document["nodes"]:
+        if node["kind"] != "Service":
+            continue
+        for cid in node.get("children", []):
+            if nodes[cid]["kind"] == "Workflow":
+                names[cid] = node["name"]
+    return names
+
+
 # The post-run mapping rows, in decision order. M6 is decided before M7: a
 # deadline that lands on a validation step ("deadline exhausted before step
 # 'validate input'") is a timeout, not a payload rejection. The prefix is
@@ -462,6 +627,7 @@ _TITLES = {
     "cursor-invalid": "the `after` cursor could not be used",
     "limit-invalid": "the `limit` query parameter is out of range",
     "read-failed": "repository read failed",
+    "not-ready": "the server is not ready to receive traffic",
 }
 
 
@@ -503,10 +669,14 @@ class LnplWsgiApp:
 
     def __init__(self, document, routes, repository_factory=None,
                  token_provider=None, network=None, clock=None,
-                 log_format="text", exporter=None, trust_incoming_trace=False):
+                 log_format="text", exporter=None, trust_incoming_trace=False,
+                 jwt_secret_env=None, metrics_registry=None):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
+        # issue #110, D7: workflow node id -> owning service name, computed
+        # once (not per-request) for the metrics labels `_respond` records.
+        self._workflow_service_names = _workflow_service_names(document)
         # A factory, not a driver: each request opens its own store and closes
         # it, so a connection is never shared across threads/workers. The
         # provider is the opposite — one immutable object, safe to read from
@@ -537,6 +707,25 @@ class LnplWsgiApp:
         # considerations); this flag is the "configured trusted source"
         # gate security-input-validation-at-trust-boundaries calls for.
         self.trust_incoming_trace = trust_incoming_trace
+        # issue #110, D4 check 3: the NAME of the env var `--jwt-secret-env`
+        # named, not its value — `_readyz_broken` re-reads `os.environ` at
+        # request time, independent of `cli.cmd_serve`'s own startup-time
+        # validation, so a variable removed from a still-running process's
+        # environment is caught by the next readiness probe rather than
+        # never observed again. `None` (default) means the flag was not
+        # given — nothing to check.
+        self.jwt_secret_env = jwt_secret_env
+        # issue #110, D6/D9: `None` (default, `--metrics` off) means
+        # `/-/metrics` was never even added to `routes` — off is a plain
+        # 404, not a "disabled" response this attribute would gate. Set,
+        # it is the process-level `MetricsRegistry` `_respond` records
+        # into and `_metrics` renders from.
+        self.metrics = metrics_registry
+        # issue #110, D11: process-level, set only by a SIGTERM handler
+        # (serve.py) that does no I/O in the handler itself. `/-/readyz`
+        # reads this and nothing else decides it; `/-/healthz` never reads
+        # it (liveness must stay 200 through a graceful shutdown).
+        self.shutting_down = False
 
     def _resolve_trace_context(self, environ):
         """issue #107: decide this request's `(trace_id, span_id, link,
@@ -844,6 +1033,16 @@ class LnplWsgiApp:
             if auth_result is not None:
                 return auth_result
             return self._get_list(start_response, route, query)
+        if route is not None and route.get("kind") in (
+                "ops-health", "ops-ready", "ops-metrics"):
+            _, auth_result = self._check_auth(environ, start_response, route, path_info)
+            if auth_result is not None:
+                return auth_result
+            if route["kind"] == "ops-health":
+                return self._healthz(start_response)
+            if route["kind"] == "ops-ready":
+                return self._readyz(start_response)
+            return self._metrics(start_response)
         if route is not None:                                        # M2
             return _json_response(start_response, 405,
                                   problem(405, "method-not-allowed",
@@ -924,6 +1123,82 @@ class LnplWsgiApp:
         return _json_response(start_response, 200,
                               {"items": items, "next": next_cursor},
                               content_type="application/json")
+
+    def _healthz(self, start_response):
+        """issue #110, D3: liveness. The process is running and this
+        document loaded — nothing else. No repository, no network: a
+        liveness probe that touches a backend turns a transient outage into
+        a pod-restart storm that cannot fix the backend and only adds
+        downtime (the search-cited failure mode D3 exists to avoid)."""
+        return _json_response(start_response, 200, {"status": "ok"},
+                              content_type="application/json")
+
+    def _readyz(self, start_response):
+        """issue #110, D4/D5/D11: readiness. Shutdown (D11) is checked
+        first and short-circuits the rest — a server told to drain has
+        nothing left worth probing. Otherwise the closed list of four
+        (`_readyz_broken`). 503 + problem+json naming every broken check:
+        unlike 401/403 this is operator-facing, not attacker-facing, so
+        D5 does not withhold the specifics the way M3a/M3b do.
+        """
+        if self.shutting_down:
+            return _json_response(start_response, 503,
+                                  problem(503, "not-ready",
+                                         "the server received SIGTERM and is "
+                                         "shutting down",
+                                         checks=["shutting-down"]))
+        broken = self._readyz_broken()
+        if broken:
+            return _json_response(start_response, 503,
+                                  problem(503, "not-ready",
+                                         "readiness check(s) failed: %s"
+                                         % ", ".join(broken),
+                                         checks=broken))
+        return _json_response(start_response, 200, {"status": "ok"},
+                              content_type="application/json")
+
+    def _readyz_broken(self):
+        """issue #110, D4's closed list of four, by name — extending this
+        list is a decision (D4 says so explicitly), not a one-line patch:
+
+          1. routing<->OpenAPI contract  — `build_routes` already asserted
+             this at construction time (`ServeError` otherwise); this
+             object exists only because it passed, so there is nothing left
+             to check here.
+          2. persistent backend reachable — acquire and release one
+             connection.
+          3. `--jwt-secret-env`'s named variable is still present.
+          4. `--network http`'s logical-name endpoint mapping is resolved
+             — like (1), `_resolve_network` already asserted this at
+             construction time (`WsgiConfigError` otherwise).
+
+        Returns the broken ones' names, in the order above; empty means
+        ready.
+        """
+        broken = []
+        if self.repository_factory is not None:
+            try:
+                repository = self.repository_factory()
+            except DriverError:
+                broken.append("repository")
+            else:
+                repository.close()
+        if self.jwt_secret_env and not os.environ.get(self.jwt_secret_env):
+            broken.append("jwt-secret-env")
+        return broken
+
+    def _metrics(self, start_response):
+        """issue #110, D6/D7: only reachable when `--metrics` is on — the
+        route itself does not exist otherwise (`make_wsgi_app` never merges
+        in `build_metrics_route`'s dict), so off is a plain 404 upstream of
+        this method, not a branch inside it. Prometheus text exposition
+        format, rendered from the process-level registry (D9) — no
+        auth (D2), same as healthz/readyz."""
+        payload = self.metrics.render().encode("utf-8")
+        headers = [("Content-Type", "text/plain; version=0.0.4; charset=utf-8"),
+                  ("Content-Length", str(len(payload)))]
+        start_response(_status_line(200), headers)
+        return [payload]
 
     def _last_event_id(self, environ, start_response):
         """`Last-Event-ID` header -> the outbox seq to resume after (issue
@@ -1055,6 +1330,14 @@ class LnplWsgiApp:
         for line in format_lines(interp.diagnostics):
             print(line, file=sys.stderr)
         status, code = map_result(result)
+        if self.metrics is not None:                                  # issue #110, D7/D9
+            service_name = self._workflow_service_names.get(workflow_id, "")
+            wf_name = self.nodes[workflow_id]["name"]
+            self.metrics.record_run(service_name, wf_name, result["status"],
+                                    result["duration_ms"] / 1000.0)
+            if result["status"] != "completed" and result.get("failed_step"):
+                self.metrics.record_step_failure(service_name, wf_name,
+                                                 result["failed_step"], code)
         if log_sink is not None:                                     # issue #78
             log_sink.update(correlation_id=result["correlation_id"],
                             workflow=workflow_id, skipped=result["skipped"],
@@ -1074,7 +1357,7 @@ class LnplWsgiApp:
 
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
                   network=None, clock=None, log_format="text", exporter=None,
-                  trust_incoming_trace=False):
+                  trust_incoming_trace=False, jwt_secret_env=None, metrics=False):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -1096,6 +1379,16 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     """
     routes = build_routes(document)
     routes.update(build_schedule_routes(document))
+    # issue #110, D1: same reason schedule routes are merged in AFTER the
+    # contract assertion, not before — `/-/healthz`/`/-/readyz` are not an
+    # OpenAPI operation, so folding them into `build_routes`'s own dict
+    # would fail `set(routes) == contract` for every document.
+    routes.update(build_ops_routes(document))
+    # issue #110, D6: `/-/metrics` is only ever created when `--metrics` is
+    # on — off, this call never happens, so the path is undeclared and
+    # 404s the same way any other undeclared path does.
+    if metrics:
+        routes.update(build_metrics_route(document))
     if token_provider is None:
         gated = sorted({path for path, route in routes.items() if route.get("role")})
         if gated:
@@ -1108,7 +1401,9 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                        repository_factory=repository_factory,
                        token_provider=token_provider, network=network,
                        clock=clock, log_format=log_format, exporter=exporter,
-                       trust_incoming_trace=trust_incoming_trace)
+                       trust_incoming_trace=trust_incoming_trace,
+                       jwt_secret_env=jwt_secret_env,
+                       metrics_registry=MetricsRegistry() if metrics else None)
 
 
 # --------------------------------------------------------------------------

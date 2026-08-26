@@ -117,10 +117,14 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics). 이슈 #78 |
 | `--trace-exporter` | 완료된 요청의 Trace를 내보낼 대상. 내장 `stderr-json`, 또는 `lnpl.exporters` entry-points 그룹에 등록된 이름. 안 주면 아무것도 내보내지 않음 — `--log-format`과 독립. 이슈 #78 |
 | `--trust-incoming-trace` | 인바운드 `traceparent` 헤더의 trace-id를 이 요청의 trace-id로 채택할지. 기본 꺼짐 — 꺼져 있으면 형식이 깨졌든 신뢰하지 않든 항상 새 trace-id를 채번하고, 받은 값은 link로만 기록한다. 이슈 #107 |
+| `--metrics` | `/-/metrics`를 연다(Prometheus 텍스트 형식의 RED 3종: 워크플로 실행/소요시간/스텝 실패). 기본 꺼짐 — 꺼져 있으면 그 경로 자체가 없어 404다. 이슈 #110 |
 
 각 워크플로가 `POST /<service-slug>/<workflow-slug>`에서 실행된다. 상태코드
 매핑표(200/400/401/404/405/413/500/504)의 정본과 계약 한계(Fake 백엔드,
 Authorization 존재 검사만)는 `docs/serving.md`. SIGINT로 정상 종료(rc 0).
+`/-/healthz`(liveness)·`/-/readyz`(readiness, SIGTERM → 503)는 플래그 없이
+항상 열려 있다 — 세 경로 모두 인증 면제, 상세는 `docs/serving.md` "운영
+표면" 절(이슈 #110).
 
 ### `token` — 서빙 경로 하나에 대한 베어러 토큰 발급 (이슈 #25)
 
