@@ -10,7 +10,10 @@
 그 SAME callable을 진짜 WSGI 호스트(gunicorn)에 넘긴다 — 두 경로가 실행하는
 코드는 하나뿐이라 서로 어긋날 수 없다(아래 "공유 계약" 절). TLS 종단·graceful
 shutdown·워커 관리는 이 모듈이 아니라 그 호스트(+ nginx 같은 리버스 프록시)의
-책임이다 — `lnpl serve`/`wsgi.py` 어느 쪽도 시그널 핸들러를 두지 않는다.
+책임이다 — 이슈 #110부터 `lnpl serve`(`serve.serve()`)가 SIGTERM 핸들러
+하나를 둔다(아래 "운영 표면" 절), 그러나 그 핸들러가 하는 일은 `/-/readyz`를
+503으로 뒤집는 것뿐이다. 연결 드레이닝·실제 종료는 여전히 이 모듈의 책임이
+아니다 — `build_app()`/gunicorn 경로는 이 핸들러가 없고 그대로다.
 
 ```
 lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
@@ -209,7 +212,8 @@ linkly에 **없다** — 행위 게이트를 통과했다고 객체 게이트까
 - 종료(dev 서버): SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. 워커 스레드는 데몬이라
   진행 중 요청을 기다리지 않는다. **graceful shutdown·TLS 종단·워커 풀
   관리는 dev 서버의 책임이 아니다** — 아래 "운영 배치" 절의 WSGI 호스트가
-  가진다(D4).
+  가진다(D4). 이슈 #110: SIGTERM은 `/-/readyz`를 즉시 503으로 뒤집을 뿐,
+  이 판단을 바꾸지 않는다 — 아래 "운영 표면" 절.
 - SSE 구독(#103)은 스레드-퍼-요청/워커 모델에서 특히 무겁다 — 연결이 열려
   있는 한 그 워커를 계속 점유한다. `wsgi.SSE_POLL_INTERVAL_S`(기본 0.2s)로
   `lnpl_outbox`를 폴링하고, `wsgi.SSE_IDLE_TIMEOUT_S`(기본 30s) 동안 새 행이
@@ -218,6 +222,111 @@ linkly에 **없다** — 행위 게이트를 통과했다고 객체 게이트까
   이름을 재수출하지만, 실제로 루프가 읽는 모듈 전역은 `lnpl.wsgi`의 것이다 —
   테스트에서 값을 줄이려면 `wsgi.SSE_POLL_INTERVAL_S`를 패치해야 한다.)
 - 요청별 진단(가드 스킵 등)은 CLI와 같은 채널인 stderr로 나간다.
+
+## 운영 표면 — `/-/healthz` / `/-/readyz` / `/-/metrics` (이슈 #110)
+
+이슈 #87이 컨테이너(`examples/deploy/Dockerfile`)까지 만들어 뒀지만 붙일
+k8s 프로브가 없었다 — 롤링 업데이트 중 아직 준비되지 않은 파드로 트래픽이
+갔다. 세 경로 모두 `impl/lnpl/wsgi.py`의 `build_ops_routes`/
+`build_metrics_route`가 만들고, `make_wsgi_app`이 `build_routes`의
+집합-동일성 대조(위 "상태코드 매핑표" 절 D1과 같은 종류의 계약, `set(routes)
+== contract`) **뒤에** `routes.update(...)`로 합류시킨다 — `/-/schedules/...`
+(이슈 #81)가 이미 세운 바로 그 자리, 그 방식이다. **`/-/` 경로는 그
+대조에서 제외된다**(테스트로 고정, `impl/tests/test_ops_surface.py`) —
+OpenAPI가 규정하는 경로 집합에 들어간 적이 없으니 대조가 "빠뜨렸다"고
+읽으면 안 되고, 애초에 이 대조가 보는 대상이 아니라는 뜻이다.
+
+**셋 다 인증이 면제된다** — 어느 서비스가 `security jwt`/`security role`을
+선언했더라도 토큰 없이 접근 가능하다. kubelet의 liveness/readiness 프로브는
+`Authorization` 헤더를 들고 오지 않으므로, 여기 401/403을 물리면 그
+서비스가 있는 파드는 영원히 unready가 된다.
+
+### `/-/healthz` — liveness
+
+프로세스가 살아 있고 이 문서가 로드됐는지만 본다. **저장소도 네트워크도
+만지지 않는다** — 검사가 100 자체로 끝나며, `repository_factory`를 단 한
+번도 호출하지 않는다(`impl/tests/test_ops_surface.py`가 기록형 드라이버로
+호출 카운트 0을 단언한다). liveness에 백엔드 검사를 넣지 않는 이유는
+검색 자료가 반복해 경고하는 실패 모드다: DB가 30초 죽으면 liveness가 그때
+같이 죽고, k8s는 그 파드를 재시작한다 — 그러나 재시작은 DB를 못 고치고
+다운타임만 하나 더 만든다. 백엔드 가용성은 아래 readyz의 몫이다.
+
+SIGTERM을 받아도 `/-/healthz`는 **영향받지 않는다** — 종료 중인 파드를
+liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
+
+### `/-/readyz` — readiness
+
+닫힌 목록 넷만 본다(임의로 늘리지 않는다):
+
+1. 라우팅↔OpenAPI 대조 통과 여부 — `build_routes`가 기동 시 이미 판정했다
+   (실패했다면 `ServeError`로 애초에 뜨지 못했으므로, 이 앱이 존재한다는
+   사실 자체가 통과의 증거다).
+2. 영속 백엔드(`--backend sqlite:...`)가 설정돼 있으면 커넥션을 1회
+   획득·해제한다.
+3. `--jwt-secret-env`가 지정돼 있으면 그 환경변수가 **지금도** 설정돼
+   있는지 — 기동 시 검증(`cli.cmd_serve`)과 별개로, 매 프로브마다 다시
+   읽는다(프로세스가 떠 있는 동안 그 변수가 사라지는 드문 드리프트도
+   다음 프로브가 잡는다).
+4. `--network http`를 썼으면 논리명 endpoint 매핑이 전부 해소돼 있는지 —
+   (1)과 같은 이유로, 기동 시 이미 판정된 사실을 노출한다.
+
+SIGTERM은 이 넷보다 **먼저** 본다 — 받는 즉시 나머지 검사 없이 503이다.
+전부 통과하면 200 `{"status": "ok"}`; 하나라도 깨졌으면 503 +
+`application/problem+json`(`code: "not-ready"`)에 **깨진 검사 이름**을
+`checks`로 싣는다. 401/403(위 M3/M3a/M3b)과 반대 판단이다 — readyz는
+운영자용이지 공격면이 아니므로, 어느 검사가 깨졌는지 감추지 않는다.
+
+```jsonc
+// 예: 백엔드 커넥션 획득 실패 + jwt-secret-env 미설정, 둘 다
+{"title": "the server is not ready to receive traffic", "status": 503,
+ "code": "not-ready",
+ "detail": "readiness check(s) failed: repository, jwt-secret-env",
+ "checks": ["repository", "jwt-secret-env"]}
+```
+
+**liveness와 readiness를 절대 섞지 않는다.** 재시작이 답인 실패(프로세스가
+망가짐)는 healthz로, 트래픽만 끊으면 되는 실패(백엔드/설정 드리프트)는
+readyz로 간다 — 둘을 하나로 합치면 트래픽 차단이면 충분한 상황에서
+재시작이 나가거나, 재시작이 필요한 상황에서 트래픽만 계속 흘러들어간다.
+
+### `/-/metrics` — RED 시그널 (`--metrics`, 기본 off)
+
+`--metrics` 없이 띄우면 `/-/metrics`는 라우팅 테이블에 아예 없다 — **404다,
+"비활성" 본문이 아니다**. 켜면 Prometheus 텍스트 노출 형식(`# HELP`/`# TYPE`
+포함)으로 RED 3종을 낸다:
+
+| 메트릭 | 종류 | 라벨 |
+|---|---|---|
+| `lnpl_workflow_runs_total` | counter | `service`, `workflow`, `status` |
+| `lnpl_workflow_duration_seconds` | histogram | `service`, `workflow` |
+| `lnpl_step_failures_total` | counter | `service`, `workflow`, `step`, `kind` |
+
+**카디널리티 계약(D8).** 위 라벨 값은 전부 컴파일 시점에 알려진, 작고 닫힌
+집합의 이름이다 — 서비스/워크플로/스텝 선언 이름, 그리고 `completed`/
+`failed`나 매핑표의 `code`처럼 작은 고정 열거값. **`correlation_id`,
+엔티티 id, payload 값은 라벨이 될 수 없다** — 무한 카디널리티는 Prometheus
+자체를 무너뜨린다. 이건 새 규칙이 아니라 이미 있던 것의 승격이다:
+`interp.Trace.metric`의 라벨 allowlist(`{module, service, workflow, step,
+kind}`, RFC-0003)가 소스에서부터 이 계약을 막아 왔고, 이 issue의 세 지표는
+전부 그 allowlist 안의 라벨만 쓴다(새 라벨 축 없음). allowlist를 벗어난
+라벨은 여전히 `RunError`다 — 이 issue가 그 판단을 바꾸지 않는다.
+
+**적재 위치(D9).** `interp.Trace.metrics`(요청마다 새로 생기는 배열,
+`--trace-exporter`/이슈 #78 계약)는 건드리지 않는다. 그 옆에서, 요청이
+끝날 때(`LnplWsgiApp._respond`) 이미 계산된 `result`를 읽어 **프로세스
+수준**(`wsgi.MetricsRegistry`, 요청 간에 살아남는다)에 더한다 — 두 채널은
+서로 독립이라 한쪽을 껐다고 다른 쪽이 달라지지 않는다. 갱신은
+`threading.Lock`으로 보호한다(D10) — dev 서버는 스레드-퍼-요청이라 락 없는
+`+=`는 동시 요청 아래서 갱신을 잃는다.
+
+**`lnpl serve`/`serve.serve()` 전용.** `--metrics`와 readyz 검사 ③(살아있는
+`--jwt-secret-env` 재확인)은 지금은 `lnpl serve` 경로에만 있다 —
+`build_app()`(운영 배치, gunicorn)의 환경 변수 표(아래 "운영 배치" 절)에는
+아직 대응 항목이 없다. `--trust-incoming-trace`(이슈 #107)가 이미 세운
+같은 전례다: `serve()`에 새 플래그가 늘 때마다 자동으로 `build_app()`의
+env-var 표면까지 넓히지 않는다. `/-/healthz`/`/-/readyz` 자체는 `build_app()`
+경로에서도 그대로 뜬다 — 둘 다 `make_wsgi_app()` 안에서 무조건 합류하는
+`build_ops_routes`가 만들기 때문이다(위).
 
 ## 관측 — `--log-format` / `TraceExporter` (이슈 #78)
 
