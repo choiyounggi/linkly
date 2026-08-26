@@ -116,7 +116,6 @@ Security:
 security
 jwt
 role admin
-encrypt password
 ```
 
 Performance:

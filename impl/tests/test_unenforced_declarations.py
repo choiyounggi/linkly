@@ -310,25 +310,35 @@ class TestBoundaries(unittest.TestCase):
         self.assertEqual(sorted(d.where for d in diags),
                          ["security.billing", "security.login"])
 
-    def test_an_argument_mechanism_carries_its_head_token_as_the_subject(self):
-        # `encrypt password` and `encrypt secret` are the same declaration for
-        # enforcement purposes; the subject names the mechanism, not the
-        # argument. `role` used to be this test's example — issue #119 gave it
-        # real enforcement, so it no longer contributes a `declared-not-
-        # enforced` diagnostic at all (see the `rollback` precedent above);
-        # `encrypt` is `security`'s other ARGUMENT_MECHANISMS entry and is
-        # still unenforced, so it now carries this case.
+    def test_an_unenforced_policy_declaration_is_reported_too(self):
+        # `encrypt password` used to be this test's example of an
+        # ARGUMENT_MECHANISMS entry whose diagnostic subject drops the
+        # argument ("security encrypt", not "security encrypt password").
+        # `role` was the example before that, until issue #119 gave it real
+        # enforcement (see the `rollback` precedent above) — and issue #127
+        # then removed `encrypt` itself from SECURITY_MECHANISMS entirely
+        # (RFC-0035 §D3: the "driver-dependent" framing was always a proxy
+        # for zero drivers). `role` is now the only ARGUMENT_MECHANISMS
+        # entry, and it is enforced, so the language currently has no
+        # unenforced argument-bearing mechanism at all — the argument-
+        # dropping sub-case this test used to pin has no live example left
+        # and issue #127 leaves it undemonstrated rather than reconstructed
+        # with test-only surface area.
+        #
+        # What this test preserves instead: the unenforced-declaration
+        # reporting the two tests above already pin, exercised on a
+        # `policy` mechanism rather than `security` — neither prior case in
+        # this class used anything but `security jwt`.
         source = """
-entity User
+entity Report
     field
         id UUID
-        password Password
-service LoginService
-    security
-        encrypt password
+service ReportService
+    policy
+        parallel
 """
         diags = declaration_diagnostics(compile_module(source))
-        self.assertEqual([d.subject for d in diags], ["security encrypt"])
+        self.assertEqual([d.subject for d in diags], ["policy parallel"])
 
 
 class TestAuthorizationIsRecordedNeverChecked(unittest.TestCase):

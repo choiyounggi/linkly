@@ -9,10 +9,10 @@
 ## 절별 허용 이름
 
 - `policy`: `retry` `rollback` `timeout` `parallel`
-- `security`: `jwt` `role` `encrypt`
+- `security`: `jwt` `role`
 - `performance`: `response` `cache` `parallel` `prefetch` `batch`
 
-인자를 받는 security 기제: `role` `encrypt`
+인자를 받는 security 기제: `role`
 값 없이 쓰는 performance 지표: `parallel` `prefetch` `batch`
 
 ## 집행 매트릭스
@@ -25,7 +25,6 @@
 | `policy parallel` | **unenforced** | parsed, but the execution plan never reads it |
 | `security jwt` | **unenforced** | the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md) |
 | `security role` | **enforced** | every route the declaring service owns requires the verified token's role to exactly match `<r>`; mismatch or absence is 403 `forbidden` (docs/serving.md M3b) |
-| `security encrypt` | **unenforced** | the field is not encrypted (Password masking is a separate, type-driven behaviour) |
 | `performance response` | **measured** | measured and reported per run, but an over-budget run is not blocked |
 | `performance cache` | **enforced** | owns the TTL budget every CacheAccess set is written with |
 | `performance parallel` | **unenforced** | parsed, but the execution plan never reads it |

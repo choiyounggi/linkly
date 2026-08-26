@@ -172,10 +172,10 @@ NUMBER_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?$")    # Number
 WORD_RE = re.compile(r"^[a-z][a-zA-Z0-9]*$")        # Word
 
 POLICY_NAMES = ("retry", "rollback", "timeout", "parallel")
-SECURITY_MECHANISMS = ("jwt", "role", "encrypt")
+SECURITY_MECHANISMS = ("jwt", "role")
 PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
-ARGUMENT_MECHANISMS = ("role", "encrypt")
+ARGUMENT_MECHANISMS = ("role",)
 
 # issue #119, D2: the read-only `caller` scope's closed field vocabulary —
 # mirrors `interp.CALLER_NAMESPACE`/`caller_view`. No `roles` (plural), no
@@ -556,7 +556,7 @@ def _parse_security_line(tokens, lineno):
     head = tokens[0]
     if head not in SECURITY_MECHANISMS:
         raise LowerError("line %d: unknown security mechanism %r "
-                         "(allowed: jwt, role <r>, encrypt <field>)" % (lineno, head))
+                         "(allowed: jwt, role <r>)" % (lineno, head))
     if head in ARGUMENT_MECHANISMS:
         if len(tokens) != 2:
             raise LowerError("line %d: `%s` needs one argument" % (lineno, head))

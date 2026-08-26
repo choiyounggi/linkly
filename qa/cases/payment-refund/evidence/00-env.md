@@ -1,5 +1,7 @@
 # evidence/00-env — 환경 구축과 베이스라인 (T01)
 
+> 2026-08-26: 이 기록은 `security encrypt` 어휘 제거(#127) 이전의 실행이다.
+
 - 시각: 2026-08-05T21:20+0900
 - 워크트리: `.worktrees/qa-t2-payment-refund`
 - 베이스라인 commit: `713a4cba14a5ace278801c193abbc809ab09894e`

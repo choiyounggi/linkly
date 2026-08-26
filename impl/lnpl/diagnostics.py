@@ -171,8 +171,6 @@ ENFORCEMENT = {
         (ENFORCED, "every route the declaring service owns requires the "
                    "verified token's role to exactly match `<r>`; mismatch "
                    "or absence is 403 `forbidden` (docs/serving.md M3b)"),
-    ("security", "encrypt"):
-        (UNENFORCED, "the field is not encrypted (Password masking is a separate, type-driven behaviour)"),
     ("performance", "response"):
         (MEASURED, "measured and reported per run, but an over-budget run is not blocked"),
     ("performance", "cache"):

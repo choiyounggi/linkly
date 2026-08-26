@@ -246,10 +246,10 @@ class TestMatrixCompleteness(unittest.TestCase):
         # Asserted before any set comparison: a source list that parsed to zero
         # items would satisfy set equality against anything.
         self.assertEqual(len(POLICY_NAMES), 4)
-        self.assertEqual(len(SECURITY_MECHANISMS), 3)
+        self.assertEqual(len(SECURITY_MECHANISMS), 2)  # issue #127: encrypt removed
         self.assertEqual(len(PERF_METRICS), 5)
         self.assertEqual(len(EVENT_TRIGGERS), 1)
-        self.assertEqual(len(ENFORCEMENT), 13)   # 12 + RFC-0016's schedule
+        self.assertEqual(len(ENFORCEMENT), 12)   # 11 + RFC-0016's schedule
 
     def test_enforcement_covers_exactly_the_closed_sets(self):
         self.assertEqual(
