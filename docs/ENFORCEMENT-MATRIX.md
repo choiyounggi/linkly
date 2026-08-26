@@ -70,11 +70,10 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 |--------|------|--------|-----------|------|
 | policy | retry | enforced | — | `run_workflow`가 실패 스텝을 멱등인 동안 재실행한다 |
 | policy | timeout | enforced | — | 워크플로 데드라인을 계산하고 초과 시 실행을 실패시킨다 |
-| policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 롤백한다(issue #79, RFC-0032) |
+| policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 **선언 여부와 무관하게 모든 서비스에서 무조건** 롤백한다 — `policy rollback` 선언이 실제로 좌우하는 것은 (a) 그 INFO trace 로그 한 줄과 (b) 컴파일 타임 `rollback-escapes-network` 진단(issue #112)의 활성화뿐이다(issue #79, RFC-0032, RFC-0036) |
 | policy | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
 | security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
 | security | role | enforced | — | 이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`(docs/serving.md M3b). `jwt`와 달리 "약한 경로"가 없다 — `security role`을 선언하고도 `serve`가 뜬다면 token_provider 없이는 기동 자체가 rc 2로 거부되기 때문이다(D6) |
-| security | encrypt | unenforced | declared-not-enforced | 필드를 암호화하지 않는다. Password 마스킹은 타입이 하는 별개 동작이다 |
 | performance | response | measured | declared-measured-only | 실행마다 측정·보고하지만 예산 초과 실행을 차단하지 않는다 |
 | performance | cache | enforced | — | 모든 CacheAccess set이 쓰는 TTL 예산을 소유한다 |
 | performance | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
@@ -151,7 +150,7 @@ stderr로 출력하며, 형식은 `diagnostics.py`의 `format_lines()` 한 곳�
 | 남은 것 | 왜 |
 |---------|-----|
 | `redis` 실제 바인딩 | RFC-0003의 cache TTL이 주입된 **가상 시계** 단위라 프로세스를 넘으면 뜻이 없다. 영속 캐시는 새 프로세스의 시계 0에 대해 언제나 신선해 보인다 — 만료 계약이 거짓인 저장소가 된다 |
-| `security encrypt` | 필드 암호화는 손대지 않았다. `security role`은 issue #119가 이후 집행으로 옮겼다 |
+| `security encrypt` | 더 이상 없다 — issue #127이 RFC-0035 §D3을 집행해 닫힌 어휘에서 제거했다(드라이버 0건이 항상 빈 집합이었다는 이유로). `security role`은 issue #119가 이후 집행으로 옮겼다 |
 | refresh 토큰·회전·폐기 목록 | 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다 |
 
 표의 status를 고치는 것만으로 집행이 생기지는 않는다. 정본은 코드이므로

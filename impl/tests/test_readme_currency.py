@@ -1,9 +1,11 @@
-"""README가 주장하는 수치가 레포의 실제와 같은가.
+"""README가 주장하는 수치가 레포의 실제를 충실히 반영하는가.
 
 이 파일이 생긴 이유: README의 "**1346 tests**"와 "**15 RFCs**"가 **두 릴리스치**
 낡아 있었다(실제로는 1964와 24). 아무도 거짓말하지 않았고, 손으로 적은 숫자가
 릴리스마다 조용히 밀렸을 뿐이다. 첫 접촉면이 자기 규모를 틀리게 말하면, 읽는
-쪽은 그것을 검증할 방법이 없다.
+쪽은 그것을 검증할 방법이 없다. (이 1346 vs 1964 수치는 이제
+`BandDiscriminationTest`의 역방향 대조군으로도 쓰인다 — 밴드 밖 값이 실제로
+걸러지는지를 이 실제 사건으로 증명한다.)
 
 여기서 세는 것은 **손으로 적힌 주장**뿐이다. 생성물(`references/`)은
 `gen_plugin_references.py --check`가 이미 소유하고 있으므로 건드리지 않는다.
@@ -11,7 +13,10 @@
 세 축을 각각 본다 — 하나로 뭉치면 어느 축이 밀렸는지 실패 메시지가 말해주지
 못한다:
 
-  1. 스위트 규모     README의 테스트 수 == 실제 발견되는 테스트 수
+  1. 스위트 규모     README의 테스트 수(근사치)가 실제 발견되는 테스트 수의
+                     ±5% 밴드 안에 있는가 — 정확한 수는 어디에도 커밋되지
+                     않으므로, 테스트를 추가하는 브랜치가 이 줄을 고칠 이유가
+                     없다 (`within_band` 참고)
   2. RFC 규모        README의 RFC 수·Accepted 수 == `rfcs/`의 실제
   3. 표의 완전성     RFC 표와 플러그인 표가 실재하는 것을 빠짐없이 싣는가
 
@@ -85,32 +90,79 @@ def marketplace_plugin_names():
         return [e["name"] for e in json.load(fh)["plugins"]]
 
 
+SUITE_CLAIM_BAND = 0.05
+
+
+def within_band(claimed, actual, ratio=SUITE_CLAIM_BAND):
+    """주장한 수가 실측값의 ±ratio 안인가. 판정을 함수로 빼는 이유는
+    README를 변조하지 않고도 이 판정이 빨개질 수 있음을 증명하기
+    위해서다 (wiki: tests-that-cannot-fail §1)."""
+    if actual <= 0:
+        raise ValueError("actual must be positive; 0이면 공허한 통과다")
+    return abs(claimed - actual) <= actual * ratio
+
+
 class SuiteSizeClaimTest(unittest.TestCase):
 
     def test_both_readmes_state_the_real_test_count(self):
         actual = discovered_test_count()
-        for path, pattern in ((EN, r"\*\*(\d[\d,]*) tests, all passing\*\*"),
-                              (KO, r"\*\*테스트 (\d[\d,]*)개 전부 통과\*\*")):
+        for path, pattern in ((EN, r"\*\*~([\d,]+) tests, all passing\*\*"),
+                              (KO, r"\*\*테스트 ([\d,]+)여 개 전부 통과\*\*")):
             with self.subTest(readme=os.path.basename(path)):
                 m = re.search(pattern, read(path))
                 self.assertIsNotNone(
                     m, "%s 에서 테스트 수 주장을 찾지 못했다 — 문면이 바뀌었으면 "
                        "이 가드의 패턴도 함께 고쳐라" % os.path.basename(path))
                 claimed = int(m.group(1).replace(",", ""))
-                self.assertEqual(
-                    claimed, actual,
-                    "%s 가 %d개라고 적었는데 실제로는 %d개다."
-                    % (os.path.basename(path), claimed, actual))
+                self.assertTrue(
+                    within_band(claimed, actual),
+                    "%s 는 약 %d개라고 적었는데 실측은 %d개다 — 밴드 ±%d%% 밖이다. "
+                    "README의 근사치를 갱신하라."
+                    % (os.path.basename(path), claimed, actual,
+                       int(SUITE_CLAIM_BAND * 100)))
 
-    def test_the_verification_block_shows_the_same_number(self):
-        # 위의 산문과 아래의 붙여넣은 출력이 서로 어긋나면 어느 쪽을 믿을지
-        # 알 수 없다.
+    def test_the_verification_block_is_within_the_band(self):
+        # 위의 산문과 아래의 붙여넣은 출력이 서로 크게 어긋나면 어느 쪽을
+        # 믿을지 알 수 없다. 붙여넣은 출력은 특정 시점의 증거이므로 등호가
+        # 아니라 같은 밴드로 검사한다(wiki: stale-artifact-baselines §1).
         actual = discovered_test_count()
         for path in (EN, KO):
             with self.subTest(readme=os.path.basename(path)):
                 m = re.search(r"Ran (\d+) tests in ", read(path))
                 self.assertIsNotNone(m)
-                self.assertEqual(int(m.group(1)), actual)
+                pasted = int(m.group(1))
+                self.assertTrue(
+                    within_band(pasted, actual),
+                    "%s 의 붙여넣은 실행 출력(%d개)이 실측(%d개)과 밴드 ±%d%% "
+                    "밖으로 어긋났다."
+                    % (os.path.basename(path), pasted, actual,
+                       int(SUITE_CLAIM_BAND * 100)))
+
+
+class BandDiscriminationTest(unittest.TestCase):
+    """`within_band`가 실제로 빨개질 수 있음을 증명하는 역방향 대조군
+    (wiki: harness-reverse-controls §1, minimum-case-set)."""
+
+    def test_within_band_normal(self):
+        self.assertTrue(within_band(2800, 2823))
+
+    def test_within_band_error_out_of_band(self):
+        # 이 파일이 생긴 실제 사건: 1346 주장 vs 1964 실측(31% 과소) —
+        # 밴드 ±5%로는 명백히 걸러져야 한다.
+        self.assertFalse(within_band(1346, 1964))
+
+    def test_within_band_boundary(self):
+        # actual=2800은 actual*SUITE_CLAIM_BAND가 부동소수점으로 정확히
+        # 떨어져(140.0) 경계 비교가 반올림 오차로 흔들리지 않는다.
+        actual = 2800
+        at_edge = actual - actual * SUITE_CLAIM_BAND
+        self.assertTrue(within_band(at_edge, actual))
+        just_outside = at_edge - 1
+        self.assertFalse(within_band(just_outside, actual))
+
+    def test_within_band_zero_actual_raises(self):
+        with self.assertRaises(ValueError):
+            within_band(1, 0)
 
 
 class RfcCountClaimTest(unittest.TestCase):

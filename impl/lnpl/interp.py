@@ -121,6 +121,8 @@ class FakeRepository:
                                  for key, row in table.items()}
                      for entity_id, table in (rows or {}).items()}
         self.calls = []
+        # issue #120: the `begin()` snapshot, or `None` between transactions.
+        self._snapshot = None
 
     def execute(self, entity_id, operation, key):
         self.calls.append((entity_id, operation))
@@ -209,18 +211,36 @@ class FakeRepository:
         return None
 
     def begin(self):
-        """No-op (issue #79, RFC-0032) — the Fake has no transaction to
-        open, the same asymmetry `record_emission` states. `run_workflow`
-        calls this and `commit`/`rollback` unconditionally around every
-        run; on the Fake all three do nothing, so a failed run's writes
-        (already applied directly into `self.rows`) are not undone."""
-        return None
+        """Snapshot `self.rows` so a later `rollback()` can restore it
+        (issue #120, RFC-0032 enforced). The copy goes two dict levels deep,
+        matching the constructor's own copy: RFC-0015's `set` mutates a read
+        row's dict in place and a read binds that exact object, so a
+        shallow (one-level) snapshot would share the row dict with the live
+        table and "restore" a value that was mutated right along with it.
+
+        Rejects a nested call — a re-snapshot while one is already open
+        would make "the matching `begin()`" ambiguous, and silently drop
+        whatever `rollback()` was supposed to undo."""
+        if self._snapshot is not None:
+            raise RunError("begin() called while a transaction is already open")
+        self._snapshot = {entity_id: {key: dict(row) if isinstance(row, dict) else row
+                                      for key, row in table.items()}
+                          for entity_id, table in self.rows.items()}
 
     def commit(self):
-        return None
+        """Discard the snapshot — the writes since `begin()` stay."""
+        self._snapshot = None
 
     def rollback(self):
-        return None
+        """Restore `self.rows` from the `begin()` snapshot, discarding
+        every write made since. A no-op, not an error, when there is no
+        snapshot: `FakeRepository` is also driven directly (its own unit
+        tests, `--backend fake` without a wrapping `run_workflow`), and
+        those callers never open a transaction to begin with."""
+        if self._snapshot is None:
+            return
+        self.rows = self._snapshot
+        self._snapshot = None
 
     def read_outbox(self, event, after_seq=0):
         """Nothing to tail — same asymmetry `record_emission` states: with
@@ -1133,17 +1153,21 @@ class Interpreter:
                     # never the exception — so the failure's TYPE has to ride
                     # along as a field, not be re-derived by matching against
                     # `failure_reason`'s wording (that is M6's mistake, issue
-                    # #113 forbids repeating it). Two carriers, one per raise
-                    # site: `__cause__` is the original `DriverError` a real
-                    # driver's `raise RunError(...) from exc` chained;
-                    # `failure_kind` is the attribute `FakeRepository` sets on
-                    # a bare `RunError` it raises directly (it is not a
-                    # `RepositoryDriver`, so it never chains a `DriverError`).
-                    # Neither is present on a failure this feature does not
-                    # know about.
-                    if (isinstance(last_error.__cause__, ConflictError)
-                            or getattr(last_error, "failure_kind", None) == "conflict"):
+                    # #113/#128 forbid repeating it). Two carriers, one per
+                    # raise site: `__cause__` is the original `DriverError` a
+                    # real driver's `raise RunError(...) from exc` chained
+                    # (currently only ever a `ConflictError`); `failure_kind`
+                    # is the attribute a bare `RunError` carries when raised
+                    # directly — `FakeRepository`'s create-conflict (D2) and
+                    # `_run_step`'s deadline-exhausted raise (issue #128) both
+                    # set it. Neither carrier is present on a failure this
+                    # feature does not know about.
+                    if isinstance(last_error.__cause__, ConflictError):
                         result["failure_kind"] = "conflict"
+                    else:
+                        kind = getattr(last_error, "failure_kind", None)
+                        if kind is not None:
+                            result["failure_kind"] = kind
                     self.trace.log("ERROR", "step failed",
                                    step=step["name"], reason=str(last_error))
                     break
@@ -1152,6 +1176,7 @@ class Interpreter:
                     result["failed_step"] = step["name"]
                     result["failure_reason"] = ("deadline exceeded after step %r"
                                                 % step["name"])
+                    result["failure_kind"] = "deadline"
                     self.trace.log("ERROR", "deadline exceeded",
                                    step=step["name"], deadline_ms=con["timeout_ms"])
                     break
@@ -1230,7 +1255,9 @@ class Interpreter:
 
     def _run_step(self, step, span, con, payload, deadline, bindings, rowsets):
         if deadline is not None and self.clock.now >= deadline:
-            raise RunError("deadline exhausted before step %r" % step["name"])
+            exhausted = RunError("deadline exhausted before step %r" % step["name"])
+            exhausted.failure_kind = "deadline"
+            raise exhausted
         for child_id in step.get("children", []):
             effect = self.nodes[child_id]
             self._run_effect(effect, span, con, payload, bindings, rowsets, deadline)

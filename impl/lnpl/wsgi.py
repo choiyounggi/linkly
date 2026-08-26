@@ -630,15 +630,15 @@ def _workflow_service_names(document):
 
 # The post-run mapping rows, in decision order. M6 is decided before M7: a
 # deadline that lands on a validation step ("deadline exhausted before step
-# 'validate input'") is a timeout, not a payload rejection. The prefix is
-# pinned to interp.py's two message forms ("deadline exceeded after step %r",
-# "deadline exhausted before step %r") — the result carries no typed failure
-# class, and the runner contract is consume-only here.
+# 'validate input'") is a timeout, not a payload rejection. issue #128: M6
+# reads the typed `failure_kind` interp.py's two deadline sites both set,
+# same as M8a's conflict check below — not a match against
+# `failure_reason`'s wording, which is free to reword without breaking this.
 def map_result(result):
     """`run_workflow` result -> (http status, error code or None)."""
     if result["status"] == "completed":
         return 200, None                                  # M9 — skipped[] rides the body
-    if (result["failure_reason"] or "").startswith("deadline"):
+    if result.get("failure_kind") == "deadline":
         return 504, "deadline-exceeded"                   # M6
     failed = result["failed_step"]
     for entry in result["steps"]:
@@ -838,10 +838,20 @@ class LnplWsgiApp:
         SSE is a generator, not a materialized body — its line is emitted at
         stream end (`_log_sse_then`), not at connection open, so `duration_ms`
         reflects the stream's actual lifetime.
+
+        issue #123, D1: `trace_id`/`span_id` are resolved exactly once here,
+        for every method — this is the one place all four route kinds pass
+        through in JSON log mode. `log_sink` starts seeded with the pair
+        (instead of `{}`) so GET/SSE, which never reach `_respond`, still
+        report them; the POST/workflow path forwards this same resolution
+        into `_respond` as `trace_ctx` so it never resolves a second, and
+        possibly different, one (D1's own overwrite risk).
         """
         start_t = time.monotonic()
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
-        log_sink = {}
+        trace_ctx = self._resolve_trace_context(environ)
+        trace_id, span_id = trace_ctx[:2]
+        log_sink = {"trace_id": trace_id, "span_id": span_id}
         captured = {}
 
         def capture_start_response(status_line, headers, exc_info=None):
@@ -850,7 +860,7 @@ class LnplWsgiApp:
 
         if method == "POST":
             body = self._do_post(environ, capture_start_response, path_info,
-                                 raw_path, log_sink=log_sink)
+                                 raw_path, log_sink=log_sink, trace_ctx=trace_ctx)
         elif method == "GET":
             body = self._do_get(environ, capture_start_response, path_info,
                                query, raw_path)
@@ -860,7 +870,7 @@ class LnplWsgiApp:
         if not isinstance(body, list):
             # The SSE generator: log once the stream actually ends.
             return self._log_sse_then(body, method, path_info, correlation_id,
-                                      start_t, captured)
+                                      start_t, captured, log_sink)
         self._emit_request_log(method, path_info, correlation_id, start_t,
                                captured, log_sink)
         return body
@@ -877,10 +887,13 @@ class LnplWsgiApp:
             "skipped": log_sink.get("skipped", []),
             "diagnostics": log_sink.get("diagnostics", []),
         }
-        # issue #107, D3: trace_id/span_id sit alongside correlation_id, not
-        # in place of it. `None` (a non-workflow GET/SSE request, which never
-        # populates log_sink) omits the key — the pre-#107 golden line stays
-        # byte-identical.
+        # issue #107, D3 / issue #123, D1: trace_id/span_id sit alongside
+        # correlation_id, not in place of it. `_call_with_json_log` seeds
+        # `log_sink` with both keys for every route kind, so `None` only
+        # happens if `_resolve_trace_context` itself ever returned one --
+        # it doesn't (D1's own tuple is never partial) -- and the omission
+        # here is defensive, not the pre-#123 GET/SSE golden-line byte
+        # invariance that used to rely on it.
         trace_id = log_sink.get("trace_id")
         if trace_id is not None:
             line["trace_id"] = trace_id
@@ -890,13 +903,13 @@ class LnplWsgiApp:
         print(json.dumps(line, ensure_ascii=False), file=sys.stderr)
 
     def _log_sse_then(self, generator, method, path, correlation_id, start_t,
-                      captured):
+                      captured, log_sink):
         try:
             for chunk in generator:
                 yield chunk
         finally:
             self._emit_request_log(method, path, correlation_id, start_t,
-                                   captured, {})
+                                   captured, log_sink)
 
     def _reject_non_post(self, start_response, path_info, raw_path):
         if raw_path in self.routes:                                # M2
@@ -1009,7 +1022,7 @@ class LnplWsgiApp:
                                      correlation_id=correlation_id))
 
     def _do_post(self, environ, start_response, path_info, raw_path,
-                log_sink=None):
+                log_sink=None, trace_ctx=None):
         route = self.routes.get(raw_path)                            # M1
         if route is None:
             return _json_response(start_response, 404,
@@ -1056,7 +1069,7 @@ class LnplWsgiApp:
         # when no client sends it.
         if_match = environ.get("HTTP_IF_MATCH")
         return self._run(environ, start_response, route["workflow"], payload,
-                         claims=claims, log_sink=log_sink,
+                         claims=claims, log_sink=log_sink, trace_ctx=trace_ctx,
                          idempotency_key=idempotency_key, if_match=if_match)
 
     def _do_get(self, environ, start_response, path_info, query, raw_path):
@@ -1345,7 +1358,7 @@ class LnplWsgiApp:
                 repository.close()
 
     def _run(self, environ, start_response, workflow_id, payload, claims=None,
-            log_sink=None, idempotency_key=None, if_match=None):
+            log_sink=None, trace_ctx=None, idempotency_key=None, if_match=None):
         doc = self.document
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
         factory = self.repository_factory
@@ -1353,7 +1366,8 @@ class LnplWsgiApp:
         try:
             return self._respond(environ, start_response, doc, workflow_id, payload,
                                  correlation_id, repository, claims=claims,
-                                 log_sink=log_sink, idempotency_key=idempotency_key,
+                                 log_sink=log_sink, trace_ctx=trace_ctx,
+                                 idempotency_key=idempotency_key,
                                  if_match=if_match)
         finally:
             # A request that fails must still release its store, or the leak
@@ -1406,7 +1420,7 @@ class LnplWsgiApp:
 
     def _respond(self, environ, start_response, doc, workflow_id, payload,
                 correlation_id, repository, claims=None, log_sink=None,
-                idempotency_key=None, if_match=None):
+                trace_ctx=None, idempotency_key=None, if_match=None):
         # issue #113, D8/D9/D11: opt-in on the repository object, the same
         # `getattr` idiom D12's ETag opt-in uses -- covers "no backend at
         # all" (fake -> `repository is None`) and "a backend that never
@@ -1453,7 +1467,17 @@ class LnplWsgiApp:
         # Trace this request will use is built — trace_id/span_id/trace_link
         # are a runtime-decided identity, D3's correlation_id stays separate
         # and untouched alongside them on the same record.
-        trace_id, span_id, trace_link, tracestate, flags = self._resolve_trace_context(environ)
+        #
+        # issue #123, D1 (r1): `trace_ctx` arrives pre-resolved from
+        # `_call_with_json_log` for the JSON-log path -- resolving again
+        # here would mint a second, different `span_id` (fresh every call)
+        # and let this Trace disagree with the canonical line already
+        # seeded from the first resolution. Text-log mode never goes
+        # through `_call_with_json_log` at all, so it falls back to
+        # resolving its own here, exactly as before this task.
+        if trace_ctx is None:
+            trace_ctx = self._resolve_trace_context(environ)
+        trace_id, span_id, trace_link, tracestate, flags = trace_ctx
         interp.trace.trace_id = trace_id
         interp.trace.span_id = span_id
         interp.trace.trace_link = trace_link

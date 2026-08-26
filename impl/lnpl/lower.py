@@ -172,10 +172,10 @@ NUMBER_RE = re.compile(r"^-?[0-9]+(\.[0-9]+)?$")    # Number
 WORD_RE = re.compile(r"^[a-z][a-zA-Z0-9]*$")        # Word
 
 POLICY_NAMES = ("retry", "rollback", "timeout", "parallel")
-SECURITY_MECHANISMS = ("jwt", "role", "encrypt")
+SECURITY_MECHANISMS = ("jwt", "role")
 PERF_METRICS = ("response", "cache", "parallel", "prefetch", "batch")
 VALUELESS_PERF = ("parallel", "prefetch", "batch")
-ARGUMENT_MECHANISMS = ("role", "encrypt")
+ARGUMENT_MECHANISMS = ("role",)
 
 # issue #119, D2: the read-only `caller` scope's closed field vocabulary —
 # mirrors `interp.CALLER_NAMESPACE`/`caller_view`. No `roles` (plural), no
@@ -556,7 +556,7 @@ def _parse_security_line(tokens, lineno):
     head = tokens[0]
     if head not in SECURITY_MECHANISMS:
         raise LowerError("line %d: unknown security mechanism %r "
-                         "(allowed: jwt, role <r>, encrypt <field>)" % (lineno, head))
+                         "(allowed: jwt, role <r>)" % (lineno, head))
     if head in ARGUMENT_MECHANISMS:
         if len(tokens) != 2:
             raise LowerError("line %d: `%s` needs one argument" % (lineno, head))
@@ -1007,7 +1007,7 @@ def lower(decls, module_name):
         owner = owner_of.get(id(d))
         has_rollback = owner is not None and id(owner) in rollback_services
         _check_rollback_escapes_network(ctx.emitted, d.name, has_rollback,
-                                        mod.diagnostics)
+                                        mod.diagnostics, verbs=ctx.network_verbs)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -1040,6 +1040,13 @@ class _WfContext:
         # step's line rather than the node it is about — recording the pairing
         # here as it is made is simpler than re-deriving it from `self.emitted`.
         self.step_lines = {}
+        # issue #125: `NetworkCall` nodes carry no `verb` field (`call` and
+        # `request` both lower to the same node, `VERB_LEXICON`), so the two
+        # diagnostics that quote a `NetworkCall` step's verb need it recorded
+        # somewhere that isn't the IR — this side map, not serialized, keyed
+        # by the Effect node's `eid` (not `step_id`; `ctx.emitted` holds the
+        # derived Effect nodes, whose `id` is `eid`).
+        self.network_verbs = {}
 
     def plan(self, item):
         """Emit the nodes for one body item; returns the id the parent should own."""
@@ -1104,7 +1111,8 @@ class _WfContext:
                                      line.lineno, line.tokens[2:],
                                      diagnostics=self.diagnostics,
                                      step_text=" ".join(line.tokens),
-                                     http_cap_names=self.http_cap_names)
+                                     http_cap_names=self.http_cap_names,
+                                     verb_sink=self.network_verbs)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -1471,7 +1479,8 @@ def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics)
                                           field["name"]))
 
 
-def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagnostics):
+def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagnostics,
+                                    verbs=None):
     """`rollback-escapes-network` (warning) — issue #112.
 
     RFC-0032 opens one transaction per `run_workflow` execution and rolls it
@@ -1488,15 +1497,23 @@ def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagno
     contradict. One diagnostic per `NetworkCall` step (not one per
     workflow): each is a separate step an author has to either move or wrap,
     so collapsing them into one line would hide the rest.
+
+    `verbs` (issue #125) is `_WfContext.network_verbs`, keyed by the
+    `NetworkCall` node's own `id` (an Effect node's `eid`, which is what
+    `step["id"]` is here — `emitted` holds derived Effect nodes, not
+    `WorkflowStep` wrappers) — it lets this diagnostic quote the author's
+    `call`/`request` verb instead of assuming `call`.
     """
     if not has_rollback:
         return
+    verbs = verbs or {}
     for step in emitted:
         if step["kind"] != "NetworkCall":
             continue
         line = step.get("line")
         where_str = ("line %d" % line) if line else workflow_name
-        subject = "call %s" % step.get("target", "unspecified")
+        verb = verbs.get(step["id"], "call")
+        subject = "%s %s" % (verb, step.get("target", "unspecified"))
         diagnostics.add(
             code="rollback-escapes-network",
             where=where_str, subject=subject, line=line,
@@ -2123,7 +2140,8 @@ class _Scope:
 
 
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
-                   diagnostics=None, step_text=None, http_cap_names=frozenset()):
+                   diagnostics=None, step_text=None, http_cap_names=frozenset(),
+                   verb_sink=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
@@ -2140,6 +2158,11 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     used only by the `NetworkCall` branch to flag a target with no matching
     declaration — it runs with method POST and no auth either way, so this is
     informational, not a rejection.
+
+    `verb_sink` (issue #125) is `_WfContext.network_verbs` — the `NetworkCall`
+    branch records `eid -> verb` there so `_check_rollback_escapes_network`
+    can quote the author's own verb later, without adding a `verb` field to
+    the IR node itself.
     """
     entry = VERB_LEXICON.get(verb)
     if entry is None:
@@ -2207,11 +2230,13 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
 
     if kind == "NetworkCall":
         target = obj or "unspecified"
+        if verb_sink is not None:
+            verb_sink[eid] = verb
         if (diagnostics is not None and not _looks_like_url(target)
                 and target not in http_cap_names):
             diagnostics.add(
                 code="declared-not-bound", where=eid,
-                subject="call %s" % target,
+                subject="%s %s" % (verb, target),
                 message="%r has no `capability http` declaration — it runs "
                         "with method POST and no auth" % target,
                 line=lineno)

@@ -281,7 +281,7 @@ class TestEnforcementMatrix(unittest.TestCase):
     def test_matrix_has_the_expected_row_count(self):
         # Asserted before any set comparison elsewhere, so a matrix that parsed
         # to zero rows cannot make a coverage check pass vacuously.
-        self.assertEqual(len(ENFORCEMENT), 13)   # 12 + RFC-0016's event schedule
+        self.assertEqual(len(ENFORCEMENT), 12)   # 11 + RFC-0016's event schedule; issue #127 removed security.encrypt
 
     def test_every_status_is_in_the_canonical_set(self):
         self.assertEqual(ENFORCEMENT_STATUSES,

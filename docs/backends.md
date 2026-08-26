@@ -263,12 +263,17 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). 남은 이유는 다음 행뿐이다: 서버·드라이버 라이브러리가 이 계획을 세운 머신에 없다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — 실드라이버 자체는 #75(SPI 외부 공급)가 소유한다 |
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
 | **postgres / redis 서버 바인딩** | `psycopg2`/`redis` 자체는 이제 문제가 아니다(Testcontainers로 로컬에 서버를 띄울 수 있다) — 그 바인딩을 실을 `lnpl-postgres` 외부 레포와 그 레포의 Testcontainers CI가 아직 없다. 이슈 #115가 레포 안(TCK 강화) 절반만 완료했고, 이 절반은 후속 이슈로 등재돼 있다 |
-| **`FakeRepository`의 `rollback`** | 문서화된 no-op이다(`impl/lnpl/interp.py`의 `FakeRepository.begin` docstring: "on the Fake all three do nothing, so a failed run's writes … are not undone."). RFC-0032가 `policy rollback`을 enforced로 올렸지만 기본 백엔드(`--backend fake`)에서는 그 정책이 조용히 거짓이다 — 2583개 테스트의 기반을 바꾸는 변경이라 이슈 #115와 별도로 후속 이슈로 등재돼 있다 |
 | **트랜잭션 경계 밖 `NetworkCall`의 보상** | `policy rollback`은 저장소 쓰기만 되돌린다(RFC-0032 §Open Questions ②) — `call`/`request`는 이미 나간 뒤라 되돌아가지 않는다. 컴파일러는 그 워크플로마다 `rollback-escapes-network`(warning, 이슈 #112)로 **신고만** 한다. 보상 방식은 RFC-0034(Draft)가 결정했고 구현은 후속(Batch B) |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
 | **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
-| **`security encrypt <field>`** | 필드를 암호화하지 않는다(`docs/ENFORCEMENT-MATRIX.md`, `unenforced`). **`Password` 마스킹과는 무관한, 별개의 기제다** — 이름이 비슷해 혼동되기 쉽다: 마스킹(#43)은 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 **관측 채널 규칙**이고, `security encrypt`는 저장 시 필드를 **암호화하겠다는 선언**이다. 후자를 실제로 집행할 외부 드라이버가 0건이라(이슈 #115) 지금은 무엇을 암호화해도 되돌아오지 않는다. RFC-0035가 이 상태를 어떻게 할지 결정한다 — Password 마스킹은 이 결정과 무관하게 그대로 남는다 |
+| **`security encrypt <field>`** | 제거됨 — RFC-0035 §D3 참조(issue #127). 실제로 집행할 외부 드라이버가 0건이었던 것이 "드라이버 의존"이 아니라 항상 빈 집합이었다는 이유로, 닫힌 어휘에서 빠졌다. `Password` 마스킹(#43, 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 관측 채널 규칙)은 이 결정과 무관하게 그대로 남는다 |
+
+`FakeRepository`의 `rollback`은 위 표에서 뺐다: 이슈 #120부터는 no-op이
+아니라 실제로 되돌린다. `begin()`이 `self.rows`의 스냅샷을 뜨고,
+`rollback()`이 그 스냅샷으로 복원하며, `commit()`이 스냅샷을 버린다 —
+`--backend fake`(스위트 대부분과 로컬 개발이 쓰는 백엔드)에서도 RFC-0032의
+"한 워크플로 실행 = 한 트랜잭션" 정책이 실제로 지켜진다.
 
 ## 6. 차동 검증과의 관계
 

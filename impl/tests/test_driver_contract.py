@@ -661,8 +661,11 @@ class AssignmentFlushTargetTest(ContractTestCase):
         # silently dropped on the Fake — is that no SECOND flush follows it.
         self.assertEqual(repository.persisted,
                          [("entity.order", "entity.order#p-1")])
-        self.assertEqual(repository.rows["entity.order"]["entity.order#p-1"],
-                         {"id": "p-1", "quantity": 4})
+        # issue #120: the run fails, so `run_workflow`'s `rollback()` now
+        # actually discards that one flush along with everything else since
+        # `begin()` — `persisted` above still shows the attempt happened,
+        # `self.rows` no longer does.
+        self.assertNotIn("entity.order", repository.rows)
 
 
 class DefaultPathTest(ContractTestCase):

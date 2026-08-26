@@ -421,11 +421,23 @@ env-var 표면까지 넓히지 않는다. `/-/healthz`/`/-/readyz` 자체는 `bu
   | `duration_ms` | 요청 처리 전체 걸린 시간(반올림 3자리) |
   | `skipped` | `result["skipped"]` 그대로(워크플로 요청이 아니면 `[]`) |
   | `diagnostics` | `diagnostics.to_records(interp.diagnostics)`(기존 진단 레코드 재사용 — 새 직렬화를 발명하지 않는다; 워크플로 요청이 아니면 `[]`) |
+  | `trace_id` / `span_id` | `_resolve_trace_context`가 인바운드 `traceparent`(`--trust-incoming-trace` on일 때만 채택, 그 외엔 새로 채번)로부터 결정한 값(이슈 #123) |
 
   SSE 구독은 스트림이라 `duration_ms`가 연결이 열려 있던 시간 전체를
   가리켜야 하므로, 접속 시점이 아니라 **스트림이 끝날 때**(정상 소진,
   idle timeout, 또는 클라이언트 연결 종료로 인한 `GeneratorExit`) 1행이
   나간다.
+
+  **trace 전파 범위(이슈 #123, D1/D3/D6).** `trace_id`/`span_id`는 서빙되는
+  네 경로 전부(워크플로 POST, GET 단건, GET 목록, SSE 구독) 의 canonical
+  줄에 실린다 — 단 **`--log-format json`일 때만**: `text` 모드는 canonical
+  줄 자체가 없으므로 범위 밖이다(워크플로 POST는 `Trace`용으로 여전히 자기
+  trace를 해석하지만, 그 값이 로그로 나갈 자리가 없을 뿐이다). GET/SSE는
+  `Trace` 객체를 만들지 않는다 — id는 이 로그 줄에만 실리고
+  `--trace-exporter` 출력에는 나타나지 않는다(안 2를 고르지 않았다). 한
+  요청당 `_resolve_trace_context`는 정확히 한 번만 불린다 — 워크플로
+  POST는 JSON 로그 경로(`_call_with_json_log`)의 단일 해석을 `_respond`에
+  인자로 넘겨받고, `text` 모드에서만 `_respond`가 자기 해석으로 되돌아간다.
 - payload/필드 값이 로그 줄에 실릴 일이 있는 채널은 전부 기존
   `mask_payload` 체크포인트를 이미 통과한 값만 받는다 — 두 번째 마스킹
   규칙을 새로 만들지 않는다(위 항목들 자체는 correlation_id/상태/시간처럼
