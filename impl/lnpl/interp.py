@@ -121,6 +121,8 @@ class FakeRepository:
                                  for key, row in table.items()}
                      for entity_id, table in (rows or {}).items()}
         self.calls = []
+        # issue #120: the `begin()` snapshot, or `None` between transactions.
+        self._snapshot = None
 
     def execute(self, entity_id, operation, key):
         self.calls.append((entity_id, operation))
@@ -209,18 +211,36 @@ class FakeRepository:
         return None
 
     def begin(self):
-        """No-op (issue #79, RFC-0032) — the Fake has no transaction to
-        open, the same asymmetry `record_emission` states. `run_workflow`
-        calls this and `commit`/`rollback` unconditionally around every
-        run; on the Fake all three do nothing, so a failed run's writes
-        (already applied directly into `self.rows`) are not undone."""
-        return None
+        """Snapshot `self.rows` so a later `rollback()` can restore it
+        (issue #120, RFC-0032 enforced). The copy goes two dict levels deep,
+        matching the constructor's own copy: RFC-0015's `set` mutates a read
+        row's dict in place and a read binds that exact object, so a
+        shallow (one-level) snapshot would share the row dict with the live
+        table and "restore" a value that was mutated right along with it.
+
+        Rejects a nested call — a re-snapshot while one is already open
+        would make "the matching `begin()`" ambiguous, and silently drop
+        whatever `rollback()` was supposed to undo."""
+        if self._snapshot is not None:
+            raise RunError("begin() called while a transaction is already open")
+        self._snapshot = {entity_id: {key: dict(row) if isinstance(row, dict) else row
+                                      for key, row in table.items()}
+                          for entity_id, table in self.rows.items()}
 
     def commit(self):
-        return None
+        """Discard the snapshot — the writes since `begin()` stay."""
+        self._snapshot = None
 
     def rollback(self):
-        return None
+        """Restore `self.rows` from the `begin()` snapshot, discarding
+        every write made since. A no-op, not an error, when there is no
+        snapshot: `FakeRepository` is also driven directly (its own unit
+        tests, `--backend fake` without a wrapping `run_workflow`), and
+        those callers never open a transaction to begin with."""
+        if self._snapshot is None:
+            return
+        self.rows = self._snapshot
+        self._snapshot = None
 
     def read_outbox(self, event, after_seq=0):
         """Nothing to tail — same asymmetry `record_emission` states: with
