@@ -6,6 +6,9 @@
 - Updates: RFC-0003 §Reference-level Specification/Execution Model (Effect 표의 `Transaction`·`EventEmit` 행)
 - Updates: RFC-0003 §Reference-level Specification/Policy Enforcement (`Policy.rollback` 행 — RFC-0013 개정분 중 이 행만)
 - Updates: RFC-0003 §Examples (타임라인 C의 rollback 서술)
+- Updated-by: RFC-0036 (§Reference-level Specification/실행 경계,
+  §Reference-level Specification/docs/ENFORCEMENT-MATRIX.md §B — policy
+  rollback 행)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. `Transaction`·`EventEmit` 행은
 RFC-0027(NetworkCall 행)·RFC-0029(Clock 문단)가 건드리지 않은 행이므로 이번이 그
@@ -111,6 +114,9 @@ CLI가 직접 여는 outbox drain/ack 경로(`ack_outbox`)는 트랜잭션 밖�
 
 ### 실행 경계
 
+> RFC-0036 §Reference-level Specification/실행 경계가 이 절을 갱신했다.
+> RFC-0007 §2.2 규칙 3에 따라 효력 있는 텍스트는 RFC-0036의 해당 절이다.
+
 `interp.Interpreter.run_workflow`가 유일한 경계다(§Guide-level Explanation) —
 step 단위가 아니라 **요청/실행당 트랜잭션 1개**. 첫 step을 평가하기 직전에
 `self.repo.begin()`을 호출한다. 이후:
@@ -155,6 +161,10 @@ this run are discarded"를 `INFO`로 남긴다. 선언이 없어도 트랜잭션
 `Performance.response` — 은 이 갱신의 대상이 아니며 바뀌지 않는다.)
 
 ### `docs/ENFORCEMENT-MATRIX.md` §B — `policy rollback` 행
+
+> RFC-0036 §Reference-level Specification/`docs/ENFORCEMENT-MATRIX.md` §B —
+> `policy rollback` 행이 이 절을 갱신했다. RFC-0007 §2.2 규칙 3에 따라 효력
+> 있는 텍스트는 RFC-0036의 해당 절이다.
 
 `status`가 `unenforced`에서 `enforced`로 바뀐다. `enforced` 행은 진단 코드
 열이 없으므로(`—`, `diagnostics._declaration_diagnostics`가 `ENFORCED` 항목을

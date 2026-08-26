@@ -589,6 +589,10 @@ RFC_ROUTES = {
              "`security encrypt`를 계속 써도 되는지 궁금하다 — 셋 다 이슈 "
              "#119가 미결로 남긴 질문이고, 이 RFC가 지금은 안 하는 이유와 "
              "재검토 조건을 적는다", ()),
+    "0036": ("`policy rollback`을 선언해야 실패한 실행의 쓰기가 롤백되는지 "
+             "궁금하다 — 선언 여부와 무관하게 왜 항상 롤백되는지, 선언이 "
+             "실제로 좌우하는 것(INFO trace 로그, `rollback-escapes-network` "
+             "진단)이 무엇뿐인지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

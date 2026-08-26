@@ -248,7 +248,7 @@ All three roadmap phases are complete.
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**36 RFCs — 32 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034/0035 `Draft`.** RFC-0007 was formally
+**37 RFCs — 33 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034/0035 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -300,8 +300,9 @@ suite is defined against.
 | [0033 Namespace Directories](rfcs/0033-namespace-directories.md) | *(Draft)* A directory holding subdirectories becomes a namespace root: each first-level subdirectory names its declarations' namespace, and a directory literally named `internal/` restricts visibility to its parent — zero grammar changes, derived entirely from path. Declared names stay unique within a namespace rather than globally; a namespace-less compilation unit (today's shape) is byte-identical. Measured first (`docs/scale-pressure-measurement.md`): 40 name-collision events at 50 entities across a 10-noun pool. *Updates 0031 §Guide-level Explanation, §Reference-level Specification (`load_sources`)* |
 | [0034 NetworkCall Compensation](rfcs/0034-network-call-compensation.md) | *(Draft)* Decides how to compensate a `NetworkCall` step outside the transaction boundary `policy rollback` protects: a future `compensate` clause silences the compiler's `rollback-escapes-network` warning (issue #112) when present, and stays the reported default otherwise. Rejects the outbox alternative — an async call cannot satisfy `call ... as <name>`'s synchronous result binding (RFC-0027 §2, RFC-0030). Decision only; no grammar changes yet. |
 | [0035 Authorization Enforcement — Deferred Scope](rfcs/0035-authorization-enforcement-deferred-scope.md) | *(Draft)* Answers the three questions issue #119 left open once `security role` became real: workflow-level `security role` stays out for now (no measured need yet, revisit conditions stated); the `authorize` verb keeps its promoted `warning` grade with its (a)-vs-(b) final fate deferred to observed usage (criteria table included); `security encrypt` is decided for removal (its "driver-dependent" framing describes an always-empty set — zero external drivers exist), with migration guidance, actual removal scoped to a follow-up `tech-debt` issue. |
+| [0036 `policy rollback` Declaration Effect](rfcs/0036-policy-rollback-declaration-effect.md) | Corrects the documented effect of `policy rollback`: `run_workflow` rolls back every failed execution's writes unconditionally, regardless of declaration — the declaration only gates an INFO trace line and the compile-time `rollback-escapes-network` diagnostic (issue #112). `enforced` status is kept (the guarantee itself is real); only the rationale text was wrong. No behavior change. *Updates 0032 §실행 경계, §docs/ENFORCEMENT-MATRIX.md §B — policy rollback 행* |
 
-Thirty-two are `Accepted`, three (`0033`, `0034`, `0035`) are `Draft`; 0000 is superseded by 0007, which was itself formally
+Thirty-three are `Accepted`, three (`0033`, `0034`, `0035`) are `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
