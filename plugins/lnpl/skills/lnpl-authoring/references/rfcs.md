@@ -46,5 +46,6 @@
 | RFC-0033 선언 이름공간 — 디렉터리 스코프와 `internal/` 가시성 | (Draft) 서로 다른 도메인 디렉터리에서 같은 엔티티 이름(`Order` 등)을 쓰고 싶다 — 디렉터리가 어떻게 네임스페이스가 되는지, `internal/`이 가시성을 어떻게 좁히는지, 짧은 이름이 어느 순서로 해소되는지, `derive_id`가 네임스페이스를 왜 대부분의 골든 IR에 영향 없이 담는지 | `rfcs/0033-namespace-directories.md` |
 | RFC-0034 NetworkCall 보상(compensation) 방식 결정 — `compensate` 절 + `rollback-escapes-network` | (Draft) `policy rollback`을 선언한 워크플로에 `call`/`request`를 쓰고 싶다 — `rollback-escapes-network` 경고가 왜 나는지, `compensate` 절이 그 경고를 어떻게 침묵시킬지, outbox 방식을 왜 기각했는지 | `rfcs/0034-network-call-compensation.md` |
 | RFC-0035 인가 집행의 유보된 범위 — 워크플로 수준 role, `authorize`의 운명, `security encrypt` | (Draft) 워크플로마다 다른 `security role`을 왜 아직 못 쓰는지, `authorize` 동사가 왜 아직 선언과 연결되지 않았는지, `security encrypt`를 계속 써도 되는지 궁금하다 — 셋 다 이슈 #119가 미결로 남긴 질문이고, 이 RFC가 지금은 안 하는 이유와 재검토 조건을 적는다 | `rfcs/0035-authorization-enforcement-deferred-scope.md` |
+| RFC-0036 `policy rollback` 선언의 실제 효력 정정 | `policy rollback`을 선언해야 실패한 실행의 쓰기가 롤백되는지 궁금하다 — 선언 여부와 무관하게 왜 항상 롤백되는지, 선언이 실제로 좌우하는 것(INFO trace 로그, `rollback-escapes-network` 진단)이 무엇뿐인지 | `rfcs/0036-policy-rollback-declaration-effect.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.
