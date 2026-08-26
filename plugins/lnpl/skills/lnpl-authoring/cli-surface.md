@@ -114,6 +114,8 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--network` | `run`과 같다. 이슈 #101 전에는 `serve`에 이 플래그 자체가 없어서 모든 요청이 `fake` 드라이버로 나갔다 |
 | `--endpoint` | `run`과 같다 — `--network http`에서 소켓을 바인드하기 전에 검사한다(백엔드·jwt 시크릿과 같은 자리). 이슈 #101 |
 | `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |
+| `--jwt-issuer` | 검증된 토큰이 실려야 할 기대 `iss` 클레임. 안 주면 기존 `"lnpl"`(이슈 #119b 이전과 바이트 단위로 동일). `--jwt-secret-env`와 함께일 때만 의미가 있다 |
+| `--token-provider` | `security jwt` 검증기를 고른다(이슈 #119b): 내장 `hmac`(기본 — `--jwt-secret-env`/`--jwt-issuer`를 그대로 읽는다) 또는 `lnpl.tokens` entry-points 그룹에 등록된 이름(실제 외부 IdP를 RS256/ES256으로 검증). 등록된 이름이 `hmac`을 가리키면 거부된다(`docs/backends.md`) |
 | `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics). 이슈 #78 |
 | `--trace-exporter` | 완료된 요청의 Trace를 내보낼 대상. 내장 `stderr-json`, 또는 `lnpl.exporters` entry-points 그룹에 등록된 이름. 안 주면 아무것도 내보내지 않음 — `--log-format`과 독립. 이슈 #78 |
 | `--trust-incoming-trace` | 인바운드 `traceparent` 헤더의 trace-id를 이 요청의 trace-id로 채택할지. 기본 꺼짐 — 꺼져 있으면 형식이 깨졌든 신뢰하지 않든 항상 새 trace-id를 채번하고, 받은 값은 link로만 기록한다. 이슈 #107 |
@@ -134,6 +136,7 @@ lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
 | `--path` | 토큰이 향하는 **서빙 경로**. `serve`가 서빙하지 않는 경로면 유효한 경로 전부와 함께 거부된다 |
 | `--subject` | `sub` 클레임 — 토큰이 누구를 대변하는가 |
 | `--secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**(시크릿 자체가 아니다) |
+| `--jwt-issuer` | 토큰에 실을 `iss` 클레임(이슈 #119b). 안 주면 `"lnpl"` — `serve --jwt-issuer`로 검증할 값과 맞춰야 한다 |
 | `--ttl` | 액세스 토큰 수명 (기본 `15m`) |
 
 토큰은 stdout 한 줄로 나온다. `aud`는 경로의 서비스 슬러그에서 유도되므로

@@ -103,14 +103,28 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 403 본문에는 어느 역할이 필요했는지 싣지 않는다 — 그 정보는 correlation id와
 함께 서버 stderr로만 나간다(M3a가 이미 쓰는 것과 같은 판단).
 
-**신뢰 모델.** `security role <r>`이 집행하는 역할은 이 서버가 검증한 토큰의
-`role`(또는 원소 1개짜리 `roles`) 클레임에서 읽는다. 그 토큰은 지금은
-`lnpl token`이 **자기 발급**한다 — 외부 IdP(issuer)가 서명한 것이 아니라,
-같은 서비스가 발급과 검증을 모두 하는 자기 주장(self-asserted)이다. 그래서
-이 집행은 t119b(외부 IdP: `--jwt-issuer`, RS256/ES256, `lnpl.tokens` SPI)가
-들어오기 전까지는 **dev/테스트 신뢰 모델**이다 — "이 역할 클레임을 누가 왜
-믿어도 되는가"라는 질문에 아직 제3자의 답이 없다. 프로덕션에서 이 신뢰
-경계를 넘기려면 t119b가 필요하다.
+**신뢰 모델 (t119b로 갱신됨).** `security role <r>`이 집행하는 역할은 이
+서버가 검증한 토큰의 `role`(또는 원소 1개짜리 `roles`) 클레임에서 읽는다.
+그 신뢰 근거는 이제 검증자가 무엇으로 구성됐는지에 달렸다:
+
+- **내장 `hmac` 프로바이더만 쓰면(`--token-provider` 미지정, 기본값)**
+  여전히 **자기 주장(self-asserted)**이다 — `lnpl token`이 같은 서비스에서
+  발급과 검증을 모두 한다. `--jwt-issuer`로 기대 `iss`를 하드코딩된
+  `"lnpl"`에서 바꿀 수는 있지만(t119b, D3), 서명 검증 자체는 여전히 대칭키
+  HS256이고 그 키를 쥔 쪽이 곧 발급자다 — **SPI가 열렸다는 것과 외부 IdP가
+  실제로 붙었다는 것은 다르다.** 내장 프로바이더만으로는 "이 역할 클레임을
+  누가 왜 믿어도 되는가"라는 질문에 여전히 제3자의 답이 없다.
+- **`lnpl.tokens` SPI로 등록된 프로바이더를 `--token-provider <name>`으로
+  선택하면**(예: RS256/ES256으로 Keycloak·Auth0·사내 IdP의 서명을 검증하는
+  외부 패키지) 신원 근거가 외부로 옮겨간다 — 그 IdP만 아는 개인키로 서명한
+  토큰만 통과하고, linkly는 공개키로 검증만 한다. RS256/ES256 자체는 코어에
+  없다(t119b, D1) — 상수시간 비교와 패딩을 손으로 구현하는 위험을 피하려고
+  `cryptography` 기반 외부 패키지에 위임했다. 코어가 소유하는 것은 계약
+  (`TokenProvider`)과 그 계약을 검증하는 `TokenProviderTCK`뿐이다
+  (`docs/backends.md`).
+
+프로덕션에서 self-asserted 신뢰 경계를 실제로 넘으려면 `lnpl.tokens` SPI
+구현체(외부 패키지)가 필요하다 — t119b는 그 SPI 경계와 TCK만 낸다.
 
 **게이트 범위 — 행위(action) 대 객체(object).** `security role <r>`은
 **행위 게이트**다: "이 역할을 가진 호출자가 이 라우트를 실행해도 되는가"만
@@ -158,12 +172,16 @@ linkly에 **없다** — 행위 게이트를 통과했다고 객체 게이트까
   출하한 그대로다. `--backend sqlite:<path>`를 주면 요청마다 자기 연결을 열고
   닫는 실제 영속 저장소가 되며, **요청 간에 상태가 남는다**. 계약은
   `docs/backends.md`.
-- **401의 뜻은 프로바이더 설정 여부에 달렸다.** `--jwt-secret-env` 없이 띄우면
-  `Authorization` 헤더의 **존재 검사만**이다(presence-checked, not verified) —
-  아무 값이나 통과한다. 주고 띄우면 M3a가 살아나 서명·`exp`/`nbf`(60초 leeway)·
-  `iss`/`aud`/`typ`를 전부 검증하고, 실패는 401 `auth-invalid`다. 어느 검사가
-  깨졌는지는 응답에 싣지 않는다 — 위조를 다듬는 쪽이 원하는 피드백이라서,
-  correlation id와 함께 서버 stderr로 나간다. 토큰은 `lnpl token`이 발급한다.
+- **401의 뜻은 프로바이더 설정 여부에 달렸다.** `--jwt-secret-env`도
+  `--token-provider`도 없이 띄우면 `Authorization` 헤더의 **존재 검사만**이다
+  (presence-checked, not verified) — 아무 값이나 통과한다. 주고 띄우면 M3a가
+  살아나 서명·`exp`/`nbf`(60초 leeway)·`iss`/`aud`/`typ`를 전부 검증하고,
+  실패는 401 `auth-invalid`다. 어느 검사가 깨졌는지는 응답에 싣지 않는다 —
+  위조를 다듬는 쪽이 원하는 피드백이라서, correlation id와 함께 서버
+  stderr로 나간다. 내장 `hmac` 프로바이더용 토큰은 `lnpl token`이 발급한다
+  (`--jwt-issuer`로 기대 `iss`를 바꿀 수 있다, 이슈 #119b); `--token-provider`
+  로 선택한 외부 SPI 프로바이더의 토큰은 그 프로바이더가 검증하는 실제 IdP가
+  발급한다 — `lnpl token`은 여전히 내장 `hmac`만 발급한다.
 - **내장 스케줄러(크론 루프)는 없다** — 이 서버는 어떤 타이머도 자체적으로
   돌리지 않는다. `event ... on schedule`이 선언한 시각/주기를 실제로 지키는
   것은 여전히 운영자가 붙이는 외부 스케줄러(cron/systemd)의 몫이다 — 아래
