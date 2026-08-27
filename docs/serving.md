@@ -500,6 +500,76 @@ otlp = "my_otlp_exporter:OtlpExporter"
 아래 "운영 배치" 절 표에 두 행이 더 있다: `LNPL_LOG_FORMAT`,
 `LNPL_TRACE_EXPORTER`.
 
+## 설정 파일 — `lnpl.toml` (이슈 #114)
+
+`lnpl serve`는 CLI 플래그·개별 환경변수(`LNPL_ENDPOINT_<NAME>`)뿐이던 설정
+통로에 파일 하나를 더한다 — 시크릿 **값**은 절대 담기지 않는다(이슈 #101
+규율 그대로): `[*.secrets]`는 그 값을 담은 환경변수의 **이름**만 받는다.
+
+```toml
+# lnpl.toml — 기본 위치는 cwd, --config로 재지정
+[default]
+backend = "sqlite:./app.db"
+log_format = "json"
+trace_exporter = "stderr-json"
+
+[default.endpoints]
+payments = "https://api.example.com/pay"
+
+[default.secrets]
+jwt = "LNPL_JWT_SECRET"          # 값이 아니라 환경변수 이름
+
+[staging]                        # [default] 위에 얕게(1단) 오버레이
+backend = "sqlite:./staging.db"
+
+[staging.endpoints]
+payments = "https://staging.example.com/pay"   # payments만 덮는다
+```
+
+`--profile staging`(또는 `LNPL_PROFILE=staging`)이 없으면 `[default]` 단독이
+적용된다. `[<profile>]`은 `[default]` 위에 **키 단위**로만 얹힌다 — 섹션
+전체가 아니라 `endpoints`/`secrets`의 개별 키만 덮이므로, 프로파일이 건드리지
+않은 키는 `[default]`에서 그대로 내려온다. include·상속·조건부는 없다.
+
+### 우선순위 (정본)
+
+값 하나를 결정할 때, 위에서부터 먼저 있는 것이 이긴다:
+
+| 순위 | 소스 | 비고 |
+|------|------|------|
+| 1 | CLI 플래그 (`--backend`/`--jwt-secret-env`/`--log-format`/`--trace-exporter`/`--endpoint`) | |
+| 2 | 환경변수 (`LNPL_ENDPOINT_<NAME>`) | 오늘은 endpoint 매핑에만 있다(이슈 #101 계약) |
+| 3 | `lnpl.toml` `[<profile>]` | `--profile`/`LNPL_PROFILE`로 선택 |
+| 4 | `lnpl.toml` `[default]` | |
+| 5 | 내장 기본값 | `backend=fake`, `log_format=text`, `trace_exporter`/시크릿=미설정 |
+
+`lnpl.toml`이 없으면(기본 경로 `./lnpl.toml`이 없을 때) 5개 값 전부가 이 파일이
+생기기 전과 바이트 단위로 동일하게 해석된다 — 도입 자체는 회귀가 아니다. 반면
+`--config`로 명시한 경로가 없으면 그건 조작자 실수로 취급해 rc 2다.
+
+### `${VAR}` 치환
+
+스칼라·`endpoints`의 문자열 값 안에서 `${VAR}`는 순수 환경변수 참조로만
+치환된다 — 미정의 `VAR`는 그 키 경로와 함께 rc 2. `${VAR:-default}` 같은
+기본값 문법은 지원하지 않는다(시크릿을 파일에 우회로 적어 넣을 구멍을 만들지
+않기 위해서다). `[*.secrets]` 값 안에서는 애초에 치환이 없다 — 그 값은 항상
+환경변수 **이름**이어야 하고, 이름 정규식(`^[A-Za-z_][A-Za-z0-9_]*$`, 64자
+이하)에 맞지 않으면(URL·공백 포함 등) 로드 시점에 rc 2로 거부된다.
+
+### `lnpl config check` — 기동 전 완결성 판정
+
+```
+lnpl config check <src>.lnpl... [--profile staging] [--config lnpl.toml]
+```
+
+`lnpl serve`가 소켓을 바인드하기 전에 실패할 조건 셋을 미리 판정한다: (a)
+소스의 모든 `NetworkCall` 논리명에 endpoint 매핑이 있는가, (b) `lnpl.toml`의
+`[*.secrets]`가 가리키는 환경변수가 실제로 설정돼 있는가, (c) `security jwt`를
+선언했다면 `[*.secrets].jwt` 매핑이 있는가. 전부 통과하면 rc 0, 아니면 발견한
+문제 **전부**를 stderr에 나열하고 rc 2 — `--endpoint`/`--jwt-secret-env`는
+받지 않는다(즉석 오버라이드가 아니라 이미 서 있는 lnpl.toml+환경변수 표면만
+진단한다).
+
 ## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
 
 `lnpl serve`의 dev 서버는 TLS도, graceful shutdown도, 다중 프로세스 워커

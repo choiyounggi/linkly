@@ -121,6 +121,14 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--trust-incoming-trace` | 인바운드 `traceparent` 헤더의 trace-id를 이 요청의 trace-id로 채택할지. 기본 꺼짐 — 꺼져 있으면 형식이 깨졌든 신뢰하지 않든 항상 새 trace-id를 채번하고, 받은 값은 link로만 기록한다. 이슈 #107 |
 | `--metrics` | `/-/metrics`를 연다(Prometheus 텍스트 형식의 RED 3종: 워크플로 실행/소요시간/스텝 실패). 기본 꺼짐 — 꺼져 있으면 그 경로 자체가 없어 404다. 이슈 #110 |
 | `--idempotency-ttl` | `Idempotency-Key` 클레임 유지 시간(초). 기본 86400(24h) — 지나면 같은 키가 새 실행으로 취급된다. `--backend fake`에는 효과가 없다(영속 저장소가 없어 클레임을 남길 곳이 없다). 이슈 #113 |
+| `--config` | `lnpl.toml` 경로(이슈 #114). 기본 `./lnpl.toml` — 없으면 이 파일이 없던 때와 바이트 단위로 동일하게 동작한다(회귀 없음). `--config`로 명시한 경로가 없으면 그건 rc 2 에러 |
+| `--profile` | `[default]` 위에 얹을 `lnpl.toml` 프로파일 이름(이슈 #114). `LNPL_PROFILE` 환경변수로도 줄 수 있고 `--profile`이 이긴다. 생략하면 `[default]` 단독 |
+
+`--backend`/`--jwt-secret-env`/`--log-format`/`--trace-exporter`/`--endpoint`는
+각각 `lnpl.toml`의 `backend`/`[*.secrets].jwt`/`log_format`/`trace_exporter`/
+`endpoints`로도 줄 수 있다 — 우선순위는 **CLI 플래그 > 환경변수
+(`LNPL_ENDPOINT_<NAME>`) > `[profile]` > `[default]` > 내장 기본값**이다(이슈
+#114). 정본 표는 `docs/serving.md`.
 
 각 워크플로가 `POST /<service-slug>/<workflow-slug>`에서 실행된다. 상태코드
 매핑표(200/400/401/404/405/413/500/504)의 정본과 계약 한계(Fake 백엔드,
@@ -128,6 +136,28 @@ Authorization 존재 검사만)는 `docs/serving.md`. SIGINT로 정상 종료(rc
 `/-/healthz`(liveness)·`/-/readyz`(readiness, SIGTERM → 503)는 플래그 없이
 항상 열려 있다 — 세 경로 모두 인증 면제, 상세는 `docs/serving.md` "운영
 표면" 절(이슈 #110).
+
+### `config check` — `lnpl serve` 기동 전 endpoint/secrets/jwt 완결성 판정 (이슈 #114)
+
+```
+lnpl config check <source...> [--profile NAME] [--config PATH]
+```
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--profile` | `serve`와 같다 |
+| `--config` | `serve`와 같다 |
+
+`serve`가 소켓을 바인드하기 전에 실패할 조건 셋을 미리 판정한다: (a) 소스의
+모든 `NetworkCall` 논리명에 `lnpl.toml`/`LNPL_ENDPOINT_<NAME>` 매핑이 있는가,
+(b) `lnpl.toml`의 `[*.secrets]` 항목이 가리키는 환경변수가 실제로 설정돼
+있는가, (c) `security jwt`를 선언했다면 `[*.secrets].jwt` 매핑이 있는가.
+`--endpoint`/`--jwt-secret-env`는 받지 않는다 — `serve` 실행 시 즉석으로 줄
+값이 아니라 `lnpl.toml`+환경변수로 이미 서 있는 표면만 진단한다.
+
+전부 통과하면 stdout에 `ok`, rc 0. 문제가 있으면 발견한 것 **전부**를 각각
+`error: ...`로 stderr에 찍고 rc 2 — `_open_endpoints`처럼 첫 번째에서 멈추지
+않는다(사전 점검은 목록 전체가 필요하다).
 
 ### `token` — 서빙 경로 하나에 대한 베어러 토큰 발급 (이슈 #25)
 
