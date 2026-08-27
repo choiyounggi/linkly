@@ -56,7 +56,7 @@ lnpl compile <파일>
 `guard-skipped-steps`, `guard-orphaned-steps`, `validation-sample-derived`,
 `aggregation-orphaned-list`, `event-source-mismatch`, `event-source-orphaned`,
 `derived-never-assigned`, `declared-not-bound`, `stored-row-shape-mismatch`,
-`rollback-escapes-network` 중
+`rollback-escapes-network`, `retry-on-non-idempotent` 중
 하나라도 나오면, 그게 의도한 것인지 사용자에게 확인하고 넘어간다. 조용히
 무시하지 않는다.
 

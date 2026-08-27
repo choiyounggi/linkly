@@ -101,13 +101,14 @@ class FakeNetworkDriverReceivedTests(unittest.TestCase):
         driver = FakeNetworkDriver({"PaymentGateway": (500, {"x": 1})})
         traceparent = format_traceparent("a" * 32, "b" * 16)
 
-        status, body = driver.call("PaymentGateway", {"amount": 1}, 1000,
-                                   trace_headers={"traceparent": traceparent})
+        status, body, _headers = driver.call(
+            "PaymentGateway", {"amount": 1}, 1000,
+            trace_headers={"traceparent": traceparent})
 
         self.assertEqual((status, body), (500, {"x": 1}))
         self.assertEqual(driver.received, [{
             "target": "PaymentGateway", "payload": {"amount": 1},
-            "trace_headers": {"traceparent": traceparent},
+            "trace_headers": {"traceparent": traceparent}, "path": None,
         }])
 
     def test_received_records_empty_dict_when_trace_headers_omitted(self):

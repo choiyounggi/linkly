@@ -287,7 +287,8 @@ status completed
 `aggregation-orphaned-list`, `event-source-mismatch`, `derived-never-assigned`,
 `stored-row-shape-mismatch`(이 하나는 프로그램이 아니라 데이터를 고치면
 사라진다 — 이슈 #85), `rollback-escapes-network`(호출을 경계 밖으로 옮기거나
-`rollback`을 떼면 사라진다 — 이슈 #112)), `info`는 고쳐도 사라지지 않는
+`rollback`을 떼면 사라진다 — 이슈 #112), `retry-on-non-idempotent`(`retry`를
+떼거나 멱등 메서드로 바꾸면 사라진다 — 이슈 #109)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`).

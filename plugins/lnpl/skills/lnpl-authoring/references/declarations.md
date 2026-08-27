@@ -53,3 +53,4 @@
 | `declared-not-bound` | **info** |
 | `stored-row-shape-mismatch` | **warning** |
 | `rollback-escapes-network` | **warning** |
+| `retry-on-non-idempotent` | **warning** |

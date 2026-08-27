@@ -186,8 +186,12 @@ CALLER_FIELDS = ("subject", "role")
 # `capability http <Name>` (issue #101 / RFC-0027): the outbound HTTP method
 # and auth-scheme vocabularies. Closed sets, widened only on demand (issue
 # text) — the same "add a table row, not a branch" shape as POLICY_NAMES etc.
-HTTP_METHODS = ("get", "post")
+HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 HTTP_AUTH_KINDS = ("bearer", "apikey")
+# issue #109, D4: RFC 9110 §9.2.2 idempotent methods. `post`/`patch` are the
+# two NOT in this set — pairing either with `retry` risks re-applying a
+# non-idempotent effect (a double charge), hence the compile warning below.
+HTTP_IDEMPOTENT_METHODS = ("get", "put", "delete")
 
 # issue #99, D2: `expose` opt-in list surface. `list` is the only verb — a
 # closed set of one, widened only if a later issue asks for more (RFC-0016
@@ -387,15 +391,113 @@ def _parse_http_auth(line):
     return {"kind": "apikey", "header": tokens[2], "env": tokens[4]}
 
 
-def _parse_http_capability(d):
-    """`capability http <Name>` body lines -> {"method": ..., "auth": ...|None}.
+def _parse_http_retry(line):
+    """`retry <N> backoff <duration> [jitter]` -> {"count", "backoff_ms",
+    "jitter"} (issue #109, D2). `N` must be a positive integer — `retry 0`
+    is not a way to spell "no retry", it is just not a sentence anyone
+    should write (the way to mean "no retry" is to not write the clause at
+    all, RFC-0027-style declared-not-bound)."""
+    from .lexer import duration_ms_or_none
+    tokens = line.tokens
+    if (len(tokens) < 4 or not tokens[1].isdigit() or tokens[2] != "backoff"):
+        raise LowerError(
+            "line %d: `retry` needs `<N> backoff <duration> [jitter]`"
+            % line.lineno)
+    count = int(tokens[1])
+    if count < 1:
+        raise LowerError(
+            "line %d: `retry` count must be a positive integer, got %r"
+            % (line.lineno, tokens[1]))
+    backoff_ms = duration_ms_or_none(tokens[3])
+    if backoff_ms is None:
+        raise LowerError(
+            "line %d: `retry backoff` needs a duration like `200ms`, got %r"
+            % (line.lineno, tokens[3]))
+    jitter = False
+    rest = tokens[4:]
+    if rest:
+        if rest != ["jitter"]:
+            raise LowerError(
+                "line %d: `retry` takes only a trailing `jitter` flag, got %r"
+                % (line.lineno, " ".join(rest)))
+        jitter = True
+    return {"count": count, "backoff_ms": backoff_ms, "jitter": jitter}
+
+
+def _parse_http_breaker(line):
+    """`breaker after <N> within <duration>` -> {"threshold", "window_ms"}
+    (issue #109, D5)."""
+    from .lexer import duration_ms_or_none
+    tokens = line.tokens
+    if (len(tokens) != 5 or tokens[1] != "after" or not tokens[2].isdigit()
+            or tokens[3] != "within"):
+        raise LowerError(
+            "line %d: `breaker` needs `after <N> within <duration>`"
+            % line.lineno)
+    threshold = int(tokens[2])
+    if threshold < 1:
+        raise LowerError(
+            "line %d: `breaker after` count must be a positive integer, "
+            "got %r" % (line.lineno, tokens[2]))
+    window_ms = duration_ms_or_none(tokens[4])
+    if window_ms is None:
+        raise LowerError(
+            "line %d: `breaker within` needs a duration like `1m`, got %r"
+            % (line.lineno, tokens[4]))
+    return {"threshold": threshold, "window_ms": window_ms}
+
+
+def _parse_http_path(line):
+    """`path "<template>"` -> the template string (issue #109, D6). The
+    quoted-literal shape mirrors `condition._parse_template_token` exactly
+    (one double-quoted word, no embedded quote) since both feed the same
+    `{}`-placeholder convention; kept as its own copy here rather than an
+    import because this one additionally requires a leading `/` — a URL
+    path, not `format`'s arbitrary string."""
+    tokens = line.tokens
+    if len(tokens) != 2:
+        raise LowerError(
+            "line %d: `path` takes one double-quoted template, no spaces"
+            % line.lineno)
+    token = tokens[1]
+    if len(token) < 2 or token[0] != '"' or token[-1] != '"':
+        raise LowerError(
+            "line %d: `path` template must be one double-quoted word"
+            % line.lineno)
+    template = token[1:-1]
+    if '"' in template:
+        raise LowerError(
+            "line %d: `path` template contains an embedded quote" % line.lineno)
+    if not template.startswith("/"):
+        raise LowerError(
+            "line %d: `path` template must start with `/`, got %r"
+            % (line.lineno, template))
+    if "{}" not in template:
+        raise LowerError(
+            "line %d: `path` template %r has no `{}` placeholder — `path` "
+            "exists only to be substituted by a `with <ref>...` call site; "
+            "a fixed path with no placeholder belongs in the endpoint URL "
+            "itself, not in a `path` declaration" % (line.lineno, template))
+    return template
+
+
+def _parse_http_capability(d, diagnostics=None):
+    """`capability http <Name>` body lines -> {"method", "auth", "retry",
+    "path", "breaker"} — the last three present only when declared.
 
     `method` is required (no silent POST default — issue #101's whole point is
-    that method/auth are declared, not guessed); `auth` is optional. Each
-    keyword may appear at most once.
+    that method/auth are declared, not guessed); every other keyword is
+    optional and may appear at most once (issue #109 widens the same shape).
+
+    `diagnostics` (issue #109, D4), when given, gets a `retry-on-non-idempotent`
+    warning when `method post`/`patch` is declared alongside `retry` — the
+    non-idempotent methods, RFC 9110 §9.2.2.
     """
     method = None
     auth = None
+    retry = None
+    breaker = None
+    path = None
     for line in d.items:
         head = line.tokens[0]
         if head == "method":
@@ -414,15 +516,45 @@ def _parse_http_capability(d):
                     "line %d: capability http %s declares `auth` twice"
                     % (line.lineno, d.name))
             auth = _parse_http_auth(line)
+        elif head == "retry":
+            if retry is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `retry` twice"
+                    % (line.lineno, d.name))
+            retry = _parse_http_retry(line)
+        elif head == "breaker":
+            if breaker is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `breaker` twice"
+                    % (line.lineno, d.name))
+            breaker = _parse_http_breaker(line)
+        elif head == "path":
+            if path is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `path` twice"
+                    % (line.lineno, d.name))
+            path = _parse_http_path(line)
         else:
             raise LowerError(
-                "line %d: capability http takes `method`/`auth`, got %r"
-                % (line.lineno, head))
+                "line %d: capability http takes `method`/`auth`/`retry`/"
+                "`breaker`/`path`, got %r" % (line.lineno, head))
     if method is None:
         raise LowerError(
             "line %d: capability http %s declares no `method` — one of %s "
             "is required" % (d.lineno, d.name, "/".join(HTTP_METHODS)))
-    return {"method": method, "auth": auth}
+    if (retry is not None and method not in HTTP_IDEMPOTENT_METHODS
+            and diagnostics is not None):
+        diagnostics.add(
+            code="retry-on-non-idempotent",
+            where=derive_id(d.name, "Capability"),
+            subject="method %s" % method,
+            message="capability http %s declares `method %s` with `retry` — "
+                    "a non-idempotent method may be applied more than once "
+                    "on a retry; pair it with an idempotency key (issue "
+                    "#113) or drop `retry`" % (d.name, method),
+            line=d.lineno)
+    return {"method": method, "auth": auth, "retry": retry,
+            "breaker": breaker, "path": path}
 
 
 def _parse_event_subscribe(d):
@@ -816,11 +948,17 @@ def lower(decls, module_name):
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
     cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
-    # issue #101: which declared capabilities carry outbound HTTP metadata —
-    # `_derive_effect`'s NetworkCall branch uses only the name set, to flag a
-    # `call <target>` whose target names no `capability http` declaration.
-    http_cap_names = {d.name for d in by_kind["capability"]
-                      if d.extra.get("capability_kind") == "http"}
+    # issue #101/#109: which declared capabilities carry outbound HTTP
+    # metadata, and what it is — `_derive_effect`'s NetworkCall branch reads
+    # `http_caps` both to flag a `call <target>` naming no `capability http`
+    # declaration (membership) and to check a `with <ref>...` clause's
+    # argument count against the capability's declared `path` template's
+    # `{}` count (issue #109, D6). Parsed once here, not re-parsed by the
+    # Capability node-emission loop below, so a diagnostic like
+    # `retry-on-non-idempotent` is never emitted twice for the same line.
+    http_caps = {d.name: _parse_http_capability(d, diagnostics=mod.diagnostics)
+                for d in by_kind["capability"]
+                if d.extra.get("capability_kind") == "http"}
 
     # ---- workflow ownership: nearest preceding service (RFC-0002 A.2 R2) ----
     owner_of = {}
@@ -986,7 +1124,7 @@ def lower(decls, module_name):
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, registry, mod.diagnostics, http_cap_names)
+        ctx = _WfContext(wid, registry, mod.diagnostics, http_caps)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
                       line=d.lineno))
@@ -1013,8 +1151,10 @@ def lower(decls, module_name):
         mod.add(n)
 
     for d in by_kind["capability"]:
-        http_fields = (_parse_http_capability(d)
-                      if d.extra.get("capability_kind") == "http" else {})
+        # Reuses the parse done above building `http_caps` — never re-parsed
+        # here, so a diagnostic it raises (e.g. `retry-on-non-idempotent`)
+        # fires exactly once per declaration.
+        http_fields = http_caps.get(d.name, {})
         mod.add(_node("Capability", derive_id(d.name, "Capability"),
                       name=d.name, version=d.extra.get("version"),
                       line=d.lineno, **http_fields))
@@ -1025,11 +1165,16 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, registry, diagnostics, http_cap_names=frozenset()):
+    def __init__(self, wid, registry, diagnostics, http_caps=None):
         self.wid = wid
         self.registry = registry
         self.diagnostics = diagnostics
-        self.http_cap_names = http_cap_names
+        # name -> {"method", "auth", "retry", "breaker", "path"} for every
+        # declared `capability http` (issues #101, #109). `_derive_effect`'s
+        # NetworkCall branch reads both membership (a target naming no entry
+        # gets `declared-not-bound`) and `path`, to check a `with <ref>...`
+        # clause's argument count against the template's `{}` count.
+        self.http_caps = http_caps or {}
         self.emitted = []
         self._step_n = 0
         self._guard_n = 0
@@ -1111,7 +1256,7 @@ class _WfContext:
                                      line.lineno, line.tokens[2:],
                                      diagnostics=self.diagnostics,
                                      step_text=" ".join(line.tokens),
-                                     http_cap_names=self.http_cap_names,
+                                     http_caps=self.http_caps,
                                      verb_sink=self.network_verbs)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
@@ -2140,7 +2285,7 @@ class _Scope:
 
 
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
-                   diagnostics=None, step_text=None, http_cap_names=frozenset(),
+                   diagnostics=None, step_text=None, http_caps=None,
                    verb_sink=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
@@ -2148,22 +2293,25 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     verb but `NetworkCall` and `create`/`insert` ignores it; those read an
     `as <name>` trailing clause there (RFC-0027 §2, extended to `create` by
     issue #97 / RFC-0012 Updates — `update`/`delete` still ignore `rest`,
-    since they answer an affected-row count, not a row).
+    since they answer an affected-row count, not a row). `NetworkCall` also
+    reads an optional leading `with <ref>...` clause there (issue #109, D6).
 
     `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
     `unknown-entity` warning for a step object that names no declared entity,
     without changing which entity it falls back to resolving.
 
-    `http_cap_names` (issue #101) is the declared `capability http` name set,
-    used only by the `NetworkCall` branch to flag a target with no matching
-    declaration — it runs with method POST and no auth either way, so this is
-    informational, not a rejection.
+    `http_caps` (issues #101, #109) is name -> the declared `capability http`
+    fields. The `NetworkCall` branch uses membership to flag a target with no
+    matching declaration (it runs with method POST and no auth either way,
+    so this is informational, not a rejection), and reads `path` to check a
+    `with <ref>...` clause's argument count against the template's `{}` count.
 
     `verb_sink` (issue #125) is `_WfContext.network_verbs` — the `NetworkCall`
     branch records `eid -> verb` there so `_check_rollback_escapes_network`
     can quote the author's own verb later, without adding a `verb` field to
     the IR node itself.
     """
+    http_caps = http_caps or {}
     entry = VERB_LEXICON.get(verb)
     if entry is None:
         return None
@@ -2232,20 +2380,59 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
         target = obj or "unspecified"
         if verb_sink is not None:
             verb_sink[eid] = verb
+        cap = http_caps.get(target)
         if (diagnostics is not None and not _looks_like_url(target)
-                and target not in http_cap_names):
+                and cap is None):
             diagnostics.add(
                 code="declared-not-bound", where=eid,
                 subject="%s %s" % (verb, target),
                 message="%r has no `capability http` declaration — it runs "
                         "with method POST and no auth" % target,
                 line=lineno)
-        if not rest:
+        # issue #109, D6: an optional leading `with <ref>...` clause,
+        # substituted into the target capability's declared `path` template
+        # at run time (`condition.parse_format`'s `{}`-count convention
+        # reused here, not its runtime substitution — that one does not
+        # escape, and a URL path must, `drivers.py`'s job).
+        tail = list(rest)
+        path_args = None
+        if tail and tail[0] == "with":
+            j = 1
+            while j < len(tail) and tail[j] != "as":
+                j += 1
+            arg_tokens = tail[1:j]
+            if not arg_tokens:
+                raise LowerError(
+                    "line %d: `with` needs at least one reference" % lineno)
+            from .condition import _is_reference_name
+            for tok in arg_tokens:
+                if not _is_reference_name(tok):
+                    raise LowerError(
+                        "line %d: `with` argument must be camelCase or "
+                        "binding.field, got %r" % (lineno, tok))
+            path_args = list(arg_tokens)
+            tail = tail[j:]
+        template = cap.get("path") if cap else None
+        placeholders = template.count("{}") if template else 0
+        given = len(path_args) if path_args is not None else 0
+        if placeholders != given:
+            if template is None:
+                raise LowerError(
+                    "line %d: `with` needs a `path` declared on capability "
+                    "http %s to substitute into" % (lineno, target))
+            raise LowerError(
+                "line %d: capability http %s's `path` %r has %d `{}` "
+                "placeholder(s) but `with` gives %d argument(s)"
+                % (lineno, target, template, placeholders, given))
+        if not tail:
             # RFC-0027 §3: the unbound, backward-compatible form — no
             # `result` field, byte-identical to the pre-RFC-0027 no-op.
-            return _node(kind, eid, target=target, line=lineno)
-        if len(rest) == 2 and rest[0] == "as":
-            name = rest[1]
+            node = _node(kind, eid, target=target, line=lineno)
+            if path_args is not None:
+                node["path_args"] = path_args
+            return node
+        if len(tail) == 2 and tail[0] == "as":
+            name = tail[1]
             # RFC-0027 §2, check 1: `<name>.status` must be a valid
             # `Reference` (RFC-0012 §G12.1), which requires camelCase — the
             # same shape `condition._is_camel_name` already enforces for
@@ -2267,10 +2454,14 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                         "single-row binding name — a network result "
                         "binding cannot share a name with it "
                         "(RFC-0027 §2)" % (lineno, name, ent["name"]))
-            return _node(kind, eid, target=target, result=name, line=lineno)
+            node = _node(kind, eid, target=target, result=name, line=lineno)
+            if path_args is not None:
+                node["path_args"] = path_args
+            return node
         raise LowerError(
-            "line %d: call/request accepts either no trailing words or "
-            "'as <name>', got %r" % (lineno, tuple(rest)))
+            "line %d: call/request accepts either no trailing words, "
+            "'with <ref>...', 'as <name>', or both, got %r"
+            % (lineno, tuple(rest)))
 
     if kind == "Authorization":
         return _node(kind, eid, requirement=obj or "unspecified", line=lineno)

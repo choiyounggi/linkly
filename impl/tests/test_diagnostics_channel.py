@@ -40,7 +40,7 @@ class TestSeverityLadder(unittest.TestCase):
         # Neither direction may drift: a code with no grade cannot be built,
         # and a grade for a retired code is a row nothing reaches.
         self.assertEqual(set(SEVERITY_OF), set(CODES))
-        self.assertEqual(len(SEVERITY_OF), 15)
+        self.assertEqual(len(SEVERITY_OF), 16)
 
     def test_each_code_carries_its_assigned_grade(self):
         # Spelled out one by one rather than looped: this table *is* the
@@ -110,7 +110,7 @@ class TestDiagnosticRecord(unittest.TestCase):
     def test_every_declared_code_is_constructible_and_graded(self):
         # The closed set is the contract; a code in CODES that the record
         # rejects would be a contract nobody can honour.
-        self.assertEqual(len(CODES), 15)
+        self.assertEqual(len(CODES), 16)
         for code in CODES:
             self.assertEqual(_diag(code=code).code, code)
             self.assertEqual(_diag(code=code).severity, SEVERITY_OF[code])

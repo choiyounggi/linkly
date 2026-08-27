@@ -1474,9 +1474,27 @@ class Interpreter:
                 trace_headers = {"traceparent": format_traceparent(trace_id, span_id, flags)}
                 if self.trace.tracestate is not None:
                     trace_headers["tracestate"] = self.trace.tracestate
+            # issue #109, D6: `with <ref>...` path arguments are resolved to
+            # their bound values here — the same `resolve_reference` every
+            # other RHS in this method reads through — and handed to the
+            # driver RAW; the driver (which alone knows the declared `path`
+            # template) does the `{}` substitution and the percent-encoding
+            # (`drivers._assemble_path`), so both `NetworkDriver`
+            # implementations escape identically.
+            path_args = None
+            if effect.get("path_args"):
+                path_args = []
+                for ref in effect["path_args"]:
+                    value = resolve_reference(ref, payload, bindings, self.caller)
+                    if value is None:
+                        raise RunError(
+                            "NetworkCall %r: `with` reference %r resolved to "
+                            "nothing" % (effect["id"], ref))
+                    path_args.append(value)
             try:
-                status, body = self.network.call(effect["target"], payload,
-                                                  remaining_ms, trace_headers)
+                status, body, _headers = self.network.call(
+                    effect["target"], payload, remaining_ms, trace_headers,
+                    path_args=path_args)
             except DriverError as exc:
                 if effect.get("result"):
                     # RFC-0027 §3, D3: a bound call's transport failure is a

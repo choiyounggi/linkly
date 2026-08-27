@@ -118,6 +118,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | declared-not-bound | info | `call`/`request`의 target이 URL 리터럴이 아닌 논리명인데, 그 이름을 선언한 `capability http`가 모듈에 없을 때 (issue #101) — method POST·인증 없음으로 그대로 실행된다 | 컴파일 타임 — lowering |
 | stored-row-shape-mismatch | warning | `read`/`find`가 돌려준 행에 entity가 선언한 필드가 없거나(missing), 있어도 선언된 타입과 맞지 않을 때(type) — 값은 절대 싣지 않는다 (issue #85) | 런타임 — 인터프리터 |
 | rollback-escapes-network | warning | `policy rollback`을 선언한 서비스가 소유한 워크플로에 `call`/`request`(NetworkCall) 스텝이 있을 때 — 저장소 트랜잭션 밖이라 rollback이 되돌리지 못한다. 스텝마다 한 건씩 (issue #112) | 컴파일 타임 — lowering |
+| retry-on-non-idempotent | warning | `capability http`가 `method post`/`patch`와 `retry`를 함께 선언했을 때 — 비멱등 메서드에 재시도를 걸면 효과가 중복될 수 있다 (issue #109) | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -128,7 +129,8 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 `derived-never-assigned` · `stored-row-shape-mismatch`(프로그램이 아니라
 데이터를 고치면 사라진다는 점만 다르다 — 이슈 #85, RFC-0021 질문의 데이터판) ·
 `rollback-escapes-network`(호출을 경계 밖으로 옮기거나 `rollback`을 떼면
-사라진다 — 이슈 #112)),
+사라진다 — 이슈 #112) · `retry-on-non-idempotent`(`retry`를 떼거나 멱등
+메서드로 바꾸면 사라진다 — 이슈 #109)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

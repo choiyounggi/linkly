@@ -53,6 +53,7 @@ CODES = (
     "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
     "stored-row-shape-mismatch",    # #85  a read/find row is missing a declared field, or has the wrong type
     "rollback-escapes-network",     # #112 `policy rollback`'s service has a workflow step whose NetworkCall sits outside the transaction boundary
+    "retry-on-non-idempotent",      # #109 `capability http` declares `method post`/`patch` together with `retry`
 )
 
 # code -> grade (#52). One question decides every row:
@@ -121,6 +122,11 @@ SEVERITY_OF = {
     # (that code covers a fact the platform states about *itself*; this one
     # is about the *program's* shape).
     "rollback-escapes-network":  "warning",
+    # #109: a retry on a non-idempotent method risks duplicating the call's
+    # effect (a double charge, a double order) — dropping `retry`, switching
+    # to an idempotent method, or pairing it with an idempotency key (#113)
+    # each remove this, so `warning` (same test as `unknown-verb`).
+    "retry-on-non-idempotent":   "warning",
 }
 
 # How the runtime treats a declaration.

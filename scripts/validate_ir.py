@@ -358,7 +358,7 @@ def capability_http_negatives():
     field turns on, per `network_negatives`'s template.
     """
     n1 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
-    n1["nodes"][0]["method"] = "put"                      # method 밖 — 폐집합 get/post
+    n1["nodes"][0]["method"] = "head"                     # method 밖 — 폐집합 get/post/put/patch/delete (issue #109)
 
     n2 = copy.deepcopy(CAPABILITY_HTTP_FIXTURE)
     n2["nodes"][0]["auth"]["kind"] = "basic"               # auth.kind 밖 — 폐집합 bearer/apikey
@@ -376,7 +376,7 @@ def capability_http_negatives():
                                                             # method/auth가 있어도 여전히 걸린다
 
     return [
-        ("method outside the enum: 'put'", n1),
+        ("method outside the enum: 'head'", n1),
         ("auth.kind outside the enum: 'basic'", n2),
         ("auth is missing its required env", n3),
         ("undeclared property on auth: token (a secret VALUE, not an env name)", n4),
