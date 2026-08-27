@@ -167,8 +167,13 @@ ENFORCEMENT = {
         (ENFORCED, "run_workflow opens a transaction before its first step "
                    "and rolls it back on any failure, discarding every "
                    "write (and outbox registration) that run made"),
+    # issue #108, RFC-0041: `run_workflow` now runs a `parallel` block's steps
+    # on a block-scoped `ThreadPoolExecutor`, fail-fast, capped at the
+    # declared value (or the block's own step count with no explicit cap).
     ("policy", "parallel"):
-        (UNENFORCED, "parsed, but the execution plan never reads it"),
+        (ENFORCED, "run_workflow executes a `parallel` block's steps "
+                   "concurrently, cancels the rest on the first failure, and "
+                   "caps concurrency at the declared value"),
     # Issue #25 gave `jwt` a real issue/verify path, and the status still reads
     # UNENFORCED because this diagnostic is emitted at COMPILE time, which does
     # not know which backend the program will run against. Naming the one path
@@ -192,6 +197,11 @@ ENFORCEMENT = {
         (MEASURED, "measured and reported per run, but an over-budget run is not blocked"),
     ("performance", "cache"):
         (ENFORCED, "owns the TTL budget every CacheAccess set is written with"),
+    # issue #108 D9: `policy parallel` (above) is what governs concurrent
+    # *execution* now; these three stay UNENFORCED because they are storage-
+    # access patterns (how a RepositoryCall is issued/batched), not execution
+    # order — that meaning waits on query predicates (issue #116's
+    # neighbourhood), out of this issue's scope.
     ("performance", "parallel"):
         (UNENFORCED, "parsed, but the execution plan never reads it"),
     ("performance", "prefetch"):

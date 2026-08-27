@@ -319,21 +319,24 @@ class TestDocumentValidity(unittest.TestCase):
 
     def test_negative_control_a_flipped_status_is_caught(self):
         # The defect this whole gate exists for: the document claiming that
-        # something unenforced is enforced. `policy parallel` stays
-        # unenforced after issue #79/RFC-0032 (only `rollback` was promoted),
-        # so it is still a valid target for this mutation.
+        # something unenforced is enforced. `policy parallel` was this
+        # mutation's target until issue #108/RFC-0041 promoted it too (the
+        # `rollback` precedent above, issue #79/RFC-0032, repeats) — `policy
+        # retry`/`timeout`/`rollback`/`parallel` are now all enforced, so
+        # `performance prefetch` (issue #108 D9: a storage-access pattern,
+        # deliberately left unenforced) is the new target.
         mutant = self.markdown.replace(
-            "| policy | parallel | unenforced | declared-not-enforced |",
-            "| policy | parallel | enforced | declared-not-enforced |")
+            "| performance | prefetch | unenforced | declared-not-enforced |",
+            "| performance | prefetch | enforced | declared-not-enforced |")
         self.assertNotEqual(mutant, self.markdown, "the mutation did not apply")
         errors = document_validity_errors(mutant)
         self.assertTrue(errors, "check 3 did not notice a flipped status")
-        self.assertIn("parallel", str(errors))
+        self.assertIn("prefetch", str(errors))
 
     def test_negative_control_a_flipped_status_leaves_coverage_green(self):
         mutant = self.markdown.replace(
-            "| policy | parallel | unenforced | declared-not-enforced |",
-            "| policy | parallel | enforced | declared-not-enforced |")
+            "| performance | prefetch | unenforced | declared-not-enforced |",
+            "| performance | prefetch | enforced | declared-not-enforced |")
         self.assertEqual(document_coverage_errors(mutant), [])
 
     def test_negative_control_an_unknown_status_word_is_caught(self):

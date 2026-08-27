@@ -310,6 +310,18 @@ fake 백엔드에서의 `EQUIVALENT`는 계속 성립한다. 다만 그 판정�
   where\` step(s) — filtered RowSet content is not compared (unverified
   dimension, docs/backends.md §6)`. "일치"가 "걸러진 내용까지 같다"로 읽히지
   않도록 하는 것이 이 줄의 목적이다.
+- **`parallel` 블록의 실제 동시성도 미검증 차원이다** (이슈 #108, D8). 모드
+  A는 이제 `parallel` 블록의 스텝을 진짜 동시 실행하지만(RFC-0041), 모드 B는
+  여전히 순차 실행이다 — RFC-0004 §5(#7)가 이미 미결로 들고 있던 질문 그대로,
+  이번 이슈는 모드 A만 바꾸고 모드 B는 손대지 않았다. 네 관측 클래스 중
+  "실행 순서"는 완료 순서가 아니라 **선언 순서**로 보고되므로(D6) 실패 없는
+  실행에서는 두 모드의 순서 리포트가 우연히 같은 모양으로 나온다 — 하지만
+  그것이 "모드 A가 실제로 병렬로 돌았는지"를 검증한 것은 아니다. 벽시계 겹침
+  같은 실제 동시성의 증거는 애초에 네 클래스 중 어디에도 속하지 않는다.
+  `differential.compare_observations`는 그래서 `parallel` 블록이 있는
+  워크플로를 리포트가 지나칠 때 한 줄을 더 낸다: `note: N \`parallel\`
+  block(s) — mode B runs them sequentially (unverified dimension,
+  docs/backends.md §6)`.
 
 ## 7. mode B의 관측 표면 (이슈 #55)
 

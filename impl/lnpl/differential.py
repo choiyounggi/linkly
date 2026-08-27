@@ -434,6 +434,41 @@ def _list_where_step_count(document, workflow_id):
     return count
 
 
+def _parallel_block_count(document, workflow_id):
+    """How many `parallel` blocks (issue #108) `workflow_id` reaches.
+
+    Mode A now actually runs a `parallel` block's steps concurrently
+    (RFC-0041); mode B still runs everything sequentially — RFC-0004
+    §5(#7)'s open question, still open, this issue only changed mode A.
+    The four observation classes' "execution order" reads the block's
+    steps in DECLARED order (D6), not completion order, so a run with no
+    failure reports the same order either mode used — but that says
+    nothing about whether mode A's steps actually overlapped in real time,
+    which is not a thing any of the four classes observes at all (same
+    shape as `_list_where_step_count`'s filtered-content caveat above).
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    workflow = nodes.get(workflow_id)
+    if workflow is None or workflow["kind"] != "Workflow":
+        return 0
+
+    count = 0
+
+    def walk(ids):
+        nonlocal count
+        for node_id in ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            if node["kind"] == "Concurrency":
+                count += 1
+            elif node["kind"] != "WorkflowStep":
+                walk(node.get("children", []))
+
+    walk(workflow.get("children", []))
+    return count
+
+
 def compare_observations(a, b, document=None, workflow_id=None):
     """RFC-0004's four-class comparison on two observations. (ok, report).
 
@@ -496,4 +531,9 @@ def compare_observations(a, b, document=None, workflow_id=None):
             report.append(
                 "note: %d `list where` step(s) — filtered RowSet content is "
                 "not compared (unverified dimension, docs/backends.md §6)" % n)
+        p = _parallel_block_count(document, workflow_id)
+        if p:
+            report.append(
+                "note: %d `parallel` block(s) — mode B runs them "
+                "sequentially (unverified dimension, docs/backends.md §6)" % p)
     return ok, report

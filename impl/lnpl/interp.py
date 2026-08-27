@@ -12,9 +12,14 @@ What is enforced here (RFC-0003 §Policy Enforcement):
   cache    — the CacheAccess TTL budget; a hit skips the origin read
   response — an SLO, measured and reported, never enforced
   rollback — compensation at Transaction boundaries (no Transaction in Phase 1)
+  parallel — a `parallel` block's steps run on a block-scoped
+             ThreadPoolExecutor, fail-fast, capped at the declared value
+             (issue #108)
 """
 
+import threading
 import time
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 
 from .condition import PAYLOAD_NAMESPACE, guard_condition_text, parse_value
 from .diagnostics import Diagnostics
@@ -394,6 +399,23 @@ class _CreatedRow(dict):
         self.entity_id = entity_id
 
 
+class _ParallelGroup:
+    """Marks one `Concurrency` block for `run_workflow`'s main loop (issue
+    #108 D1). `_flatten_items` yields this instead of recursing into the
+    block's children the way it still does for `Pipeline` — running them is
+    not "get the next id," it is "run this whole scope on its own executor,"
+    which needs `rowsets`/`deadline`/the run's constraints, none of which
+    this generator carries. `parallel` cannot nest and cannot be guarded
+    (RFC-0002's grammar), so `step_ids` are always plain WorkflowStep ids,
+    never another block.
+    """
+    __slots__ = ("node_id", "step_ids")
+
+    def __init__(self, node_id, step_ids):
+        self.node_id = node_id
+        self.step_ids = step_ids
+
+
 def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
     """Yield the WorkflowStep ids to execute, applying Guard/Concurrency/Pipeline.
 
@@ -401,16 +423,21 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
       when   — evaluate the condition once; skip the guarded item if it is false
       until  — run the guarded item until the condition holds (deadline-bounded)
       repeat — run the guarded item `count` times
-    Concurrency and Pipeline both expand to their children in declared order: this
-    interpreter is single-threaded by design (mode A), and RFC-0004 requires only
-    *observable* equivalence with mode B, which does not include scheduler shape.
+    Pipeline expands to its children in declared order: this interpreter is
+    single-threaded by design for everything but `parallel` (mode A), and
+    RFC-0004 requires only *observable* equivalence with mode B, which does
+    not include scheduler shape. `Concurrency` (issue #108) is different: its
+    children genuinely run concurrently, so this generator does not descend
+    into it at all — it yields a `_ParallelGroup` marker instead (see there).
     """
     for node_id in ids:
         node = nodes[node_id]
         kind = node["kind"]
         if kind == "WorkflowStep":
             yield node_id
-        elif kind in ("Concurrency", "Pipeline"):
+        elif kind == "Concurrency":
+            yield _ParallelGroup(node_id, node.get("children", []))
+        elif kind == "Pipeline":
             for inner in _flatten_items(nodes, node.get("children", []), interp,
                                         result, root, con, payload, bindings):
                 yield inner
@@ -1082,7 +1109,12 @@ class Interpreter:
 
     def _constraints(self, service):
         out = {"retry": 0, "timeout_ms": None, "rollback": False,
-               "cache_ttl_ms": None, "response_slo_ms": None, "mechanisms": []}
+               "cache_ttl_ms": None, "response_slo_ms": None, "mechanisms": [],
+               # issue #108 D2-r1: the declared cap, or `None` when `parallel`
+               # is bare (or absent) — `_run_parallel_block` falls back to
+               # the block's own step count in that case, since it is the
+               # one place that knows how many steps a given block has.
+               "parallel_cap": None}
         if service is None:
             return out
         for cid in service.get("constraints", []):
@@ -1097,6 +1129,8 @@ class Interpreter:
                         out["timeout_ms"] = _duration_ms(rule["value"])
                     elif rule["name"] == "rollback":
                         out["rollback"] = True
+                    elif rule["name"] == "parallel":
+                        out["parallel_cap"] = rule.get("value")
             elif node["kind"] == "Security":
                 out["mechanisms"] = list(node.get("mechanisms", []))
             elif node["kind"] == "Performance":
@@ -1216,6 +1250,17 @@ class Interpreter:
         try:
             for item_id in _flatten_items(self.nodes, wf.get("children", []), self,
                                          result, root, con, payload, bindings):
+                if isinstance(item_id, _ParallelGroup):
+                    # issue #108 D1: a whole scope, not a single step — see
+                    # `_run_parallel_block`. It does its own fail-fast
+                    # short-circuiting internally; this loop only needs to
+                    # stop pulling further items once it has.
+                    self._run_parallel_block(item_id, wf["name"], result, root,
+                                             con, payload, bindings, rowsets,
+                                             deadline, response_refs, notes)
+                    if result["status"] == "failed":
+                        break
+                    continue
                 step = self.nodes[item_id]
                 span = Span(step["name"], "WorkflowStep", self.clock.now)
                 root.children.append(span)
@@ -1376,18 +1421,33 @@ class Interpreter:
         self.trace.metric("workflow.duration_ms", {"workflow": wf["name"]}, total)
         return result
 
-    def _run_step(self, step, span, con, payload, deadline, bindings, rowsets):
-        if deadline is not None and self.clock.now >= deadline:
-            exhausted = RunError("deadline exhausted before step %r" % step["name"])
-            exhausted.failure_kind = "deadline"
-            raise exhausted
-        for child_id in step.get("children", []):
-            effect = self.nodes[child_id]
-            self._run_effect(effect, span, con, payload, bindings, rowsets, deadline)
-        self.clock.advance()
+    def _run_step(self, step, span, con, payload, deadline, bindings, rowsets,
+                 lock=None):
+        # issue #108 D4: `lock` is `None` on every pre-#108 call site (the
+        # sequential main loop) and this method is then byte-identical to
+        # before — the `if lock is not None` guards below are no-ops. Only
+        # `_run_parallel_block` passes a real `threading.RLock`, held for
+        # everything here EXCEPT the one place D4 carves out
+        # (`_run_effect`'s NetworkCall branch, below) — repository/cache
+        # calls and every `bindings`/`rowsets` mutation stay serialized.
+        if lock is not None:
+            lock.acquire()
+        try:
+            if deadline is not None and self.clock.now >= deadline:
+                exhausted = RunError("deadline exhausted before step %r" % step["name"])
+                exhausted.failure_kind = "deadline"
+                raise exhausted
+            for child_id in step.get("children", []):
+                effect = self.nodes[child_id]
+                self._run_effect(effect, span, con, payload, bindings, rowsets,
+                                 deadline, lock=lock)
+            self.clock.advance()
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _run_effect(self, effect, span, con, payload, bindings, rowsets,
-                    deadline=None):
+                    deadline=None, lock=None):
         kind = effect["kind"]
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
@@ -1642,6 +1702,15 @@ class Interpreter:
                             "NetworkCall %r: `with` reference %r resolved to "
                             "nothing" % (effect["id"], ref))
                     path_args.append(value)
+            # issue #108 D4: the ONE point in a locked step where the lock
+            # is dropped — the whole reason a `parallel` block is faster is
+            # that N of these can be in flight while their threads hold no
+            # lock at all. `_run_step`'s own `finally` still releases once
+            # more when this method returns; reacquiring here first keeps
+            # that release balanced (and every mutation below — `child.attrs`,
+            # `bindings` — happens with the lock held again).
+            if lock is not None:
+                lock.release()
             try:
                 status, body, _headers = self.network.call(
                     effect["target"], payload, remaining_ms, trace_headers,
@@ -1657,6 +1726,9 @@ class Interpreter:
                     # CacheAccess, and this one) — an observation-only step
                     # must not silently swallow a real failure (RFC-0027 §3).
                     raise RunError(str(exc)) from exc
+            finally:
+                if lock is not None:
+                    lock.acquire()
             child.attrs["target"] = effect.get("target")
             if effect.get("result"):
                 child.attrs["status"] = status
@@ -1745,6 +1817,177 @@ class Interpreter:
             if eff["kind"] in ("NetworkCall", "EventEmit"):
                 return False
         return True
+
+    # ---- issue #108: `parallel` block execution ----------------------------
+
+    def _execute_step_with_retry(self, step, workflow_name, con, payload,
+                                 deadline, bindings, rowsets, lock,
+                                 cancel_event):
+        """Run one step to completion under its retry policy; never raises —
+        returns `(span, entry, error, response_ext, notes_ext)`, `error`
+        being the final `RunError` or `None`. `_run_parallel_block`'s
+        per-step worker (only caller): the sequential main loop keeps its
+        own, separate inline copy of this same shape rather than calling
+        here, so that loop's behaviour for a workflow with no `parallel`
+        block is provably untouched by this method's existence (issue #108
+        DoD 7).
+
+        `span`'s start/end are real wall-clock milliseconds, not the virtual
+        `self.clock` every other span uses — D6's reason: sibling spans that
+        share one incrementing counter can never show overlap, and overlap
+        IS the evidence a `parallel` block actually ran concurrently.
+        `self.clock` itself still advances normally (under `lock`) for
+        deadline/backoff bookkeeping — only the SPAN timestamps are real time.
+        """
+        span = Span(step["name"], "WorkflowStep", _wall_clock_ms())
+        attempts = 0
+        last_error = None
+        while True:
+            attempts += 1
+            if attempts > 1 and cancel_event.is_set():
+                # D3/D7: a sibling's failure stops the NEXT retry attempt,
+                # never the one already in flight (a thread cannot be
+                # stopped mid-attempt, only kept from starting another).
+                break
+            try:
+                self._run_step(step, span, con, payload, deadline, bindings,
+                               rowsets, lock=lock)
+                last_error = None
+                break
+            except RunError as exc:
+                last_error = exc
+                if not self._retryable(step, con, attempts, deadline):
+                    break
+                with lock:
+                    self.trace.log("WARN", "step retry", step=step["name"],
+                                   attempt=attempts, reason=str(exc))
+                    self.clock.advance(_backoff_ms(attempts))
+        span.end_ms = _wall_clock_ms()
+        response_ext, notes_ext = [], []
+        with lock:
+            span.attrs["attempts"] = attempts
+            self.trace.metric("step.duration_ms",
+                              {"workflow": workflow_name, "step": step["name"]},
+                              span.duration_ms)
+            entry = {"step": step["name"], "attempts": attempts,
+                     "duration_ms": span.duration_ms,
+                     "effects": [self.nodes[c]["kind"]
+                                for c in step.get("children", [])
+                                if self.nodes[c]["kind"] != "Annotation"]}
+            if last_error is None:
+                for child_id in step.get("children", []):
+                    child = self.nodes[child_id]
+                    if child["kind"] == "Response":
+                        response_ext.extend(child["refs"])
+                    elif child["kind"] == "Annotation":
+                        notes_ext.append({"template": child["template"],
+                                          "values": _note_values(
+                                              self, child["refs"], payload, bindings)})
+            else:
+                self.trace.log("ERROR", "step failed", step=step["name"],
+                               reason=str(last_error))
+        return span, entry, last_error, response_ext, notes_ext
+
+    def _run_parallel_block(self, group, workflow_name, result, root, con,
+                            payload, bindings, rowsets, deadline,
+                            response_refs, notes):
+        """issue #108 D1-D4/D6/D7: run one `parallel` block's steps
+        concurrently on a block-scoped `ThreadPoolExecutor` — created and
+        shut down within this call, so no task from this block outlives it
+        either way (structural concurrency; the block IS the scope).
+
+        Fail-fast (D3): every step is submitted, then `wait(FIRST_EXCEPTION)`
+        returns as soon as one raises. That step's failure cancels every
+        future that has not started yet (`Future.cancel()` — a no-op once a
+        thread has actually begun) and sets `cancel_event` so any step still
+        retrying stops after its current attempt. Whatever was already in
+        flight is still joined before this method returns — nothing survives
+        it, success or failure.
+
+        Declared-order reporting (D6): steps are appended to `root.children`/
+        `result["steps"]` in the block's WRITTEN order, not completion order,
+        once every future is settled — the same shape `spec.py`'s `steps <N>`
+        already expects from the sequential path. A step whose future was
+        cancelled before it ever started contributes nothing, exactly like a
+        step after a sequential failure never running (D6). `failed_step` is
+        whichever failed step's span started EARLIEST in real time — the
+        branch that actually triggered the cancellation, when more than one
+        step fails independently.
+        """
+        step_ids = group.step_ids
+        steps = [self.nodes[sid] for sid in step_ids]
+        cap = con["parallel_cap"] or len(steps)
+        lock = threading.RLock()
+        cancel_event = threading.Event()
+        outcomes = {}
+
+        def worker(step):
+            outcome = self._execute_step_with_retry(
+                step, workflow_name, con, payload, deadline, bindings,
+                rowsets, lock, cancel_event)
+            outcomes[step["id"]] = outcome
+            error = outcome[2]
+            if error is not None:
+                raise error
+
+        with ThreadPoolExecutor(max_workers=cap) as pool:
+            futures = {pool.submit(worker, step): step for step in steps}
+            done, pending = wait(futures, return_when=FIRST_EXCEPTION)
+            if any(fut.exception() is not None for fut in done):
+                cancel_event.set()
+                for fut in pending:
+                    fut.cancel()
+            # `pool`'s own `__exit__` (`shutdown(wait=True)`) blocks here
+            # until every future that DID start has actually finished —
+            # cancelling a pending one only stops it from starting.
+
+        failed_step_name = None
+        failed_error = None
+        earliest_failure_start = None
+        for step in steps:
+            outcome = outcomes.get(step["id"])
+            if outcome is None:
+                continue   # cancelled before it ever started — no record
+            span, entry, error, response_ext, notes_ext = outcome
+            root.children.append(span)
+            result["steps"].append(entry)
+            if error is None:
+                response_refs.extend(response_ext)
+                notes.extend(notes_ext)
+            elif earliest_failure_start is None or span.start_ms < earliest_failure_start:
+                earliest_failure_start = span.start_ms
+                failed_step_name = step["name"]
+                failed_error = error
+
+        if failed_error is not None:
+            result["status"] = "failed"
+            result["failed_step"] = failed_step_name
+            result["failure_reason"] = str(failed_error)
+            if isinstance(failed_error.__cause__, ConflictError):
+                result["failure_kind"] = "conflict"
+            else:
+                kind = getattr(failed_error, "failure_kind", None)
+                if kind is not None:
+                    result["failure_kind"] = kind
+        elif (deadline is not None and outcomes and self.clock.now > deadline):
+            # Parity with the sequential loop's own post-step check
+            # (`run_workflow`, "deadline exceeded after step %r") — every
+            # step here succeeded on its own, but this block's steps'
+            # combined virtual-clock cost (each `_run_step` still calls
+            # `self.clock.advance()` under `lock`, same as sequential; the
+            # SUM is order-independent even though which thread advances it
+            # when is not) pushed the run past its `policy timeout`
+            # deadline. Reported against the last DECLARED step, matching
+            # D6's declared-order framing — there is no single "the step
+            # that did it" once steps ran concurrently.
+            last_step = steps[-1]
+            result["status"] = "failed"
+            result["failed_step"] = last_step["name"]
+            result["failure_reason"] = ("deadline exceeded after step %r"
+                                        % last_step["name"])
+            result["failure_kind"] = "deadline"
+            self.trace.log("ERROR", "deadline exceeded", step=last_step["name"],
+                           deadline_ms=con["timeout_ms"])
 
 
 def validate_effect(nodes, effect, payload, refinements):
@@ -2053,3 +2296,14 @@ def _backoff_ms(attempt):
     """Capped exponential backoff. Deterministic: jitter is a runtime concern
     and would make the reference interpreter non-reproducible."""
     return min(100 * (2 ** (attempt - 1)), 1000)
+
+
+def _wall_clock_ms():
+    """Real elapsed time in milliseconds — issue #108 D6's exception to the
+    virtual `Clock` every other span timestamp uses. `time.monotonic()`, not
+    `time.time()`: immune to a system clock adjustment landing mid-run, and
+    every sibling span within one process shares the same base regardless,
+    which is all overlap detection needs. Integer milliseconds, matching the
+    virtual `Clock`'s own type — every other span-timestamp consumer already
+    assumes `int`."""
+    return int(time.monotonic() * 1000)
