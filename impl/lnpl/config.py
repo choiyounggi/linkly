@@ -25,7 +25,6 @@ task's `definition_of_done`).
 import dataclasses
 import os
 import re
-import tomllib
 
 from .serve import WsgiConfigError
 
@@ -166,6 +165,15 @@ def load_config(path=None, profile=None):
         if explicit_path:
             raise WsgiConfigError("--config %r: no such file" % path)
         return ResolvedConfig()
+
+    # Imported here, not at module level: `tomllib` is stdlib-only from
+    # Python 3.11 (this project supports >=3.9, `pyproject.toml`), and
+    # `cli.py` imports this module unconditionally at its own top level —
+    # a module-level `import tomllib` would break `python -m lnpl` under
+    # the walk-up-failed module-fallback path (`lnpl-diagnostics.sh` step
+    # 5) on any interpreter below 3.11, even when no `lnpl.toml` is ever
+    # read.
+    import tomllib
 
     try:
         with open(path, "rb") as fh:
