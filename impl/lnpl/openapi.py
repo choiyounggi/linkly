@@ -194,6 +194,14 @@ def generate(document, version="0.1.0"):
         if node["kind"] == "Refinement":
             schemas[node["name"]] = _refinement_schema(node)
     refined = set(schemas)
+    # The collision this guards against is unreachable today: a name repeated
+    # within one file is already rejected by lower()'s entity/refinement
+    # namespace check (RFC-0011 A.7(e)) before generate() ever sees the
+    # document, and a name repeated across files is rejected by load_sources
+    # (RFC-0031). Keep the check anyway — RFC-0033 (namespace directories,
+    # Draft) makes it reachable again once implemented (see its "OpenAPI
+    # components/schemas" section); revisit alongside issue #122 at that
+    # point instead of deleting this now.
     for entity in entities:
         if entity["name"] in refined:
             raise OpenApiError(
