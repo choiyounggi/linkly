@@ -602,6 +602,11 @@ RFC_ROUTES = {
              "필드인지, 등가(`==`/`!=`)가 왜 UUID/Text/Email까지 허용하는데 "
              "순서 비교는 여전히 Integer/DateTime뿐인지, `RepositoryDriver."
              "query`가 예전 호출부와 왜 바이트 동일을 지키는지", ()),
+    "0039": ("`note \"<template>\" with <ref>...`로 span에 도메인 맥락을 "
+             "남기고 싶다 — `note`가 왜 Effect가 아니라 `Annotation`인지, "
+             "미바인딩 참조가 왜 컴파일/런타임 실패가 아니라 값 `null`인지, "
+             "canonical log line의 `notes`/`effects`/`input_digest`가 각각 "
+             "무엇이고 `--capture-on-failure`가 언제만 입력을 싣는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

@@ -36,6 +36,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | publish | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 |
 | authorize | Authorization | requirement를 **기록만** 한다 — §B의 `security` 항목과 같은 간극 |
 | respond | Response | 목적어가 엔티티명이 아니라 `<binding>.<field>` Reference 목록이다(`respond order.id order.status`). 다른 Effect와 달리 상태를 바꾸지 않는다 — 워크플로가 성공적으로 끝난 시점에 바인딩값을 읽어 `response` 절로 조립할 뿐이다. Password 계열 참조는 컴파일 에러 — 마스킹 chokepoint(#43)를 respond로 우회하는 경로를 막는다. OpenAPI 200 스키마가 이 목록에서 유도된다 — issue #96 |
+| note | Annotation | 목적어가 엔티티명이 아니라 `"<template>" [with <ref>...]`다(`note "picked-tier-{}" with customer.tier`) — `format`의 저장 표현식 파서(`condition._parse_format_rhs`)를 그대로 재사용한다. respond와 같은 이유로 Effect가 아니다: 상태를 바꾸지 않고 현재 span에 구조화 어노테이션 하나를 남길 뿐이다. 참조는 컴파일 타임에 검증하지 않는다 — 미바인딩 참조는 실행 실패가 아니라 값 `null`(관측이 실행을 죽이면 안 된다), Password 계열 값은 `mask_payload` chokepoint(#43)로 마스킹된 채로만 실린다. 워크플로당 16개 초과 시 `note-cap-exceeded` 경고 — issue #111 |
 
 ### 사전 밖 동사
 
@@ -119,6 +120,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | stored-row-shape-mismatch | warning | `read`/`find`가 돌려준 행에 entity가 선언한 필드가 없거나(missing), 있어도 선언된 타입과 맞지 않을 때(type) — 값은 절대 싣지 않는다 (issue #85) | 런타임 — 인터프리터 |
 | rollback-escapes-network | warning | `policy rollback`을 선언한 서비스가 소유한 워크플로에 `call`/`request`(NetworkCall) 스텝이 있을 때 — 저장소 트랜잭션 밖이라 rollback이 되돌리지 못한다. 스텝마다 한 건씩 (issue #112) | 컴파일 타임 — lowering |
 | retry-on-non-idempotent | warning | `capability http`가 `method post`/`patch`와 `retry`를 함께 선언했을 때 — 비멱등 메서드에 재시도를 걸면 효과가 중복될 수 있다 (issue #109) | 컴파일 타임 — lowering |
+| note-cap-exceeded | warning | 워크플로 하나에 `note`가 16개를 초과할 때 — "필요한 로그만"을 어휘 차원에서 지킨다 (issue #111) | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -130,7 +132,8 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 데이터를 고치면 사라진다는 점만 다르다 — 이슈 #85, RFC-0021 질문의 데이터판) ·
 `rollback-escapes-network`(호출을 경계 밖으로 옮기거나 `rollback`을 떼면
 사라진다 — 이슈 #112) · `retry-on-non-idempotent`(`retry`를 떼거나 멱등
-메서드로 바꾸면 사라진다 — 이슈 #109)),
+메서드로 바꾸면 사라진다 — 이슈 #109) · `note-cap-exceeded`(`note`를 16개
+이하로 줄이면 사라진다 — 이슈 #111)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

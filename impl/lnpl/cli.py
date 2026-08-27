@@ -638,7 +638,8 @@ def cmd_serve(args):
                    jwt_secret_env=jwt_secret_env,
                    metrics=getattr(args, "metrics", False),
                    idempotency_ttl_ms=(None if idempotency_ttl_s is None
-                                       else idempotency_ttl_s * 1000))
+                                       else idempotency_ttl_s * 1000),
+                   capture_on_failure=getattr(args, "capture_on_failure", False))
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -1391,6 +1392,11 @@ def main(argv=None):
                          "before a repeat becomes a fresh miss (issue #113, "
                          "D10); default 86400 (24h). No effect on --backend "
                          "fake, which cannot durably record a claim (D11)")
+    sv.add_argument("--capture-on-failure", action="store_true",
+                    help="on a failed/500 run only, add the masked input "
+                         "payload to that run's canonical log line (--log-"
+                         "format json only). Default: off — a successful "
+                         "run never carries its payload into the log")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",

@@ -116,7 +116,8 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |
 | `--jwt-issuer` | 검증된 토큰이 실려야 할 기대 `iss` 클레임. 안 주면 기존 `"lnpl"`(이슈 #119b 이전과 바이트 단위로 동일). `--jwt-secret-env`와 함께일 때만 의미가 있다 |
 | `--token-provider` | `security jwt` 검증기를 고른다(이슈 #119b): 내장 `hmac`(기본 — `--jwt-secret-env`/`--jwt-issuer`를 그대로 읽는다) 또는 `lnpl.tokens` entry-points 그룹에 등록된 이름(실제 외부 IdP를 RS256/ES256으로 검증). 등록된 이름이 `hmac`을 가리키면 거부된다(`docs/backends.md`) |
-| `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics). 이슈 #78 |
+| `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics, 존재할 때만 trace_id/span_id/notes/effects/input_digest). 이슈 #78/#107/#111 |
+| `--capture-on-failure` | 실패/500으로 끝난 실행의 canonical line(json 모드 한정)에 마스킹된 입력 payload 전문을 싣는다. 기본 꺼짐 — 성공한 실행은 켜져 있어도 이 필드가 없다. 이슈 #111 |
 | `--trace-exporter` | 완료된 요청의 Trace를 내보낼 대상. 내장 `stderr-json`, 또는 `lnpl.exporters` entry-points 그룹에 등록된 이름. 안 주면 아무것도 내보내지 않음 — `--log-format`과 독립. 이슈 #78 |
 | `--trust-incoming-trace` | 인바운드 `traceparent` 헤더의 trace-id를 이 요청의 trace-id로 채택할지. 기본 꺼짐 — 꺼져 있으면 형식이 깨졌든 신뢰하지 않든 항상 새 trace-id를 채번하고, 받은 값은 link로만 기록한다. 이슈 #107 |
 | `--metrics` | `/-/metrics`를 연다(Prometheus 텍스트 형식의 RED 3종: 워크플로 실행/소요시간/스텝 실패). 기본 꺼짐 — 꺼져 있으면 그 경로 자체가 없어 404다. 이슈 #110 |
@@ -318,7 +319,8 @@ status completed
 `stored-row-shape-mismatch`(이 하나는 프로그램이 아니라 데이터를 고치면
 사라진다 — 이슈 #85), `rollback-escapes-network`(호출을 경계 밖으로 옮기거나
 `rollback`을 떼면 사라진다 — 이슈 #112), `retry-on-non-idempotent`(`retry`를
-떼거나 멱등 메서드로 바꾸면 사라진다 — 이슈 #109)), `info`는 고쳐도 사라지지 않는
+떼거나 멱등 메서드로 바꾸면 사라진다 — 이슈 #109), `note-cap-exceeded`(`note`를
+16개 이하로 줄이면 사라진다 — 이슈 #111)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`).

@@ -49,5 +49,6 @@
 | RFC-0036 `policy rollback` 선언의 실제 효력 정정 | `policy rollback`을 선언해야 실패한 실행의 쓰기가 롤백되는지 궁금하다 — 선언 여부와 무관하게 왜 항상 롤백되는지, 선언이 실제로 좌우하는 것(INFO trace 로그, `rollback-escapes-network` 진단)이 무엇뿐인지 | `rfcs/0036-policy-rollback-declaration-effect.md` |
 | RFC-0037 아웃바운드 HTTP 회복성 계층 | `capability http`에 재시도·서킷브레이커·경로 템플릿을 어떻게 선언하는지, `NetworkDriver.call`이 왜 3-튜플이 됐는지 궁금하다 — 재시도 대상 판정(408/429/5xx, 501 제외)·지수 백오프와 jitter·Retry-After 반영·브레이커 half-open 규칙의 정본 | `rfcs/0037-http-resilience.md` |
 | RFC-0038 `list where` — 질의 술어, order by/limit, 드라이버 푸시다운 | `list <Entity> where <cond>`로 RowSet을 걸러 `order by`/`limit`을 쓰고 싶다 — 좌변이 왜 항상 나열 대상 엔티티 자신의 필드인지, 등가(`==`/`!=`)가 왜 UUID/Text/Email까지 허용하는데 순서 비교는 여전히 Integer/DateTime뿐인지, `RepositoryDriver.query`가 예전 호출부와 왜 바이트 동일을 지키는지 | `rfcs/0038-list-where-predicate.md` |
+| RFC-0039 `note` 동사와 canonical log line 확장 | `note "<template>" with <ref>...`로 span에 도메인 맥락을 남기고 싶다 — `note`가 왜 Effect가 아니라 `Annotation`인지, 미바인딩 참조가 왜 컴파일/런타임 실패가 아니라 값 `null`인지, canonical log line의 `notes`/`effects`/`input_digest`가 각각 무엇이고 `--capture-on-failure`가 언제만 입력을 싣는지 | `rfcs/0039-note-verb-and-canonical-line.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

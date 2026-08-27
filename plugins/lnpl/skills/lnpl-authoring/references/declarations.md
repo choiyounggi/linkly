@@ -54,3 +54,4 @@
 | `stored-row-shape-mismatch` | **warning** |
 | `rollback-escapes-network` | **warning** |
 | `retry-on-non-idempotent` | **warning** |
+| `note-cap-exceeded` | **warning** |

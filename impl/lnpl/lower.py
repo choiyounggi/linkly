@@ -67,6 +67,7 @@ EFFECT_SLUG = {
     "EventEmit": "emit",
     "BusinessRule": "rule",
     "Response": "respond",
+    "Annotation": "note",
 }
 
 # The one verb whose object is a value expression rather than an entity name
@@ -89,6 +90,18 @@ FORMAT_VERB = "format"
 # Assignment — nothing is written — so it gets its own IR node kind,
 # `Response`.
 RESPOND_VERB = "respond"
+
+# issue #111: `note "<template>" [with <ref>...]` — a span annotation, not an
+# Effect (nothing changes state, the same judgment `respond` made for
+# `Response`). Routed the same way `RESPOND_VERB` is: its object is a
+# template + reference list, not an entity name, so `_WfContext._step` sends
+# it to its own derivation (`_derive_note`) rather than `_derive_effect`.
+NOTE_VERB = "note"
+
+# issue #111, D3: more than this many `note`s in one workflow is a
+# `note-cap-exceeded` compile warning — "log what earns its place" enforced
+# at the vocabulary level, not left to author discipline.
+NOTE_CAP = 16
 
 # R1: the closed step-verb lexicon. verb -> (Effect kind, fixed fields)
 VERB_LEXICON = {
@@ -124,6 +137,9 @@ VERB_LEXICON = {
     # Effect that changes state, so it gets its own kind rather than reusing
     # one of the nine Effect kinds above.
     "respond": ("Response", {}),
+    # issue #111: see `NOTE_VERB` — a span annotation, not an Effect, gets
+    # its own kind for the same reason `respond` does.
+    "note": ("Annotation", {}),
 }
 
 # RFC-0026: `unknown-verb`'s did-you-mean, tier 1. The closed lexicon's actual
@@ -1303,6 +1319,7 @@ def lower(decls, module_name):
         has_rollback = owner is not None and id(owner) in rollback_services
         _check_rollback_escapes_network(ctx.emitted, d.name, has_rollback,
                                         mod.diagnostics, verbs=ctx.network_verbs)
+        _check_note_cap(ctx.emitted, d.name, mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -1415,6 +1432,8 @@ class _WfContext:
         elif verb == RESPOND_VERB:
             derived = _derive_respond(
                 step_id, line, self._registry_with_create_bindings())
+        elif verb == NOTE_VERB:
+            derived = _derive_note(step_id, line)
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
                                      line.lineno, line.tokens[2:],
@@ -1787,6 +1806,27 @@ def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics)
                         "add a `set`/`format` step that fills it somewhere in "
                         "this workflow" % (entity["name"], entity["name"],
                                           field["name"]))
+
+
+def _check_note_cap(emitted, workflow_name, diagnostics):
+    """`note-cap-exceeded` (warning) — issue #111, D3.
+
+    More than `NOTE_CAP` `note`s in one workflow is drift toward free-form
+    logging, the exact thing the closed verb table exists to prevent (issue
+    #111's "no arbitrary output stream" guarantee). Trimming notes makes this
+    go away, so it grades `warning` by the same "does editing the program
+    remove it" test every other code's grade already answers (#52) — the
+    workflow still compiles and runs.
+    """
+    count = sum(1 for node in emitted if node["kind"] == "Annotation")
+    if count <= NOTE_CAP:
+        return
+    diagnostics.add(
+        code="note-cap-exceeded",
+        where=workflow_name, subject=workflow_name,
+        message="workflow %r has %d `note` annotations, over the %d-per-"
+                "workflow cap — trim to the notes that earn their place"
+                % (workflow_name, count, NOTE_CAP))
 
 
 def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagnostics,
@@ -2881,6 +2921,39 @@ def _derive_respond(step_id, line, registry):
 
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Response"])
     return _node("Response", eid, refs=list(refs), line=line.lineno)
+
+
+def _derive_note(step_id, line):
+    """`note "<template>" [with <ref>...]` -> an Annotation node (issue #111,
+    D1/D2).
+
+    `note`'s author-facing shape — verb, template, optional `with`-clause; no
+    target, no `from` — is structurally the SAME right-hand side
+    `condition._parse_format_rhs` already parses (the reader `format`'s
+    stored `Assignment.expression` re-reads), so this reuses it verbatim
+    rather than inventing a second template parser. `_parse_format_rhs`
+    itself does not check the `{}`-count-vs-argument-count rule (it exists to
+    re-read an already-validated expression) — `_check_placeholder_count` is
+    called here explicitly, the same way `parse_format` calls it for the
+    author-facing `format` grammar. Unlike `format`/`respond`, `note` names
+    no declared entity or field, so there is nothing here for
+    `_resolve_entity`/binding-shape checks to do — a reference's existence,
+    and whether it is Password-typed, are both RUN-time questions
+    (`interp.py`'s Annotation branch, D4): an observability channel must not
+    be able to fail a compile or a run over a stale/unbound reference.
+    """
+    from .condition import ConditionError, _check_placeholder_count, _parse_format_rhs
+
+    text = " ".join(line.tokens)
+    try:
+        fmt = _parse_format_rhs(line.tokens, text)
+        _check_placeholder_count(fmt.template, fmt.args, text)
+    except ConditionError as exc:
+        raise LowerError("line %d: %s" % (line.lineno, exc))
+
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Annotation"])
+    return _node("Annotation", eid, template=fmt.template,
+                 refs=[ref.name for ref in fmt.args], line=line.lineno)
 
 
 def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=None):

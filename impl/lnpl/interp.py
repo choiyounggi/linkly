@@ -975,6 +975,36 @@ def _masked_evaluation(interp, entry):
     return dict(entry, value=masked[field])
 
 
+def _note_values(interp, refs, payload, bindings):
+    """A `note`'s `refs` -> resolved values, in template order (issue #111,
+    D4). Each is resolved through `resolve_reference` — the ONE resolver
+    every other reader uses — then masked through the same `mask_payload`
+    chokepoint `_masked_evaluation` applies to a guard's collected values
+    (issue #43: no second masking rule for this channel either). An
+    unresolved reference (no such binding, no such field) is `None`, not a
+    fault — this is an observability channel, and it must not be able to
+    fail a run over a stale reference.
+    """
+    values = []
+    for ref in refs:
+        raw = resolve_reference(ref, payload, bindings, interp.caller)
+        if raw is None or "." not in ref:
+            values.append(raw)
+            continue
+        binding, _, field = ref.partition(".")
+        if binding == PAYLOAD_NAMESPACE:
+            values.append(raw)
+            continue
+        entity_id = interp._entity_id_for_binding(binding)
+        if entity_id is None:
+            values.append(raw)
+            continue
+        entity_view = interp._entity_view(interp.nodes[entity_id])
+        masked = mask_payload({field: raw}, entity_view)
+        values.append(masked[field])
+    return values
+
+
 class Interpreter:
     def __init__(self, document, clock=None, repo_rows=None,
                  correlation_id="cid-0001", *, repository=None, cache=None,
@@ -1167,6 +1197,14 @@ class Interpreter:
         # after the fact, so a guard that never fired contributes nothing —
         # the same rule every other Effect gets from this loop.
         response_refs = []
+        # issue #111, D4: same collection shape as `response_refs`, but
+        # resolved to VALUES immediately rather than deferred to end-of-run
+        # — a `note` is a span annotation, a snapshot of `bindings` at the
+        # point it ran, not a final-state read like `respond`'s FieldMask.
+        # Resolving it here (right after `_run_step` returns for the SAME
+        # step, before any later step can mutate the same row) is what
+        # keeps that snapshot honest.
+        notes = []
         # issue #79, RFC-0032: one transaction per execution, not per step.
         # `begin()` opens it before the first step; exactly one of
         # `commit()`/`rollback()` below closes it before this method
@@ -1204,12 +1242,24 @@ class Interpreter:
                                   span.duration_ms)
                 result["steps"].append({"step": step["name"], "attempts": attempts,
                                         "duration_ms": span.duration_ms,
+                                        # issue #111, D5: `Annotation` is not
+                                        # an Effect (issue #96's `Response`
+                                        # precedent) — `spec.py`'s `effects
+                                        # <N>` count must not see a `note`
+                                        # any differently than it saw a
+                                        # `respond` before this feature.
                                         "effects": [self.nodes[c]["kind"]
-                                                    for c in step.get("children", [])]})
+                                                    for c in step.get("children", [])
+                                                    if self.nodes[c]["kind"] != "Annotation"]})
                 if last_error is None:
                     for child_id in step.get("children", []):
-                        if self.nodes[child_id]["kind"] == "Response":
-                            response_refs.extend(self.nodes[child_id]["refs"])
+                        child = self.nodes[child_id]
+                        if child["kind"] == "Response":
+                            response_refs.extend(child["refs"])
+                        elif child["kind"] == "Annotation":
+                            notes.append({"template": child["template"],
+                                         "values": _note_values(
+                                             self, child["refs"], payload, bindings)})
                 if last_error is not None:
                     result["status"] = "failed"
                     result["failed_step"] = step["name"]
@@ -1307,6 +1357,14 @@ class Interpreter:
         # still registered.
         if self.outbox:
             result["emissions"] = list(self.outbox)
+        # issue #111, D4: same `emissions` precedent — additive, and NOT
+        # gated on `status == "completed"`. A `note` is exactly the
+        # observability channel a failed run needs most (the issue's own
+        # motivation: domain context for a failure the trace cannot show),
+        # so a step that ran and noted something before a LATER step failed
+        # must not lose that note.
+        if notes:
+            result["notes"] = notes
         result["duration_ms"] = total
         result["correlation_id"] = self.trace.correlation_id
         if con["response_slo_ms"] is not None:
@@ -1644,6 +1702,13 @@ class Interpreter:
             # `bindings` after the run completes. Nothing to evaluate here;
             # this branch exists only so the step's effect walk does not
             # treat an unrecognized kind as unimplemented (the `else` below).
+            pass
+        elif kind == "Annotation":
+            # issue #111, D4: declarative, the same `Response` precedent —
+            # `run_workflow` resolves `effect["refs"]`/`effect["template"]`
+            # into `result["notes"]` right after this step returns (while
+            # `bindings` still holds THIS step's values, not a later step's
+            # overwrite), which is why nothing runs here.
             pass
         else:
             raise RunError("Phase 1 interpreter does not execute %s" % kind)

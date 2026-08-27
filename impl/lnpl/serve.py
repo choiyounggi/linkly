@@ -72,7 +72,7 @@ def _install_sigterm_handler(app):
 def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
           token_provider=None, network=None, clock=None, log_format="text",
           exporter=None, trust_incoming_trace=False, jwt_secret_env=None,
-          metrics=False, idempotency_ttl_ms=None):
+          metrics=False, idempotency_ttl_ms=None, capture_on_failure=False):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -90,6 +90,9 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     behavior) or "json" (one JSON Line per request to stderr). `exporter`
     (issue #78) is a `TraceExporter` every completed workflow run's Trace is
     handed to; omitted, nothing is exported — independent of `log_format`.
+    `capture_on_failure` (issue #111, D7) is off by default; on, a failed/
+    500 run's canonical line (json log mode only) carries its masked input
+    payload — a reproduction snapshot for exactly the runs that need one.
     """
     kwargs = {}
     if idempotency_ttl_ms is not None:
@@ -99,6 +102,7 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
                         clock=clock, log_format=log_format, exporter=exporter,
                         trust_incoming_trace=trust_incoming_trace,
                         jwt_secret_env=jwt_secret_env, metrics=metrics,
+                        capture_on_failure=capture_on_failure,
                         **kwargs)
     _install_sigterm_handler(app)
     server = _Server((host, port), _WSGIRequestHandler)
