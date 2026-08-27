@@ -269,3 +269,31 @@ class IdempotencyDriverTest(unittest.TestCase):
 
         self.assertEqual(("done", (500, {"failure_reason": "boom"})), result)
         d.close()
+
+    def test_release_without_a_prior_claim_is_a_noop(self):
+        """issue #118, D6 r2: releasing a key nothing ever claimed must not
+        raise -- the escape/503 paths call this unconditionally whenever a
+        claim exists, and a DELETE matching zero rows is exactly the shape
+        that makes "no claim to release" and "already released" the same
+        harmless case."""
+        d = SqliteRepositoryDriver(self.path)
+        d.idempotency_release("wf.x", "never-claimed")   # must not raise
+        result = d.idempotency_begin("wf.x", "never-claimed",
+                                     int(time.time() * 1000), 3600_000)
+        self.assertEqual(("started", None), result)   # still a fresh miss
+        d.close()
+
+    def test_release_after_begin_lets_the_next_claim_start_fresh(self):
+        """The whole point of D6 r2: releasing an in-progress claim clears
+        it immediately -- unlike an expired claim (D10), this does not wait
+        for the TTL. A `("started", None)` right after release proves the
+        row is gone, not merely reachable at some future time."""
+        d = SqliteRepositoryDriver(self.path)
+        now = int(time.time() * 1000)
+        d.idempotency_begin("wf.x", "k", now, 3600_000)
+
+        d.idempotency_release("wf.x", "k")
+        result = d.idempotency_begin("wf.x", "k", now, 3600_000)
+
+        self.assertEqual(("started", None), result)
+        d.close()

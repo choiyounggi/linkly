@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 2,950여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 3,150여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 40편 — 37편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
+**RFC 41편 — 38편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -256,8 +256,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0037 아웃바운드 HTTP 회복성 계층](rfcs/0037-http-resilience.md) | `capability http`에 `retry <N> backoff <duration> [jitter]`(지수 백오프, full jitter, Retry-After 인지)와 `breaker after <N> within <duration>`(인프로세스 서킷브레이커)를 더하고, `method`가 `get/post/put/patch/delete`로 넓어지고, `path "<template>"` + `call ... with <ref>...`가 이스케이프된 URL 경로를 조립한다. `NetworkDriver.call`은 파괴적으로 3-튜플 `(status, body, headers)`가 되며 두 구현에 한 번에 적용된다 — `NetworkDriverTCK`가 둘이 같은 선언을 다르게 채점하지 않는지 검사한다. 선언이 없으면 이전과 바이트 동일. *0027 §Reference-level Specification/1 갱신* |
 | [0038 `list where` 질의 술어 + order by/limit](rfcs/0038-list-where-predicate.md) | `list <Entity>`에 `where <cond> [order by <field> [desc]] [limit <N>]`가 더해진다 — 가드 조건 문법(`condition.py`)을 그대로 재사용해 새 표현식 언어를 만들지 않는다. 등가(`==`/`!=`)는 선언 타입이 같으면(UUID/Text/Email 포함) 허용하고, 순서 비교(`<`,`<=`,`>`,`>=`)는 Integer/DateTime 차원 제약을 그대로 유지한다. `RepositoryDriver.query`에 `predicate`/`order`/`limit`이 더해지며(전부 기본값 `None`, 없으면 바이트 동일) 드라이버는 `supports_predicate`로 푸시다운을 옵트인하고, 아니면 코어가 과다수신 후 파이썬에서 걸러 INFO `predicate-not-pushed-down` 한 줄을 남긴다. *0016 §Reference-level Specification/3, 0025 §Reference-level Specification/1 갱신* |
 | [0039 `note` 동사 + canonical log line](rfcs/0039-note-verb-and-canonical-line.md) | `note "<template>" [with <ref>...]`가 Effect가 아닌 `Annotation` 노드로 lower된다(`respond`/`Response`와 같은 취급) — `condition._parse_format_rhs`를 그대로 재사용한다. 미바인딩 참조는 `null`로 기록될 뿐 실행을 실패시키지 않고, Password 타입 값은 기존 `mask_payload` chokepoint로 마스킹된다. 워크플로당 `note` 16개 초과는 컴파일 에러가 아니라 `note-cap-exceeded` 경고다. `--log-format json`의 canonical line에 `notes`/`effects`/`input_digest`가 존재할 때만 덧붙고, `lnpl serve --capture-on-failure`(기본 off)는 실패/500으로 끝난 실행의 줄에만 마스킹된 입력 payload를 싣는다. `_call_with_json_log`는 이제 끝까지 예외 안전하다 — `_respond`에 닿기도 전에 죽는 요청도 canonical line 한 줄을 낸다. |
+| [0040 이벤트 소비 계약](rfcs/0040-event-consumption-contract.md) | `event ... consume by <Workflow>`가 도착 시 워크플로를 실행한다 — RFC-0032가 이미 확정한 발행 쪽의 남은 소비 절반. `POST /-/events/<slug>`(예약 공간, RFC-0016 스케줄 트리거와 같은 모양)가 CloudEvents v1.0 구조화 봉투를 받고, 그 `id`가 멱등성 키다(이슈 #113의 `lnpl_idempotency` 테이블·API·TTL을 그대로 재사용, 두 번째 저장소 없음). 실행 결과는 정확히 3갈래로 매핑된다 — 200 성공, 503+`Retry-After` 일시적(데드라인, 또는 `RepositoryCall`/`NetworkCall` effect 실패), 422 영구적(Validation 거부, 비즈니스/가드 RunError, create 충돌) — 그리고 503은 `idempotency_finish`를 의도적으로 건너뛰어 재시도가 503을 영원히 재생하는 대신 새로 실행되게 한다. `consume by`와 그 워크플로 자신의 `emit` 사이의 순환은 정적 경고(`event-consume-cycle`)이지 컴파일 에러가 아니다. `lnpl relay`가 outbox를 드레인해 소비 라우트로 미는 레퍼런스 릴레이다(urllib만, 브로커 의존 없음). |
 
-37편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+38편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -314,7 +315,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2950 tests in 106.014s
+Ran 3150 tests in 112.059s
 OK
 ```
 

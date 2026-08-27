@@ -350,6 +350,9 @@
         },
         "subscribe": {
           "type": "boolean"
+        },
+        "consume": {
+          "$ref": "#/$defs/nodeId"
         }
       },
       "required": [

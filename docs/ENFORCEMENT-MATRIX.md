@@ -121,6 +121,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | rollback-escapes-network | warning | `policy rollback`을 선언한 서비스가 소유한 워크플로에 `call`/`request`(NetworkCall) 스텝이 있을 때 — 저장소 트랜잭션 밖이라 rollback이 되돌리지 못한다. 스텝마다 한 건씩 (issue #112) | 컴파일 타임 — lowering |
 | retry-on-non-idempotent | warning | `capability http`가 `method post`/`patch`와 `retry`를 함께 선언했을 때 — 비멱등 메서드에 재시도를 걸면 효과가 중복될 수 있다 (issue #109) | 컴파일 타임 — lowering |
 | note-cap-exceeded | warning | 워크플로 하나에 `note`가 16개를 초과할 때 — "필요한 로그만"을 어휘 차원에서 지킨다 (issue #111) | 컴파일 타임 — lowering |
+| event-consume-cycle | warning | `event <E> consume by <W>`가 선언돼 있고, `W`(그 자식 워크플로 포함)가 결국 `E`를 다시 `emit`/`publish`할 때 — 런타임 무한 재디스패치의 정적 신호. 가드가 실제로는 그 경로를 막을 수 있어 에러가 아니라 경고다 (issue #118) | 컴파일 타임 — lowering, 모든 워크플로를 다 내린 뒤 |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -133,7 +134,8 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 `rollback-escapes-network`(호출을 경계 밖으로 옮기거나 `rollback`을 떼면
 사라진다 — 이슈 #112) · `retry-on-non-idempotent`(`retry`를 떼거나 멱등
 메서드로 바꾸면 사라진다 — 이슈 #109) · `note-cap-exceeded`(`note`를 16개
-이하로 줄이면 사라진다 — 이슈 #111)),
+이하로 줄이면 사라진다 — 이슈 #111) · `event-consume-cycle`(`consume by`를
+떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

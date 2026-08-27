@@ -11,6 +11,9 @@ import argparse
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
 
 from . import __version__
 from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
@@ -703,6 +706,133 @@ def cmd_outbox_ack(args):
     try:
         repository.ack_outbox(args.seq)
         return 0
+    except DriverError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        repository.close()
+
+
+# issue #118, D8: the reference relay's pause between drain cycles when
+# `--once` is not given. No `--interval` flag -- the issue names only
+# `--once`, and this is a reference implementation, not a tunable daemon.
+RELAY_POLL_INTERVAL_S = 1.0
+
+
+def _relay_post(url, envelope):
+    """POST `envelope` (a CloudEvents structured-mode JSON body) to `url` ->
+    `(status, parsed_body)`. `status is None` means the request never got a
+    response at all (connection refused, DNS failure, timeout) -- folded
+    into the SAME bucket `_cmd_relay_drain_once` already treats 503 as
+    (leave un-acked, the next drain cycle tries again), so that function
+    needs only one branch for "could not confirm delivery," not two.
+
+    stdlib `urllib` only (issue #118, out-of-scope: no broker/HTTP client
+    dependency) -- the same posture #88 already set for the outbox itself.
+    """
+    data = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            return resp.status, _read_json_or_none(resp)
+    except urllib.error.HTTPError as exc:
+        return exc.code, _read_json_or_none(exc)
+    except urllib.error.URLError:
+        return None, None
+
+
+def _read_json_or_none(response):
+    body = response.read()
+    if not body:
+        return None
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
+
+
+def _relay_drain_once(repository, event_names, source, target):
+    """One outbox drain -> POST -> ack cycle (issue #118, D8). Returns the
+    count of emissions acked, for `--once`'s stdout summary.
+
+    Ack policy, per emission, decided by the response `_relay_post` got:
+    200 -> ack (delivered). 422 -> ack anyway (RFC-0040 D7: permanent
+    rejection, redelivering the identical envelope can never turn it into a
+    success) + one dead-letter line to stderr, naming what got dropped and
+    why -- the DLQ this reference relay has, in place of an actual queue.
+    503, or no response at all -> leave un-acked; the next drain cycle
+    re-reads the same row and tries again (at-least-once, offset-commit
+    discipline: ack only after confirmed success or a confirmed permanent
+    rejection). Any OTHER status (e.g. a slug this target never declared
+    `consume by` for, 404) is treated the same conservative way as 503 --
+    this reference relay never invents a fourth bucket RFC-0040 D7 does not
+    define.
+    """
+    acked = []
+    for emission in repository.drain_outbox():
+        name = event_names.get(emission["event"])
+        if name is None:
+            print("relay: seq=%d references event id %r, which this "
+                 "document does not declare -- left un-acked"
+                 % (emission["seq"], emission["event"]), file=sys.stderr)
+            continue
+        envelope = {"specversion": "1.0", "id": "outbox-%d" % emission["seq"],
+                   "source": source, "type": name, "data": emission["payload"]}
+        url = "%s/-/events/%s" % (target.rstrip("/"), _slug(name))
+        status, body = _relay_post(url, envelope)
+        if status == 200:
+            acked.append(emission["seq"])
+        elif status == 422:
+            acked.append(emission["seq"])
+            print("relay: dead-letter -- seq=%d event=%s rejected (422): %s"
+                 % (emission["seq"], name,
+                    body.get("detail") if isinstance(body, dict) else body),
+                 file=sys.stderr)
+        elif status == 503 or status is None:
+            pass
+        else:
+            print("relay: seq=%d event=%s got unexpected status %r -- "
+                 "left un-acked for the next drain"
+                 % (emission["seq"], name, status), file=sys.stderr)
+    if acked:
+        repository.ack_outbox(acked)
+    return len(acked)
+
+
+def cmd_relay(args):
+    """`lnpl relay <source...> --backend sqlite:... --target <base-url>
+    [--once]` (issue #118, D8) -- the reference relay: drains this
+    document's outbox (issue #102) and POSTs each emission as a CloudEvents
+    structured-mode envelope to `<target>/-/events/<slug>` (D4/D5). Proves
+    RFC-0040's consume contract end-to-end without a broker: two `lnpl`
+    processes, one outbox table, one HTTP hop between them.
+
+    `source` is compiled (never re-executed) only to map an emission's
+    event id back to the event's declared NAME -- the `type`/routing-slug
+    CloudEvents needs and the outbox row does not itself carry.
+    """
+    doc, _, module_name, diagnostics = _compile(args.source)
+    _emit_diagnostics(diagnostics)
+    event_names = {n["id"]: n["name"] for n in doc["nodes"] if n["kind"] == "Event"}
+
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: relay needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no outbox to drain",
+              file=sys.stderr)
+        return 2
+    try:
+        while True:
+            acked = _relay_drain_once(repository, event_names, module_name,
+                                      args.target)
+            if args.once:
+                print("relay: acked %d emission(s)" % acked)
+                return 0
+            time.sleep(RELAY_POLL_INTERVAL_S)
     except DriverError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
@@ -1445,6 +1575,30 @@ def main(argv=None):
                           "output) to mark delivered — a repeated or "
                           "already-delivered seq is a no-op success")
     oba.set_defaults(func=cmd_outbox_ack)
+
+    rl = sub.add_parser("relay",
+                        help="reference relay: drain this document's outbox "
+                             "and POST each emission as a CloudEvents "
+                             "envelope to a target's `/-/events/<slug>` "
+                             "consume route (issue #118)")
+    rl.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77) — compiled only to map an "
+                         "emission's event id back to its declared name")
+    rl.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                    help="a persistent capability backend to drain, e.g. "
+                         "sqlite:./store.db (`fake` has no outbox)")
+    rl.add_argument("--target", required=True, metavar="BASE-URL",
+                    help="the consuming instance's base URL, e.g. "
+                         "http://localhost:8081 — envelopes POST to "
+                         "<BASE-URL>/-/events/<slug>")
+    rl.add_argument("--once", action="store_true",
+                    help="drain and POST exactly once, then exit (rc 0) — "
+                         "the shape a test or a cron entry drives. Default: "
+                         "loop forever, polling the outbox every %gs"
+                         % RELAY_POLL_INTERVAL_S)
+    rl.set_defaults(func=cmd_relay)
 
     db = sub.add_parser("db",
                         help="inspect a persistent store against the "

@@ -573,27 +573,47 @@ def _parse_http_capability(d, diagnostics=None):
             "breaker": breaker, "path": path}
 
 
-def _parse_event_subscribe(d):
-    """`event ... subscribe` body lines -> `True`, or a refusal.
+def _parse_event_body(d):
+    """`event ...` body lines -> `(subscribe: bool, consume: (name, lineno) or None)`.
 
-    issue #103, D1: a bare flag, one word, at most once — the same shape
-    `_parse_perf_line`'s `VALUELESS_PERF` branch already gives a flag metric.
-    Structural validation only; `subscribe` reaching the IR at all is what
-    `serve.py` reads to derive the SSE route (D2) — this function does not
-    know about routes or auth.
+    Two shapes share this clause-free content-line slot (parser.py:366-372):
+    `subscribe` (issue #103, D1) — a bare flag, one word, at most once, the
+    same shape `_parse_perf_line`'s `VALUELESS_PERF` branch already gives a
+    flag metric — and `consume by <Workflow>` (issue #118, D1) — exactly
+    three tokens, at most once. Neither excludes the other, and neither
+    excludes an `on <Entity> ...`/`on schedule ...` source parsed separately
+    from `d.extra` above: `subscribe` means "expose over SSE", `consume by`
+    means "run this workflow on arrival" — independent opt-ins on the same
+    declaration.
+
+    Structural validation only. `subscribe` reaching the IR is what
+    `serve.py` reads to derive the SSE route (D2); the consume target's
+    *existence* as a declared workflow is checked by the caller, which alone
+    has `by_kind["workflow"]` in hand — this function only shapes the line.
     """
     subscribed = False
+    consume = None
     for line in d.items:
-        if line.tokens != ["subscribe"]:
-            raise LowerError(
-                "line %d: event %s takes only a bare `subscribe` line, got %r"
-                % (line.lineno, d.name, " ".join(line.tokens)))
-        if subscribed:
-            raise LowerError(
-                "line %d: event %s declares `subscribe` twice"
-                % (line.lineno, d.name))
-        subscribed = True
-    return subscribed
+        tokens = line.tokens
+        if tokens == ["subscribe"]:
+            if subscribed:
+                raise LowerError(
+                    "line %d: event %s declares `subscribe` twice"
+                    % (line.lineno, d.name))
+            subscribed = True
+            continue
+        if len(tokens) == 3 and tokens[0] == "consume" and tokens[1] == "by":
+            if consume is not None:
+                raise LowerError(
+                    "line %d: event %s declares `consume by` twice"
+                    % (line.lineno, d.name))
+            consume = (tokens[2], line.lineno)
+            continue
+        raise LowerError(
+            "line %d: event %s takes only a bare `subscribe` line or "
+            "`consume by <Workflow>`, got %r"
+            % (line.lineno, d.name, " ".join(tokens)))
+    return subscribed, consume
 
 
 def _parse_policy_line(tokens, lineno):
@@ -1265,11 +1285,21 @@ def lower(decls, module_name):
         mod.add(_node("Entity", ent["id"], name=ent["name"], fields=ent["fields"],
                       line=ent["decl"].lineno))
 
+    # issue #118, D1: workflow ids known before any workflow is lowered — the
+    # names are already in `by_kind["workflow"]` from parsing, and `consume
+    # by <Workflow>` needs to validate against them right here, in the same
+    # pass that builds each Event node (lowering a workflow body is a
+    # separate, later concern).
+    declared_workflow_ids = {derive_id(w.name, "Workflow") for w in by_kind["workflow"]}
+
     declared_event_ids = set()
     # eid -> (entity id, create|update|delete) for `on`-sourced events only —
     # issue #98's mismatch/orphaned checks apply to this coupling and nowhere
     # else (a schedule-sourced or bare `event X` has no step to check against).
     event_sources = {}
+    # eid -> consume workflow id, issue #118 D3's cycle check reads this once
+    # every workflow (and its own `emit`s) has been lowered, below.
+    event_consumes = {}
     for d in by_kind["event"]:
         eid = derive_id(d.name, "Event")
         declared_event_ids.add(eid)
@@ -1290,11 +1320,28 @@ def lower(decls, module_name):
             # `performance batch`, which parses into silence (t3 F-2).
             _declaration_diagnostics(mod.diagnostics, "event",
                                      [("schedule", d.lineno)], where=eid)
-        subscribe = _parse_event_subscribe(d)
+        subscribe, consume_decl = _parse_event_body(d)
+        consume = None
+        if consume_decl is not None:
+            consume_name, consume_lineno = consume_decl
+            consume = derive_id(consume_name, "Workflow")
+            if consume not in declared_workflow_ids:
+                raise LowerError(
+                    "line %d: event %s declares `consume by %s`, which is not "
+                    "a declared workflow (declared: %s)"
+                    % (consume_lineno, d.name, consume_name,
+                       ", ".join(sorted(declared_workflow_ids))
+                       if declared_workflow_ids else "none declared"))
+            event_consumes[eid] = consume
         mod.add(_node("Event", eid, name=d.name, source=source,
-                      subscribe=subscribe or None, line=d.lineno))
+                      subscribe=subscribe or None, consume=consume,
+                      line=d.lineno))
 
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
+    # wid -> set of event ids this workflow's own `emit`/`publish` steps
+    # reference — issue #118 D3's cycle check needs every workflow's emitted
+    # events in hand, so it runs once after this loop, not per-workflow.
+    emits_by_workflow = {}
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
         ctx = _WfContext(wid, registry, mod.diagnostics, http_caps, base_of)
@@ -1303,6 +1350,8 @@ def lower(decls, module_name):
                       line=d.lineno))
         for node in ctx.emitted:
             mod.add(node)
+        emits_by_workflow[wid] = {node["event"] for node in ctx.emitted
+                                  if node["kind"] == "EventEmit"}
         _check_scoped_conditions(ctx.emitted, registry, d.name, base_of,
                                  top_ids, diagnostics=mod.diagnostics)
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
@@ -1320,6 +1369,8 @@ def lower(decls, module_name):
         _check_rollback_escapes_network(ctx.emitted, d.name, has_rollback,
                                         mod.diagnostics, verbs=ctx.network_verbs)
         _check_note_cap(ctx.emitted, d.name, mod.diagnostics)
+
+    _check_event_consume_cycles(event_consumes, emits_by_workflow, mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
@@ -1660,6 +1711,83 @@ def _check_event_refs(emitted, declared_event_ids, workflow_name):
             % (workflow_name, ref,
                ", ".join(sorted(declared_event_ids)) if declared_event_ids
                else "none declared"))
+
+
+def _check_event_consume_cycles(event_consumes, emits_by_workflow, diagnostics):
+    """Issue #118, D3: warn (never error) when `consume by` and `emit` chain
+    back to an event already in the chain — event -> its consuming workflow
+    -> that workflow's own emitted events -> ... -> the same event again.
+
+    A *static* signal for a possible infinite runtime dispatch loop, not
+    proof of one: a guard inside the consuming workflow may keep the loop
+    from ever actually firing, so the program is not necessarily wrong (the
+    same reasoning `guard-orphaned-steps` already applies to a different
+    shape of "this looks off but might be fine"). That is why this is a
+    diagnostic, not a `LowerError` — unlike `consume by`'s undeclared-target
+    case above, which the author cannot mean.
+
+    The graph is bipartite (event id, workflow id) with two edge kinds —
+    `event -> workflow` from `consume`, `workflow -> event` from `emit` —
+    walked by one standard white/gray/black cycle-detecting DFS. Iterative,
+    with an explicit frame stack rather than Python's call stack: a module
+    with hundreds of chained `consume by`/`emit` declarations must not blow
+    the interpreter's recursion limit lowering it.
+    """
+    graph = {}
+    for eid, wid in event_consumes.items():
+        graph.setdefault(eid, set()).add(wid)
+    for wid, emitted_events in emits_by_workflow.items():
+        for eid in emitted_events:
+            graph.setdefault(wid, set()).add(eid)
+
+    reported = set()
+
+    def report(path_stack, closing_node):
+        cycle = path_stack[path_stack.index(closing_node):] + [closing_node]
+        key = frozenset(cycle[:-1])
+        if key in reported:
+            return
+        reported.add(key)
+        # Canonical rendering: rotate to the smallest id, so the same cycle
+        # reads identically no matter which node the DFS started from.
+        start = cycle.index(min(cycle[:-1]))
+        rotated = cycle[start:-1] + cycle[:start] + [cycle[start]]
+        path = " -> ".join(rotated)
+        diagnostics.add(
+            code="event-consume-cycle",
+            where=rotated[0],
+            subject="cycle %s" % path,
+            message="`consume by`/`emit` forms a cycle: %s — if this path "
+                    "ever runs unguarded, dispatching the event re-triggers "
+                    "the same workflow forever"
+                    % path)
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {}
+    for root in graph:
+        if color.get(root, WHITE) != WHITE:
+            continue
+        color[root] = GRAY
+        path_stack = [root]
+        # Each frame: [node, its neighbors (sorted for a deterministic
+        # message), the index of the next neighbor still to visit].
+        frames = [[root, sorted(graph.get(root, ())), 0]]
+        while frames:
+            node, neighbors, i = frames[-1]
+            if i >= len(neighbors):
+                color[node] = BLACK
+                frames.pop()
+                path_stack.pop()
+                continue
+            frames[-1][2] += 1
+            nxt = neighbors[i]
+            nxt_color = color.get(nxt, WHITE)
+            if nxt_color == GRAY:
+                report(path_stack, nxt)
+            elif nxt_color == WHITE and nxt in graph:
+                color[nxt] = GRAY
+                path_stack.append(nxt)
+                frames.append([nxt, sorted(graph.get(nxt, ())), 0])
 
 
 def _guard_owner_map(top_ids, by_id):
