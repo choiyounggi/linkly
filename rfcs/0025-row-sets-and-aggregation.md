@@ -4,6 +4,7 @@
 
 - Status: **Accepted** (RFC-0025, 2026-08-18)
 - Updates: RFC-0012 §G12.2, RFC-0012 §G12.4, RFC-0012 §G12.5, RFC-0015 §1
+- Updated-by: RFC-0038 (§Reference-level Specification/1)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. G12.2가 정의하는 실행 스코프
 바인딩 규칙에 RowSet 바인딩을 더하고, G12.5가 정의하는 한정 참조의 컴파일 시점

@@ -597,6 +597,11 @@ RFC_ROUTES = {
              "선언하는지, `NetworkDriver.call`이 왜 3-튜플이 됐는지 궁금하다 "
              "— 재시도 대상 판정(408/429/5xx, 501 제외)·지수 백오프와 "
              "jitter·Retry-After 반영·브레이커 half-open 규칙의 정본", ()),
+    "0038": ("`list <Entity> where <cond>`로 RowSet을 걸러 `order by`/"
+             "`limit`을 쓰고 싶다 — 좌변이 왜 항상 나열 대상 엔티티 자신의 "
+             "필드인지, 등가(`==`/`!=`)가 왜 UUID/Text/Email까지 허용하는데 "
+             "순서 비교는 여전히 Integer/DateTime뿐인지, `RepositoryDriver."
+             "query`가 예전 호출부와 왜 바이트 동일을 지키는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

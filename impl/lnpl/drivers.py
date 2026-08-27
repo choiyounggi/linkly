@@ -115,6 +115,15 @@ class RepositoryDriver:
     """The `postgres` capability's adapter contract.
 
     Reference implementation: `interp.FakeRepository` (in-memory, per run).
+
+    `supports_predicate` (issue #116, D5) — class attribute, absent by
+    default: opt in by setting it `True` to declare that `query`'s
+    `predicate`/`order`/`limit` are pushed down rather than ignored. A
+    driver that does not set it gets `interp.Interpreter`'s fallback
+    instead — `query(entity_id)` (the pre-#116 call), filtered/sorted/
+    limited in Python (`repo_policy.apply_predicate`) — the same opt-in
+    idiom `testing.RepositoryDriverTCK`'s optimistic-version conflict test
+    already uses for `observed_version`.
     """
 
     def seed(self, rows):
@@ -135,7 +144,7 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
-    def query(self, entity_id):
+    def query(self, entity_id, predicate=None, order=None, limit=None):
         """Every row for `entity_id`, ordered by row_key ascending.
 
         Empty list when the entity has no rows — never `None`, and never an
@@ -144,6 +153,19 @@ class RepositoryDriver:
         detail: `SqliteRepositoryDriver` orders by `ORDER BY row_key`, and any
         other implementation must agree with that order for a document to
         mean the same thing under either `--backend` (RFC-0025 §7).
+
+        `predicate`/`order`/`limit` (issue #116, D5) all default to `None`
+        — every pre-#116 caller's shape, unchanged. A driver that declares
+        `supports_predicate = True` is called with these when a `list
+        where`/`order by`/`limit` clause is present, and must push them
+        down; one that does not is never called with them (`interp.
+        Interpreter` filters/sorts/limits over a plain `query(entity_id)`
+        fetch instead). `predicate` is a list of `(field, op, value)`
+        3-tuples, ANDed together — `field` is a whitelisted column name
+        (compiler-validated, never raw text), `op` one of `<`/`<=`/`>`/
+        `>=`/`==`/`!=`, `value` the already-resolved concrete value to bind.
+        `order` is `(field, desc)` or `None`. `limit` is a positive `int` or
+        `None`.
         """
         raise NotImplementedError
 
@@ -354,6 +376,21 @@ _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
 # unchanged), so the sort key is extracted from the JSON blob at read time.
 _SELECT_SORTED = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
                   "ORDER BY json_extract(payload, ?), row_key")
+# issue #116, D5/D6: `list where`/`order by`/`limit` pushdown, assembled from
+# fixed literal fragments only — never a document-supplied field name or
+# value (STATEMENT TEXT IS CONSTANT, module docstring). A predicate term's
+# field rides in `json_extract`'s second argument (issue #99 D7's precedent,
+# just above); its value is an ordinary bound parameter; its comparator is
+# one of six fixed SQL operator strings, chosen by dict lookup from the
+# compiler's own whitelist (`condition.COMPARATORS`) — never document text.
+_SELECT_PREDICATE_OPS = {
+    "==": "=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
+}
+_SELECT_PREDICATE_BASE = "SELECT payload FROM lnpl_rows WHERE entity_id = ?"
+_SELECT_PREDICATE_TERM = " AND json_extract(payload, ?) %s ?"
+_SELECT_PREDICATE_ORDER = " ORDER BY json_extract(payload, ?)%s, row_key"
+_SELECT_PREDICATE_ORDER_DEFAULT = " ORDER BY row_key"
+_SELECT_PREDICATE_LIMIT = " LIMIT ?"
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
                      "VALUES (?, ?, ?)")
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
@@ -483,6 +520,12 @@ class SqliteRepositoryDriver(RepositoryDriver):
     and synchronous pragmas persist on the file, so they are set when the file
     is created and not re-asserted on every later open.
     """
+
+    # issue #116, D5/D6: pushes `query`'s predicate/order/limit down into
+    # SQL (bind parameters only — STATEMENT TEXT IS CONSTANT, module
+    # docstring), the same `query_sorted` precedent (issue #99, D7) already
+    # set for a sort field.
+    supports_predicate = True
 
     def __init__(self, path):
         self.raw_path = path
@@ -695,9 +738,28 @@ class SqliteRepositoryDriver(RepositoryDriver):
         raise DriverError("unsupported repository operation %r (accepted: %s)"
                           % (operation, ", ".join(ACCEPTED_OPS)))
 
-    def query(self, entity_id):
+    def query(self, entity_id, predicate=None, order=None, limit=None):
+        if predicate is None and order is None and limit is None:
+            sql, params = _SELECT_ALL_ROWS, (entity_id,)
+        else:
+            parts = [_SELECT_PREDICATE_BASE]
+            params = [entity_id]
+            for field, op, value in predicate or ():
+                parts.append(_SELECT_PREDICATE_TERM % _SELECT_PREDICATE_OPS[op])
+                params.append("$." + field)
+                params.append(value)
+            if order is not None:
+                field, desc = order
+                parts.append(_SELECT_PREDICATE_ORDER % (" DESC" if desc else ""))
+                params.append("$." + field)
+            else:
+                parts.append(_SELECT_PREDICATE_ORDER_DEFAULT)
+            if limit is not None:
+                parts.append(_SELECT_PREDICATE_LIMIT)
+                params.append(limit)
+            sql, params = "".join(parts), tuple(params)
         try:
-            found = self._conn.execute(_SELECT_ALL_ROWS, (entity_id,)).fetchall()
+            found = self._conn.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             raise DriverError("cannot query %s: %s" % (entity_id, exc)) from exc
         return [json.loads(row[0]) for row in found]

@@ -734,6 +734,163 @@ def _parse_expose_line(tokens, lineno, registry, base_of):
     return {"entity": entity["id"], "field": field_name}
 
 
+# issue #116, D1: `list <Entity> where <cond> [order by <field> [desc]]
+# [limit <N>]` — clause order fixed, all three tail clauses (`where`'s
+# condition included) collectively optional (a bare `list <Entity>` is
+# still the RFC-0025 form). Comparators split by D2: `<`/`<=`/`>`/`>=` keep
+# the Integer/DateTime dimension restriction `_dimension_of` already
+# enforces for guards; `==`/`!=` additionally allow any base type, as long
+# as both sides agree, since equality does not need an evaluator the way an
+# ordering does.
+_LIST_ORDER_COMPARATORS = ("<", "<=", ">", ">=")
+
+
+def _parse_list_clauses(rest, lineno, entity, base_of):
+    """`list <Entity>`'s trailing tokens (issue #116, D1) -> `(predicate,
+    order, limit)`, each `None` when absent. Called only when `rest` is
+    non-empty — the empty case is the RFC-0025 regression path and never
+    reaches here (`_derive_effect` returns the unchanged 4-key node for it).
+    """
+    if rest[0] != "where":
+        raise LowerError(
+            "line %d: `list` accepts `where <cond> [order by <field> "
+            "[desc]] [limit <N>]`, got %r" % (lineno, " ".join(rest)))
+    boundary = len(rest)
+    for i in range(1, len(rest)):
+        if rest[i] in ("order", "limit"):
+            boundary = i
+            break
+    cond_tokens = rest[1:boundary]
+    if not cond_tokens:
+        raise LowerError("line %d: `where` needs a condition" % lineno)
+    predicate = _parse_predicate_terms(" ".join(cond_tokens), lineno, entity, base_of)
+    tail = rest[boundary:]
+
+    order = None
+    if tail[:1] == ["order"]:
+        if len(tail) < 3 or tail[1] != "by":
+            raise LowerError(
+                "line %d: `order` must be `order by <field> [desc]`" % lineno)
+        field_name = tail[2]
+        consumed = 3
+        desc = False
+        if len(tail) > 3 and tail[3] == "desc":
+            desc = True
+            consumed = 4
+        order = _parse_list_order_field(field_name, desc, lineno, entity, base_of)
+        tail = tail[consumed:]
+
+    limit = None
+    if tail[:1] == ["limit"]:
+        if len(tail) < 2:
+            raise LowerError(
+                "line %d: `limit` needs exactly one integer argument" % lineno)
+        if not tail[1].isdigit():
+            raise LowerError(
+                "line %d: `limit` needs a positive integer, got %r"
+                % (lineno, tail[1]))
+        n = int(tail[1])
+        if n < 1:
+            raise LowerError(
+                "line %d: `limit` must be at least 1, got %d" % (lineno, n))
+        limit = n
+        tail = tail[2:]
+
+    if tail:
+        raise LowerError(
+            "line %d: unexpected trailing tokens %r after `list` clauses "
+            "(clause order is where -> order by -> limit)"
+            % (lineno, " ".join(tail)))
+
+    return predicate, order, limit
+
+
+def _parse_predicate_terms(cond_text, lineno, entity, base_of):
+    """`where`'s condition text -> a conjunction list of `{field, op,
+    value}` dicts (issue #116, D4) — a structured node, not the raw text,
+    so the field name reaching the driver is always one the compiler
+    already whitelisted (RFC-0016's injection principle applied to `list`).
+
+    Reuses `condition.parse_condition` verbatim (D1: no new parser) — this
+    function only judges what that parser already produced, against the
+    entity being listed.
+    """
+    from .condition import And, ConditionError, Presence, Ref, parse_condition, value_to_string
+
+    try:
+        cond = parse_condition(cond_text)
+    except ConditionError as e:
+        raise LowerError("line %d: %s" % (lineno, e))
+    if isinstance(cond, Presence):
+        raise LowerError(
+            "line %d: `list where` supports comparisons only (no `exists`/"
+            "`missing` presence checks), got %r" % (lineno, cond_text))
+    terms = cond.terms if isinstance(cond, And) else (cond,)
+
+    fields_by_name = {f["name"]: f for f in entity["fields"]}
+    result = []
+    for term in terms:
+        left = term.left
+        if not isinstance(left, Ref) or left.namespace is not None:
+            raise LowerError(
+                "line %d: the left side of a `list where` comparison must "
+                "be a bare field of %s, got %r"
+                % (lineno, entity["name"], value_to_string(left)))
+        field = fields_by_name.get(left.field)
+        if field is None:
+            raise LowerError(
+                "line %d: entity %s has no field %r (candidates: %s)"
+                % (lineno, entity["name"], left.field,
+                   ", ".join(sorted(fields_by_name)) or "none"))
+        base = base_of.get(field["type"], field["type"])
+        if term.op in _LIST_ORDER_COMPARATORS:
+            if base not in EXPOSE_SORT_BASES:
+                raise LowerError(
+                    "line %d: `list where` order comparison (%s) needs an "
+                    "Integer or DateTime field, but %s.%s is base %r"
+                    % (lineno, term.op, entity["name"], left.field, base))
+        elif base not in EXPOSE_SORT_BASES:
+            # D2: equality across any type, but only between two references
+            # of the same declared base — there is no literal syntax for a
+            # UUID/Text/Email value in this grammar (`condition.py`'s
+            # `Operand` is `Reference | Integer | Duration`), so a Lit or
+            # Arith on the right can never be the same type as a non-
+            # scalar/instant field. The same-base-type check itself needs
+            # the workflow's binding scope (which entity a qualified
+            # reference names) — deferred to `_check_list_predicate`, the
+            # post-pass every other guard-shaped check already runs in.
+            if not isinstance(term.right, Ref):
+                raise LowerError(
+                    "line %d: %s.%s is %s — equality against it needs a "
+                    "reference (a single-row binding field or "
+                    "`input.%s`), not a literal or arithmetic expression"
+                    % (lineno, entity["name"], left.field, base, left.field))
+        result.append({"field": left.field, "op": term.op,
+                       "value": value_to_string(term.right)})
+    return result
+
+
+def _parse_list_order_field(field_name, desc, lineno, entity, base_of):
+    """`order by <field> [desc]` (issue #116, D7) — reuses `expose list`'s
+    sort-field check (`EXPOSE_SORT_BASES`) verbatim, plus a candidates list
+    on an unknown field (issue #116 DoD item 5)."""
+    fields_by_name = {f["name"]: f for f in entity["fields"]}
+    field = fields_by_name.get(field_name)
+    if field is None:
+        raise LowerError(
+            "line %d: entity %s has no field %r (candidates: %s)"
+            % (lineno, entity["name"], field_name,
+               ", ".join(sorted(fields_by_name)) or "none"))
+    base = base_of.get(field["type"], field["type"])
+    if base not in EXPOSE_SORT_BASES:
+        raise LowerError(
+            "line %d: `order by` field must be Integer or DateTime "
+            "(allowed: %s), but %s.%s is base %r"
+            % (lineno, ", ".join(EXPOSE_SORT_BASES), entity["name"],
+               field_name, base))
+    return {"field": field_name, "desc": desc}
+
+
 def _number(tok):
     """RFC-0002 `Number` -> int when it has no fraction, else float.
 
@@ -1124,7 +1281,7 @@ def lower(decls, module_name):
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, registry, mod.diagnostics, http_caps)
+        ctx = _WfContext(wid, registry, mod.diagnostics, http_caps, base_of)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
                       line=d.lineno))
@@ -1165,10 +1322,17 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, registry, diagnostics, http_caps=None):
+    def __init__(self, wid, registry, diagnostics, http_caps=None, base_of=None):
         self.wid = wid
         self.registry = registry
         self.diagnostics = diagnostics
+        # issue #116: `list <Entity> where ...`'s left-side field validation
+        # needs the declared-type -> base map to apply the same Integer/
+        # DateTime (order comparisons) and any-type (equality) rules
+        # `_parse_expose_line`/guards already apply — computed once at
+        # document scope (module-level, before any workflow is lowered) and
+        # threaded down here rather than re-derived per step.
+        self.base_of = base_of or {}
         # name -> {"method", "auth", "retry", "breaker", "path"} for every
         # declared `capability http` (issues #101, #109). `_derive_effect`'s
         # NetworkCall branch reads both membership (a target naming no entry
@@ -1257,7 +1421,8 @@ class _WfContext:
                                      diagnostics=self.diagnostics,
                                      step_text=" ".join(line.tokens),
                                      http_caps=self.http_caps,
-                                     verb_sink=self.network_verbs)
+                                     verb_sink=self.network_verbs,
+                                     base_of=self.base_of)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -1760,8 +1925,12 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                     if child is None:
                         continue
                     if child["kind"] == "RepositoryCall":
-                        if not guarded and child.get("operation") == "query":
-                            listed.add(child["entity"])
+                        if child.get("operation") == "query":
+                            if not guarded:
+                                listed.add(child["entity"])
+                            if child.get("predicate"):
+                                _check_list_predicate(child, registry, scope,
+                                                     workflow_name)
                         continue
                     if child["kind"] == "Response":
                         text = "respond %s" % " ".join(child["refs"])
@@ -1816,6 +1985,57 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                 visit(node.get("children") or [], guarded=guarded)
 
     visit(top_ids or [])
+
+
+def _check_list_predicate(node, registry, scope, workflow_name):
+    """issue #116, D1/D2: a `list where` predicate's RIGHT side, judged the
+    same way a guard condition's operands are — reusing `scope` rather than
+    a second lookup, so "which binding names a declared entity, read by
+    this workflow" is answered once, the same way, everywhere.
+
+    The LEFT side (which field, which base type) was already validated at
+    lowering time (`_parse_predicate_terms`, when the entity's own field
+    list was in hand with no scope needed); this is the half that needs the
+    workflow's binding state (`by_binding`/`read_entities`), so it runs here,
+    in the same post-pass every other guard-shaped check already runs in.
+    """
+    from .condition import Ref, parse_value
+
+    entity = registry[node["entity"]]
+    fields_by_name = {f["name"]: f for f in entity["fields"]}
+    for term in node["predicate"]:
+        field = fields_by_name[term["field"]]
+        left_base = scope.base_of.get(field["type"], field["type"])
+        right_value = parse_value(term["value"])
+        text = "list %s where %s %s %s" % (
+            entity["name"], term["field"], term["op"], term["value"])
+        if left_base in EXPOSE_SORT_BASES:
+            # Integer/DateTime: the same scalar/instant dimension check a
+            # guard's `_check_dimensions` applies, unchanged by this issue.
+            left_dim = "instant" if left_base == "DateTime" else "scalar"
+            right_dim = _value_dimension(right_value, scope, text)
+            if right_dim is not None and right_dim != left_dim:
+                raise LowerError(
+                    "workflow %s: %r compares %s (%s) with %s (%s) — "
+                    "RFC-0016 compares like with like"
+                    % (workflow_name, text, term["field"], left_dim,
+                       _describe(right_value), right_dim))
+        else:
+            # D2: any-type equality — `_parse_predicate_terms` already
+            # refused a Lit/Arith here, so `right_value` is a `Ref`.
+            # Reading the field it names (as opposed to plain dimension
+            # checking) is the part that needs `scope`.
+            right_field = scope.resolve_field(right_value.name, text,
+                                             subject="list where")
+            if right_field is not None:
+                right_base = scope.base_of.get(right_field["type"],
+                                              right_field["type"])
+                if right_base != left_base:
+                    raise LowerError(
+                        "workflow %s: %r compares %s (%s) with %s (%s) — "
+                        "equality needs the same declared type on both sides"
+                        % (workflow_name, text, term["field"], left_base,
+                           right_value.name, right_base))
 
 
 def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
@@ -2286,7 +2506,7 @@ class _Scope:
 
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                    diagnostics=None, step_text=None, http_caps=None,
-                   verb_sink=None):
+                   verb_sink=None, base_of=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
@@ -2365,6 +2585,16 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
             raise LowerError(
                 "line %d: create accepts either no trailing words or "
                 "'as <name>', got %r" % (lineno, tuple(rest)))
+        if fixed["operation"] == "query" and rest:
+            # issue #116, D1: `list <Entity> where <cond> [order by <field>
+            # [desc]] [limit <N>]`. `_node` drops a `None`-valued kwarg, so
+            # the empty-`rest` case just below stays the unchanged 4-key
+            # node RFC-0025 already emits — the "predicate=None path is
+            # byte-identical" regression this issue's constraints require.
+            predicate, order, limit = _parse_list_clauses(
+                rest, lineno, ent, base_of or {})
+            return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
+                        predicate=predicate, order=order, limit=limit, line=lineno)
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 

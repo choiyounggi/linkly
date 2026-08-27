@@ -149,6 +149,108 @@ class RepositoryDriverTCK:
 
         self.assertEqual([row["id"] for row in rows], ["0", "1", "2"])
 
+    # -- query with predicate/order/limit (issue #116, D5/D6/D10) -----------
+    #
+    # Optional, the same way the optimistic-version conflict above is: a
+    # driver opts in by setting `supports_predicate = True` (`RepositoryDriver`'s
+    # own docstring); one that has not is never called this way by
+    # `interp.Interpreter` (it falls back to a plain `query(entity_id)`,
+    # filtered in Python instead), so there is nothing here for it to satisfy.
+
+    def _skip_unless_predicate_supported(self):
+        if not getattr(self.driver, "supports_predicate", False):
+            self.skipTest(
+                "driver does not declare supports_predicate — "
+                "query()'s predicate/order/limit are never pushed down to it")
+
+    def test_query_without_predicate_order_or_limit_is_the_pre_116_call(self):
+        """The regression case every driver must keep true regardless of
+        `supports_predicate`: three `None`s behaves exactly like the old
+        one-argument `query(entity_id)`."""
+        self.driver.seed({"widget": {"w1": {"id": "w1", "n": 1}}})
+
+        self.assertEqual(
+            self.driver.query("widget", predicate=None, order=None, limit=None),
+            self.driver.query("widget"))
+
+    def test_predicate_filters_rows(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 1}, "w2": {"id": "w2", "n": 2},
+        }})
+
+        rows = self.driver.query("widget", predicate=[("n", ">", 1)])
+
+        self.assertEqual([row["id"] for row in rows], ["w2"])
+
+    def test_predicate_matching_no_row_is_an_empty_list(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {"w1": {"id": "w1", "n": 1}}})
+
+        self.assertEqual(
+            self.driver.query("widget", predicate=[("n", ">", 100)]), [])
+
+    def test_predicate_conjunction_requires_every_term(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 5}, "w2": {"id": "w2", "n": 15},
+            "w3": {"id": "w3", "n": 25},
+        }})
+
+        rows = self.driver.query(
+            "widget", predicate=[("n", ">", 10), ("n", "<", 20)])
+
+        self.assertEqual([row["id"] for row in rows], ["w2"])
+
+    def test_predicate_equality_on_a_text_value(self):
+        """D2's motivating case: equality pushed down for a non-numeric
+        field, not just Integer/DateTime."""
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "status": "open"},
+            "w2": {"id": "w2", "status": "closed"},
+        }})
+
+        rows = self.driver.query("widget", predicate=[("status", "==", "open")])
+
+        self.assertEqual([row["id"] for row in rows], ["w1"])
+
+    def test_order_ascending_and_descending(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 30}, "w2": {"id": "w2", "n": 10},
+            "w3": {"id": "w3", "n": 20},
+        }})
+
+        asc = self.driver.query("widget", order=("n", False))
+        desc = self.driver.query("widget", order=("n", True))
+
+        self.assertEqual([row["id"] for row in asc], ["w2", "w3", "w1"])
+        self.assertEqual([row["id"] for row in desc], ["w1", "w3", "w2"])
+
+    def test_limit_caps_the_result(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 1}, "w2": {"id": "w2", "n": 2},
+            "w3": {"id": "w3", "n": 3},
+        }})
+
+        rows = self.driver.query("widget", order=("n", False), limit=2)
+
+        self.assertEqual([row["id"] for row in rows], ["w1", "w2"])
+
+    def test_predicate_order_and_limit_compose(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 5}, "w2": {"id": "w2", "n": 30},
+            "w3": {"id": "w3", "n": 20}, "w4": {"id": "w4", "n": 10},
+        }})
+
+        rows = self.driver.query("widget", predicate=[("n", ">", 5)],
+                                 order=("n", True), limit=2)
+
+        self.assertEqual([row["id"] for row in rows], ["w2", "w3"])
+
     # -- persist -------------------------------------------------------------
 
     def test_persist_flushes_a_row_mutated_after_read(self):
