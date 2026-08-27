@@ -21,6 +21,7 @@ normative in docs/serving.md.
 
 import base64
 import binascii
+import hashlib
 import http.client
 import json
 import os
@@ -334,6 +335,30 @@ def _entity_view(document, entity_node):
                    .get("base", f.get("type")))
              for f in entity_node.get("fields", [])]
     return dict(entity_node, fields=fields)
+
+
+def _input_digest(masked_payload):
+    """issue #111, D6: a stable fingerprint over the MASKED payload — "is
+    this the same input?", not the input itself. Sorted keys, no whitespace,
+    UTF-8: an RFC 8785-style canonical JSON, the minimal approximation this
+    channel needs (a full canonical-JSON implementation is not RFC 8785's
+    number formatting or Unicode-normalization rules, both moot here since
+    `payload` is already-parsed JSON with no float/Unicode edge the request
+    body did not already carry)."""
+    canonical = json.dumps(masked_payload, sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _effect_counts(result):
+    """issue #111, D6: `result["steps"][].effects` (already `Annotation`-
+    filtered, issue #111 D5) tallied by kind — `{"RepositoryCall": 3,
+    "NetworkCall": 1, ...}` — the canonical line's `effects` field."""
+    counts = {}
+    for step in result.get("steps", []):
+        for kind in step.get("effects", []):
+            counts[kind] = counts.get(kind, 0) + 1
+    return counts
 
 
 def encode_cursor(value, key):
@@ -711,7 +736,8 @@ class LnplWsgiApp:
                  token_provider=None, network=None, clock=None,
                  log_format="text", exporter=None, trust_incoming_trace=False,
                  jwt_secret_env=None, metrics_registry=None,
-                 idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS):
+                 idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
+                 capture_on_failure=False):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
@@ -773,6 +799,12 @@ class LnplWsgiApp:
         # no claim could ever outlive the request that made it (D11); warn
         # once at startup rather than staying silently inert.
         self.idempotency_ttl_ms = idempotency_ttl_ms
+        # issue #111, D7: off by default. On, `_respond` adds the masked
+        # input payload to `log_sink` only for a run that ends failed/500 —
+        # a successful run never carries its payload into the canonical
+        # line, so turning this on does not make every request's log line
+        # dominate on cost the way an unconditional payload would.
+        self.capture_on_failure = capture_on_failure
         if repository_factory is None:
             print(
                 "lnpl serve: Idempotency-Key support is disabled -- the "
@@ -858,22 +890,40 @@ class LnplWsgiApp:
             captured["status"] = int(status_line.split(" ", 1)[0])
             return start_response(status_line, headers, exc_info)
 
-        if method == "POST":
-            body = self._do_post(environ, capture_start_response, path_info,
-                                 raw_path, log_sink=log_sink, trace_ctx=trace_ctx)
-        elif method == "GET":
-            body = self._do_get(environ, capture_start_response, path_info,
-                               query, raw_path)
-        else:
-            body = self._reject_non_post(capture_start_response, path_info, raw_path)
+        # issue #111, D8: Stripe's `ensure`-block guarantee, extended to the
+        # non-SSE path. `_respond` already turns a `run_workflow` escape into
+        # a 500 response (never re-raising), so the gap this closes is
+        # earlier/wider: anything that raises before a body is even decided
+        # — `_do_post`/`_do_get`/`_reject_non_post` themselves, or routing/
+        # auth/body-parsing inside them — used to skip `_emit_request_log`
+        # entirely, the one non-SSE path with no `finally`. `logged` tracks
+        # whether either normal branch below already emitted (directly, or
+        # by handing off to `_log_sse_then`'s OWN try/finally) so this
+        # `finally` fires exactly once per request, never twice.
+        logged = False
+        try:
+            if method == "POST":
+                body = self._do_post(environ, capture_start_response, path_info,
+                                     raw_path, log_sink=log_sink, trace_ctx=trace_ctx)
+            elif method == "GET":
+                body = self._do_get(environ, capture_start_response, path_info,
+                                   query, raw_path)
+            else:
+                body = self._reject_non_post(capture_start_response, path_info, raw_path)
 
-        if not isinstance(body, list):
-            # The SSE generator: log once the stream actually ends.
-            return self._log_sse_then(body, method, path_info, correlation_id,
-                                      start_t, captured, log_sink)
-        self._emit_request_log(method, path_info, correlation_id, start_t,
-                               captured, log_sink)
-        return body
+            if not isinstance(body, list):
+                # The SSE generator: log once the stream actually ends.
+                logged = True
+                return self._log_sse_then(body, method, path_info, correlation_id,
+                                          start_t, captured, log_sink)
+            self._emit_request_log(method, path_info, correlation_id, start_t,
+                                   captured, log_sink)
+            logged = True
+            return body
+        finally:
+            if not logged:
+                self._emit_request_log(method, path_info, correlation_id,
+                                       start_t, captured, log_sink)
 
     def _emit_request_log(self, method, path, correlation_id, start_t,
                           captured, log_sink):
@@ -900,6 +950,26 @@ class LnplWsgiApp:
         span_id = log_sink.get("span_id")
         if span_id is not None:
             line["span_id"] = span_id
+        # issue #111, D6: `notes`/`effects`/`input_digest` widen the
+        # canonical line the same way `trace_id`/`span_id` did (#107/#123)
+        # — appended only when present, so a payload-less route (GET, or a
+        # request that never reached `_respond`) omits them rather than
+        # carrying an empty/null placeholder.
+        notes = log_sink.get("notes")
+        if notes:
+            line["notes"] = notes
+        effects = log_sink.get("effects")
+        if effects:
+            line["effects"] = effects
+        input_digest = log_sink.get("input_digest")
+        if input_digest is not None:
+            line["input_digest"] = input_digest
+        # issue #111, D7: `--capture-on-failure` — set on `log_sink` only
+        # when the flag is on AND this run ended failed/500 (`_respond`
+        # decides which); a successful run's line never carries this key.
+        captured_input = log_sink.get("input")
+        if captured_input is not None:
+            line["input"] = captured_input
         print(json.dumps(line, ensure_ascii=False), file=sys.stderr)
 
     def _log_sse_then(self, generator, method, path, correlation_id, start_t,
@@ -1463,6 +1533,13 @@ class LnplWsgiApp:
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
                              network=self.network, claims=claims)
+        # issue #111, D6: computed once, reused for the canonical line's
+        # `input_digest` on both the escape path below and the normal
+        # completion path — the same masking chokepoint the workflow-start
+        # trace log already uses (`Interpreter._entity_node`), so this is a
+        # third call site of an EXISTING rule, not a second one (issue #43).
+        masked_payload = mask_payload(payload, interp._entity_node())
+        input_digest = _input_digest(masked_payload)
         # issue #107: resolved exactly once per request, right where the
         # Trace this request will use is built — trace_id/span_id/trace_link
         # are a runtime-decided identity, D3's correlation_id stays separate
@@ -1503,7 +1580,10 @@ class LnplWsgiApp:
             if log_sink is not None:                                 # issue #78
                 log_sink.update(correlation_id=correlation_id, workflow=workflow_id,
                                 skipped=[], diagnostics=to_records(interp.diagnostics),
-                                trace_id=interp.trace.trace_id, span_id=interp.trace.span_id)
+                                trace_id=interp.trace.trace_id, span_id=interp.trace.span_id,
+                                input_digest=input_digest)
+                if self.capture_on_failure:                          # issue #111, D7
+                    log_sink["input"] = masked_payload
             if self.exporter is not None:                            # issue #78, D3
                 self.exporter.export(interp.trace.to_dict())
             return _json_response(start_response, 500,
@@ -1525,7 +1605,11 @@ class LnplWsgiApp:
             log_sink.update(correlation_id=result["correlation_id"],
                             workflow=workflow_id, skipped=result["skipped"],
                             diagnostics=to_records(interp.diagnostics),
-                            trace_id=interp.trace.trace_id, span_id=interp.trace.span_id)
+                            trace_id=interp.trace.trace_id, span_id=interp.trace.span_id,
+                            input_digest=input_digest, notes=result.get("notes", []),
+                            effects=_effect_counts(result))
+            if self.capture_on_failure and result["status"] != "completed":  # D7
+                log_sink["input"] = masked_payload
         if self.exporter is not None:                                 # issue #78, D3
             self.exporter.export(interp.trace.to_dict())
         if status == 200:                                            # M9
@@ -1551,7 +1635,8 @@ class LnplWsgiApp:
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
                   network=None, clock=None, log_format="text", exporter=None,
                   trust_incoming_trace=False, jwt_secret_env=None, metrics=False,
-                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS):
+                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
+                  capture_on_failure=False):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -1598,7 +1683,8 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                        trust_incoming_trace=trust_incoming_trace,
                        jwt_secret_env=jwt_secret_env,
                        metrics_registry=MetricsRegistry() if metrics else None,
-                       idempotency_ttl_ms=idempotency_ttl_ms)
+                       idempotency_ttl_ms=idempotency_ttl_ms,
+                       capture_on_failure=capture_on_failure)
 
 
 # --------------------------------------------------------------------------

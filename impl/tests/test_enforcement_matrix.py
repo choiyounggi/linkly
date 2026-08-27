@@ -373,8 +373,9 @@ class TestVerbCrossReference(unittest.TestCase):
     def test_the_verb_table_matches_the_lexicon(self):
         # 16 through RFC-0014; `set` (RFC-0015) is the seventeenth, `list`
         # (RFC-0025) the eighteenth; `format` (issue #94) is the nineteenth;
-        # `respond` (issue #96) is the twentieth.
-        self.assertEqual(len(VERB_LEXICON), 20)
+        # `respond` (issue #96) is the twentieth; `note` (issue #111) is the
+        # twenty-first.
+        self.assertEqual(len(VERB_LEXICON), 21)
         self.assertEqual(verb_reference_errors(self.markdown), [])
 
     def test_the_three_golden_verbs_are_named_and_still_outside_the_lexicon(self):

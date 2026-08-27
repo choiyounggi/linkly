@@ -664,6 +664,56 @@ class TestNoOpStepFailsTheSpec(unittest.TestCase):
         self.assertEqual(failed, 0, lines)
 
 
+# ---- issue #111, D5: `note` must not move `effects <N>`/`effects complete` -
+
+# Same shape as SHOP_WITH_NOOP, but with a `note` step instead of an unknown
+# verb: `note` DOES derive a node (`Annotation`), unlike `ponder`, which
+# derives nothing at all — so this is a different question than
+# TestNoOpStepFailsTheSpec's. `Annotation` is filtered out of
+# `steps[].effects` (issue #111, D5; the same treatment `Response` already
+# gets at compile time — issue #96 — now applied to interp's runtime effects
+# tally too), so it must move neither the `effects <N>` total nor trip
+# `effects complete` any more than a `respond` step would.
+SHOP_WITH_NOTE = SHOP.replace(
+    "    find product\n",
+    "    find product\n    note \"stock-was-{}\" with product.stock\n")
+
+
+class TestNoteExcludedFromEffectsCount(unittest.TestCase):
+    """DoD 5: a `note` step is not one of the effect kinds `effects <N>`
+    counts — `note` is not an Effect by design (issue #111, D2), the same
+    judgment already made for `respond`/`Response`."""
+
+    def test_a_note_step_does_not_inflate_the_effects_total(self):
+        # find(RepositoryCall) + create(RepositoryCall) + emit(EventEmit) = 3,
+        # the SAME total SHOP's own baseline asserts (TestEffectsExpectation) —
+        # the note step contributes 0.
+        passed, failed, lines = run_shop_src(SHOP_WITH_NOTE, ["valid product"],
+                                             ["effects 3"])
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 1, lines)
+
+    def test_a_wrong_total_still_fails_with_the_note_present(self):
+        # Control: the note's presence must not make a wrong count pass either.
+        passed, failed, lines = run_shop_src(SHOP_WITH_NOTE, ["valid product"],
+                                             ["effects 4"])
+        self.assertEqual(failed, 1, lines)
+
+    def test_a_note_only_step_still_trips_effects_complete(self):
+        # Boundary, and NOT a bug: `note`'s own step correctly has an empty
+        # (post-filter) effects list — a note genuinely performs no Effect,
+        # so `effects complete` ("every step performed an Effect") is right
+        # to flag it, exactly as it flags a genuine no-op
+        # (TestNoOpStepFailsTheSpec's `ponder`). D5 narrows only `effects
+        # <N>`'s TOTAL, not this separate, correctly-still-strict assertion —
+        # an author who writes a note-only step and asserts `effects
+        # complete` gets an honest answer, not a blind spot.
+        passed, failed, lines = run_shop_src(SHOP_WITH_NOTE, ["valid product"],
+                                             ["effects complete"])
+        self.assertEqual(failed, 1, lines)
+        self.assertTrue(any("note " in l for l in lines), lines)
+
+
 class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
     """`lnpl spec` reports compile diagnostics like `compile` and `run` do.
 

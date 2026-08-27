@@ -54,6 +54,7 @@ CODES = (
     "stored-row-shape-mismatch",    # #85  a read/find row is missing a declared field, or has the wrong type
     "rollback-escapes-network",     # #112 `policy rollback`'s service has a workflow step whose NetworkCall sits outside the transaction boundary
     "retry-on-non-idempotent",      # #109 `capability http` declares `method post`/`patch` together with `retry`
+    "note-cap-exceeded",            # #111 a workflow has more than NOTE_CAP `note` annotations
 )
 
 # code -> grade (#52). One question decides every row:
@@ -127,6 +128,9 @@ SEVERITY_OF = {
     # to an idempotent method, or pairing it with an idempotency key (#113)
     # each remove this, so `warning` (same test as `unknown-verb`).
     "retry-on-non-idempotent":   "warning",
+    # #111: trimming `note`s below the cap removes this — same test as
+    # `unknown-verb`; the workflow still compiles and runs either way.
+    "note-cap-exceeded":         "warning",
 }
 
 # How the runtime treats a declaration.
