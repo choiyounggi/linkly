@@ -8,6 +8,9 @@ and the response budget is measured and reported but never blocks a run.
 compensate at" reason — issue #79/RFC-0032 closed that gap (workflow
 execution is now an implicit transaction boundary), so `rollback` moved to
 the enforced list beside `retry`/`timeout` and no longer reports here.
+`policy parallel` made the same move for issue #108/RFC-0041 (a `parallel`
+block's steps now run concurrently, block-scoped and capped) — POLICY_NAMES
+has no unenforced member left.
 
 That gap is issue #25 and the roadmap. Making it *visible* is this file's
 subject, so what is pinned here is the reporting — including the negative half,
@@ -310,7 +313,7 @@ class TestBoundaries(unittest.TestCase):
         self.assertEqual(sorted(d.where for d in diags),
                          ["security.billing", "security.login"])
 
-    def test_an_unenforced_policy_declaration_is_reported_too(self):
+    def test_parallel_is_no_longer_reported_now_that_it_is_enforced(self):
         # `encrypt password` used to be this test's example of an
         # ARGUMENT_MECHANISMS entry whose diagnostic subject drops the
         # argument ("security encrypt", not "security encrypt password").
@@ -325,20 +328,28 @@ class TestBoundaries(unittest.TestCase):
         # and issue #127 leaves it undemonstrated rather than reconstructed
         # with test-only surface area.
         #
-        # What this test preserves instead: the unenforced-declaration
+        # What this test preserved instead: the unenforced-declaration
         # reporting the two tests above already pin, exercised on a
-        # `policy` mechanism rather than `security` — neither prior case in
-        # this class used anything but `security jwt`.
+        # `policy` mechanism rather than `security`, using `policy parallel`
+        # as the example. issue #108/RFC-0041 then gave `parallel` real
+        # enforcement too (interp.py runs a `parallel` block's steps
+        # concurrently, capped by the declared value) — the same "no longer
+        # reported" turn `rollback` took above (issue #79/RFC-0032). Every
+        # POLICY_NAMES member is enforced now, so this class has no
+        # unenforced-`policy`-example left to give; what remains worth
+        # pinning is the negative check.
         source = """
 entity Report
     field
         id UUID
 service ReportService
     policy
-        parallel
+        parallel 3
+workflow Report
+    validate input
 """
         diags = declaration_diagnostics(compile_module(source))
-        self.assertEqual([d.subject for d in diags], ["policy parallel"])
+        self.assertEqual(diags, [])
 
 
 class TestAuthorizationIsRecordedNeverChecked(unittest.TestCase):

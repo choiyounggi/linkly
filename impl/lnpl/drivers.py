@@ -540,7 +540,15 @@ class SqliteRepositoryDriver(RepositoryDriver):
         self._in_transaction = False
         self._sql_transaction_open = False
         try:
-            self._conn = sqlite3.connect(self.path)
+            # issue #108 D4: a `parallel` block's steps run this driver from
+            # worker threads. The default `check_same_thread=True` would
+            # raise on any call from a thread other than the one that opened
+            # the connection; `False` lifts that, and `interp._state_lock`
+            # (held around every repository/cache call, not just this one) is
+            # what actually serializes access — RFC-0032's one-transaction-
+            # per-execution semantics are unchanged, only the thread that is
+            # allowed to reach this connection widens.
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
             self._conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
             if is_new:
                 self._conn.execute("PRAGMA journal_mode = WAL")

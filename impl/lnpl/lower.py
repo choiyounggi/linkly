@@ -629,6 +629,25 @@ def _parse_policy_line(tokens, lineno):
         if len(tokens) != 2 or not is_duration(tokens[1]):
             raise LowerError("line %d: `timeout` needs a duration (e.g. 3s)" % lineno)
         return {"name": "timeout", "value": tokens[1]}
+    if head == "parallel":
+        # issue #108 D2-r1: the bare flag form stays valid (cap falls back to
+        # the block's own step count at run time — interp.py); an optional
+        # integer argument sets an explicit concurrency cap, the same arity
+        # `retry` above already has.
+        if len(tokens) == 1:
+            return {"name": "parallel"}
+        if (len(tokens) != 2 or not tokens[1].isdigit()
+                or int(tokens[1]) < 1):
+            # A cap of 0 workers can never run a block's steps at all — not
+            # a smaller concurrency limit, a stuck one — so it is refused
+            # here rather than silently falling back to "no cap" the way
+            # `con["parallel_cap"] or len(steps)` (interp.py) treats any
+            # falsy value. Refusing it at the source is what keeps this
+            # RFC-0041/RFC-0003's "N is never exceeded" claim actually true
+            # for every value the grammar accepts.
+            raise LowerError("line %d: `parallel` takes an optional positive "
+                             "integer cap (e.g. `parallel 3`)" % lineno)
+        return {"name": "parallel", "value": int(tokens[1])}
     if len(tokens) != 1:
         raise LowerError("line %d: `%s` takes no argument" % (lineno, head))
     return {"name": head}
@@ -1357,6 +1376,7 @@ def lower(decls, module_name):
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
         _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
                            mod.diagnostics, d.name)
+        _check_parallel_write_conflict(ctx.emitted, registry, d.name)
         _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
                                      d.name, mod.diagnostics)
         _check_derived_never_assigned(ctx.emitted, registry, d.name,
@@ -1594,6 +1614,73 @@ def _touched_entities(step_node, by_id):
             if child.get("target"):
                 found.add(child["target"])
     return found
+
+
+# The write family D5 cares about — a step here changes a stored row, so two
+# of them racing inside one `parallel` block (no order to resolve who wins)
+# is the non-determinism the check refuses. `list`/`read`/`find`/etc. are
+# absent on purpose: two readers, or a reader beside a writer, touch nothing
+# that depends on which one ran first.
+WRITE_OPS = ("create", "update", "delete")
+
+
+def _written_entity(step_node, by_id):
+    """The entity id this WorkflowStep writes, or `None` if it writes none.
+
+    Narrower than `_touched_entities`: only the write family matters here
+    (`_touched_entities`'s own docstring already draws this line for reads).
+    """
+    for child_id in step_node.get("children") or []:
+        child = by_id.get(child_id)
+        if child is None:
+            continue
+        if child["kind"] == "RepositoryCall" and child.get("operation") in WRITE_OPS:
+            return child.get("entity")
+    return None
+
+
+def _check_parallel_write_conflict(emitted, registry, workflow_name):
+    """issue #108 D5: two steps writing the same entity inside one `parallel`
+    block is a compile error, not a diagnostic.
+
+    RFC-0012's execution-scope binding is order-dependent (a later step reads
+    what an earlier one bound), and a `parallel` block runs its steps
+    concurrently — there is no "earlier". Two writers racing on the same
+    entity would make the row that survives non-deterministic between runs,
+    which is a correctness bug neither step shows on its own (each parses and
+    lowers fine alone). `LowerError`, not a diagnostic: non-determinism is not
+    something a caller can accept and route around the way `unenforced` is.
+
+    Concurrency blocks cannot nest and cannot be guarded (RFC-0002's
+    `parallel` grammar), so a flat scan of each block's direct children is
+    exhaustive — no recursion into nested blocks is possible.
+    """
+    by_id = {node["id"]: node for node in emitted}
+    for node in emitted:
+        if node["kind"] != "Concurrency":
+            continue
+        writers = {}
+        for child_id in node.get("children") or []:
+            step = by_id.get(child_id)
+            if step is None or step["kind"] != "WorkflowStep":
+                continue
+            entity = _written_entity(step, by_id)
+            if entity is None:
+                continue
+            writers.setdefault(entity, []).append(step)
+        for entity_id, steps in writers.items():
+            if len(steps) < 2:
+                continue
+            lines = sorted(s.get("line") for s in steps if s.get("line") is not None)
+            entity_name = registry.get(entity_id, {}).get("name", entity_id)
+            raise LowerError(
+                "workflow %s: `parallel` block has %d steps writing %s at "
+                "lines %s — same-entity writes inside one `parallel` block "
+                "are non-deterministic (RFC-0012 binding is order-dependent, "
+                "and a `parallel` block has no order); split them across "
+                "separate steps or serialize them outside the block"
+                % (workflow_name, len(steps), entity_name,
+                   ", ".join(str(l) for l in lines)))
 
 
 def _steps_outside_guards(node_id, by_id):
