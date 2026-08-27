@@ -289,6 +289,16 @@ fake 백엔드에서의 `EQUIVALENT`는 계속 성립한다. 다만 그 판정�
 - **`--clock real`도 차동 검증 대상이 아니다** — 비결정적이므로 반복 가능한
   비교를 낼 수 없다. `diff`/`spec` 서브커맨드에는 `--clock` 선택자 자체가
   없다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100).
+- **`list where`의 술어도 미검증 차원이다** (이슈 #116, D9). 술어는 저장소에
+  쌓인 행 **값**으로 RowSet을 거르는데, RFC-0025 §10이 이미 적었듯 RowSet
+  값은 모드 B의 네 관측 클래스(실행 순서+skips, 정책 결과, 관측 신호, 마스킹)
+  중 어느 것도 아니다 — `sum`/`count`의 결과가 애초에 비교 대상이 아니었던
+  것과 같은 이유다. `differential.compare_observations`는 그래서 네 클래스가
+  실제로 일치할 때 `EQUIVALENT`를 계속 낸다(그 판정 자체는 참이다) — 다만
+  술어가 있는 `list`를 리포트가 지나칠 때 한 줄을 더 낸다: `note: N \`list
+  where\` step(s) — filtered RowSet content is not compared (unverified
+  dimension, docs/backends.md §6)`. "일치"가 "걸러진 내용까지 같다"로 읽히지
+  않도록 하는 것이 이 줄의 목적이다.
 
 ## 7. mode B의 관측 표면 (이슈 #55)
 

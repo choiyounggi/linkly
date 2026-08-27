@@ -16,12 +16,12 @@ What is enforced here (RFC-0003 §Policy Enforcement):
 
 import time
 
-from .condition import PAYLOAD_NAMESPACE, guard_condition_text
+from .condition import PAYLOAD_NAMESPACE, guard_condition_text, parse_value
 from .diagnostics import Diagnostics
 from .drivers import (ConflictError, DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
                       FakeNetworkDriver)
 from .refinements import BASE_CATEGORY
-from .repo_policy import binding_name, row_key
+from .repo_policy import apply_predicate, binding_name, row_key
 from .tracecontext import format_traceparent, new_span_id
 from .types import SEMANTIC_TYPES
 
@@ -108,6 +108,14 @@ def open_clock(spec):
 class FakeRepository:
     """Stands in for a `postgres` capability: one keyed table per entity."""
 
+    # issue #116, D5: this reference implementation pushes a `list where`
+    # predicate/order/limit down into its own `query()` (in-memory, via
+    # `repo_policy.apply_predicate`) rather than relying on the interpreter's
+    # over-fetch-then-filter fallback — the same "opt in by declaring the
+    # attribute" idiom `testing.RepositoryDriverTCK` already uses for the
+    # optimistic-version conflict (`observed_version`).
+    supports_predicate = True
+
     def __init__(self, rows=None):
         # {entity_id: {row_key: row}} — copied per instance because `create` now
         # writes into the table, and aliasing the caller's seed dict would carry
@@ -151,7 +159,7 @@ class FakeRepository:
             table[key] = {"id": key}
         return {"affected": 1}
 
-    def query(self, entity_id):
+    def query(self, entity_id, predicate=None, order=None, limit=None):
         """Every row for `entity_id`, row_key ascending — never `None`, empty
         list when the table has none (RFC-0025 §5: an empty RowSet, not an
         absent one). Sorted rather than `dict.values()`: insertion order and
@@ -159,9 +167,17 @@ class FakeRepository:
         `ORDER BY row_key`, so this has to sort the same way to agree with it
         (RFC-0025 §7 — the contract suite's reverse-insertion-order case is
         what a plain `dict.values()` here would fail).
+
+        `predicate`/`order`/`limit` (issue #116, D5) default to `None` —
+        the pre-#116 call shape, byte-identical in behaviour — and, when
+        given, are applied by `repo_policy.apply_predicate` over this same
+        row_key-ordered list, never a second sort strategy.
         """
         table = self.rows.get(entity_id, {})
-        return [row for _key, row in sorted(table.items())]
+        rows = [row for _key, row in sorted(table.items())]
+        if predicate is None and order is None and limit is None:
+            return rows
+        return apply_predicate(rows, predicate, order, limit)
 
     def query_sorted(self, entity_id, field):
         """Every row for `entity_id`, ordered by `field` ascending, row_key
@@ -630,6 +646,55 @@ def resolve_reference(name, payload, bindings, caller=None):
     if not isinstance(row, dict):
         return None
     return row.get(field)
+
+
+def _resolve_predicate_value(value, payload, bindings, caller=None):
+    """A `list where` term's right-side `Value` -> the concrete value a
+    driver compares a stored field against (issue #116, D5).
+
+    `caller` (issue #119) threads through to `resolve_reference` exactly as
+    every other resolver here does, so `list where` can name `caller.
+    subject`/`caller.role` on its right side (`_Scope.resolve_field`
+    already accepts it at compile time) without it silently resolving to
+    `None` — and matching nothing — at run time.
+
+    Deliberately NOT `eval_value`: that function encodes an instant-shaped
+    string operand to epoch-milliseconds (RFC-0016), which would compare a
+    `DateTime` field's raw STORED string (`SqliteRepositoryDriver.query`
+    reads it via `json_extract`, unencoded — the same representation
+    `query_sorted`'s existing `ORDER BY json_extract(...)` already compares
+    raw, issue #99 D7) against an encoded int — a type mismatch on one side
+    only. Resolving both sides in their stored representation keeps a
+    predicate/order comparison consistent with `query_sorted`'s established
+    precedent, and needs no int64-bounds enforcement (RFC-0015's own reason
+    for that check): mode B never compiles a `list where` predicate at all
+    (RFC-0025 §10 — RowSet values are outside its four observation
+    classes), so there is no compiled path for this arithmetic to disagree
+    with.
+    """
+    from .condition import Arith, Lit, Ref
+
+    if isinstance(value, Lit):
+        return value.value
+    if isinstance(value, Ref):
+        return resolve_reference(value.name, payload, bindings, caller)
+    if isinstance(value, Arith):
+        left = _resolve_predicate_value(value.left, payload, bindings, caller)
+        right = _resolve_predicate_value(value.right, payload, bindings, caller)
+        if left is None or right is None:
+            return None
+        if value.op == '+':
+            return left + right
+        if value.op == '-':
+            return left - right
+        if value.op == '*':
+            return left * right
+        # '/' — RFC-0028 §1: truncating toward zero, matching `eval_value`.
+        if right == 0:
+            raise RunError("division by zero in a `list where` predicate")
+        quotient, _ = divmod(abs(left), abs(right))
+        return -quotient if (left < 0) != (right < 0) else quotient
+    raise RunError("unknown predicate value type: %r" % (value,))
 
 
 def _condition_holds(condition, payload, bindings, collector=None, caller=None):
@@ -1341,8 +1406,36 @@ class Interpreter:
             # in ("read", "query")` the old, unused way, for D5's
             # unchanged-signature reason: RFC-0025 §7 kept `execute` as no
             # call site had to be enumerated).
+            #
+            # issue #116, D5: `predicate`/`order`/`limit` all `None` (no
+            # `where`/`order by`/`limit` clause) is the unchanged call —
+            # `self.repo.query(effect["entity"])`, one positional argument,
+            # byte-identical to the pre-#116 shape (this issue's constraint).
+            # Only when one of the three is present does the driver's
+            # `supports_predicate` opt-in decide whether it is pushed down
+            # or applied here, over an over-fetched row_count (D5's "core
+            # over-receives, then post-processes" fallback).
+            predicate = None
+            if effect.get("predicate"):
+                predicate = [(term["field"], term["op"],
+                             _resolve_predicate_value(
+                                 parse_value(term["value"]), payload, bindings,
+                                 self.caller))
+                            for term in effect["predicate"]]
+            order = ((effect["order"]["field"], effect["order"]["desc"])
+                    if effect.get("order") else None)
+            limit = effect.get("limit")
             try:
-                rows = self.repo.query(effect["entity"])
+                if predicate is None and order is None and limit is None:
+                    rows = self.repo.query(effect["entity"])
+                elif getattr(self.repo, "supports_predicate", False):
+                    rows = self.repo.query(effect["entity"], predicate=predicate,
+                                          order=order, limit=limit)
+                else:
+                    rows = self.repo.query(effect["entity"])
+                    rows = apply_predicate(rows, predicate, order, limit)
+                    self.trace.log("INFO", "predicate-not-pushed-down",
+                                   entity=effect["entity"])
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             child.attrs["row_count"] = len(rows)

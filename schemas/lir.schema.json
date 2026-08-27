@@ -942,6 +942,57 @@
         },
         "result": {
           "type": "string"
+        },
+        "predicate": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "op": {
+                "enum": [
+                  "<",
+                  "<=",
+                  ">",
+                  ">=",
+                  "==",
+                  "!="
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "op",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "order": {
+          "type": "object",
+          "properties": {
+            "field": {
+              "type": "string"
+            },
+            "desc": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "field",
+            "desc"
+          ],
+          "additionalProperties": false
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
         }
       },
       "required": [

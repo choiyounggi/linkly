@@ -391,15 +391,62 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     a = observe_mode_a(document, workflow_id, payload, repo_rows, network=network)
     b = observe_mode_b(document, workflow_id, workdir, payload=payload,
                        seeded=resolved)
-    return compare_observations(a, b)
+    return compare_observations(a, b, document, workflow_id)
 
 
-def compare_observations(a, b):
+def _list_where_step_count(document, workflow_id):
+    """How many `list where` steps (issue #116, D9) `workflow_id` reaches.
+
+    A predicate filters the RowSet by stored row VALUES, which RFC-0025 §10
+    already put outside mode B's four observation classes (mode B never
+    computes a value at all — `_render_std` emits only the effect-kind
+    pointer). `EQUIVALENT` from the four classes below is still an honest
+    claim (nothing that differs IS compared), but it says nothing about
+    which rows the predicate kept — that has to be spelled out, or a
+    reader takes "EQUIVALENT" as "the filtered content agrees too," which
+    it was never checked to say (docs/backends.md §6's sqlite-storage
+    caveat, extended to this dimension).
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    workflow = nodes.get(workflow_id)
+    if workflow is None or workflow["kind"] != "Workflow":
+        return 0
+
+    count = 0
+
+    def walk(ids):
+        nonlocal count
+        for node_id in ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            if node["kind"] == "WorkflowStep":
+                for child_id in node.get("children", []):
+                    child = nodes.get(child_id)
+                    if (child is not None and child["kind"] == "RepositoryCall"
+                            and child.get("operation") == "query"
+                            and child.get("predicate")):
+                        count += 1
+            else:
+                walk(node.get("children", []))
+
+    walk(workflow.get("children", []))
+    return count
+
+
+def compare_observations(a, b, document=None, workflow_id=None):
     """RFC-0004's four-class comparison on two observations. (ok, report).
 
     Split out of `verify` (issue #43) so a doctored observation can prove the
     masking class GOES RED when a channel leaks — a detection check that needs
     no toolchain. `verify`'s signature and behaviour are unchanged.
+
+    `document`/`workflow_id` (issue #116, D9) are optional and additive: when
+    given, and the workflow reaches a `list where` step, one extra report
+    line names it as an unverified dimension — the `ok` verdict itself is
+    untouched, since nothing the four classes check actually diverges.
+    Every existing caller (this module's own doctored-observation tests
+    included) passes neither and sees no behaviour change.
     """
     report, ok = [], True
 
@@ -443,4 +490,10 @@ def compare_observations(a, b):
         report.append("FAIL 4/4 masking — leaked marker(s): %s" % leaked)
 
     report.append("differential: %s" % ("EQUIVALENT" if ok else "DIVERGENT"))
+    if document is not None and workflow_id is not None:
+        n = _list_where_step_count(document, workflow_id)
+        if n:
+            report.append(
+                "note: %d `list where` step(s) — filtered RowSet content is "
+                "not compared (unverified dimension, docs/backends.md §6)" % n)
     return ok, report

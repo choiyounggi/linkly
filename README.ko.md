@@ -201,7 +201,7 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 **테스트 2,950여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 38편 — 35편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
+**RFC 39편 — 36편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -254,8 +254,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0035 인가 집행의 유보된 범위](rfcs/0035-authorization-enforcement-deferred-scope.md) | `security role`이 실제로 집행되면서 issue #119가 미결로 남긴 세 질문에 답한다 — 워크플로 수준 `security role`은 지금은 도입하지 않는다(실측된 수요 없음, 재검토 조건 명시), `authorize` 동사는 승격된 `warning` 등급을 유지한 채 최종 운명((a) 선언 연결 대 (b) 폐기)을 실사용 관측으로 미룬다(판단 기준 표 포함), `security encrypt`는 제거를 결정한다("드라이버 의존"은 외부 드라이버가 0건인 공집합에 대한 서술이라 기각) — 마이그레이션 안내를 적고, 실제 제거는 후속 `tech-debt` 이슈로 넘긴다. |
 | [0036 `policy rollback` 선언의 실제 효력 정정](rfcs/0036-policy-rollback-declaration-effect.md) | `policy rollback`의 문서화된 효력을 정정한다 — `run_workflow`는 선언 여부와 무관하게 실패한 모든 실행의 쓰기를 무조건 롤백한다. 선언이 실제로 좌우하는 것은 INFO trace 로그 한 줄과 컴파일 타임 `rollback-escapes-network` 진단(issue #112)뿐이다. `enforced` 상태는 유지한다(보장 자체는 실재한다) — 틀린 것은 설명문뿐이었다. 동작 변경 없음. *0032 §실행 경계·§docs/ENFORCEMENT-MATRIX.md §B — policy rollback 행 갱신* |
 | [0037 아웃바운드 HTTP 회복성 계층](rfcs/0037-http-resilience.md) | `capability http`에 `retry <N> backoff <duration> [jitter]`(지수 백오프, full jitter, Retry-After 인지)와 `breaker after <N> within <duration>`(인프로세스 서킷브레이커)를 더하고, `method`가 `get/post/put/patch/delete`로 넓어지고, `path "<template>"` + `call ... with <ref>...`가 이스케이프된 URL 경로를 조립한다. `NetworkDriver.call`은 파괴적으로 3-튜플 `(status, body, headers)`가 되며 두 구현에 한 번에 적용된다 — `NetworkDriverTCK`가 둘이 같은 선언을 다르게 채점하지 않는지 검사한다. 선언이 없으면 이전과 바이트 동일. *0027 §Reference-level Specification/1 갱신* |
+| [0038 `list where` 질의 술어 + order by/limit](rfcs/0038-list-where-predicate.md) | `list <Entity>`에 `where <cond> [order by <field> [desc]] [limit <N>]`가 더해진다 — 가드 조건 문법(`condition.py`)을 그대로 재사용해 새 표현식 언어를 만들지 않는다. 등가(`==`/`!=`)는 선언 타입이 같으면(UUID/Text/Email 포함) 허용하고, 순서 비교(`<`,`<=`,`>`,`>=`)는 Integer/DateTime 차원 제약을 그대로 유지한다. `RepositoryDriver.query`에 `predicate`/`order`/`limit`이 더해지며(전부 기본값 `None`, 없으면 바이트 동일) 드라이버는 `supports_predicate`로 푸시다운을 옵트인하고, 아니면 코어가 과다수신 후 파이썬에서 걸러 INFO `predicate-not-pushed-down` 한 줄을 남긴다. *0016 §Reference-level Specification/3, 0025 §Reference-level Specification/1 갱신* |
 
-35편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+36편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
