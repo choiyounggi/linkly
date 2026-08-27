@@ -728,6 +728,34 @@ class SqliteRepositoryDriver(RepositoryDriver):
             raise DriverError("cannot record idempotency result for %r: %s"
                               % (key, exc)) from exc
 
+    def idempotency_release(self, workflow_id, key):
+        """Abandon an in-progress claim -- issue #118, D6 r2. A SEPARATE,
+        immediately-committed DELETE (same style as `idempotency_begin`/
+        `idempotency_finish` above), for exactly the outcome neither of
+        those two covers: a run that ended in a state the caller wants
+        RETRIED, not replayed and not left to self-heal via the TTL.
+
+        `/-/events/<slug>`'s transient (503) outcome calls this instead of
+        `idempotency_finish` -- calling `finish` there would make #113
+        replay 503 forever for this key (D6's original reasoning), but
+        leaving the claim merely unfinished has its own hole: the row stays
+        `in-progress` until the TTL (default 24h) clears it, so a redelivery
+        minutes later -- exactly what `Retry-After` asks the relay to do --
+        sees `in-progress` and gets 409, never a fresh run. Releasing the
+        claim outright, right after deciding 503, is what actually lets the
+        next delivery reclaim and re-run.
+
+        A DELETE against a key with no row (already released, never
+        claimed, or already finished) matches zero rows and raises
+        nothing -- release is idempotent, a no-op on an absent claim.
+        """
+        try:
+            self._conn.execute(_DELETE_IDEMPOTENCY, (workflow_id, key))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot release idempotency key %r: %s"
+                              % (key, exc)) from exc
+
     def execute(self, entity_id, operation, key):
         if operation in READ_OPS:
             return self._read(entity_id, key)

@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**~2,950 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**~3,150 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**40 RFCs — 37 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034 `Draft`.** RFC-0007 was formally
+**41 RFCs — 38 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -304,8 +304,9 @@ suite is defined against.
 | [0037 Outbound HTTP Resilience](rfcs/0037-http-resilience.md) | `capability http` gains `retry <N> backoff <duration> [jitter]` (exponential backoff, full jitter, Retry-After-aware) and `breaker after <N> within <duration>` (in-process circuit breaker), `method` widens to `get/post/put/patch/delete`, and `path "<template>"` + `call ... with <ref>...` assembles an escaped URL path. `NetworkDriver.call` becomes a breaking 3-tuple, `(status, body, headers)`, done once for both implementations; `NetworkDriverTCK` checks the two never grade a declaration differently. No declaration is byte-identical to before. *Updates 0027 §Reference-level Specification/1* |
 | [0038 `list where` Query Predicate + order by/limit](rfcs/0038-list-where-predicate.md) | `list <Entity>` gains `where <cond> [order by <field> [desc]] [limit <N>]`, reusing the guard condition grammar (`condition.py`) verbatim — no new expression language. Equality (`==`/`!=`) allows any matching declared type (UUID/Text/Email included); order comparisons (`<`,`<=`,`>`,`>=`) keep the Integer/DateTime dimension restriction. `RepositoryDriver.query` gains `predicate`/`order`/`limit` (all default `None`, byte-identical when absent); a driver opts into pushdown via `supports_predicate`, or the core over-fetches and filters in Python, logging one `predicate-not-pushed-down` INFO trace line. *Updates 0016 §Reference-level Specification/3, 0025 §Reference-level Specification/1* |
 | [0039 `note` Verb + Canonical Log Line](rfcs/0039-note-verb-and-canonical-line.md) | `note "<template>" [with <ref>...]` lowers to a non-Effect `Annotation` node (same treatment `respond`/`Response` gets), reusing `condition._parse_format_rhs` verbatim. An unresolved reference records `null`, never fails the run; a Password-typed value is masked through the existing `mask_payload` chokepoint. Over 16 `note`s per workflow is a `note-cap-exceeded` warning, not a compile error. `--log-format json`'s canonical line gains `notes`/`effects`/`input_digest` (appended only when present); `lnpl serve --capture-on-failure` (default off) adds the masked input payload only to a failed/500 run's line. `_call_with_json_log` is now exception-safe end to end — a request that dies before `_respond` is reached still emits exactly one line. |
+| [0040 Event Consumption Contract](rfcs/0040-event-consumption-contract.md) | `event ... consume by <Workflow>` runs a workflow on arrival — the missing consume half of the publish side RFC-0032 already settled. `POST /-/events/<slug>` (reserved space, same shape as RFC-0016's schedule trigger) accepts a CloudEvents v1.0 structured envelope; its `id` is the idempotency key, reusing issue #113's `lnpl_idempotency` table/API/TTL as-is (no second store). The execution result maps to exactly 3 buckets — 200 success, 503 + `Retry-After` transient (deadline, or a `RepositoryCall`/`NetworkCall`-effect failure), 422 permanent (Validation rejection, business/guard RunError, create conflict) — and a transient 503 deliberately skips `idempotency_finish` so a retry gets a fresh run instead of replaying 503 forever. A cycle between `consume by` and a workflow's own `emit` is a static warning (`event-consume-cycle`), never a compile error. `lnpl relay` is the reference relay (urllib only, no broker dependency) draining the outbox into the consume route. |
 
-Thirty-seven are `Accepted`, two (`0033`, `0034`) are `Draft`; 0000 is superseded by 0007, which was itself formally
+Thirty-eight are `Accepted`, two (`0033`, `0034`) are `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -365,7 +366,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2950 tests in 106.014s
+Ran 3150 tests in 112.059s
 OK
 ```
 

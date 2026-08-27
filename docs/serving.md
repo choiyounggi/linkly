@@ -238,6 +238,61 @@ REST의 PUT/PATCH가 갖는 단일 대상 리소스가 없어서, 이전 GET의 
 거부한다 — 추측하지 않는다. `lnpl serve`는 문서의 모든 스케줄 이벤트를 한
 번에 검증하고, `lnpl trigger`는 그중 요청한 하나만 검증한다.
 
+## 이벤트 소비 (`consume by`, 이슈 #118)
+
+발행 쪽(`emit`/`publish` → `lnpl_outbox`, 이슈 #102)은 있었지만 소비 쪽 —
+이벤트가 워크플로를 실제로 깨우는 경로 — 는 없었다. `event <E> subscribe`
+(이슈 #103)는 HTTP 클라이언트로 SSE를 **내보낼 뿐**, 아무 워크플로도 돌리지
+않는다. `event <E> consume by <Workflow>`가 그 반대쪽이다: 도착하면
+`<Workflow>`를 실행한다. 두 절은 같은 `event` 선언에 나란히 앉을 수 있고
+서로 배타적이지 않다 — 아래 대조표.
+
+| 절 | 뜻 | 라우트 | 인증 |
+|----|----|--------|------|
+| `subscribe` | HTTP 클라이언트에게 SSE로 **내보낸다** | `GET /<svc>/events/<slug>` | 이벤트를 `emit`하는 워크플로의 서비스 |
+| `consume by <W>` | 도착하면 `<W>`를 **실행한다** | `POST /-/events/<slug>` | `<W>`를 소유한 서비스 |
+
+**라우트** — `POST /-/events/<event-slug>`. `/-/schedules/<slug>`(이슈 #81)와
+같은 예약 공간·같은 병합 순서(`build_routes`의 OpenAPI 계약 검사 **뒤에**
+합류 — CloudEvents 인입은 오퍼레이션이 아니라 이 서버만의 계약이다)이지만,
+실행 경로는 스케줄 트리거와 다르다: 워크플로 POST의 M1-M9 매핑을 그대로
+타지 않고, 아래 자신의 3갈래 매핑을 쓴다(D7) — 릴레이가 재시도할지
+dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 잘못했나"가
+아니라 "이 봉투를 다시 밀어도 되는가"이기 때문이다.
+
+**봉투 (D5)** — 구조화 모드 CloudEvents v1.0만 받는다. `specversion`(`"1.0"`
+고정)·`id`·`source`·`type`은 비어있지 않은 문자열이어야 한다. `type`을
+이벤트 이름과 대조하지는 **않는다** — 슬러그가 이미 라우팅 키이고, 그
+대조는 릴레이의 몫이라는 계획된 단순화다. `datacontenttype`이 오면
+`application/json`만(`;` 뒤 파라미터는 무시) 받고, 그 외 값이나
+`data_base64`(바이너리 모드)는 거부한다. `data`는 기본값 `{}`로, 이
+워크플로의 입력 페이로드가 된다(D6).
+
+| # | 관측 조건 | HTTP | error `code` |
+|---|-----------|------|--------------|
+| E1 | `specversion`/`id`/`source`/`type` 중 하나라도 비어있지 않은 문자열이 아니거나 `specversion != "1.0"` | 400 | `cloudevents-invalid` |
+| E2 | `datacontenttype`이 있는데 `application/json`이 아니거나, `data_base64`가 있음(바이너리 모드) | 400 | `cloudevents-invalid` |
+| E3 | `data`가 있는데 JSON object가 아님 | 400 | `cloudevents-invalid` |
+| E4 | 같은 `id`로 이미 실행 중(#113과 같은 충돌 신호) | 409 | `idempotency-in-progress` |
+| E5 | 실행 완료 | 200 | — |
+| E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
+| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`, create 충돌) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
+
+**멱등성 (D6)** — CloudEvents `id`가 멱등성 키다. `lnpl_idempotency`(이슈
+#113)를 **그대로** 재사용한다 — 두 번째 저장소를 만들지 않는다. 200과
+422는 결정적 결과이므로 `idempotency_finish`로 확정해, 같은 `id`가
+재전달되면 워크플로를 다시 돌리지 않고 첫 응답을 재생한다. 503은
+**의도적으로 확정하지 않는다** — 확정하면 #113이 그 키에 대해 503을
+영원히 재생하게 되어, 릴레이가 재시도해도 절대 새로 실행되지 않는다(D7의
+취지를 정면으로 깬다). 그래서 503 다음 같은 `id`가 즉시 재전달되면
+"실행 중" 상태가 아직 안 지워졌으므로 E4(409)를 본다 — TTL이 지나야
+완전히 새로 시작한다. `fake` 백엔드(멱등성 저장소 없음)는 매번 독립적으로
+실행한다(D9/D11 기존 규약과 동일).
+
+**레퍼런스 릴레이 — `lnpl relay`.** `lnpl outbox drain`(발행)과 이 라우트
+(소비)를 잇는 최소 구현. 브로커 의존 없이 두 인스턴스 사이에서 계약을
+실측한다. 자세한 ack 규율은 `lnpl relay --help`와 이슈 #118 D8 참조.
+
 ## 계약 한계 (이 서버가 아닌 것)
 
 - **capability 백엔드는 기본이 fake다.** 플래그 없이 띄우면 저장은 요청마다

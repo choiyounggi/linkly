@@ -607,6 +607,12 @@ RFC_ROUTES = {
              "미바인딩 참조가 왜 컴파일/런타임 실패가 아니라 값 `null`인지, "
              "canonical log line의 `notes`/`effects`/`input_digest`가 각각 "
              "무엇이고 `--capture-on-failure`가 언제만 입력을 싣는지", ()),
+    "0040": ("`event ... consume by <Workflow>`로 이벤트가 도착하면 워크플로를 "
+             "돌리고 싶다 — `POST /-/events/<slug>`가 왜 CloudEvents 봉투만 "
+             "받는지, 같은 `id`가 왜 워크플로를 다시 실행하지 않고 첫 응답을 "
+             "재생하는지, 200/503/422 3갈래가 각각 언제 나오고 503은 왜 "
+             "멱등성 클레임을 확정하지 않는지, `lnpl relay`가 outbox를 어떻게 "
+             "CloudEvents로 감싸 미는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

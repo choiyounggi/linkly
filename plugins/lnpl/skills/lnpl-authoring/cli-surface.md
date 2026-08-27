@@ -214,6 +214,32 @@ JSON Lines로 stdout에 찍는다. 한 줄이 `{"seq", "emission_id", "event", "
 스키마·drain/ack 의미론의 정본과 외부 릴레이(cron/systemd/k8s CronJob이
 drain→publish→ack 루프를 소유) 위임 구도는 `docs/backends.md`.
 
+### `relay` — 레퍼런스 릴레이: outbox → `consume by` 인입 (이슈 #118)
+
+```
+lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
+```
+
+`outbox drain`(발행 쪽)과 `POST /-/events/<slug>`(소비 쪽, `consume by`)를
+잇는 최소 구현 — 브로커 없이 두 `lnpl serve` 인스턴스 사이에서 이벤트
+계약을 실측한다. `stdlib urllib`만 쓴다(브로커·HTTP 클라이언트 의존 없음).
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--backend` | 필수. 드레인할 영속 백엔드(`sqlite:<path>`). `fake`는 outbox가 없어 거부(rc 2) |
+| `--target` | 필수. 소비 인스턴스의 base URL — 봉투는 `<--target>/-/events/<slug>`로 POST된다 |
+| `--once` | 한 번 드레인·POST하고 종료(rc 0) — 테스트나 cron이 미는 모양. 기본은 무한 반복(폴링 간격 1초) |
+| (위치 인자) `source` | 컴파일만 한다(재실행 아님) — emission의 이벤트 id를 이벤트의 선언된 이름(슬러그/`type`)으로 되돌리는 데만 쓴다 |
+
+봉투: `specversion="1.0"`, `id="outbox-<seq>"`(안정값), `source`=모듈명,
+`type`=이벤트 이름, `data`=emission의 payload. ack 규율(성공 후에만 커밋 —
+offset-commit discipline): 200 → ack. 422 → ack(재시도해도 같은 결과이므로
+dead-letter, stderr에 경고 한 줄) + ack. 503 또는 응답 없음(연결 실패) →
+ack 안 함 — 다음 드레인이 같은 행을 다시 시도한다(at-least-once). 그 외
+상태 코드도 안전한 쪽으로 ack 안 함.
+
+상태코드 3갈래(200/503/422)의 정본은 `docs/serving.md`§이벤트 소비.
+
 ### `db check` — 저장된 행을 선언과 대조 (이슈 #85)
 
 ```
@@ -320,7 +346,8 @@ status completed
 사라진다 — 이슈 #85), `rollback-escapes-network`(호출을 경계 밖으로 옮기거나
 `rollback`을 떼면 사라진다 — 이슈 #112), `retry-on-non-idempotent`(`retry`를
 떼거나 멱등 메서드로 바꾸면 사라진다 — 이슈 #109), `note-cap-exceeded`(`note`를
-16개 이하로 줄이면 사라진다 — 이슈 #111)), `info`는 고쳐도 사라지지 않는
+16개 이하로 줄이면 사라진다 — 이슈 #111), `event-consume-cycle`(`consume by`를
+떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`).

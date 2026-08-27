@@ -463,6 +463,44 @@ def subscribe_negatives():
     ]
 
 
+CONSUME_EVENT_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "orders",
+    "nodes": [
+        {
+            "kind": "Event",
+            "id": "event.order.placed",
+            "name": "OrderPlaced",
+            "source": {"ref": "entity.order", "on": "create"},
+            "consume": "wf.fulfill.order",
+        },
+        {
+            "kind": "Workflow",
+            "id": "wf.fulfill.order",
+            "name": "FulfillOrder",
+        },
+    ],
+}
+
+
+def consume_negatives():
+    """issue #118, D2 — `Event.consume` is a `nodeId` (a workflow id), the
+    same shape RFC-0002 A.4's other cross-references already take (e.g.
+    `EventEmit.event`), so it inherits the `nodeId` pattern's own negatives
+    for free; only the field-specific ones need a case here.
+    """
+    n1 = copy.deepcopy(CONSUME_EVENT_FIXTURE)
+    n1["nodes"][0]["consume"] = 1                       # type 불일치 — string 아님
+
+    n2 = copy.deepcopy(CONSUME_EVENT_FIXTURE)
+    n2["nodes"][0]["consume"] = "Wf.FulfillOrder"        # nodeId 패턴 밖(대문자)
+
+    return [
+        ("consume is not a string: 1", n1),
+        ("consume outside the nodeId pattern: 'Wf.FulfillOrder'", n2),
+    ]
+
+
 ALT_GUARD_FIXTURE = {
     "lir_version": "0.1",
     "module": "alt_guard",
@@ -739,6 +777,8 @@ def self_test():
          CAPABILITY_HTTP_FIXTURE),
         ("SUBSCRIBE_EVENT_FIXTURE (issue #103 Event.subscribe)",
          SUBSCRIBE_EVENT_FIXTURE),
+        ("CONSUME_EVENT_FIXTURE (issue #118 Event.consume)",
+         CONSUME_EVENT_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -778,7 +818,8 @@ def self_test():
     ] + refinement_negatives() + assignment_negatives() + schedule_negatives() \
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
       + respond_negatives() + create_negatives() + expose_negatives() \
-      + capability_http_negatives() + subscribe_negatives()
+      + capability_http_negatives() + subscribe_negatives() \
+      + consume_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

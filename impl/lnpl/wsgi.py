@@ -108,6 +108,50 @@ def _parse_if_match(value):
     return int(digits)
 
 
+# issue #118, D5: CloudEvents v1.0's four required structured-mode
+# attributes — every one a non-empty string.
+_CLOUDEVENTS_REQUIRED = ("specversion", "id", "source", "type")
+
+
+def _validate_cloudevents_envelope(payload):
+    """`payload` (already a parsed JSON object) against the CloudEvents v1.0
+    structured-mode envelope `/-/events/<slug>` accepts (issue #118, D5) —
+    `None` if valid, else `(field, detail)` for the 400 to send.
+
+    Deliberately narrow, matching D5 exactly: `specversion`/`id`/`source`/
+    `type` must be non-empty strings and `specversion` must read `"1.0"`;
+    an optional `datacontenttype` is accepted only as `application/json`
+    (any parameters after `;` ignored); `data_base64` (binary mode) is
+    refused outright — this route accepts structured JSON only, never a
+    second envelope shape invented alongside CloudEvents'. `type` is NOT
+    cross-checked against the event's own name here — the slug already IS
+    the routing key (RFC-0040 D5); that cross-check is left to the relay,
+    a deliberate simplification the RFC states.
+    """
+    for field in _CLOUDEVENTS_REQUIRED:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value:
+            return field, "%r must be a non-empty string" % field
+    if payload["specversion"] != "1.0":
+        return "specversion", "must be \"1.0\", got %r" % payload["specversion"]
+    if "data_base64" in payload:
+        return ("data_base64",
+                "binary-mode CloudEvents are not accepted -- send a "
+                "structured JSON envelope with `data` instead")
+    datacontenttype = payload.get("datacontenttype")
+    if datacontenttype is not None:
+        if not isinstance(datacontenttype, str):
+            return "datacontenttype", "must be a string, got %r" % datacontenttype
+        media_type = datacontenttype.split(";", 1)[0].strip()
+        if media_type != "application/json":
+            return ("datacontenttype",
+                    "only \"application/json\" is accepted, got %r" % datacontenttype)
+    data = payload.get("data", {})
+    if not isinstance(data, dict):
+        return "data", "must be a JSON object when present"
+    return None
+
+
 def open_log_format(spec):
     """`--log-format`'s value -> itself, validated; `ValueError` on a bad
     selector, naming the accepted set (mirrors `interp.open_clock`)."""
@@ -608,6 +652,61 @@ def build_schedule_routes(document, triggers=None):
     return routes
 
 
+def _workflow_owner_service(document):
+    """workflow node id -> its owning Service node (issue #118, D4).
+
+    `build_schedule_routes` never needs this lookup — `resolve_schedule_
+    triggers` already hands it the owning service from its OWN walk (nearest
+    preceding service to the EVENT, RFC-0002 A.2 R2 applied to a schedule
+    source). `Event.consume` names the target WORKFLOW directly instead, so
+    the auth-owning service has to be found the other way round: this is
+    `build_routes`'s own service->workflow walk (line ~483), inverted.
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    owner = {}
+    for node in document["nodes"]:
+        if node["kind"] != "Service":
+            continue
+        for cid in node.get("children", []):
+            if nodes[cid]["kind"] == "Workflow":
+                owner[cid] = node
+    return owner
+
+
+def build_event_consume_routes(document):
+    """`/-/events/<event-slug>` -> `POST` runs `Event.consume`'s target
+    workflow (issue #118, D4) — same reserved space, same merge pattern, and
+    same auth-lookup shape as `build_schedule_routes` just above: a
+    `security jwt`/`security role` on the CONSUMING workflow's own service
+    applies to its ingress route exactly as it applies to that workflow's
+    normal POST route, no new auth invented.
+
+    Kept OUT of `build_routes`'s OpenAPI-contract assertion for the same
+    reason a schedule trigger is: this is a CloudEvents ingress endpoint, not
+    an operation this module's OpenAPI document declares (RFC-0040 D4/D9).
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    owner_of_workflow = _workflow_owner_service(document)
+    routes = {}
+    for node in document["nodes"]:
+        if node["kind"] != "Event" or not node.get("consume"):
+            continue
+        wid = node["consume"]
+        service = owner_of_workflow.get(wid)
+        auth, role = False, None
+        if service is not None:
+            for cid in service.get("constraints", []):
+                cnode = nodes.get(cid)
+                if cnode is not None and cnode["kind"] == "Security":
+                    mechanisms = cnode.get("mechanisms", [])
+                    auth = "jwt" in mechanisms
+                    role = _required_role(mechanisms)
+        path = "/-/events/%s" % _slug(node["name"])
+        routes[path] = {"kind": "event-consume", "workflow": wid,
+                        "event": node["id"], "auth": auth, "role": role}
+    return routes
+
+
 def build_ops_routes(document):
     """`/-/healthz`/`/-/readyz` (issue #110, D1) — the SAME out-of-band
     pattern `build_schedule_routes` established: merged into `routes` via
@@ -674,6 +773,42 @@ def map_result(result):
     return 500, "workflow-failed"                         # M8
 
 
+def map_consume_result(result):
+    """`run_workflow` result -> (http status, error code) for the
+    `/-/events/<slug>` ingress route's 3-way contract (issue #118, D7) —
+    deliberately NOT `map_result` just above: that ladder answers "what did
+    THIS CALLER get wrong" (400/404/409/504); a relay re-posting the exact
+    same CloudEvents envelope only needs "should I retry this, or give up
+    and dead-letter it" — transient (503, retry) vs permanent (422).
+
+    Transient: the deadline ran out, or the failed step carried a
+    `RepositoryCall`/`NetworkCall` effect — the two effect kinds a
+    `DriverError` funnels through (drivers.py), i.e. "DriverError 계열
+    RunError" (RFC-0040 D7's own wording). Everything else — a `Validation`
+    rejection, an explicit business/guard `RunError`, a create conflict — is
+    permanent: re-running the identical payload fails the identical way, so
+    a retry can never turn it into a success.
+    """
+    if result["status"] == "completed":
+        return 200, None
+    if result.get("failure_kind") == "deadline":
+        return 503, "event-retry-later"
+    # A create conflict is a `RepositoryCall` failure too, so this MUST be
+    # checked before the effects-based branch below -- otherwise a conflict
+    # (explicitly named as permanent by D7) would fall into that branch's
+    # "RepositoryCall failed -> transient" reasoning and never dead-letter.
+    if result.get("failure_kind") == "conflict":
+        return 422, "event-rejected"
+    failed = result["failed_step"]
+    for entry in result["steps"]:
+        if entry["step"] == failed:
+            effects = entry.get("effects", ())
+            if "RepositoryCall" in effects or "NetworkCall" in effects:
+                return 503, "event-retry-later"
+            break
+    return 422, "event-rejected"
+
+
 _TITLES = {
     "not-found": "no such path",
     "method-not-allowed": "method not allowed",
@@ -693,6 +828,9 @@ _TITLES = {
     "limit-invalid": "the `limit` query parameter is out of range",
     "read-failed": "repository read failed",
     "not-ready": "the server is not ready to receive traffic",
+    "cloudevents-invalid": "the CloudEvents envelope is invalid",
+    "event-rejected": "the event was permanently rejected",
+    "event-retry-later": "processing failed transiently -- retry after backing off",
 }
 
 
@@ -721,6 +859,44 @@ def _json_response(start_response, status, body, content_type="application/probl
     header_list.extend(headers)
     start_response(_status_line(status), header_list)
     return [payload]
+
+
+def _read_json_body(environ, start_response):
+    """Read+parse the request body as a JSON object -- `(payload, None)`, or
+    `(None, response)` for the M4/M5 error to send instead of any route's
+    own body. Extracted from `_do_post`'s workflow-route body (unchanged
+    behavior) so `event-consume` (issue #118) can share it: both need "is
+    this a JSON object, and not too large" settled before their own,
+    different validation of WHAT the object contains proceeds.
+    """
+    try:
+        length = int(environ.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        length = 0
+    if length > MAX_BODY_BYTES:                                   # M4
+        return None, _json_response(start_response, 413,
+                              problem(413, "body-too-large",
+                                     "request body exceeds %d bytes"
+                                     % MAX_BODY_BYTES))
+    raw = environ["wsgi.input"].read(length) if length > 0 else b""
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except ValueError:                                       # M5
+            return None, _json_response(start_response, 400,
+                                  problem(400, "body-unreadable",
+                                         "request body is not valid JSON"))
+        if not isinstance(payload, dict):                        # M5
+            return None, _json_response(start_response, 400,
+                                  problem(400, "body-unreadable",
+                                         "request body must be a JSON object"))
+    else:
+        # No special case for an empty body: it runs as {} and a workflow
+        # with a Validation effect rejects it through M7 (or, for
+        # event-consume, `_validate_cloudevents_envelope` rejects it -- an
+        # empty CloudEvents envelope has no required fields).
+        payload = {}
+    return payload, None
 
 
 class LnplWsgiApp:
@@ -1098,7 +1274,10 @@ class LnplWsgiApp:
             return _json_response(start_response, 404,
                                   problem(404, "not-found",
                                          "no OpenAPI path %r" % raw_path))
-        if route.get("kind") != "workflow":                           # M2
+        kind = route.get("kind")
+        # issue #118, D4: `event-consume` shares this POST surface — same
+        # M1-M5 (routing/auth/body-shape) gate, its own D5-D7 beyond that.
+        if kind not in ("workflow", "event-consume"):                 # M2
             return _json_response(start_response, 405,
                                   problem(405, "method-not-allowed",
                                          "only GET is served at %s" % raw_path),
@@ -1106,31 +1285,12 @@ class LnplWsgiApp:
         claims, auth_result = self._check_auth(environ, start_response, route, path_info)
         if auth_result is not None:
             return auth_result
-        try:
-            length = int(environ.get("CONTENT_LENGTH") or 0)
-        except (TypeError, ValueError):
-            length = 0
-        if length > MAX_BODY_BYTES:                                   # M4
-            return _json_response(start_response, 413,
-                                  problem(413, "body-too-large",
-                                         "request body exceeds %d bytes"
-                                         % MAX_BODY_BYTES))
-        raw = environ["wsgi.input"].read(length) if length > 0 else b""
-        if raw:
-            try:
-                payload = json.loads(raw)
-            except ValueError:                                       # M5
-                return _json_response(start_response, 400,
-                                      problem(400, "body-unreadable",
-                                             "request body is not valid JSON"))
-            if not isinstance(payload, dict):                        # M5
-                return _json_response(start_response, 400,
-                                      problem(400, "body-unreadable",
-                                             "request body must be a JSON object"))
-        else:
-            # No special case for an empty body: it runs as {} and a workflow
-            # with a Validation effect rejects it through M7.
-            payload = {}
+        payload, body_error = _read_json_body(environ, start_response)
+        if body_error is not None:
+            return body_error
+        if kind == "event-consume":
+            return self._respond_event_consume(start_response, route, payload,
+                                               claims=claims)
         # issue #113, D8/D9: absent by default -- a request with no header
         # takes the exact pre-#113 path through `_run`/`_respond` (D9
         # regression: byte-identical when no key is sent).
@@ -1631,6 +1791,112 @@ class LnplWsgiApp:
             repository.idempotency_finish(workflow_id, idempotency_key, status, body)
         return _json_response(start_response, status, body, content_type=content_type)
 
+    def _respond_event_consume(self, start_response, route, payload, claims=None):
+        """`POST /-/events/<slug>` — CloudEvents envelope in, `Event.consume`'s
+        target workflow run (issue #118). D5 (envelope shape) gates D6
+        (idempotency, reusing #113's claim/replay AS-IS) which gates D7 (the
+        200/503/422 outcome contract) — in that order, each a hard stop.
+        """
+        invalid = _validate_cloudevents_envelope(payload)
+        if invalid is not None:
+            field, detail = invalid
+            return _json_response(start_response, 400,
+                                  problem(400, "cloudevents-invalid",
+                                         "%s: %s" % (field, detail)))
+        workflow_id = route["workflow"]
+        event_key = payload["id"]
+        data = payload.get("data") or {}
+        correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+
+        factory = self.repository_factory
+        repository = factory() if factory is not None else None
+        try:
+            # issue #113, D8/D9's same opt-in `getattr` idiom `_respond`
+            # uses: covers "no backend" (fake) and "a backend that never
+            # implemented it" in one check.
+            claim = (repository is not None
+                    and hasattr(repository, "idempotency_begin"))
+            if claim:
+                now_ms = int(time.time() * 1000)
+                claim_status, stored = repository.idempotency_begin(
+                    workflow_id, event_key, now_ms, self.idempotency_ttl_ms)
+                if claim_status == "in-progress":
+                    return _json_response(
+                        start_response, 409,
+                        problem(409, "idempotency-in-progress",
+                               "a request with this CloudEvents id is "
+                               "already running", correlation_id=correlation_id))
+                if claim_status == "done":                          # D6 replay
+                    http_status, body = stored
+                    content_type = ("application/json" if http_status == 200
+                                    else "application/problem+json")
+                    return _json_response(start_response, http_status, body,
+                                          content_type=content_type)
+                # claim_status == "started": run the workflow below.
+            interp = Interpreter(self.document, clock=self.clock,
+                                 repo_rows=default_rows(self.document, workflow_id, data),
+                                 correlation_id=correlation_id, repository=repository,
+                                 network=self.network, claims=claims)
+            try:
+                result = interp.run_workflow(workflow_id, data)
+            except Exception:
+                # Mirrors `_respond`'s own escape handling: the workflow's
+                # true fate (partial write? clean rollback?) is unknown, so
+                # this is treated as transient rather than a definite 422.
+                import traceback
+                print("serve: internal error consuming event (correlation_id=%s)"
+                     % correlation_id, file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                # issue #118, D6 r2: release, not finish -- see the 503
+                # branch below for why leaving the claim merely unfinished
+                # is itself a bug (`idempotency_release`'s own docstring).
+                if claim:
+                    repository.idempotency_release(workflow_id, event_key)
+                return _json_response(
+                    start_response, 503,
+                    problem(503, "event-retry-later", "internal server error",
+                           correlation_id=correlation_id),
+                    content_type="application/problem+json",
+                    headers=(("Retry-After", "1"),))
+            for line in format_lines(interp.diagnostics):
+                print(line, file=sys.stderr)
+            status, code = map_consume_result(result)
+            if status == 200:
+                body = result
+                content_type = "application/json"
+            else:
+                body = problem(status, code, result["failure_reason"],
+                              correlation_id=result["correlation_id"],
+                              failed_step=result["failed_step"],
+                              skipped=result["skipped"])
+                content_type = "application/problem+json"
+            if claim:
+                if status == 503:
+                    # issue #118, D6 r2: releasing (not finishing) is what
+                    # actually lets the NEXT delivery re-run. Finishing would
+                    # make #113 replay 503 forever for this key (the
+                    # original D6/D7 reasoning); merely leaving it unfinished
+                    # has its own hole -- the claim would stay `in-progress`
+                    # until the TTL (default 24h) clears it, so a redelivery
+                    # minutes later (exactly what `Retry-After` asks the
+                    # relay to do) would see `in-progress` and get 409, not
+                    # a fresh run, turning one transient failure into an
+                    # hours-long outage for this event id. Releasing right
+                    # here reclaims the key immediately for the next attempt.
+                    repository.idempotency_release(workflow_id, event_key)
+                else:
+                    # A 200 or 422 is a DETERMINISTIC outcome -- the
+                    # identical envelope would fail (or succeed) the
+                    # identical way again, so #113's replay-on-redelivery is
+                    # exactly right and this finalizes it.
+                    repository.idempotency_finish(workflow_id, event_key, status, body)
+            headers = (("Retry-After", "1"),) if status == 503 else ()
+            return _json_response(start_response, status, body,
+                                  content_type=content_type, headers=headers)
+        finally:
+            if repository is not None:
+                repository.close()
+
 
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
                   network=None, clock=None, log_format="text", exporter=None,
@@ -1658,6 +1924,9 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     """
     routes = build_routes(document)
     routes.update(build_schedule_routes(document))
+    # issue #118, D4: same reserved-space merge as schedule routes just
+    # above — a CloudEvents ingress endpoint is not an OpenAPI operation.
+    routes.update(build_event_consume_routes(document))
     # issue #110, D1: same reason schedule routes are merged in AFTER the
     # contract assertion, not before — `/-/healthz`/`/-/readyz` are not an
     # OpenAPI operation, so folding them into `build_routes`'s own dict

@@ -55,6 +55,7 @@ CODES = (
     "rollback-escapes-network",     # #112 `policy rollback`'s service has a workflow step whose NetworkCall sits outside the transaction boundary
     "retry-on-non-idempotent",      # #109 `capability http` declares `method post`/`patch` together with `retry`
     "note-cap-exceeded",            # #111 a workflow has more than NOTE_CAP `note` annotations
+    "event-consume-cycle",          # #118 `consume by` + that workflow's own `emit` reaches the event again
 )
 
 # code -> grade (#52). One question decides every row:
@@ -131,6 +132,12 @@ SEVERITY_OF = {
     # #111: trimming `note`s below the cap removes this — same test as
     # `unknown-verb`; the workflow still compiles and runs either way.
     "note-cap-exceeded":         "warning",
+    # #118, D3: a cycle is a *static signal* for a possible runtime infinite
+    # dispatch loop, not proof of one — a guard inside the consuming workflow
+    # may break it at run time, so the program is not necessarily wrong.
+    # `warning`, not `info`: breaking the cycle (drop the `consume by`, or the
+    # `emit`) is an edit the author can make, same test as `unknown-verb`.
+    "event-consume-cycle":      "warning",
 }
 
 # How the runtime treats a declaration.
