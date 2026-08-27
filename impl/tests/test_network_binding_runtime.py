@@ -83,7 +83,8 @@ class _FailingNetworkDriver(FakeNetworkDriver):
     dead. Mirrors `_FailingRepository` (test_driver_contract.py): injected
     because the fake's own default path never raises on its own."""
 
-    def call(self, target, payload, timeout_ms, trace_headers=None):
+    def call(self, target, payload, timeout_ms, trace_headers=None,
+             path_args=None):
         raise DriverError("the gateway is unreachable")
 
 
@@ -95,9 +96,11 @@ class _RecordingNetworkDriver(FakeNetworkDriver):
         super().__init__(stubs)
         self.seen_timeouts = []
 
-    def call(self, target, payload, timeout_ms, trace_headers=None):
+    def call(self, target, payload, timeout_ms, trace_headers=None,
+             path_args=None):
         self.seen_timeouts.append(timeout_ms)
-        return super().call(target, payload, timeout_ms, trace_headers)
+        return super().call(target, payload, timeout_ms, trace_headers,
+                            path_args)
 
 
 class BoundCallBindingTest(unittest.TestCase):

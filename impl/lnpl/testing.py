@@ -149,6 +149,108 @@ class RepositoryDriverTCK:
 
         self.assertEqual([row["id"] for row in rows], ["0", "1", "2"])
 
+    # -- query with predicate/order/limit (issue #116, D5/D6/D10) -----------
+    #
+    # Optional, the same way the optimistic-version conflict above is: a
+    # driver opts in by setting `supports_predicate = True` (`RepositoryDriver`'s
+    # own docstring); one that has not is never called this way by
+    # `interp.Interpreter` (it falls back to a plain `query(entity_id)`,
+    # filtered in Python instead), so there is nothing here for it to satisfy.
+
+    def _skip_unless_predicate_supported(self):
+        if not getattr(self.driver, "supports_predicate", False):
+            self.skipTest(
+                "driver does not declare supports_predicate — "
+                "query()'s predicate/order/limit are never pushed down to it")
+
+    def test_query_without_predicate_order_or_limit_is_the_pre_116_call(self):
+        """The regression case every driver must keep true regardless of
+        `supports_predicate`: three `None`s behaves exactly like the old
+        one-argument `query(entity_id)`."""
+        self.driver.seed({"widget": {"w1": {"id": "w1", "n": 1}}})
+
+        self.assertEqual(
+            self.driver.query("widget", predicate=None, order=None, limit=None),
+            self.driver.query("widget"))
+
+    def test_predicate_filters_rows(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 1}, "w2": {"id": "w2", "n": 2},
+        }})
+
+        rows = self.driver.query("widget", predicate=[("n", ">", 1)])
+
+        self.assertEqual([row["id"] for row in rows], ["w2"])
+
+    def test_predicate_matching_no_row_is_an_empty_list(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {"w1": {"id": "w1", "n": 1}}})
+
+        self.assertEqual(
+            self.driver.query("widget", predicate=[("n", ">", 100)]), [])
+
+    def test_predicate_conjunction_requires_every_term(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 5}, "w2": {"id": "w2", "n": 15},
+            "w3": {"id": "w3", "n": 25},
+        }})
+
+        rows = self.driver.query(
+            "widget", predicate=[("n", ">", 10), ("n", "<", 20)])
+
+        self.assertEqual([row["id"] for row in rows], ["w2"])
+
+    def test_predicate_equality_on_a_text_value(self):
+        """D2's motivating case: equality pushed down for a non-numeric
+        field, not just Integer/DateTime."""
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "status": "open"},
+            "w2": {"id": "w2", "status": "closed"},
+        }})
+
+        rows = self.driver.query("widget", predicate=[("status", "==", "open")])
+
+        self.assertEqual([row["id"] for row in rows], ["w1"])
+
+    def test_order_ascending_and_descending(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 30}, "w2": {"id": "w2", "n": 10},
+            "w3": {"id": "w3", "n": 20},
+        }})
+
+        asc = self.driver.query("widget", order=("n", False))
+        desc = self.driver.query("widget", order=("n", True))
+
+        self.assertEqual([row["id"] for row in asc], ["w2", "w3", "w1"])
+        self.assertEqual([row["id"] for row in desc], ["w1", "w3", "w2"])
+
+    def test_limit_caps_the_result(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 1}, "w2": {"id": "w2", "n": 2},
+            "w3": {"id": "w3", "n": 3},
+        }})
+
+        rows = self.driver.query("widget", order=("n", False), limit=2)
+
+        self.assertEqual([row["id"] for row in rows], ["w1", "w2"])
+
+    def test_predicate_order_and_limit_compose(self):
+        self._skip_unless_predicate_supported()
+        self.driver.seed({"widget": {
+            "w1": {"id": "w1", "n": 5}, "w2": {"id": "w2", "n": 30},
+            "w3": {"id": "w3", "n": 20}, "w4": {"id": "w4", "n": 10},
+        }})
+
+        rows = self.driver.query("widget", predicate=[("n", ">", 5)],
+                                 order=("n", True), limit=2)
+
+        self.assertEqual([row["id"] for row in rows], ["w2", "w3"])
+
     # -- persist -------------------------------------------------------------
 
     def test_persist_flushes_a_row_mutated_after_read(self):
@@ -234,6 +336,176 @@ class RepositoryDriverTCK:
         # attempt above never reached the row.
         self.assertEqual(
             self.driver.execute("widget", "read", "w-v1")["n"], 1)
+
+
+NETWORK_TCK_TARGET = "TckTarget"
+
+
+class NetworkDriverTCK:
+    """`NetworkDriver` Technology Compatibility Kit (issue #109) — the
+    `RepositoryDriverTCK` idiom applied to `capability http`'s resilience
+    contract: methods, retry, breaker, response headers, timeout, checked
+    once against both `FakeNetworkDriver` and `HttpNetworkDriver` so neither
+    can quietly drift from what the other does with the same declaration.
+
+    Mix into a `unittest.TestCase` subclass, override `make_driver()` (and
+    `make_slow_driver()` if this driver kind can time out — see below)::
+
+        import unittest
+        from lnpl.testing import NetworkDriverTCK
+
+        class MyDriverTCKTest(NetworkDriverTCK, unittest.TestCase):
+            def make_driver(self, target, capabilities, script):
+                return MyNetworkDriver(...)
+
+    Unlike `RepositoryDriverTCK`'s zero-argument `make_driver()`, this one
+    takes the scenario itself: `target` (always `NETWORK_TCK_TARGET`),
+    `capabilities` (this target's resolved capabilities entry — `method`
+    plus, per test, `retry`/`breaker`), and `script` — a list of `(status,
+    body)`/`(status, body, headers)` tuples, one per transport ATTEMPT, in
+    order, holding on the last once exhausted (`FakeNetworkDriver`'s own
+    list-stub convention). `NetworkDriver`'s two implementations are not
+    symmetric in what holds their state: `FakeNetworkDriver` takes the
+    script as a constructor dict, while `HttpNetworkDriver`'s "script" is a
+    real server the subclass must stand up — passing the scenario in lets
+    each subclass answer only the question it alone can (how THIS driver
+    kind gets told to answer this way), the same reason
+    `SqliteDriverTCKTest.make_driver()` opens a real file `RepositoryDriverTCK`
+    never mentions.
+
+    Every test constructs `sleep`/`rand` such that a scripted retry never
+    actually waits — `make_driver()` implementations should thread through a
+    no-op `sleep` (both drivers accept one) so the TCK stays fast regardless
+    of the `backoff_ms` a scenario declares.
+
+    `make_slow_driver(target, capabilities, delay_s)` is optional — return
+    `None` (the default) for a driver kind that performs no real I/O and so
+    cannot time out (`FakeNetworkDriver`); the timeout test then skips, the
+    same "opt-in capability" shape `RepositoryDriverTCK`'s optimistic-version
+    test uses (`hasattr(first_read, "observed_version")`) for a capability
+    only some drivers offer.
+    """
+
+    def make_driver(self, target, capabilities, script):
+        raise NotImplementedError(
+            "NetworkDriverTCK subclasses must override make_driver(target, "
+            "capabilities, script) to return a fresh NetworkDriver wired to "
+            "answer `target` with `script`, one entry per attempt")
+
+    def make_slow_driver(self, target, capabilities, delay_s):
+        return None
+
+    # -- methods -----------------------------------------------------------
+
+    def test_get_reaches_the_wire_and_returns_the_scripted_response(self):
+        driver = self.make_driver(NETWORK_TCK_TARGET, {"method": "GET"},
+                                  [(200, {"ok": True})])
+        self.addCleanup(driver.close)
+
+        status, body, _headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual((status, body), (200, {"ok": True}))
+
+    def test_put_patch_delete_each_reach_the_wire(self):
+        for method in ("PUT", "PATCH", "DELETE"):
+            driver = self.make_driver(NETWORK_TCK_TARGET, {"method": method},
+                                      [(200, {})])
+            self.addCleanup(driver.close)
+
+            status, _body, _headers = driver.call(NETWORK_TCK_TARGET,
+                                                   {"x": 1}, 2000)
+
+            self.assertEqual(status, 200)
+
+    # -- retry (issue #109, D1/D2) ------------------------------------------
+
+    def test_no_retry_declared_makes_exactly_one_attempt(self):
+        """The declared-not-bound default: a target the capability's `retry`
+        clause never mentions gets exactly one attempt, even against a
+        retryable status — the pre-#109, RFC-0027 behaviour."""
+        driver = self.make_driver(NETWORK_TCK_TARGET, {"method": "POST"},
+                                  [(500, {}), (200, {"should": "not reach"})])
+        self.addCleanup(driver.close)
+
+        status, body, _headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual((status, body), (500, {}))
+
+    def test_retry_recovers_across_a_failing_then_succeeding_sequence(self):
+        driver = self.make_driver(
+            NETWORK_TCK_TARGET,
+            {"method": "POST",
+             "retry": {"count": 2, "backoff_ms": 1, "jitter": False}},
+            [(500, {}), (200, {"ok": True})])
+        self.addCleanup(driver.close)
+
+        status, body, _headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual((status, body), (200, {"ok": True}))
+
+    def test_a_non_retryable_4xx_is_not_retried_even_with_retry_declared(self):
+        driver = self.make_driver(
+            NETWORK_TCK_TARGET,
+            {"method": "POST",
+             "retry": {"count": 3, "backoff_ms": 1, "jitter": False}},
+            [(404, {}), (200, {"should": "not reach"})])
+        self.addCleanup(driver.close)
+
+        status, body, _headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual((status, body), (404, {}))
+
+    # -- breaker (issue #109, D5) --------------------------------------------
+
+    def test_breaker_opens_after_the_threshold_and_rejects_without_a_response(self):
+        driver = self.make_driver(
+            NETWORK_TCK_TARGET,
+            {"method": "POST", "breaker": {"threshold": 2, "window_ms": 60_000}},
+            [(500, {})])
+        self.addCleanup(driver.close)
+
+        first = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+        second = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual(first[0], 500)
+        self.assertEqual(second[0], 500)
+        with self.assertRaises(DriverError) as caught:
+            driver.call(NETWORK_TCK_TARGET, {}, 2000)
+        self.assertIn("breaker-open", str(caught.exception))
+
+    def test_no_breaker_declared_never_rejects_on_its_own(self):
+        driver = self.make_driver(NETWORK_TCK_TARGET, {"method": "POST"},
+                                  [(500, {})])
+        self.addCleanup(driver.close)
+
+        for _ in range(5):
+            status, _body, _headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+            self.assertEqual(status, 500)
+
+    # -- response headers (issue #109, D7) -----------------------------------
+
+    def test_response_headers_reach_the_caller_lower_cased(self):
+        driver = self.make_driver(
+            NETWORK_TCK_TARGET, {"method": "GET"},
+            [(200, {}, {"x-request-id": "abc123"})])
+        self.addCleanup(driver.close)
+
+        _status, _body, headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual(headers.get("x-request-id"), "abc123")
+
+    # -- timeout (opt-in — see make_slow_driver's docstring note above) -----
+
+    def test_a_response_slower_than_the_timeout_raises_driver_error(self):
+        driver = self.make_slow_driver(NETWORK_TCK_TARGET, {"method": "GET"},
+                                       delay_s=1.0)
+        if driver is None:
+            self.skipTest("this driver kind performs no real I/O and so "
+                          "cannot time out")
+        self.addCleanup(driver.close)
+
+        with self.assertRaises(DriverError):
+            driver.call(NETWORK_TCK_TARGET, {}, timeout_ms=50)
 
 
 def _b64u_json(obj):

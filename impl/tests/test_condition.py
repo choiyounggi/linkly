@@ -1,7 +1,7 @@
 """Test guard condition parsing (RFC-0008)."""
 
 import unittest
-from impl.lnpl.condition import (
+from lnpl.condition import (
     parse_condition, condition_to_string, references,
     And, Arith, Lit, Presence, Comparison, Ref, ConditionError
 )
@@ -356,23 +356,23 @@ class TestModeARefusesUnevaluableConditions(unittest.TestCase):
     """
 
     def _holds(self, condition, payload=None, bindings=None):
-        from impl.lnpl.interp import _condition_holds
+        from lnpl.interp import _condition_holds
         return _condition_holds(condition, payload or {}, bindings or {})
 
     def test_an_unknown_comparator_is_refused(self):
-        from impl.lnpl.interp import RunError
+        from lnpl.interp import RunError
         with self.assertRaises(RunError) as ctx:
             self._holds("latency exceeds budget")
         self.assertIn("Invalid condition", str(ctx.exception))
 
     def test_a_bare_word_is_refused(self):
-        from impl.lnpl.interp import RunError
+        from lnpl.interp import RunError
         with self.assertRaises(RunError):
             self._holds("token")
 
     def test_a_four_token_phrase_is_refused(self):
         """The production RFC-0008 removed — no evaluator ever implemented it."""
-        from impl.lnpl.interp import RunError
+        from lnpl.interp import RunError
         with self.assertRaises(RunError):
             self._holds("foo bar baz qux")
 

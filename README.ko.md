@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 2,800여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 3,150여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 37편 — 33편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034/0035는 `Draft`.** RFC-0007은
+**RFC 42편 — 39편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -251,10 +251,15 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0032 트랜잭션 경계와 rollback 집행](rfcs/0032-transaction-boundary-and-rollback-enforcement.md) | 워크플로 실행이 암묵적 트랜잭션 하나가 된다(명시적 `Transaction` IR 노드는 아직 없다) — 성공 시 commit, 실패 시 rollback(실패한 실행이 등록한 이벤트 emission 포함). `policy rollback`은 `unenforced`에서 `enforced`로 승격된다. *0003 §Execution Model·§Policy Enforcement·§Examples 갱신* |
 | [0033 선언 이름공간 — 디렉터리 스코프와 internal/ 가시성](rfcs/0033-namespace-directories.md) | *(Draft)* 하위 디렉터리를 가진 디렉터리가 네임스페이스 루트가 된다 — 1단계 하위 디렉터리 이름이 곧 그 안 선언들의 네임스페이스이고, 이름이 정확히 `internal`인 디렉터리는 가시성을 그 부모로 좁힌다. 문법 변경 0개, 전부 경로에서 유도. 선언 이름은 이제 전역이 아니라 네임스페이스 안에서만 유일하면 되고, 네임스페이스 없는(오늘의) 컴파일 단위는 바이트 동일이다. 실측이 먼저다(`docs/scale-pressure-measurement.md`): 엔티티 50개·명사 풀 10개에서 이름 충돌 40건. *0031 §Guide-level Explanation·§Reference-level Specification(`load_sources`) 갱신* |
 | [0034 NetworkCall 보상(compensation) 결정](rfcs/0034-network-call-compensation.md) | *(Draft)* `policy rollback`이 보호하는 트랜잭션 경계 밖의 `NetworkCall` 스텝을 어떻게 보상할지 결정한다 — 향후 도입될 `compensate` 절이 있으면 컴파일러의 `rollback-escapes-network` 경고(이슈 #112)를 침묵시키고, 없으면 그 경고가 기본으로 남는다. outbox 대안은 기각 — 비동기 호출은 `call ... as <이름>`의 동기 결과 바인딩(RFC-0027 §2, RFC-0030)을 만족할 수 없다. 결정만, 문법 변경은 아직 없다. |
-| [0035 인가 집행의 유보된 범위](rfcs/0035-authorization-enforcement-deferred-scope.md) | *(Draft)* `security role`이 실제로 집행되면서 issue #119가 미결로 남긴 세 질문에 답한다 — 워크플로 수준 `security role`은 지금은 도입하지 않는다(실측된 수요 없음, 재검토 조건 명시), `authorize` 동사는 승격된 `warning` 등급을 유지한 채 최종 운명((a) 선언 연결 대 (b) 폐기)을 실사용 관측으로 미룬다(판단 기준 표 포함), `security encrypt`는 제거를 결정한다("드라이버 의존"은 외부 드라이버가 0건인 공집합에 대한 서술이라 기각) — 마이그레이션 안내를 적고, 실제 제거는 후속 `tech-debt` 이슈로 넘긴다. |
+| [0035 인가 집행의 유보된 범위](rfcs/0035-authorization-enforcement-deferred-scope.md) | `security role`이 실제로 집행되면서 issue #119가 미결로 남긴 세 질문에 답한다 — 워크플로 수준 `security role`은 지금은 도입하지 않는다(실측된 수요 없음, 재검토 조건 명시), `authorize` 동사는 승격된 `warning` 등급을 유지한 채 최종 운명((a) 선언 연결 대 (b) 폐기)을 실사용 관측으로 미룬다(판단 기준 표 포함), `security encrypt`는 제거를 결정한다("드라이버 의존"은 외부 드라이버가 0건인 공집합에 대한 서술이라 기각) — 마이그레이션 안내를 적고, 실제 제거는 후속 `tech-debt` 이슈로 넘긴다. |
 | [0036 `policy rollback` 선언의 실제 효력 정정](rfcs/0036-policy-rollback-declaration-effect.md) | `policy rollback`의 문서화된 효력을 정정한다 — `run_workflow`는 선언 여부와 무관하게 실패한 모든 실행의 쓰기를 무조건 롤백한다. 선언이 실제로 좌우하는 것은 INFO trace 로그 한 줄과 컴파일 타임 `rollback-escapes-network` 진단(issue #112)뿐이다. `enforced` 상태는 유지한다(보장 자체는 실재한다) — 틀린 것은 설명문뿐이었다. 동작 변경 없음. *0032 §실행 경계·§docs/ENFORCEMENT-MATRIX.md §B — policy rollback 행 갱신* |
+| [0037 아웃바운드 HTTP 회복성 계층](rfcs/0037-http-resilience.md) | `capability http`에 `retry <N> backoff <duration> [jitter]`(지수 백오프, full jitter, Retry-After 인지)와 `breaker after <N> within <duration>`(인프로세스 서킷브레이커)를 더하고, `method`가 `get/post/put/patch/delete`로 넓어지고, `path "<template>"` + `call ... with <ref>...`가 이스케이프된 URL 경로를 조립한다. `NetworkDriver.call`은 파괴적으로 3-튜플 `(status, body, headers)`가 되며 두 구현에 한 번에 적용된다 — `NetworkDriverTCK`가 둘이 같은 선언을 다르게 채점하지 않는지 검사한다. 선언이 없으면 이전과 바이트 동일. *0027 §Reference-level Specification/1 갱신* |
+| [0038 `list where` 질의 술어 + order by/limit](rfcs/0038-list-where-predicate.md) | `list <Entity>`에 `where <cond> [order by <field> [desc]] [limit <N>]`가 더해진다 — 가드 조건 문법(`condition.py`)을 그대로 재사용해 새 표현식 언어를 만들지 않는다. 등가(`==`/`!=`)는 선언 타입이 같으면(UUID/Text/Email 포함) 허용하고, 순서 비교(`<`,`<=`,`>`,`>=`)는 Integer/DateTime 차원 제약을 그대로 유지한다. `RepositoryDriver.query`에 `predicate`/`order`/`limit`이 더해지며(전부 기본값 `None`, 없으면 바이트 동일) 드라이버는 `supports_predicate`로 푸시다운을 옵트인하고, 아니면 코어가 과다수신 후 파이썬에서 걸러 INFO `predicate-not-pushed-down` 한 줄을 남긴다. *0016 §Reference-level Specification/3, 0025 §Reference-level Specification/1 갱신* |
+| [0039 `note` 동사 + canonical log line](rfcs/0039-note-verb-and-canonical-line.md) | `note "<template>" [with <ref>...]`가 Effect가 아닌 `Annotation` 노드로 lower된다(`respond`/`Response`와 같은 취급) — `condition._parse_format_rhs`를 그대로 재사용한다. 미바인딩 참조는 `null`로 기록될 뿐 실행을 실패시키지 않고, Password 타입 값은 기존 `mask_payload` chokepoint로 마스킹된다. 워크플로당 `note` 16개 초과는 컴파일 에러가 아니라 `note-cap-exceeded` 경고다. `--log-format json`의 canonical line에 `notes`/`effects`/`input_digest`가 존재할 때만 덧붙고, `lnpl serve --capture-on-failure`(기본 off)는 실패/500으로 끝난 실행의 줄에만 마스킹된 입력 payload를 싣는다. `_call_with_json_log`는 이제 끝까지 예외 안전하다 — `_respond`에 닿기도 전에 죽는 요청도 canonical line 한 줄을 낸다. |
+| [0040 이벤트 소비 계약](rfcs/0040-event-consumption-contract.md) | `event ... consume by <Workflow>`가 도착 시 워크플로를 실행한다 — RFC-0032가 이미 확정한 발행 쪽의 남은 소비 절반. `POST /-/events/<slug>`(예약 공간, RFC-0016 스케줄 트리거와 같은 모양)가 CloudEvents v1.0 구조화 봉투를 받고, 그 `id`가 멱등성 키다(이슈 #113의 `lnpl_idempotency` 테이블·API·TTL을 그대로 재사용, 두 번째 저장소 없음). 실행 결과는 정확히 3갈래로 매핑된다 — 200 성공, 503+`Retry-After` 일시적(데드라인, 또는 `RepositoryCall`/`NetworkCall` effect 실패), 422 영구적(Validation 거부, 비즈니스/가드 RunError, create 충돌) — 그리고 503은 `idempotency_finish`를 의도적으로 건너뛰어 재시도가 503을 영원히 재생하는 대신 새로 실행되게 한다. `consume by`와 그 워크플로 자신의 `emit` 사이의 순환은 정적 경고(`event-consume-cycle`)이지 컴파일 에러가 아니다. `lnpl relay`가 outbox를 드레인해 소비 라우트로 미는 레퍼런스 릴레이다(urllib만, 브로커 의존 없음). |
+| [0041 `parallel` 블록 실행](rfcs/0041-parallel-block-execution.md) | RFC-0003이 구조적 동시성으로 이미 약속했던 것을 mode A가 마침내 집행한다 — `parallel` 블록의 스텝이 블록 스코프 `ThreadPoolExecutor`에서 실행되고, fail-fast(한 브랜치 실패 시 시작 전인 나머지를 취소하고 블록 실패), 동시성 상한은 `policy parallel <N>`(기존 정책 이름에 새로 붙은 선택적 정수 인자 — 값이 없으면 블록 자신의 스텝 수로 폴백)이 정한다. 같은 entity에 쓰는 두 스텝이 한 블록에 있으면 컴파일 타임 `LowerError`가 두 줄번호를 함께 인용한다 — RFC-0012의 바인딩은 순서 의존적인데 `parallel` 블록에는 순서가 없기 때문이다. 보고는 완료 순서가 아니라 선언 순서를 유지해 `spec.py`의 `steps <N>`이 순차 실행과 같은 모양을 낸다. 각 스텝 스팬은 가상 `Clock`이 아니라 실제 벽시계 타임스탬프를 써서, 겹치는 형제 스팬이 실제 동시 실행의 증거가 된다. mode B는 손대지 않았다(RFC-0004 §5(#7) 계속 미결) — `differential`이 이제 `parallel`을 가진 워크플로의 리포트를 정확히 그 이유로 미검증 차원으로 표시한다. |
 
-32편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+38편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -311,7 +316,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2823 tests in 74.800s
+Ran 3150 tests in 112.059s
 OK
 ```
 

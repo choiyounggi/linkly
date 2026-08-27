@@ -22,7 +22,7 @@
 | `policy retry` | **enforced** | run_workflow re-runs a failed step while its effects are idempotent |
 | `policy timeout` | **enforced** | a workflow deadline is computed, and exceeding it fails the run |
 | `policy rollback` | **enforced** | run_workflow opens a transaction before its first step and rolls it back on any failure, discarding every write (and outbox registration) that run made |
-| `policy parallel` | **unenforced** | parsed, but the execution plan never reads it |
+| `policy parallel` | **enforced** | run_workflow executes a `parallel` block's steps concurrently, cancels the rest on the first failure, and caps concurrency at the declared value |
 | `security jwt` | **unenforced** | the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md) |
 | `security role` | **enforced** | every route the declaring service owns requires the verified token's role to exactly match `<r>`; mismatch or absence is 403 `forbidden` (docs/serving.md M3b) |
 | `performance response` | **measured** | measured and reported per run, but an over-budget run is not blocked |
@@ -53,3 +53,6 @@
 | `declared-not-bound` | **info** |
 | `stored-row-shape-mismatch` | **warning** |
 | `rollback-escapes-network` | **warning** |
+| `retry-on-non-idempotent` | **warning** |
+| `note-cap-exceeded` | **warning** |
+| `event-consume-cycle` | **warning** |

@@ -67,6 +67,7 @@ EFFECT_SLUG = {
     "EventEmit": "emit",
     "BusinessRule": "rule",
     "Response": "respond",
+    "Annotation": "note",
 }
 
 # The one verb whose object is a value expression rather than an entity name
@@ -89,6 +90,18 @@ FORMAT_VERB = "format"
 # Assignment — nothing is written — so it gets its own IR node kind,
 # `Response`.
 RESPOND_VERB = "respond"
+
+# issue #111: `note "<template>" [with <ref>...]` — a span annotation, not an
+# Effect (nothing changes state, the same judgment `respond` made for
+# `Response`). Routed the same way `RESPOND_VERB` is: its object is a
+# template + reference list, not an entity name, so `_WfContext._step` sends
+# it to its own derivation (`_derive_note`) rather than `_derive_effect`.
+NOTE_VERB = "note"
+
+# issue #111, D3: more than this many `note`s in one workflow is a
+# `note-cap-exceeded` compile warning — "log what earns its place" enforced
+# at the vocabulary level, not left to author discipline.
+NOTE_CAP = 16
 
 # R1: the closed step-verb lexicon. verb -> (Effect kind, fixed fields)
 VERB_LEXICON = {
@@ -124,6 +137,9 @@ VERB_LEXICON = {
     # Effect that changes state, so it gets its own kind rather than reusing
     # one of the nine Effect kinds above.
     "respond": ("Response", {}),
+    # issue #111: see `NOTE_VERB` — a span annotation, not an Effect, gets
+    # its own kind for the same reason `respond` does.
+    "note": ("Annotation", {}),
 }
 
 # RFC-0026: `unknown-verb`'s did-you-mean, tier 1. The closed lexicon's actual
@@ -186,8 +202,12 @@ CALLER_FIELDS = ("subject", "role")
 # `capability http <Name>` (issue #101 / RFC-0027): the outbound HTTP method
 # and auth-scheme vocabularies. Closed sets, widened only on demand (issue
 # text) — the same "add a table row, not a branch" shape as POLICY_NAMES etc.
-HTTP_METHODS = ("get", "post")
+HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 HTTP_AUTH_KINDS = ("bearer", "apikey")
+# issue #109, D4: RFC 9110 §9.2.2 idempotent methods. `post`/`patch` are the
+# two NOT in this set — pairing either with `retry` risks re-applying a
+# non-idempotent effect (a double charge), hence the compile warning below.
+HTTP_IDEMPOTENT_METHODS = ("get", "put", "delete")
 
 # issue #99, D2: `expose` opt-in list surface. `list` is the only verb — a
 # closed set of one, widened only if a later issue asks for more (RFC-0016
@@ -387,15 +407,113 @@ def _parse_http_auth(line):
     return {"kind": "apikey", "header": tokens[2], "env": tokens[4]}
 
 
-def _parse_http_capability(d):
-    """`capability http <Name>` body lines -> {"method": ..., "auth": ...|None}.
+def _parse_http_retry(line):
+    """`retry <N> backoff <duration> [jitter]` -> {"count", "backoff_ms",
+    "jitter"} (issue #109, D2). `N` must be a positive integer — `retry 0`
+    is not a way to spell "no retry", it is just not a sentence anyone
+    should write (the way to mean "no retry" is to not write the clause at
+    all, RFC-0027-style declared-not-bound)."""
+    from .lexer import duration_ms_or_none
+    tokens = line.tokens
+    if (len(tokens) < 4 or not tokens[1].isdigit() or tokens[2] != "backoff"):
+        raise LowerError(
+            "line %d: `retry` needs `<N> backoff <duration> [jitter]`"
+            % line.lineno)
+    count = int(tokens[1])
+    if count < 1:
+        raise LowerError(
+            "line %d: `retry` count must be a positive integer, got %r"
+            % (line.lineno, tokens[1]))
+    backoff_ms = duration_ms_or_none(tokens[3])
+    if backoff_ms is None:
+        raise LowerError(
+            "line %d: `retry backoff` needs a duration like `200ms`, got %r"
+            % (line.lineno, tokens[3]))
+    jitter = False
+    rest = tokens[4:]
+    if rest:
+        if rest != ["jitter"]:
+            raise LowerError(
+                "line %d: `retry` takes only a trailing `jitter` flag, got %r"
+                % (line.lineno, " ".join(rest)))
+        jitter = True
+    return {"count": count, "backoff_ms": backoff_ms, "jitter": jitter}
+
+
+def _parse_http_breaker(line):
+    """`breaker after <N> within <duration>` -> {"threshold", "window_ms"}
+    (issue #109, D5)."""
+    from .lexer import duration_ms_or_none
+    tokens = line.tokens
+    if (len(tokens) != 5 or tokens[1] != "after" or not tokens[2].isdigit()
+            or tokens[3] != "within"):
+        raise LowerError(
+            "line %d: `breaker` needs `after <N> within <duration>`"
+            % line.lineno)
+    threshold = int(tokens[2])
+    if threshold < 1:
+        raise LowerError(
+            "line %d: `breaker after` count must be a positive integer, "
+            "got %r" % (line.lineno, tokens[2]))
+    window_ms = duration_ms_or_none(tokens[4])
+    if window_ms is None:
+        raise LowerError(
+            "line %d: `breaker within` needs a duration like `1m`, got %r"
+            % (line.lineno, tokens[4]))
+    return {"threshold": threshold, "window_ms": window_ms}
+
+
+def _parse_http_path(line):
+    """`path "<template>"` -> the template string (issue #109, D6). The
+    quoted-literal shape mirrors `condition._parse_template_token` exactly
+    (one double-quoted word, no embedded quote) since both feed the same
+    `{}`-placeholder convention; kept as its own copy here rather than an
+    import because this one additionally requires a leading `/` — a URL
+    path, not `format`'s arbitrary string."""
+    tokens = line.tokens
+    if len(tokens) != 2:
+        raise LowerError(
+            "line %d: `path` takes one double-quoted template, no spaces"
+            % line.lineno)
+    token = tokens[1]
+    if len(token) < 2 or token[0] != '"' or token[-1] != '"':
+        raise LowerError(
+            "line %d: `path` template must be one double-quoted word"
+            % line.lineno)
+    template = token[1:-1]
+    if '"' in template:
+        raise LowerError(
+            "line %d: `path` template contains an embedded quote" % line.lineno)
+    if not template.startswith("/"):
+        raise LowerError(
+            "line %d: `path` template must start with `/`, got %r"
+            % (line.lineno, template))
+    if "{}" not in template:
+        raise LowerError(
+            "line %d: `path` template %r has no `{}` placeholder — `path` "
+            "exists only to be substituted by a `with <ref>...` call site; "
+            "a fixed path with no placeholder belongs in the endpoint URL "
+            "itself, not in a `path` declaration" % (line.lineno, template))
+    return template
+
+
+def _parse_http_capability(d, diagnostics=None):
+    """`capability http <Name>` body lines -> {"method", "auth", "retry",
+    "path", "breaker"} — the last three present only when declared.
 
     `method` is required (no silent POST default — issue #101's whole point is
-    that method/auth are declared, not guessed); `auth` is optional. Each
-    keyword may appear at most once.
+    that method/auth are declared, not guessed); every other keyword is
+    optional and may appear at most once (issue #109 widens the same shape).
+
+    `diagnostics` (issue #109, D4), when given, gets a `retry-on-non-idempotent`
+    warning when `method post`/`patch` is declared alongside `retry` — the
+    non-idempotent methods, RFC 9110 §9.2.2.
     """
     method = None
     auth = None
+    retry = None
+    breaker = None
+    path = None
     for line in d.items:
         head = line.tokens[0]
         if head == "method":
@@ -414,38 +532,88 @@ def _parse_http_capability(d):
                     "line %d: capability http %s declares `auth` twice"
                     % (line.lineno, d.name))
             auth = _parse_http_auth(line)
+        elif head == "retry":
+            if retry is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `retry` twice"
+                    % (line.lineno, d.name))
+            retry = _parse_http_retry(line)
+        elif head == "breaker":
+            if breaker is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `breaker` twice"
+                    % (line.lineno, d.name))
+            breaker = _parse_http_breaker(line)
+        elif head == "path":
+            if path is not None:
+                raise LowerError(
+                    "line %d: capability http %s declares `path` twice"
+                    % (line.lineno, d.name))
+            path = _parse_http_path(line)
         else:
             raise LowerError(
-                "line %d: capability http takes `method`/`auth`, got %r"
-                % (line.lineno, head))
+                "line %d: capability http takes `method`/`auth`/`retry`/"
+                "`breaker`/`path`, got %r" % (line.lineno, head))
     if method is None:
         raise LowerError(
             "line %d: capability http %s declares no `method` — one of %s "
             "is required" % (d.lineno, d.name, "/".join(HTTP_METHODS)))
-    return {"method": method, "auth": auth}
+    if (retry is not None and method not in HTTP_IDEMPOTENT_METHODS
+            and diagnostics is not None):
+        diagnostics.add(
+            code="retry-on-non-idempotent",
+            where=derive_id(d.name, "Capability"),
+            subject="method %s" % method,
+            message="capability http %s declares `method %s` with `retry` — "
+                    "a non-idempotent method may be applied more than once "
+                    "on a retry; pair it with an idempotency key (issue "
+                    "#113) or drop `retry`" % (d.name, method),
+            line=d.lineno)
+    return {"method": method, "auth": auth, "retry": retry,
+            "breaker": breaker, "path": path}
 
 
-def _parse_event_subscribe(d):
-    """`event ... subscribe` body lines -> `True`, or a refusal.
+def _parse_event_body(d):
+    """`event ...` body lines -> `(subscribe: bool, consume: (name, lineno) or None)`.
 
-    issue #103, D1: a bare flag, one word, at most once — the same shape
-    `_parse_perf_line`'s `VALUELESS_PERF` branch already gives a flag metric.
-    Structural validation only; `subscribe` reaching the IR at all is what
-    `serve.py` reads to derive the SSE route (D2) — this function does not
-    know about routes or auth.
+    Two shapes share this clause-free content-line slot (parser.py:366-372):
+    `subscribe` (issue #103, D1) — a bare flag, one word, at most once, the
+    same shape `_parse_perf_line`'s `VALUELESS_PERF` branch already gives a
+    flag metric — and `consume by <Workflow>` (issue #118, D1) — exactly
+    three tokens, at most once. Neither excludes the other, and neither
+    excludes an `on <Entity> ...`/`on schedule ...` source parsed separately
+    from `d.extra` above: `subscribe` means "expose over SSE", `consume by`
+    means "run this workflow on arrival" — independent opt-ins on the same
+    declaration.
+
+    Structural validation only. `subscribe` reaching the IR is what
+    `serve.py` reads to derive the SSE route (D2); the consume target's
+    *existence* as a declared workflow is checked by the caller, which alone
+    has `by_kind["workflow"]` in hand — this function only shapes the line.
     """
     subscribed = False
+    consume = None
     for line in d.items:
-        if line.tokens != ["subscribe"]:
-            raise LowerError(
-                "line %d: event %s takes only a bare `subscribe` line, got %r"
-                % (line.lineno, d.name, " ".join(line.tokens)))
-        if subscribed:
-            raise LowerError(
-                "line %d: event %s declares `subscribe` twice"
-                % (line.lineno, d.name))
-        subscribed = True
-    return subscribed
+        tokens = line.tokens
+        if tokens == ["subscribe"]:
+            if subscribed:
+                raise LowerError(
+                    "line %d: event %s declares `subscribe` twice"
+                    % (line.lineno, d.name))
+            subscribed = True
+            continue
+        if len(tokens) == 3 and tokens[0] == "consume" and tokens[1] == "by":
+            if consume is not None:
+                raise LowerError(
+                    "line %d: event %s declares `consume by` twice"
+                    % (line.lineno, d.name))
+            consume = (tokens[2], line.lineno)
+            continue
+        raise LowerError(
+            "line %d: event %s takes only a bare `subscribe` line or "
+            "`consume by <Workflow>`, got %r"
+            % (line.lineno, d.name, " ".join(tokens)))
+    return subscribed, consume
 
 
 def _parse_policy_line(tokens, lineno):
@@ -461,6 +629,25 @@ def _parse_policy_line(tokens, lineno):
         if len(tokens) != 2 or not is_duration(tokens[1]):
             raise LowerError("line %d: `timeout` needs a duration (e.g. 3s)" % lineno)
         return {"name": "timeout", "value": tokens[1]}
+    if head == "parallel":
+        # issue #108 D2-r1: the bare flag form stays valid (cap falls back to
+        # the block's own step count at run time — interp.py); an optional
+        # integer argument sets an explicit concurrency cap, the same arity
+        # `retry` above already has.
+        if len(tokens) == 1:
+            return {"name": "parallel"}
+        if (len(tokens) != 2 or not tokens[1].isdigit()
+                or int(tokens[1]) < 1):
+            # A cap of 0 workers can never run a block's steps at all — not
+            # a smaller concurrency limit, a stuck one — so it is refused
+            # here rather than silently falling back to "no cap" the way
+            # `con["parallel_cap"] or len(steps)` (interp.py) treats any
+            # falsy value. Refusing it at the source is what keeps this
+            # RFC-0041/RFC-0003's "N is never exceeded" claim actually true
+            # for every value the grammar accepts.
+            raise LowerError("line %d: `parallel` takes an optional positive "
+                             "integer cap (e.g. `parallel 3`)" % lineno)
+        return {"name": "parallel", "value": int(tokens[1])}
     if len(tokens) != 1:
         raise LowerError("line %d: `%s` takes no argument" % (lineno, head))
     return {"name": head}
@@ -600,6 +787,163 @@ def _parse_expose_line(tokens, lineno, registry, base_of):
             "(allowed: %s), but %s.%s is base %r"
             % (lineno, ", ".join(EXPOSE_SORT_BASES), entity_name, field_name, base))
     return {"entity": entity["id"], "field": field_name}
+
+
+# issue #116, D1: `list <Entity> where <cond> [order by <field> [desc]]
+# [limit <N>]` — clause order fixed, all three tail clauses (`where`'s
+# condition included) collectively optional (a bare `list <Entity>` is
+# still the RFC-0025 form). Comparators split by D2: `<`/`<=`/`>`/`>=` keep
+# the Integer/DateTime dimension restriction `_dimension_of` already
+# enforces for guards; `==`/`!=` additionally allow any base type, as long
+# as both sides agree, since equality does not need an evaluator the way an
+# ordering does.
+_LIST_ORDER_COMPARATORS = ("<", "<=", ">", ">=")
+
+
+def _parse_list_clauses(rest, lineno, entity, base_of):
+    """`list <Entity>`'s trailing tokens (issue #116, D1) -> `(predicate,
+    order, limit)`, each `None` when absent. Called only when `rest` is
+    non-empty — the empty case is the RFC-0025 regression path and never
+    reaches here (`_derive_effect` returns the unchanged 4-key node for it).
+    """
+    if rest[0] != "where":
+        raise LowerError(
+            "line %d: `list` accepts `where <cond> [order by <field> "
+            "[desc]] [limit <N>]`, got %r" % (lineno, " ".join(rest)))
+    boundary = len(rest)
+    for i in range(1, len(rest)):
+        if rest[i] in ("order", "limit"):
+            boundary = i
+            break
+    cond_tokens = rest[1:boundary]
+    if not cond_tokens:
+        raise LowerError("line %d: `where` needs a condition" % lineno)
+    predicate = _parse_predicate_terms(" ".join(cond_tokens), lineno, entity, base_of)
+    tail = rest[boundary:]
+
+    order = None
+    if tail[:1] == ["order"]:
+        if len(tail) < 3 or tail[1] != "by":
+            raise LowerError(
+                "line %d: `order` must be `order by <field> [desc]`" % lineno)
+        field_name = tail[2]
+        consumed = 3
+        desc = False
+        if len(tail) > 3 and tail[3] == "desc":
+            desc = True
+            consumed = 4
+        order = _parse_list_order_field(field_name, desc, lineno, entity, base_of)
+        tail = tail[consumed:]
+
+    limit = None
+    if tail[:1] == ["limit"]:
+        if len(tail) < 2:
+            raise LowerError(
+                "line %d: `limit` needs exactly one integer argument" % lineno)
+        if not tail[1].isdigit():
+            raise LowerError(
+                "line %d: `limit` needs a positive integer, got %r"
+                % (lineno, tail[1]))
+        n = int(tail[1])
+        if n < 1:
+            raise LowerError(
+                "line %d: `limit` must be at least 1, got %d" % (lineno, n))
+        limit = n
+        tail = tail[2:]
+
+    if tail:
+        raise LowerError(
+            "line %d: unexpected trailing tokens %r after `list` clauses "
+            "(clause order is where -> order by -> limit)"
+            % (lineno, " ".join(tail)))
+
+    return predicate, order, limit
+
+
+def _parse_predicate_terms(cond_text, lineno, entity, base_of):
+    """`where`'s condition text -> a conjunction list of `{field, op,
+    value}` dicts (issue #116, D4) — a structured node, not the raw text,
+    so the field name reaching the driver is always one the compiler
+    already whitelisted (RFC-0016's injection principle applied to `list`).
+
+    Reuses `condition.parse_condition` verbatim (D1: no new parser) — this
+    function only judges what that parser already produced, against the
+    entity being listed.
+    """
+    from .condition import And, ConditionError, Presence, Ref, parse_condition, value_to_string
+
+    try:
+        cond = parse_condition(cond_text)
+    except ConditionError as e:
+        raise LowerError("line %d: %s" % (lineno, e))
+    if isinstance(cond, Presence):
+        raise LowerError(
+            "line %d: `list where` supports comparisons only (no `exists`/"
+            "`missing` presence checks), got %r" % (lineno, cond_text))
+    terms = cond.terms if isinstance(cond, And) else (cond,)
+
+    fields_by_name = {f["name"]: f for f in entity["fields"]}
+    result = []
+    for term in terms:
+        left = term.left
+        if not isinstance(left, Ref) or left.namespace is not None:
+            raise LowerError(
+                "line %d: the left side of a `list where` comparison must "
+                "be a bare field of %s, got %r"
+                % (lineno, entity["name"], value_to_string(left)))
+        field = fields_by_name.get(left.field)
+        if field is None:
+            raise LowerError(
+                "line %d: entity %s has no field %r (candidates: %s)"
+                % (lineno, entity["name"], left.field,
+                   ", ".join(sorted(fields_by_name)) or "none"))
+        base = base_of.get(field["type"], field["type"])
+        if term.op in _LIST_ORDER_COMPARATORS:
+            if base not in EXPOSE_SORT_BASES:
+                raise LowerError(
+                    "line %d: `list where` order comparison (%s) needs an "
+                    "Integer or DateTime field, but %s.%s is base %r"
+                    % (lineno, term.op, entity["name"], left.field, base))
+        elif base not in EXPOSE_SORT_BASES:
+            # D2: equality across any type, but only between two references
+            # of the same declared base — there is no literal syntax for a
+            # UUID/Text/Email value in this grammar (`condition.py`'s
+            # `Operand` is `Reference | Integer | Duration`), so a Lit or
+            # Arith on the right can never be the same type as a non-
+            # scalar/instant field. The same-base-type check itself needs
+            # the workflow's binding scope (which entity a qualified
+            # reference names) — deferred to `_check_list_predicate`, the
+            # post-pass every other guard-shaped check already runs in.
+            if not isinstance(term.right, Ref):
+                raise LowerError(
+                    "line %d: %s.%s is %s — equality against it needs a "
+                    "reference (a single-row binding field or "
+                    "`input.%s`), not a literal or arithmetic expression"
+                    % (lineno, entity["name"], left.field, base, left.field))
+        result.append({"field": left.field, "op": term.op,
+                       "value": value_to_string(term.right)})
+    return result
+
+
+def _parse_list_order_field(field_name, desc, lineno, entity, base_of):
+    """`order by <field> [desc]` (issue #116, D7) — reuses `expose list`'s
+    sort-field check (`EXPOSE_SORT_BASES`) verbatim, plus a candidates list
+    on an unknown field (issue #116 DoD item 5)."""
+    fields_by_name = {f["name"]: f for f in entity["fields"]}
+    field = fields_by_name.get(field_name)
+    if field is None:
+        raise LowerError(
+            "line %d: entity %s has no field %r (candidates: %s)"
+            % (lineno, entity["name"], field_name,
+               ", ".join(sorted(fields_by_name)) or "none"))
+    base = base_of.get(field["type"], field["type"])
+    if base not in EXPOSE_SORT_BASES:
+        raise LowerError(
+            "line %d: `order by` field must be Integer or DateTime "
+            "(allowed: %s), but %s.%s is base %r"
+            % (lineno, ", ".join(EXPOSE_SORT_BASES), entity["name"],
+               field_name, base))
+    return {"field": field_name, "desc": desc}
 
 
 def _number(tok):
@@ -816,11 +1160,17 @@ def lower(decls, module_name):
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
     cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
-    # issue #101: which declared capabilities carry outbound HTTP metadata —
-    # `_derive_effect`'s NetworkCall branch uses only the name set, to flag a
-    # `call <target>` whose target names no `capability http` declaration.
-    http_cap_names = {d.name for d in by_kind["capability"]
-                      if d.extra.get("capability_kind") == "http"}
+    # issue #101/#109: which declared capabilities carry outbound HTTP
+    # metadata, and what it is — `_derive_effect`'s NetworkCall branch reads
+    # `http_caps` both to flag a `call <target>` naming no `capability http`
+    # declaration (membership) and to check a `with <ref>...` clause's
+    # argument count against the capability's declared `path` template's
+    # `{}` count (issue #109, D6). Parsed once here, not re-parsed by the
+    # Capability node-emission loop below, so a diagnostic like
+    # `retry-on-non-idempotent` is never emitted twice for the same line.
+    http_caps = {d.name: _parse_http_capability(d, diagnostics=mod.diagnostics)
+                for d in by_kind["capability"]
+                if d.extra.get("capability_kind") == "http"}
 
     # ---- workflow ownership: nearest preceding service (RFC-0002 A.2 R2) ----
     owner_of = {}
@@ -954,11 +1304,21 @@ def lower(decls, module_name):
         mod.add(_node("Entity", ent["id"], name=ent["name"], fields=ent["fields"],
                       line=ent["decl"].lineno))
 
+    # issue #118, D1: workflow ids known before any workflow is lowered — the
+    # names are already in `by_kind["workflow"]` from parsing, and `consume
+    # by <Workflow>` needs to validate against them right here, in the same
+    # pass that builds each Event node (lowering a workflow body is a
+    # separate, later concern).
+    declared_workflow_ids = {derive_id(w.name, "Workflow") for w in by_kind["workflow"]}
+
     declared_event_ids = set()
     # eid -> (entity id, create|update|delete) for `on`-sourced events only —
     # issue #98's mismatch/orphaned checks apply to this coupling and nowhere
     # else (a schedule-sourced or bare `event X` has no step to check against).
     event_sources = {}
+    # eid -> consume workflow id, issue #118 D3's cycle check reads this once
+    # every workflow (and its own `emit`s) has been lowered, below.
+    event_consumes = {}
     for d in by_kind["event"]:
         eid = derive_id(d.name, "Event")
         declared_event_ids.add(eid)
@@ -979,24 +1339,44 @@ def lower(decls, module_name):
             # `performance batch`, which parses into silence (t3 F-2).
             _declaration_diagnostics(mod.diagnostics, "event",
                                      [("schedule", d.lineno)], where=eid)
-        subscribe = _parse_event_subscribe(d)
+        subscribe, consume_decl = _parse_event_body(d)
+        consume = None
+        if consume_decl is not None:
+            consume_name, consume_lineno = consume_decl
+            consume = derive_id(consume_name, "Workflow")
+            if consume not in declared_workflow_ids:
+                raise LowerError(
+                    "line %d: event %s declares `consume by %s`, which is not "
+                    "a declared workflow (declared: %s)"
+                    % (consume_lineno, d.name, consume_name,
+                       ", ".join(sorted(declared_workflow_ids))
+                       if declared_workflow_ids else "none declared"))
+            event_consumes[eid] = consume
         mod.add(_node("Event", eid, name=d.name, source=source,
-                      subscribe=subscribe or None, line=d.lineno))
+                      subscribe=subscribe or None, consume=consume,
+                      line=d.lineno))
 
     # ---- Workflows: step nodes, guards, blocks + derived Effects (R1) ----
+    # wid -> set of event ids this workflow's own `emit`/`publish` steps
+    # reference — issue #118 D3's cycle check needs every workflow's emitted
+    # events in hand, so it runs once after this loop, not per-workflow.
+    emits_by_workflow = {}
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, registry, mod.diagnostics, http_cap_names)
+        ctx = _WfContext(wid, registry, mod.diagnostics, http_caps, base_of)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
                       line=d.lineno))
         for node in ctx.emitted:
             mod.add(node)
+        emits_by_workflow[wid] = {node["event"] for node in ctx.emitted
+                                  if node["kind"] == "EventEmit"}
         _check_scoped_conditions(ctx.emitted, registry, d.name, base_of,
                                  top_ids, diagnostics=mod.diagnostics)
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
         _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
                            mod.diagnostics, d.name)
+        _check_parallel_write_conflict(ctx.emitted, registry, d.name)
         _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
                                      d.name, mod.diagnostics)
         _check_derived_never_assigned(ctx.emitted, registry, d.name,
@@ -1008,13 +1388,18 @@ def lower(decls, module_name):
         has_rollback = owner is not None and id(owner) in rollback_services
         _check_rollback_escapes_network(ctx.emitted, d.name, has_rollback,
                                         mod.diagnostics, verbs=ctx.network_verbs)
+        _check_note_cap(ctx.emitted, d.name, mod.diagnostics)
+
+    _check_event_consume_cycles(event_consumes, emits_by_workflow, mod.diagnostics)
 
     for n in constraint_nodes:
         mod.add(n)
 
     for d in by_kind["capability"]:
-        http_fields = (_parse_http_capability(d)
-                      if d.extra.get("capability_kind") == "http" else {})
+        # Reuses the parse done above building `http_caps` — never re-parsed
+        # here, so a diagnostic it raises (e.g. `retry-on-non-idempotent`)
+        # fires exactly once per declaration.
+        http_fields = http_caps.get(d.name, {})
         mod.add(_node("Capability", derive_id(d.name, "Capability"),
                       name=d.name, version=d.extra.get("version"),
                       line=d.lineno, **http_fields))
@@ -1025,11 +1410,23 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, registry, diagnostics, http_cap_names=frozenset()):
+    def __init__(self, wid, registry, diagnostics, http_caps=None, base_of=None):
         self.wid = wid
         self.registry = registry
         self.diagnostics = diagnostics
-        self.http_cap_names = http_cap_names
+        # issue #116: `list <Entity> where ...`'s left-side field validation
+        # needs the declared-type -> base map to apply the same Integer/
+        # DateTime (order comparisons) and any-type (equality) rules
+        # `_parse_expose_line`/guards already apply — computed once at
+        # document scope (module-level, before any workflow is lowered) and
+        # threaded down here rather than re-derived per step.
+        self.base_of = base_of or {}
+        # name -> {"method", "auth", "retry", "breaker", "path"} for every
+        # declared `capability http` (issues #101, #109). `_derive_effect`'s
+        # NetworkCall branch reads both membership (a target naming no entry
+        # gets `declared-not-bound`) and `path`, to check a `with <ref>...`
+        # clause's argument count against the template's `{}` count.
+        self.http_caps = http_caps or {}
         self.emitted = []
         self._step_n = 0
         self._guard_n = 0
@@ -1106,13 +1503,16 @@ class _WfContext:
         elif verb == RESPOND_VERB:
             derived = _derive_respond(
                 step_id, line, self._registry_with_create_bindings())
+        elif verb == NOTE_VERB:
+            derived = _derive_note(step_id, line)
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
                                      line.lineno, line.tokens[2:],
                                      diagnostics=self.diagnostics,
                                      step_text=" ".join(line.tokens),
-                                     http_cap_names=self.http_cap_names,
-                                     verb_sink=self.network_verbs)
+                                     http_caps=self.http_caps,
+                                     verb_sink=self.network_verbs,
+                                     base_of=self.base_of)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -1214,6 +1614,73 @@ def _touched_entities(step_node, by_id):
             if child.get("target"):
                 found.add(child["target"])
     return found
+
+
+# The write family D5 cares about — a step here changes a stored row, so two
+# of them racing inside one `parallel` block (no order to resolve who wins)
+# is the non-determinism the check refuses. `list`/`read`/`find`/etc. are
+# absent on purpose: two readers, or a reader beside a writer, touch nothing
+# that depends on which one ran first.
+WRITE_OPS = ("create", "update", "delete")
+
+
+def _written_entity(step_node, by_id):
+    """The entity id this WorkflowStep writes, or `None` if it writes none.
+
+    Narrower than `_touched_entities`: only the write family matters here
+    (`_touched_entities`'s own docstring already draws this line for reads).
+    """
+    for child_id in step_node.get("children") or []:
+        child = by_id.get(child_id)
+        if child is None:
+            continue
+        if child["kind"] == "RepositoryCall" and child.get("operation") in WRITE_OPS:
+            return child.get("entity")
+    return None
+
+
+def _check_parallel_write_conflict(emitted, registry, workflow_name):
+    """issue #108 D5: two steps writing the same entity inside one `parallel`
+    block is a compile error, not a diagnostic.
+
+    RFC-0012's execution-scope binding is order-dependent (a later step reads
+    what an earlier one bound), and a `parallel` block runs its steps
+    concurrently — there is no "earlier". Two writers racing on the same
+    entity would make the row that survives non-deterministic between runs,
+    which is a correctness bug neither step shows on its own (each parses and
+    lowers fine alone). `LowerError`, not a diagnostic: non-determinism is not
+    something a caller can accept and route around the way `unenforced` is.
+
+    Concurrency blocks cannot nest and cannot be guarded (RFC-0002's
+    `parallel` grammar), so a flat scan of each block's direct children is
+    exhaustive — no recursion into nested blocks is possible.
+    """
+    by_id = {node["id"]: node for node in emitted}
+    for node in emitted:
+        if node["kind"] != "Concurrency":
+            continue
+        writers = {}
+        for child_id in node.get("children") or []:
+            step = by_id.get(child_id)
+            if step is None or step["kind"] != "WorkflowStep":
+                continue
+            entity = _written_entity(step, by_id)
+            if entity is None:
+                continue
+            writers.setdefault(entity, []).append(step)
+        for entity_id, steps in writers.items():
+            if len(steps) < 2:
+                continue
+            lines = sorted(s.get("line") for s in steps if s.get("line") is not None)
+            entity_name = registry.get(entity_id, {}).get("name", entity_id)
+            raise LowerError(
+                "workflow %s: `parallel` block has %d steps writing %s at "
+                "lines %s — same-entity writes inside one `parallel` block "
+                "are non-deterministic (RFC-0012 binding is order-dependent, "
+                "and a `parallel` block has no order); split them across "
+                "separate steps or serialize them outside the block"
+                % (workflow_name, len(steps), entity_name,
+                   ", ".join(str(l) for l in lines)))
 
 
 def _steps_outside_guards(node_id, by_id):
@@ -1331,6 +1798,83 @@ def _check_event_refs(emitted, declared_event_ids, workflow_name):
             % (workflow_name, ref,
                ", ".join(sorted(declared_event_ids)) if declared_event_ids
                else "none declared"))
+
+
+def _check_event_consume_cycles(event_consumes, emits_by_workflow, diagnostics):
+    """Issue #118, D3: warn (never error) when `consume by` and `emit` chain
+    back to an event already in the chain — event -> its consuming workflow
+    -> that workflow's own emitted events -> ... -> the same event again.
+
+    A *static* signal for a possible infinite runtime dispatch loop, not
+    proof of one: a guard inside the consuming workflow may keep the loop
+    from ever actually firing, so the program is not necessarily wrong (the
+    same reasoning `guard-orphaned-steps` already applies to a different
+    shape of "this looks off but might be fine"). That is why this is a
+    diagnostic, not a `LowerError` — unlike `consume by`'s undeclared-target
+    case above, which the author cannot mean.
+
+    The graph is bipartite (event id, workflow id) with two edge kinds —
+    `event -> workflow` from `consume`, `workflow -> event` from `emit` —
+    walked by one standard white/gray/black cycle-detecting DFS. Iterative,
+    with an explicit frame stack rather than Python's call stack: a module
+    with hundreds of chained `consume by`/`emit` declarations must not blow
+    the interpreter's recursion limit lowering it.
+    """
+    graph = {}
+    for eid, wid in event_consumes.items():
+        graph.setdefault(eid, set()).add(wid)
+    for wid, emitted_events in emits_by_workflow.items():
+        for eid in emitted_events:
+            graph.setdefault(wid, set()).add(eid)
+
+    reported = set()
+
+    def report(path_stack, closing_node):
+        cycle = path_stack[path_stack.index(closing_node):] + [closing_node]
+        key = frozenset(cycle[:-1])
+        if key in reported:
+            return
+        reported.add(key)
+        # Canonical rendering: rotate to the smallest id, so the same cycle
+        # reads identically no matter which node the DFS started from.
+        start = cycle.index(min(cycle[:-1]))
+        rotated = cycle[start:-1] + cycle[:start] + [cycle[start]]
+        path = " -> ".join(rotated)
+        diagnostics.add(
+            code="event-consume-cycle",
+            where=rotated[0],
+            subject="cycle %s" % path,
+            message="`consume by`/`emit` forms a cycle: %s — if this path "
+                    "ever runs unguarded, dispatching the event re-triggers "
+                    "the same workflow forever"
+                    % path)
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {}
+    for root in graph:
+        if color.get(root, WHITE) != WHITE:
+            continue
+        color[root] = GRAY
+        path_stack = [root]
+        # Each frame: [node, its neighbors (sorted for a deterministic
+        # message), the index of the next neighbor still to visit].
+        frames = [[root, sorted(graph.get(root, ())), 0]]
+        while frames:
+            node, neighbors, i = frames[-1]
+            if i >= len(neighbors):
+                color[node] = BLACK
+                frames.pop()
+                path_stack.pop()
+                continue
+            frames[-1][2] += 1
+            nxt = neighbors[i]
+            nxt_color = color.get(nxt, WHITE)
+            if nxt_color == GRAY:
+                report(path_stack, nxt)
+            elif nxt_color == WHITE and nxt in graph:
+                color[nxt] = GRAY
+                path_stack.append(nxt)
+                frames.append([nxt, sorted(graph.get(nxt, ())), 0])
 
 
 def _guard_owner_map(top_ids, by_id):
@@ -1479,6 +2023,27 @@ def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics)
                                           field["name"]))
 
 
+def _check_note_cap(emitted, workflow_name, diagnostics):
+    """`note-cap-exceeded` (warning) — issue #111, D3.
+
+    More than `NOTE_CAP` `note`s in one workflow is drift toward free-form
+    logging, the exact thing the closed verb table exists to prevent (issue
+    #111's "no arbitrary output stream" guarantee). Trimming notes makes this
+    go away, so it grades `warning` by the same "does editing the program
+    remove it" test every other code's grade already answers (#52) — the
+    workflow still compiles and runs.
+    """
+    count = sum(1 for node in emitted if node["kind"] == "Annotation")
+    if count <= NOTE_CAP:
+        return
+    diagnostics.add(
+        code="note-cap-exceeded",
+        where=workflow_name, subject=workflow_name,
+        message="workflow %r has %d `note` annotations, over the %d-per-"
+                "workflow cap — trim to the notes that earn their place"
+                % (workflow_name, count, NOTE_CAP))
+
+
 def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagnostics,
                                     verbs=None):
     """`rollback-escapes-network` (warning) — issue #112.
@@ -1615,8 +2180,12 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                     if child is None:
                         continue
                     if child["kind"] == "RepositoryCall":
-                        if not guarded and child.get("operation") == "query":
-                            listed.add(child["entity"])
+                        if child.get("operation") == "query":
+                            if not guarded:
+                                listed.add(child["entity"])
+                            if child.get("predicate"):
+                                _check_list_predicate(child, registry, scope,
+                                                     workflow_name)
                         continue
                     if child["kind"] == "Response":
                         text = "respond %s" % " ".join(child["refs"])
@@ -1671,6 +2240,57 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                 visit(node.get("children") or [], guarded=guarded)
 
     visit(top_ids or [])
+
+
+def _check_list_predicate(node, registry, scope, workflow_name):
+    """issue #116, D1/D2: a `list where` predicate's RIGHT side, judged the
+    same way a guard condition's operands are — reusing `scope` rather than
+    a second lookup, so "which binding names a declared entity, read by
+    this workflow" is answered once, the same way, everywhere.
+
+    The LEFT side (which field, which base type) was already validated at
+    lowering time (`_parse_predicate_terms`, when the entity's own field
+    list was in hand with no scope needed); this is the half that needs the
+    workflow's binding state (`by_binding`/`read_entities`), so it runs here,
+    in the same post-pass every other guard-shaped check already runs in.
+    """
+    from .condition import Ref, parse_value
+
+    entity = registry[node["entity"]]
+    fields_by_name = {f["name"]: f for f in entity["fields"]}
+    for term in node["predicate"]:
+        field = fields_by_name[term["field"]]
+        left_base = scope.base_of.get(field["type"], field["type"])
+        right_value = parse_value(term["value"])
+        text = "list %s where %s %s %s" % (
+            entity["name"], term["field"], term["op"], term["value"])
+        if left_base in EXPOSE_SORT_BASES:
+            # Integer/DateTime: the same scalar/instant dimension check a
+            # guard's `_check_dimensions` applies, unchanged by this issue.
+            left_dim = "instant" if left_base == "DateTime" else "scalar"
+            right_dim = _value_dimension(right_value, scope, text)
+            if right_dim is not None and right_dim != left_dim:
+                raise LowerError(
+                    "workflow %s: %r compares %s (%s) with %s (%s) — "
+                    "RFC-0016 compares like with like"
+                    % (workflow_name, text, term["field"], left_dim,
+                       _describe(right_value), right_dim))
+        else:
+            # D2: any-type equality — `_parse_predicate_terms` already
+            # refused a Lit/Arith here, so `right_value` is a `Ref`.
+            # Reading the field it names (as opposed to plain dimension
+            # checking) is the part that needs `scope`.
+            right_field = scope.resolve_field(right_value.name, text,
+                                             subject="list where")
+            if right_field is not None:
+                right_base = scope.base_of.get(right_field["type"],
+                                              right_field["type"])
+                if right_base != left_base:
+                    raise LowerError(
+                        "workflow %s: %r compares %s (%s) with %s (%s) — "
+                        "equality needs the same declared type on both sides"
+                        % (workflow_name, text, term["field"], left_base,
+                           right_value.name, right_base))
 
 
 def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
@@ -2140,30 +2760,33 @@ class _Scope:
 
 
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
-                   diagnostics=None, step_text=None, http_cap_names=frozenset(),
-                   verb_sink=None):
+                   diagnostics=None, step_text=None, http_caps=None,
+                   verb_sink=None, base_of=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
     verb but `NetworkCall` and `create`/`insert` ignores it; those read an
     `as <name>` trailing clause there (RFC-0027 §2, extended to `create` by
     issue #97 / RFC-0012 Updates — `update`/`delete` still ignore `rest`,
-    since they answer an affected-row count, not a row).
+    since they answer an affected-row count, not a row). `NetworkCall` also
+    reads an optional leading `with <ref>...` clause there (issue #109, D6).
 
     `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
     `unknown-entity` warning for a step object that names no declared entity,
     without changing which entity it falls back to resolving.
 
-    `http_cap_names` (issue #101) is the declared `capability http` name set,
-    used only by the `NetworkCall` branch to flag a target with no matching
-    declaration — it runs with method POST and no auth either way, so this is
-    informational, not a rejection.
+    `http_caps` (issues #101, #109) is name -> the declared `capability http`
+    fields. The `NetworkCall` branch uses membership to flag a target with no
+    matching declaration (it runs with method POST and no auth either way,
+    so this is informational, not a rejection), and reads `path` to check a
+    `with <ref>...` clause's argument count against the template's `{}` count.
 
     `verb_sink` (issue #125) is `_WfContext.network_verbs` — the `NetworkCall`
     branch records `eid -> verb` there so `_check_rollback_escapes_network`
     can quote the author's own verb later, without adding a `verb` field to
     the IR node itself.
     """
+    http_caps = http_caps or {}
     entry = VERB_LEXICON.get(verb)
     if entry is None:
         return None
@@ -2217,6 +2840,16 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
             raise LowerError(
                 "line %d: create accepts either no trailing words or "
                 "'as <name>', got %r" % (lineno, tuple(rest)))
+        if fixed["operation"] == "query" and rest:
+            # issue #116, D1: `list <Entity> where <cond> [order by <field>
+            # [desc]] [limit <N>]`. `_node` drops a `None`-valued kwarg, so
+            # the empty-`rest` case just below stays the unchanged 4-key
+            # node RFC-0025 already emits — the "predicate=None path is
+            # byte-identical" regression this issue's constraints require.
+            predicate, order, limit = _parse_list_clauses(
+                rest, lineno, ent, base_of or {})
+            return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
+                        predicate=predicate, order=order, limit=limit, line=lineno)
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 
@@ -2232,20 +2865,59 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
         target = obj or "unspecified"
         if verb_sink is not None:
             verb_sink[eid] = verb
+        cap = http_caps.get(target)
         if (diagnostics is not None and not _looks_like_url(target)
-                and target not in http_cap_names):
+                and cap is None):
             diagnostics.add(
                 code="declared-not-bound", where=eid,
                 subject="%s %s" % (verb, target),
                 message="%r has no `capability http` declaration — it runs "
                         "with method POST and no auth" % target,
                 line=lineno)
-        if not rest:
+        # issue #109, D6: an optional leading `with <ref>...` clause,
+        # substituted into the target capability's declared `path` template
+        # at run time (`condition.parse_format`'s `{}`-count convention
+        # reused here, not its runtime substitution — that one does not
+        # escape, and a URL path must, `drivers.py`'s job).
+        tail = list(rest)
+        path_args = None
+        if tail and tail[0] == "with":
+            j = 1
+            while j < len(tail) and tail[j] != "as":
+                j += 1
+            arg_tokens = tail[1:j]
+            if not arg_tokens:
+                raise LowerError(
+                    "line %d: `with` needs at least one reference" % lineno)
+            from .condition import _is_reference_name
+            for tok in arg_tokens:
+                if not _is_reference_name(tok):
+                    raise LowerError(
+                        "line %d: `with` argument must be camelCase or "
+                        "binding.field, got %r" % (lineno, tok))
+            path_args = list(arg_tokens)
+            tail = tail[j:]
+        template = cap.get("path") if cap else None
+        placeholders = template.count("{}") if template else 0
+        given = len(path_args) if path_args is not None else 0
+        if placeholders != given:
+            if template is None:
+                raise LowerError(
+                    "line %d: `with` needs a `path` declared on capability "
+                    "http %s to substitute into" % (lineno, target))
+            raise LowerError(
+                "line %d: capability http %s's `path` %r has %d `{}` "
+                "placeholder(s) but `with` gives %d argument(s)"
+                % (lineno, target, template, placeholders, given))
+        if not tail:
             # RFC-0027 §3: the unbound, backward-compatible form — no
             # `result` field, byte-identical to the pre-RFC-0027 no-op.
-            return _node(kind, eid, target=target, line=lineno)
-        if len(rest) == 2 and rest[0] == "as":
-            name = rest[1]
+            node = _node(kind, eid, target=target, line=lineno)
+            if path_args is not None:
+                node["path_args"] = path_args
+            return node
+        if len(tail) == 2 and tail[0] == "as":
+            name = tail[1]
             # RFC-0027 §2, check 1: `<name>.status` must be a valid
             # `Reference` (RFC-0012 §G12.1), which requires camelCase — the
             # same shape `condition._is_camel_name` already enforces for
@@ -2267,10 +2939,14 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                         "single-row binding name — a network result "
                         "binding cannot share a name with it "
                         "(RFC-0027 §2)" % (lineno, name, ent["name"]))
-            return _node(kind, eid, target=target, result=name, line=lineno)
+            node = _node(kind, eid, target=target, result=name, line=lineno)
+            if path_args is not None:
+                node["path_args"] = path_args
+            return node
         raise LowerError(
-            "line %d: call/request accepts either no trailing words or "
-            "'as <name>', got %r" % (lineno, tuple(rest)))
+            "line %d: call/request accepts either no trailing words, "
+            "'with <ref>...', 'as <name>', or both, got %r"
+            % (lineno, tuple(rest)))
 
     if kind == "Authorization":
         return _node(kind, eid, requirement=obj or "unspecified", line=lineno)
@@ -2460,6 +3136,39 @@ def _derive_respond(step_id, line, registry):
 
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Response"])
     return _node("Response", eid, refs=list(refs), line=line.lineno)
+
+
+def _derive_note(step_id, line):
+    """`note "<template>" [with <ref>...]` -> an Annotation node (issue #111,
+    D1/D2).
+
+    `note`'s author-facing shape — verb, template, optional `with`-clause; no
+    target, no `from` — is structurally the SAME right-hand side
+    `condition._parse_format_rhs` already parses (the reader `format`'s
+    stored `Assignment.expression` re-reads), so this reuses it verbatim
+    rather than inventing a second template parser. `_parse_format_rhs`
+    itself does not check the `{}`-count-vs-argument-count rule (it exists to
+    re-read an already-validated expression) — `_check_placeholder_count` is
+    called here explicitly, the same way `parse_format` calls it for the
+    author-facing `format` grammar. Unlike `format`/`respond`, `note` names
+    no declared entity or field, so there is nothing here for
+    `_resolve_entity`/binding-shape checks to do — a reference's existence,
+    and whether it is Password-typed, are both RUN-time questions
+    (`interp.py`'s Annotation branch, D4): an observability channel must not
+    be able to fail a compile or a run over a stale/unbound reference.
+    """
+    from .condition import ConditionError, _check_placeholder_count, _parse_format_rhs
+
+    text = " ".join(line.tokens)
+    try:
+        fmt = _parse_format_rhs(line.tokens, text)
+        _check_placeholder_count(fmt.template, fmt.args, text)
+    except ConditionError as exc:
+        raise LowerError("line %d: %s" % (line.lineno, exc))
+
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Annotation"])
+    return _node("Annotation", eid, template=fmt.template,
+                 refs=[ref.name for ref in fmt.args], line=line.lineno)
 
 
 def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=None):

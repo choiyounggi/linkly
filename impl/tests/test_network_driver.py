@@ -30,6 +30,7 @@ class _StubHandler(BaseHTTPRequestHandler):
     received = []
     received_headers = []
     received_methods = []
+    received_paths = []
 
     def log_message(self, format, *args):
         pass
@@ -38,6 +39,7 @@ class _StubHandler(BaseHTTPRequestHandler):
         type(self).received.append(body_received)
         type(self).received_headers.append(dict(self.headers))
         type(self).received_methods.append(self.command)
+        type(self).received_paths.append(self.path)
         if self.delay_s:
             time.sleep(self.delay_s)
         payload = (self.raw_body if self.raw_body is not None
@@ -61,13 +63,64 @@ class _StubHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         self._reply(json.loads(raw) if raw else None)
 
+    # issue #109: PUT/PATCH/DELETE all carry a JSON body the same way POST
+    # does (`HttpNetworkDriver.call`'s `method != "GET"` branch), so they
+    # share one body-reading path.
+    do_PUT = do_POST
+    do_PATCH = do_POST
+    do_DELETE = do_POST
+
 
 def _make_handler(status=200, body=None, delay_s=0, raw_body=None):
     return type("_Handler", (_StubHandler,), {
         "status": status, "body": body if body is not None else {},
         "delay_s": delay_s, "raw_body": raw_body, "received": [],
-        "received_headers": [], "received_methods": [],
+        "received_headers": [], "received_methods": [], "received_paths": [],
     })
+
+
+class _ScriptedHandler(BaseHTTPRequestHandler):
+    """Serves `script` — a list of `(status, body)`/`(status, body,
+    headers)` tuples — one entry per request, in order, holding on the last
+    once exhausted (`FakeNetworkDriver`'s list-stub convention mirrored on
+    the wire, issue #109). Used by `NetworkDriverTCK`'s HTTP-backed subclass,
+    where a scenario is expressed once and must answer the same way whether
+    the driver under test is fake or real."""
+
+    script = [(200, {})]
+    calls = []
+
+    def log_message(self, format, *args):
+        pass
+
+    def _reply(self):
+        idx = len(type(self).calls)
+        type(self).calls.append(self.path)
+        item = type(self).script[min(idx, len(type(self).script) - 1)]
+        status, body, headers = item if len(item) == 3 else (*item, {})
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length:
+            self.rfile.read(length)
+        self._reply()
+
+    do_POST = do_GET
+    do_PUT = do_GET
+    do_PATCH = do_GET
+    do_DELETE = do_GET
+
+
+def _make_scripted_handler(script):
+    return type("_Scripted", (_ScriptedHandler,), {"script": script, "calls": []})
 
 
 class _ServerTestCase(unittest.TestCase):
@@ -99,31 +152,32 @@ class _ServerTestCase(unittest.TestCase):
 class FakeNetworkDriverTest(unittest.TestCase):
 
     def test_an_unstubbed_target_returns_the_deterministic_default(self):
-        """No stub means 200/empty body, every time — the default has to be
-        deterministic or spec cases relying on it (RFC-0027 §7, D4) would be
-        flaky."""
+        """No stub means 200/empty body/empty headers, every time — the
+        default has to be deterministic or spec cases relying on it
+        (RFC-0027 §7, D4) would be flaky."""
         driver = FakeNetworkDriver({})
 
         first = driver.call("PaymentGateway", {}, 1000)
         second = driver.call("PaymentGateway", {}, 1000)
 
-        self.assertEqual(first, (200, {}))
-        self.assertEqual(second, (200, {}))
+        self.assertEqual(first, (200, {}, {}))
+        self.assertEqual(second, (200, {}, {}))
 
     def test_a_stubbed_target_returns_the_stubbed_response(self):
         driver = FakeNetworkDriver({"PaymentGateway": (500, {"message": "card declined"})})
 
-        status, body = driver.call("PaymentGateway", {}, 1000)
+        status, body, headers = driver.call("PaymentGateway", {}, 1000)
 
         self.assertEqual(status, 500)
         self.assertEqual(body, {"message": "card declined"})
+        self.assertEqual(headers, {})
 
     def test_a_different_targets_stub_does_not_leak_onto_an_unstubbed_one(self):
         driver = FakeNetworkDriver({"PaymentGateway": (500, {})})
 
-        status, body = driver.call("ShippingApi", {}, 1000)
+        status, body, headers = driver.call("ShippingApi", {}, 1000)
 
-        self.assertEqual((status, body), (200, {}))
+        self.assertEqual((status, body, headers), (200, {}, {}))
 
     def test_close_does_not_raise(self):
         FakeNetworkDriver({}).close()
@@ -136,10 +190,11 @@ class HttpNetworkDriverTest(_ServerTestCase):
         driver = HttpNetworkDriver()
         self.addCleanup(driver.close)
 
-        status, body = driver.call(url, {"amount": 42}, 2000)
+        status, body, headers = driver.call(url, {"amount": 42}, 2000)
 
         self.assertEqual(status, 200)
         self.assertEqual(body, {"ok": True})
+        self.assertEqual(headers.get("content-type"), "application/json")
 
     def test_the_payload_is_sent_as_the_json_request_body(self):
         handler = _make_handler(status=200, body={})
@@ -158,7 +213,7 @@ class HttpNetworkDriverTest(_ServerTestCase):
         driver = HttpNetworkDriver()
         self.addCleanup(driver.close)
 
-        status, body = driver.call(url, {}, 2000)
+        status, body, _headers = driver.call(url, {}, 2000)
 
         self.assertEqual(status, 500)
         self.assertEqual(body, {"message": "boom"})
@@ -170,7 +225,7 @@ class HttpNetworkDriverTest(_ServerTestCase):
         driver = HttpNetworkDriver()
         self.addCleanup(driver.close)
 
-        status, body = driver.call(url, {}, 2000)
+        status, body, _headers = driver.call(url, {}, 2000)
 
         self.assertEqual(status, 200)
         self.assertEqual(body, {})
@@ -234,7 +289,7 @@ class HttpNetworkDriverTest(_ServerTestCase):
         driver = HttpNetworkDriver(endpoints={"PaymentGateway": url})
         self.addCleanup(driver.close)
 
-        status, body = driver.call("PaymentGateway", {"amount": 42}, 2000)
+        status, body, _headers = driver.call("PaymentGateway", {"amount": 42}, 2000)
 
         self.assertEqual((status, body), (200, {"ok": True}))
 
@@ -279,6 +334,22 @@ class HttpNetworkDriverTest(_ServerTestCase):
 
         self.assertEqual(handler.received_methods[0], "GET")
         self.assertIsNone(handler.received[0])
+
+    def test_put_patch_delete_capabilities_send_the_declared_method(self):
+        """Issue #109: PUT/PATCH/DELETE reach the wire as real HTTP methods,
+        not just as parsed capability metadata."""
+        for method in ("PUT", "PATCH", "DELETE"):
+            handler = _make_handler(status=200, body={})
+            url = self.start(handler)
+            driver = HttpNetworkDriver(
+                endpoints={"Orders": url},
+                capabilities={"Orders": {"method": method, "headers": {}}})
+            self.addCleanup(driver.close)
+
+            driver.call("Orders", {"amount": 42}, 2000)
+
+            self.assertEqual(handler.received_methods[0], method)
+            self.assertEqual(handler.received[0], {"amount": 42})
 
     def test_a_mapped_but_undeclared_logical_name_defaults_to_post_no_auth(self):
         """A logical name mapped via `endpoints` but naming no `capabilities`

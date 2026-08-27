@@ -593,6 +593,32 @@ RFC_ROUTES = {
              "궁금하다 — 선언 여부와 무관하게 왜 항상 롤백되는지, 선언이 "
              "실제로 좌우하는 것(INFO trace 로그, `rollback-escapes-network` "
              "진단)이 무엇뿐인지", ()),
+    "0037": ("`capability http`에 재시도·서킷브레이커·경로 템플릿을 어떻게 "
+             "선언하는지, `NetworkDriver.call`이 왜 3-튜플이 됐는지 궁금하다 "
+             "— 재시도 대상 판정(408/429/5xx, 501 제외)·지수 백오프와 "
+             "jitter·Retry-After 반영·브레이커 half-open 규칙의 정본", ()),
+    "0038": ("`list <Entity> where <cond>`로 RowSet을 걸러 `order by`/"
+             "`limit`을 쓰고 싶다 — 좌변이 왜 항상 나열 대상 엔티티 자신의 "
+             "필드인지, 등가(`==`/`!=`)가 왜 UUID/Text/Email까지 허용하는데 "
+             "순서 비교는 여전히 Integer/DateTime뿐인지, `RepositoryDriver."
+             "query`가 예전 호출부와 왜 바이트 동일을 지키는지", ()),
+    "0039": ("`note \"<template>\" with <ref>...`로 span에 도메인 맥락을 "
+             "남기고 싶다 — `note`가 왜 Effect가 아니라 `Annotation`인지, "
+             "미바인딩 참조가 왜 컴파일/런타임 실패가 아니라 값 `null`인지, "
+             "canonical log line의 `notes`/`effects`/`input_digest`가 각각 "
+             "무엇이고 `--capture-on-failure`가 언제만 입력을 싣는지", ()),
+    "0040": ("`event ... consume by <Workflow>`로 이벤트가 도착하면 워크플로를 "
+             "돌리고 싶다 — `POST /-/events/<slug>`가 왜 CloudEvents 봉투만 "
+             "받는지, 같은 `id`가 왜 워크플로를 다시 실행하지 않고 첫 응답을 "
+             "재생하는지, 200/503/422 3갈래가 각각 언제 나오고 503은 왜 "
+             "멱등성 클레임을 확정하지 않는지, `lnpl relay`가 outbox를 어떻게 "
+             "CloudEvents로 감싸 미는지", ()),
+    "0041": ("`parallel` 블록의 스텝이 정말 동시 실행되는지, 한 브랜치가 "
+             "실패하면 나머지가 어떻게 되는지 궁금하다 — `policy parallel <N>`이 "
+             "동시성 상한을 어떻게 정하는지(값 없으면 무엇으로 폴백하는지), "
+             "같은 entity에 쓰는 두 스텝을 한 블록에 넣으면 왜 컴파일 에러인지, "
+             "span 타임스탬프가 왜 이 블록 안에서만 벽시계를 쓰는지, mode B가 "
+             "왜 여전히 순차이고 그것이 `diff`에 어떻게 나타나는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

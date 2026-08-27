@@ -184,3 +184,56 @@ def seed_bindings(document, workflow_id, payload, seeded=None):
         if node is not None:
             scope[binding_name(node)] = dict(payload)
     return scope
+
+
+# issue #116, D4/D5: comparator symbol -> a pure two-argument test. Shared
+# by `apply_predicate` below, so a term's `op` is judged the same way
+# wherever a driver does not push the predicate down to its own store.
+_PREDICATE_OPS = {
+    "==": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+    "<":  lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+    ">":  lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+}
+
+
+def _row_matches(row, predicate):
+    """One row against every conjunction term (issue #116, D4) — `None` on
+    either side never matches, the same "unresolved -> false" rule a guard
+    comparison already applies (`interp._comparison_holds`), so a `list
+    where` referencing an unset `input.<field>` yields an empty RowSet
+    rather than raising.
+    """
+    for field, op, value in predicate:
+        actual = row.get(field)
+        if actual is None or value is None:
+            return False
+        if not _PREDICATE_OPS[op](actual, value):
+            return False
+    return True
+
+
+def apply_predicate(rows, predicate=None, order=None, limit=None):
+    """Filter/sort/limit an already row_key-ordered row list in Python
+    (issue #116, D5/D6) — the ONE place this semantics is written, shared by
+    `interp.FakeRepository.query`'s native implementation and
+    `interp.Interpreter`'s fallback for a driver that does not declare
+    `supports_predicate` (over-fetch, then filter here), so the two paths
+    can never silently disagree on what a predicate/order/limit means.
+
+    `rows` must already be in row_key-ascending order (every `RepositoryDriver.
+    query` caller's contract) — `sorted()` below is stable, so that order
+    survives as the tiebreak for equal `order` values regardless of `desc`
+    (Python's documented stable-sort guarantee: `reverse=True` does not
+    reverse ties).
+    """
+    if predicate:
+        rows = [row for row in rows if _row_matches(row, predicate)]
+    if order is not None:
+        field, desc = order
+        rows = sorted(rows, key=lambda row: row.get(field), reverse=desc)
+    if limit is not None:
+        rows = rows[:limit]
+    return rows

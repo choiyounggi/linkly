@@ -36,6 +36,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | publish | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 |
 | authorize | Authorization | requirement를 **기록만** 한다 — §B의 `security` 항목과 같은 간극 |
 | respond | Response | 목적어가 엔티티명이 아니라 `<binding>.<field>` Reference 목록이다(`respond order.id order.status`). 다른 Effect와 달리 상태를 바꾸지 않는다 — 워크플로가 성공적으로 끝난 시점에 바인딩값을 읽어 `response` 절로 조립할 뿐이다. Password 계열 참조는 컴파일 에러 — 마스킹 chokepoint(#43)를 respond로 우회하는 경로를 막는다. OpenAPI 200 스키마가 이 목록에서 유도된다 — issue #96 |
+| note | Annotation | 목적어가 엔티티명이 아니라 `"<template>" [with <ref>...]`다(`note "picked-tier-{}" with customer.tier`) — `format`의 저장 표현식 파서(`condition._parse_format_rhs`)를 그대로 재사용한다. respond와 같은 이유로 Effect가 아니다: 상태를 바꾸지 않고 현재 span에 구조화 어노테이션 하나를 남길 뿐이다. 참조는 컴파일 타임에 검증하지 않는다 — 미바인딩 참조는 실행 실패가 아니라 값 `null`(관측이 실행을 죽이면 안 된다), Password 계열 값은 `mask_payload` chokepoint(#43)로 마스킹된 채로만 실린다. 워크플로당 16개 초과 시 `note-cap-exceeded` 경고 — issue #111 |
 
 ### 사전 밖 동사
 
@@ -71,7 +72,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | policy | retry | enforced | — | `run_workflow`가 실패 스텝을 멱등인 동안 재실행한다 |
 | policy | timeout | enforced | — | 워크플로 데드라인을 계산하고 초과 시 실행을 실패시킨다 |
 | policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 **선언 여부와 무관하게 모든 서비스에서 무조건** 롤백한다 — `policy rollback` 선언이 실제로 좌우하는 것은 (a) 그 INFO trace 로그 한 줄과 (b) 컴파일 타임 `rollback-escapes-network` 진단(issue #112)의 활성화뿐이다(issue #79, RFC-0032, RFC-0036) |
-| policy | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
+| policy | parallel | enforced | — | `run_workflow`가 `parallel` 블록의 스텝을 블록 스코프 `ThreadPoolExecutor`에서 동시 실행한다 — fail-fast(한 스텝 실패 시 나머지 취소), 동시성 상한은 선언값(없으면 블록 스텝 수)이 정한다(issue #108, RFC-0041) |
 | security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
 | security | role | enforced | — | 이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`(docs/serving.md M3b). `jwt`와 달리 "약한 경로"가 없다 — `security role`을 선언하고도 `serve`가 뜬다면 token_provider 없이는 기동 자체가 rc 2로 거부되기 때문이다(D6) |
 | performance | response | measured | declared-measured-only | 실행마다 측정·보고하지만 예산 초과 실행을 차단하지 않는다 |
@@ -99,6 +100,15 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 `lnpl trigger`나 `/-/schedules/<slug>`를 실제로 cron/systemd에 연결했는지 알
 방법이 없고, 연결하지 않으면 선언은 여전히 아무것도 실행하지 않는다.
 
+### `performance parallel`/`prefetch`/`batch`는 왜 여전히 unenforced인가
+
+issue #108이 집행하는 것은 `policy parallel`(§B 위 행) 하나뿐이다 — **워크플로
+안 스텝의 실행 순서**를 바꾼다. `performance parallel`/`prefetch`/`batch` 셋은
+이름은 비슷해도 뜻이 다르다: 저장소 호출 하나를 **어떻게** 내보내는지(묶어서
+prefetch할지, batch로 낼지)를 말하는 저장소 접근 패턴 선언이다. 그 의미는
+질의 술어(issue #116의 이웃)가 있어야 채워지고, 이번 이슈의 범위 밖이다 — 셋
+다 `unenforced`로 남는다.
+
 ## C. 진단 코드
 
 | code | severity | 언제 나오나 | 어디서 나오나 |
@@ -118,6 +128,9 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | declared-not-bound | info | `call`/`request`의 target이 URL 리터럴이 아닌 논리명인데, 그 이름을 선언한 `capability http`가 모듈에 없을 때 (issue #101) — method POST·인증 없음으로 그대로 실행된다 | 컴파일 타임 — lowering |
 | stored-row-shape-mismatch | warning | `read`/`find`가 돌려준 행에 entity가 선언한 필드가 없거나(missing), 있어도 선언된 타입과 맞지 않을 때(type) — 값은 절대 싣지 않는다 (issue #85) | 런타임 — 인터프리터 |
 | rollback-escapes-network | warning | `policy rollback`을 선언한 서비스가 소유한 워크플로에 `call`/`request`(NetworkCall) 스텝이 있을 때 — 저장소 트랜잭션 밖이라 rollback이 되돌리지 못한다. 스텝마다 한 건씩 (issue #112) | 컴파일 타임 — lowering |
+| retry-on-non-idempotent | warning | `capability http`가 `method post`/`patch`와 `retry`를 함께 선언했을 때 — 비멱등 메서드에 재시도를 걸면 효과가 중복될 수 있다 (issue #109) | 컴파일 타임 — lowering |
+| note-cap-exceeded | warning | 워크플로 하나에 `note`가 16개를 초과할 때 — "필요한 로그만"을 어휘 차원에서 지킨다 (issue #111) | 컴파일 타임 — lowering |
+| event-consume-cycle | warning | `event <E> consume by <W>`가 선언돼 있고, `W`(그 자식 워크플로 포함)가 결국 `E`를 다시 `emit`/`publish`할 때 — 런타임 무한 재디스패치의 정적 신호. 가드가 실제로는 그 경로를 막을 수 있어 에러가 아니라 경고다 (issue #118) | 컴파일 타임 — lowering, 모든 워크플로를 다 내린 뒤 |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -128,7 +141,10 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 `derived-never-assigned` · `stored-row-shape-mismatch`(프로그램이 아니라
 데이터를 고치면 사라진다는 점만 다르다 — 이슈 #85, RFC-0021 질문의 데이터판) ·
 `rollback-escapes-network`(호출을 경계 밖으로 옮기거나 `rollback`을 떼면
-사라진다 — 이슈 #112)),
+사라진다 — 이슈 #112) · `retry-on-non-idempotent`(`retry`를 떼거나 멱등
+메서드로 바꾸면 사라진다 — 이슈 #109) · `note-cap-exceeded`(`note`를 16개
+이하로 줄이면 사라진다 — 이슈 #111) · `event-consume-cycle`(`consume by`를
+떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

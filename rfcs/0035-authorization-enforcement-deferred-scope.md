@@ -2,7 +2,9 @@
 
 ## Status
 
-- Status: Draft
+- Status: Accepted
+
+D3은 issue #127(2026-08-26, Batch C)로 집행 완료 — `security encrypt` 제거.
 
 번호가 0035인 이유: 이 워크트리의 분기점(`da1256e`)에서는 0034까지 점유된
 것으로 보였다(RFC-0033). 하지만 통합 브랜치에는 t112의

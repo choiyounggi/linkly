@@ -267,7 +267,19 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
 | **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
+| **브로커 → `consume by` 인입의 실바인딩(kafka 컨슈머 등)** | #88 원칙을 소비 쪽에 대칭 적용한 것(이슈 #118). 코어가 소유하는 것은 구독 선언(`consume by`)·인입 엔드포인트(`POST /-/events/<slug>`)·멱등/오류-분류 의미론뿐이다 — 브로커에서 읽어 그 엔드포인트를 찌르는 것은 `lnpl relay`(레퍼런스, urllib만) 또는 외부 릴레이 구현체의 몫이다. 실제 kafka 컨슈머 그룹·오프셋 관리는 이 레포 밖 |
 | **`security encrypt <field>`** | 제거됨 — RFC-0035 §D3 참조(issue #127). 실제로 집행할 외부 드라이버가 0건이었던 것이 "드라이버 의존"이 아니라 항상 빈 집합이었다는 이유로, 닫힌 어휘에서 빠졌다. `Password` 마스킹(#43, 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 관측 채널 규칙)은 이 결정과 무관하게 그대로 남는다 |
+| **`NetworkDriver`의 커넥션 풀·`lnpl.networks` SPI 승격** | `HttpNetworkDriver`는 매 호출 연결을 열고 닫는다 — RFC-0037(이슈 #109)이 더한 것은 retry/backoff/jitter/서킷브레이커/경로 템플릿뿐이다. keep-alive 풀이 있는 실드라이버(`urllib3`/`httpx` 기반)를 `lnpl.drivers` 진입점(이슈 #75가 연 경계)으로 등록할 수 있게 SPI 표면을 여는 것은 이슈 #132가 소유한다 |
+
+**소비 측 대칭 경계 (이슈 #118).** 발행 쪽에서 이미 세운 경계 — 코어는 계약
+(테이블 스키마, drain/ack 의미론)만 소유하고 실제 브로커 바인딩은 릴레이의
+몫이라는 #88 원칙 — 을 소비 쪽에도 그대로 적용한다. 코어가 소유하는 것은
+구독 선언(`consume by`) + 인입 엔드포인트(`POST /-/events/<slug>`) +
+멱등성/오류-분류 의미론(RFC-0040)뿐이다. 이 계약을 실측하는 레퍼런스
+릴레이(`lnpl relay`)는 있지만, brokers(kafka 등)에서 실제로 읽어와 그
+엔드포인트를 찌르는 것은 여전히 코어 밖이다 — 드라이버 SPI(#75/#132)가
+그렇듯, 실바인딩은 별도 패키지가 소유하는 판단이지 이 계획이 뒤집힌 것이
+아니다.
 
 `FakeRepository`의 `rollback`은 위 표에서 뺐다: 이슈 #120부터는 no-op이
 아니라 실제로 되돌린다. `begin()`이 `self.rows`의 스냅샷을 뜨고,
@@ -288,6 +300,28 @@ fake 백엔드에서의 `EQUIVALENT`는 계속 성립한다. 다만 그 판정�
 - **`--clock real`도 차동 검증 대상이 아니다** — 비결정적이므로 반복 가능한
   비교를 낼 수 없다. `diff`/`spec` 서브커맨드에는 `--clock` 선택자 자체가
   없다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100).
+- **`list where`의 술어도 미검증 차원이다** (이슈 #116, D9). 술어는 저장소에
+  쌓인 행 **값**으로 RowSet을 거르는데, RFC-0025 §10이 이미 적었듯 RowSet
+  값은 모드 B의 네 관측 클래스(실행 순서+skips, 정책 결과, 관측 신호, 마스킹)
+  중 어느 것도 아니다 — `sum`/`count`의 결과가 애초에 비교 대상이 아니었던
+  것과 같은 이유다. `differential.compare_observations`는 그래서 네 클래스가
+  실제로 일치할 때 `EQUIVALENT`를 계속 낸다(그 판정 자체는 참이다) — 다만
+  술어가 있는 `list`를 리포트가 지나칠 때 한 줄을 더 낸다: `note: N \`list
+  where\` step(s) — filtered RowSet content is not compared (unverified
+  dimension, docs/backends.md §6)`. "일치"가 "걸러진 내용까지 같다"로 읽히지
+  않도록 하는 것이 이 줄의 목적이다.
+- **`parallel` 블록의 실제 동시성도 미검증 차원이다** (이슈 #108, D8). 모드
+  A는 이제 `parallel` 블록의 스텝을 진짜 동시 실행하지만(RFC-0041), 모드 B는
+  여전히 순차 실행이다 — RFC-0004 §5(#7)가 이미 미결로 들고 있던 질문 그대로,
+  이번 이슈는 모드 A만 바꾸고 모드 B는 손대지 않았다. 네 관측 클래스 중
+  "실행 순서"는 완료 순서가 아니라 **선언 순서**로 보고되므로(D6) 실패 없는
+  실행에서는 두 모드의 순서 리포트가 우연히 같은 모양으로 나온다 — 하지만
+  그것이 "모드 A가 실제로 병렬로 돌았는지"를 검증한 것은 아니다. 벽시계 겹침
+  같은 실제 동시성의 증거는 애초에 네 클래스 중 어디에도 속하지 않는다.
+  `differential.compare_observations`는 그래서 `parallel` 블록이 있는
+  워크플로를 리포트가 지나칠 때 한 줄을 더 낸다: `note: N \`parallel\`
+  block(s) — mode B runs them sequentially (unverified dimension,
+  docs/backends.md §6)`.
 
 ## 7. mode B의 관측 표면 (이슈 #55)
 

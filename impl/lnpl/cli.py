@@ -11,6 +11,9 @@ import argparse
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
 
 from . import __version__
 from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
@@ -42,6 +45,7 @@ def _parse_fields(specs):
                              % (name.strip(), raw))
     return out
 from .agents import run_cycle
+from .config import load_config
 from .differential import DifferentialError, verify as verify_modes
 from .kb import KbError, KnowledgeBase
 from .openapi import OpenApiError, _slug, generate as generate_openapi
@@ -508,6 +512,68 @@ def cmd_openapi(args):
     return 0
 
 
+def _resolve_backend(args, cfg):
+    """`--backend` > `lnpl.toml` `backend` > the built-in `"fake"` (issue
+    #114 D6) — CLI wins because `args.backend` is only `None` when the flag
+    was not given (the `serve` subparser's own default moved to `None` so
+    this function can tell "omitted" from "typed fake")."""
+    value = getattr(args, "backend", None)
+    if value is not None:
+        return value
+    return cfg.backend if cfg.backend is not None else "fake"
+
+
+def _resolve_log_format(args, cfg):
+    """Same precedence as `_resolve_backend`, for `--log-format`."""
+    value = getattr(args, "log_format", None)
+    if value is not None:
+        return value
+    return cfg.log_format if cfg.log_format is not None else "text"
+
+
+def _resolve_trace_exporter(args, cfg):
+    """Same precedence as `_resolve_backend`, for `--trace-exporter` — the
+    built-in default is `None` (nothing exported), unchanged from before
+    issue #114."""
+    value = getattr(args, "trace_exporter", None)
+    if value is not None:
+        return value
+    return cfg.trace_exporter
+
+
+def _resolve_jwt_secret_env(args, cfg):
+    """`--jwt-secret-env` > `lnpl.toml` `[*.secrets].jwt` (an ENV NAME,
+    never the secret — issue #101 discipline, enforced by `config.py` at
+    load time) > unset (presence-checked, not verified — the pre-#114
+    default)."""
+    value = getattr(args, "jwt_secret_env", None)
+    if value is not None:
+        return value
+    return cfg.secrets.get("jwt")
+
+
+def _merge_endpoint_args(endpoint_args, cfg_endpoints):
+    """`--endpoint` entries, plus one `NAME=URL` per `lnpl.toml` endpoint
+    that neither `--endpoint` nor `LNPL_ENDPOINT_<NAME>` already covers
+    (issue #114 D6/D7).
+
+    `_open_endpoints` still owns the CLI-vs-ENV judgment call (issue #101) —
+    this only appends the file as a third tier beneath both, by handing it
+    a `--endpoint`-shaped entry it cannot tell apart from one actually typed
+    on the command line. `_open_endpoints`'s signature stays untouched
+    (t109 owns `open_network`; this task does not touch either)."""
+    endpoint_args = list(endpoint_args or [])
+    given_names = {item.partition("=")[0] for item in endpoint_args}
+    merged = list(endpoint_args)
+    for name, url in (cfg_endpoints or {}).items():
+        if name in given_names:
+            continue
+        if os.environ.get("LNPL_ENDPOINT_%s" % name.upper()) is not None:
+            continue
+        merged.append("%s=%s" % (name, url))
+    return merged
+
+
 def cmd_serve(args):
     """Issue #26: bind the workflows to their OpenAPI paths over HTTP (mode A).
 
@@ -515,6 +581,11 @@ def cmd_serve(args):
     shutdown path: `serve_forever` surfaces it as KeyboardInterrupt, the socket
     closes, and the exit code stays 0 — stopping a server on request is not a
     failure.
+
+    Issue #114: `lnpl.toml` (`--config`, default `./lnpl.toml`; `--profile`,
+    default `LNPL_PROFILE`) is loaded first and sits BELOW every existing
+    flag/env var in priority — a project with no `lnpl.toml` resolves
+    exactly as it did before this file existed (regression requirement).
     """
     doc, _, _, diagnostics = _compile(args.source)
     _emit_diagnostics(diagnostics)
@@ -522,23 +593,31 @@ def cmd_serve(args):
         print("no workflow to serve", file=sys.stderr)
         return 1
 
+    try:
+        cfg = load_config(getattr(args, "config", None), getattr(args, "profile", None))
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+
     # Both are validated before the socket is bound. A store that cannot be
     # opened, or a signing secret that is not set, is a failed launch — finding
     # either out on the first request instead means the server came up and is
     # quietly not the one that was asked for.
-    backend = getattr(args, "backend", "fake")
+    backend = _resolve_backend(args, cfg)
     probe = _open_backend(backend)
     if probe is _REJECTED:
         return 2
     if probe is not None:
         probe.close()
-    token_provider = _token_provider(getattr(args, "jwt_secret_env", None),
+    jwt_secret_env = _resolve_jwt_secret_env(args, cfg)
+    token_provider = _token_provider(jwt_secret_env,
                                      getattr(args, "jwt_issuer", None),
                                      getattr(args, "token_provider", None))
     if token_provider is _REJECTED:
         return 2
     network_spec = getattr(args, "network", "fake")
-    resolved = _open_endpoints(doc, getattr(args, "endpoint", None), network_spec)
+    endpoint_args = _merge_endpoint_args(getattr(args, "endpoint", None), cfg.endpoints)
+    resolved = _open_endpoints(doc, endpoint_args, network_spec)
     if resolved is _REJECTED:
         return 2
     endpoints, capabilities = resolved
@@ -546,10 +625,10 @@ def cmd_serve(args):
                             capabilities=capabilities)
     if network is _REJECTED:
         return 2
-    log_format = _open_log_format(getattr(args, "log_format", "text"))
+    log_format = _open_log_format(_resolve_log_format(args, cfg))
     if log_format is _REJECTED:
         return 2
-    exporter = _open_trace_exporter(getattr(args, "trace_exporter", None))
+    exporter = _open_trace_exporter(_resolve_trace_exporter(args, cfg))
     if exporter is _REJECTED:
         return 2
 
@@ -559,10 +638,11 @@ def cmd_serve(args):
                    token_provider=token_provider, network=network,
                    log_format=log_format, exporter=exporter,
                    trust_incoming_trace=getattr(args, "trust_incoming_trace", False),
-                   jwt_secret_env=getattr(args, "jwt_secret_env", None),
+                   jwt_secret_env=jwt_secret_env,
                    metrics=getattr(args, "metrics", False),
                    idempotency_ttl_ms=(None if idempotency_ttl_s is None
-                                       else idempotency_ttl_s * 1000))
+                                       else idempotency_ttl_s * 1000),
+                   capture_on_failure=getattr(args, "capture_on_failure", False))
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -626,6 +706,133 @@ def cmd_outbox_ack(args):
     try:
         repository.ack_outbox(args.seq)
         return 0
+    except DriverError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        repository.close()
+
+
+# issue #118, D8: the reference relay's pause between drain cycles when
+# `--once` is not given. No `--interval` flag -- the issue names only
+# `--once`, and this is a reference implementation, not a tunable daemon.
+RELAY_POLL_INTERVAL_S = 1.0
+
+
+def _relay_post(url, envelope):
+    """POST `envelope` (a CloudEvents structured-mode JSON body) to `url` ->
+    `(status, parsed_body)`. `status is None` means the request never got a
+    response at all (connection refused, DNS failure, timeout) -- folded
+    into the SAME bucket `_cmd_relay_drain_once` already treats 503 as
+    (leave un-acked, the next drain cycle tries again), so that function
+    needs only one branch for "could not confirm delivery," not two.
+
+    stdlib `urllib` only (issue #118, out-of-scope: no broker/HTTP client
+    dependency) -- the same posture #88 already set for the outbox itself.
+    """
+    data = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            return resp.status, _read_json_or_none(resp)
+    except urllib.error.HTTPError as exc:
+        return exc.code, _read_json_or_none(exc)
+    except urllib.error.URLError:
+        return None, None
+
+
+def _read_json_or_none(response):
+    body = response.read()
+    if not body:
+        return None
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
+
+
+def _relay_drain_once(repository, event_names, source, target):
+    """One outbox drain -> POST -> ack cycle (issue #118, D8). Returns the
+    count of emissions acked, for `--once`'s stdout summary.
+
+    Ack policy, per emission, decided by the response `_relay_post` got:
+    200 -> ack (delivered). 422 -> ack anyway (RFC-0040 D7: permanent
+    rejection, redelivering the identical envelope can never turn it into a
+    success) + one dead-letter line to stderr, naming what got dropped and
+    why -- the DLQ this reference relay has, in place of an actual queue.
+    503, or no response at all -> leave un-acked; the next drain cycle
+    re-reads the same row and tries again (at-least-once, offset-commit
+    discipline: ack only after confirmed success or a confirmed permanent
+    rejection). Any OTHER status (e.g. a slug this target never declared
+    `consume by` for, 404) is treated the same conservative way as 503 --
+    this reference relay never invents a fourth bucket RFC-0040 D7 does not
+    define.
+    """
+    acked = []
+    for emission in repository.drain_outbox():
+        name = event_names.get(emission["event"])
+        if name is None:
+            print("relay: seq=%d references event id %r, which this "
+                 "document does not declare -- left un-acked"
+                 % (emission["seq"], emission["event"]), file=sys.stderr)
+            continue
+        envelope = {"specversion": "1.0", "id": "outbox-%d" % emission["seq"],
+                   "source": source, "type": name, "data": emission["payload"]}
+        url = "%s/-/events/%s" % (target.rstrip("/"), _slug(name))
+        status, body = _relay_post(url, envelope)
+        if status == 200:
+            acked.append(emission["seq"])
+        elif status == 422:
+            acked.append(emission["seq"])
+            print("relay: dead-letter -- seq=%d event=%s rejected (422): %s"
+                 % (emission["seq"], name,
+                    body.get("detail") if isinstance(body, dict) else body),
+                 file=sys.stderr)
+        elif status == 503 or status is None:
+            pass
+        else:
+            print("relay: seq=%d event=%s got unexpected status %r -- "
+                 "left un-acked for the next drain"
+                 % (emission["seq"], name, status), file=sys.stderr)
+    if acked:
+        repository.ack_outbox(acked)
+    return len(acked)
+
+
+def cmd_relay(args):
+    """`lnpl relay <source...> --backend sqlite:... --target <base-url>
+    [--once]` (issue #118, D8) -- the reference relay: drains this
+    document's outbox (issue #102) and POSTs each emission as a CloudEvents
+    structured-mode envelope to `<target>/-/events/<slug>` (D4/D5). Proves
+    RFC-0040's consume contract end-to-end without a broker: two `lnpl`
+    processes, one outbox table, one HTTP hop between them.
+
+    `source` is compiled (never re-executed) only to map an emission's
+    event id back to the event's declared NAME -- the `type`/routing-slug
+    CloudEvents needs and the outbox row does not itself carry.
+    """
+    doc, _, module_name, diagnostics = _compile(args.source)
+    _emit_diagnostics(diagnostics)
+    event_names = {n["id"]: n["name"] for n in doc["nodes"] if n["kind"] == "Event"}
+
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: relay needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has no outbox to drain",
+              file=sys.stderr)
+        return 2
+    try:
+        while True:
+            acked = _relay_drain_once(repository, event_names, module_name,
+                                      args.target)
+            if args.once:
+                print("relay: acked %d emission(s)" % acked)
+                return 0
+            time.sleep(RELAY_POLL_INTERVAL_S)
     except DriverError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
@@ -786,6 +993,77 @@ def _open_endpoints(doc, endpoint_args, network_spec):
                 headers[auth["header"]] = value
         resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers}
     return endpoints, resolved_caps
+
+
+def _declares_jwt(doc):
+    """Whether any `Security` node in `doc` declares the `jwt` mechanism —
+    the same shape `wsgi.build_routes` reads off `service.constraints`, but
+    a document-wide OR: `lnpl config check` cares whether ANY served path
+    would need a verifier, not which service."""
+    return any(n["kind"] == "Security" and "jwt" in n.get("mechanisms", [])
+               for n in doc["nodes"])
+
+
+def cmd_config_check(args):
+    """`lnpl config check <source...> [--profile P] [--config PATH]` —
+    issue #114 D8: judge, before `lnpl serve` would bind a socket, whether
+    (a) every NetworkCall logical target resolves to an endpoint, (b) every
+    `lnpl.toml` `[*.secrets]` entry names a variable that is actually set,
+    and (c) a `security jwt` declaration has a secret mapped. Every failing
+    item is printed — unlike `_open_endpoints`, which stops at the first,
+    because `cmd_serve` only needs one reason to refuse to start, but an
+    operator running this diagnostic wants the whole list at once.
+
+    Endpoint/secrets resolution here intentionally omits `--endpoint`/
+    `--jwt-secret-env` (this subcommand takes neither) — it checks the
+    lnpl.toml + environment surface `lnpl serve` would fall back to, not a
+    one-off override typed alongside `serve` itself.
+    """
+    doc = compile_source(args.source)
+    try:
+        cfg = load_config(getattr(args, "config", None), getattr(args, "profile", None))
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+
+    problems = []
+
+    caps = _http_capabilities(doc)
+    for name in _network_targets(doc):
+        url = cfg.endpoints.get(name)
+        if url is None:
+            url = os.environ.get("LNPL_ENDPOINT_%s" % name.upper())
+        if url is None:
+            problems.append(
+                "network target %r has no lnpl.toml endpoints entry or "
+                "LNPL_ENDPOINT_%s environment variable"
+                % (name, name.upper()))
+            continue
+        auth = (caps.get(name) or {}).get("auth")
+        if auth is not None and os.environ.get(auth["env"]) is None:
+            problems.append(
+                "%s is not set in the environment (capability http %s "
+                "declares `auth %s from %s`)"
+                % (auth["env"], name, auth["kind"], auth["env"]))
+
+    for key, env_name in sorted(cfg.secrets.items()):
+        if os.environ.get(env_name) is None:
+            problems.append(
+                "lnpl.toml secrets.%s names %s, which is not set in the "
+                "environment" % (key, env_name))
+
+    if _declares_jwt(doc) and "jwt" not in cfg.secrets:
+        problems.append(
+            "declares `security jwt` but lnpl.toml has no [*.secrets].jwt "
+            "mapping — `lnpl serve` would only presence-check the bearer "
+            "token, never verify it")
+
+    if problems:
+        for msg in problems:
+            print("error: %s" % msg, file=sys.stderr)
+        return 2
+    print("ok")
+    return 0
 
 
 def _open_clock(spec):
@@ -1178,16 +1456,26 @@ def main(argv=None):
                     help="bind address (default: 127.0.0.1 — loopback only)")
     sv.add_argument("--port", type=int, default=8080,
                     help="TCP port; 0 binds an ephemeral port (default: 8080)")
-    sv.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
+    sv.add_argument("--backend", default=None, help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists. Falls back to lnpl.toml's `backend` (issue #114), then `fake`")
     sv.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
     sv.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
-                    help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME>, --endpoint wins)")
+                    help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME> or lnpl.toml's `endpoints` table, issue #114 — --endpoint wins, then LNPL_ENDPOINT_<NAME>, then the file)")
+    sv.add_argument("--config", default=None, metavar="PATH",
+                    help="lnpl.toml path (issue #114; default: ./lnpl.toml "
+                         "if present — a missing default path is not an "
+                         "error, an explicit --config that is missing is)")
+    sv.add_argument("--profile", default=None, metavar="NAME",
+                    help="lnpl.toml profile to overlay on [default] (issue "
+                         "#114; also settable via LNPL_PROFILE, --profile "
+                         "wins). Omitted: [default] alone")
     sv.add_argument("--jwt-secret-env", default=None, metavar="NAME",
                     help="name of the environment variable holding the HS256 "
                          "signing secret. Given, `security jwt` services verify "
                          "the bearer token; omitted, the header is only checked "
                          "for presence. The value is never read from the "
-                         "command line.")
+                         "command line. Falls back to lnpl.toml's "
+                         "`[*.secrets].jwt` (issue #114) — also a NAME, "
+                         "never the secret itself.")
     sv.add_argument("--jwt-issuer", default=None, metavar="ISS",
                     help="expected `iss` claim a verified token must carry "
                          "(issue #119b). Omitted, defaults to the built-in "
@@ -1205,16 +1493,18 @@ def main(argv=None):
                          "verification against a real external IdP "
                          "(docs/backends.md). A registered name cannot "
                          "shadow `hmac`.")
-    sv.add_argument("--log-format", default="text",
+    sv.add_argument("--log-format", default=None,
                     help="access-log line shape: `text` (default, silent — no "
                          "access log) or `json` (one JSON Line per request to "
                          "stderr: correlation_id/method/path/workflow/status/"
-                         "duration_ms/skipped/diagnostics)")
+                         "duration_ms/skipped/diagnostics). Falls back to "
+                         "lnpl.toml's `log_format` (issue #114), then `text`")
     sv.add_argument("--trace-exporter", default=None, metavar="NAME",
                     help="export each completed request's Trace: built-in "
                          "`stderr-json`, or a name registered under the "
                          "`lnpl.exporters` entry-points group; omitted, "
-                         "nothing is exported (independent of --log-format)")
+                         "nothing is exported (independent of --log-format). "
+                         "Falls back to lnpl.toml's `trace_exporter` (issue #114)")
     sv.add_argument("--trust-incoming-trace", action="store_true",
                     help="adopt an inbound `traceparent` header's trace-id "
                          "for this request (default: off). Off means a "
@@ -1232,6 +1522,11 @@ def main(argv=None):
                          "before a repeat becomes a fresh miss (issue #113, "
                          "D10); default 86400 (24h). No effect on --backend "
                          "fake, which cannot durably record a claim (D11)")
+    sv.add_argument("--capture-on-failure", action="store_true",
+                    help="on a failed/500 run only, add the masked input "
+                         "payload to that run's canonical log line (--log-"
+                         "format json only). Default: off — a successful "
+                         "run never carries its payload into the log")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",
@@ -1280,6 +1575,30 @@ def main(argv=None):
                           "output) to mark delivered — a repeated or "
                           "already-delivered seq is a no-op success")
     oba.set_defaults(func=cmd_outbox_ack)
+
+    rl = sub.add_parser("relay",
+                        help="reference relay: drain this document's outbox "
+                             "and POST each emission as a CloudEvents "
+                             "envelope to a target's `/-/events/<slug>` "
+                             "consume route (issue #118)")
+    rl.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77) — compiled only to map an "
+                         "emission's event id back to its declared name")
+    rl.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                    help="a persistent capability backend to drain, e.g. "
+                         "sqlite:./store.db (`fake` has no outbox)")
+    rl.add_argument("--target", required=True, metavar="BASE-URL",
+                    help="the consuming instance's base URL, e.g. "
+                         "http://localhost:8081 — envelopes POST to "
+                         "<BASE-URL>/-/events/<slug>")
+    rl.add_argument("--once", action="store_true",
+                    help="drain and POST exactly once, then exit (rc 0) — "
+                         "the shape a test or a cron entry drives. Default: "
+                         "loop forever, polling the outbox every %gs"
+                         % RELAY_POLL_INTERVAL_S)
+    rl.set_defaults(func=cmd_relay)
 
     db = sub.add_parser("db",
                         help="inspect a persistent store against the "
@@ -1333,6 +1652,26 @@ def main(argv=None):
     df.add_argument("--payload", help="JSON file with the workflow input")
     df.add_argument("--no-row", action="store_true")
     df.set_defaults(func=cmd_diff)
+
+    cf = sub.add_parser("config",
+                        help="inspect/validate lnpl.toml (issue #114)")
+    cf_sub = cf.add_subparsers(dest="config_cmd", required=True)
+    cfc = cf_sub.add_parser("check",
+                            help="judge endpoint/secrets/jwt completeness "
+                                 "before `lnpl serve` would bind a socket "
+                                 "(rc 0 clean, rc 2 with every problem "
+                                 "listed)")
+    cfc.add_argument("source", nargs="+",
+                     help="one or more .lnpl files (merged in the given "
+                          "order), or a single directory (its *.lnpl, "
+                          "filename-sorted — RFC-0031, issue #77)")
+    cfc.add_argument("--profile", default=None, metavar="NAME",
+                     help="lnpl.toml profile to check (also settable via "
+                          "LNPL_PROFILE, --profile wins). Omitted: "
+                          "[default] alone")
+    cfc.add_argument("--config", default=None, metavar="PATH",
+                     help="lnpl.toml path (default: ./lnpl.toml if present)")
+    cfc.set_defaults(func=cmd_config_check)
 
     kbp = sub.add_parser("kb", help="inspect the knowledge base (RFC-0005)")
     kbp.add_argument("--root", default=None)

@@ -238,6 +238,61 @@ REST의 PUT/PATCH가 갖는 단일 대상 리소스가 없어서, 이전 GET의 
 거부한다 — 추측하지 않는다. `lnpl serve`는 문서의 모든 스케줄 이벤트를 한
 번에 검증하고, `lnpl trigger`는 그중 요청한 하나만 검증한다.
 
+## 이벤트 소비 (`consume by`, 이슈 #118)
+
+발행 쪽(`emit`/`publish` → `lnpl_outbox`, 이슈 #102)은 있었지만 소비 쪽 —
+이벤트가 워크플로를 실제로 깨우는 경로 — 는 없었다. `event <E> subscribe`
+(이슈 #103)는 HTTP 클라이언트로 SSE를 **내보낼 뿐**, 아무 워크플로도 돌리지
+않는다. `event <E> consume by <Workflow>`가 그 반대쪽이다: 도착하면
+`<Workflow>`를 실행한다. 두 절은 같은 `event` 선언에 나란히 앉을 수 있고
+서로 배타적이지 않다 — 아래 대조표.
+
+| 절 | 뜻 | 라우트 | 인증 |
+|----|----|--------|------|
+| `subscribe` | HTTP 클라이언트에게 SSE로 **내보낸다** | `GET /<svc>/events/<slug>` | 이벤트를 `emit`하는 워크플로의 서비스 |
+| `consume by <W>` | 도착하면 `<W>`를 **실행한다** | `POST /-/events/<slug>` | `<W>`를 소유한 서비스 |
+
+**라우트** — `POST /-/events/<event-slug>`. `/-/schedules/<slug>`(이슈 #81)와
+같은 예약 공간·같은 병합 순서(`build_routes`의 OpenAPI 계약 검사 **뒤에**
+합류 — CloudEvents 인입은 오퍼레이션이 아니라 이 서버만의 계약이다)이지만,
+실행 경로는 스케줄 트리거와 다르다: 워크플로 POST의 M1-M9 매핑을 그대로
+타지 않고, 아래 자신의 3갈래 매핑을 쓴다(D7) — 릴레이가 재시도할지
+dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 잘못했나"가
+아니라 "이 봉투를 다시 밀어도 되는가"이기 때문이다.
+
+**봉투 (D5)** — 구조화 모드 CloudEvents v1.0만 받는다. `specversion`(`"1.0"`
+고정)·`id`·`source`·`type`은 비어있지 않은 문자열이어야 한다. `type`을
+이벤트 이름과 대조하지는 **않는다** — 슬러그가 이미 라우팅 키이고, 그
+대조는 릴레이의 몫이라는 계획된 단순화다. `datacontenttype`이 오면
+`application/json`만(`;` 뒤 파라미터는 무시) 받고, 그 외 값이나
+`data_base64`(바이너리 모드)는 거부한다. `data`는 기본값 `{}`로, 이
+워크플로의 입력 페이로드가 된다(D6).
+
+| # | 관측 조건 | HTTP | error `code` |
+|---|-----------|------|--------------|
+| E1 | `specversion`/`id`/`source`/`type` 중 하나라도 비어있지 않은 문자열이 아니거나 `specversion != "1.0"` | 400 | `cloudevents-invalid` |
+| E2 | `datacontenttype`이 있는데 `application/json`이 아니거나, `data_base64`가 있음(바이너리 모드) | 400 | `cloudevents-invalid` |
+| E3 | `data`가 있는데 JSON object가 아님 | 400 | `cloudevents-invalid` |
+| E4 | 같은 `id`로 이미 실행 중(#113과 같은 충돌 신호) | 409 | `idempotency-in-progress` |
+| E5 | 실행 완료 | 200 | — |
+| E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
+| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`, create 충돌) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
+
+**멱등성 (D6)** — CloudEvents `id`가 멱등성 키다. `lnpl_idempotency`(이슈
+#113)를 **그대로** 재사용한다 — 두 번째 저장소를 만들지 않는다. 200과
+422는 결정적 결과이므로 `idempotency_finish`로 확정해, 같은 `id`가
+재전달되면 워크플로를 다시 돌리지 않고 첫 응답을 재생한다. 503은
+**의도적으로 확정하지 않는다** — 확정하면 #113이 그 키에 대해 503을
+영원히 재생하게 되어, 릴레이가 재시도해도 절대 새로 실행되지 않는다(D7의
+취지를 정면으로 깬다). 그래서 503 다음 같은 `id`가 즉시 재전달되면
+"실행 중" 상태가 아직 안 지워졌으므로 E4(409)를 본다 — TTL이 지나야
+완전히 새로 시작한다. `fake` 백엔드(멱등성 저장소 없음)는 매번 독립적으로
+실행한다(D9/D11 기존 규약과 동일).
+
+**레퍼런스 릴레이 — `lnpl relay`.** `lnpl outbox drain`(발행)과 이 라우트
+(소비)를 잇는 최소 구현. 브로커 의존 없이 두 인스턴스 사이에서 계약을
+실측한다. 자세한 ack 규율은 `lnpl relay --help`와 이슈 #118 D8 참조.
+
 ## 계약 한계 (이 서버가 아닌 것)
 
 - **capability 백엔드는 기본이 fake다.** 플래그 없이 띄우면 저장은 요청마다
@@ -499,6 +554,76 @@ otlp = "my_otlp_exporter:OtlpExporter"
 
 아래 "운영 배치" 절 표에 두 행이 더 있다: `LNPL_LOG_FORMAT`,
 `LNPL_TRACE_EXPORTER`.
+
+## 설정 파일 — `lnpl.toml` (이슈 #114)
+
+`lnpl serve`는 CLI 플래그·개별 환경변수(`LNPL_ENDPOINT_<NAME>`)뿐이던 설정
+통로에 파일 하나를 더한다 — 시크릿 **값**은 절대 담기지 않는다(이슈 #101
+규율 그대로): `[*.secrets]`는 그 값을 담은 환경변수의 **이름**만 받는다.
+
+```toml
+# lnpl.toml — 기본 위치는 cwd, --config로 재지정
+[default]
+backend = "sqlite:./app.db"
+log_format = "json"
+trace_exporter = "stderr-json"
+
+[default.endpoints]
+payments = "https://api.example.com/pay"
+
+[default.secrets]
+jwt = "LNPL_JWT_SECRET"          # 값이 아니라 환경변수 이름
+
+[staging]                        # [default] 위에 얕게(1단) 오버레이
+backend = "sqlite:./staging.db"
+
+[staging.endpoints]
+payments = "https://staging.example.com/pay"   # payments만 덮는다
+```
+
+`--profile staging`(또는 `LNPL_PROFILE=staging`)이 없으면 `[default]` 단독이
+적용된다. `[<profile>]`은 `[default]` 위에 **키 단위**로만 얹힌다 — 섹션
+전체가 아니라 `endpoints`/`secrets`의 개별 키만 덮이므로, 프로파일이 건드리지
+않은 키는 `[default]`에서 그대로 내려온다. include·상속·조건부는 없다.
+
+### 우선순위 (정본)
+
+값 하나를 결정할 때, 위에서부터 먼저 있는 것이 이긴다:
+
+| 순위 | 소스 | 비고 |
+|------|------|------|
+| 1 | CLI 플래그 (`--backend`/`--jwt-secret-env`/`--log-format`/`--trace-exporter`/`--endpoint`) | |
+| 2 | 환경변수 (`LNPL_ENDPOINT_<NAME>`) | 오늘은 endpoint 매핑에만 있다(이슈 #101 계약) |
+| 3 | `lnpl.toml` `[<profile>]` | `--profile`/`LNPL_PROFILE`로 선택 |
+| 4 | `lnpl.toml` `[default]` | |
+| 5 | 내장 기본값 | `backend=fake`, `log_format=text`, `trace_exporter`/시크릿=미설정 |
+
+`lnpl.toml`이 없으면(기본 경로 `./lnpl.toml`이 없을 때) 5개 값 전부가 이 파일이
+생기기 전과 바이트 단위로 동일하게 해석된다 — 도입 자체는 회귀가 아니다. 반면
+`--config`로 명시한 경로가 없으면 그건 조작자 실수로 취급해 rc 2다.
+
+### `${VAR}` 치환
+
+스칼라·`endpoints`의 문자열 값 안에서 `${VAR}`는 순수 환경변수 참조로만
+치환된다 — 미정의 `VAR`는 그 키 경로와 함께 rc 2. `${VAR:-default}` 같은
+기본값 문법은 지원하지 않는다(시크릿을 파일에 우회로 적어 넣을 구멍을 만들지
+않기 위해서다). `[*.secrets]` 값 안에서는 애초에 치환이 없다 — 그 값은 항상
+환경변수 **이름**이어야 하고, 이름 정규식(`^[A-Za-z_][A-Za-z0-9_]*$`, 64자
+이하)에 맞지 않으면(URL·공백 포함 등) 로드 시점에 rc 2로 거부된다.
+
+### `lnpl config check` — 기동 전 완결성 판정
+
+```
+lnpl config check <src>.lnpl... [--profile staging] [--config lnpl.toml]
+```
+
+`lnpl serve`가 소켓을 바인드하기 전에 실패할 조건 셋을 미리 판정한다: (a)
+소스의 모든 `NetworkCall` 논리명에 endpoint 매핑이 있는가, (b) `lnpl.toml`의
+`[*.secrets]`가 가리키는 환경변수가 실제로 설정돼 있는가, (c) `security jwt`를
+선언했다면 `[*.secrets].jwt` 매핑이 있는가. 전부 통과하면 rc 0, 아니면 발견한
+문제 **전부**를 stderr에 나열하고 rc 2 — `--endpoint`/`--jwt-secret-env`는
+받지 않는다(즉석 오버라이드가 아니라 이미 서 있는 lnpl.toml+환경변수 표면만
+진단한다).
 
 ## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
 

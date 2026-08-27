@@ -7,6 +7,7 @@
   최종 텍스트 위에 세 번째 바인딩 이름공간을 더한다), RFC-0003
   §Reference-level Specification/Execution Model (`NetworkCall` 행), RFC-0014
   §Reference-level Specification/2.4 스킵 레코드 (마스킹 범위)
+- Updated-by: RFC-0037 (§Reference-level Specification/1 — `NetworkDriver` 계약)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라
 RFC-0012 §G12.2를 이미 갱신한 RFC-0025 §5도 함께 지목한다 — G12.2의 효력 있는
@@ -141,6 +142,9 @@ target은 fake 드라이버의 기본값(200/빈 바디)을 결정적으로 받�
 ## Reference-level Specification
 
 ### 1. `NetworkDriver` 계약 (D1)
+
+> RFC-0037 §Reference-level Specification/1이 이 절을 갱신했다. RFC-0007
+> §2.2 규칙 3에 따라 효력 있는 텍스트는 RFC-0037의 해당 절이다.
 
 `impl/lnpl/drivers.py`에 `RepositoryDriver`/`CacheDriver`/`TokenProvider`와
 같은 자리에 신규 계약을 더한다. 기존 관례("raise NotImplementedError" 문서화된

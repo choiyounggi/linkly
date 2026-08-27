@@ -49,7 +49,8 @@ def compile_doc(source=CHARGE_CARD_SRC, module="m"):
 
 
 class _FailingNetworkDriver(FakeNetworkDriver):
-    def call(self, target, payload, timeout_ms, trace_headers=None):
+    def call(self, target, payload, timeout_ms, trace_headers=None,
+             path_args=None):
         raise DriverError("the gateway is unreachable")
 
 

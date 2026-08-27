@@ -9,6 +9,7 @@
 - Updated-by: RFC-0027 (§Reference-level Specification/Execution Model)
 - Updated-by: RFC-0029 (§Execution Model)
 - Updated-by: RFC-0032 (§Execution Model/§Policy Enforcement/§Examples)
+- Updated-by: RFC-0041 (§Execution Model/§Policy Enforcement)
 
 ## Motivation
 
@@ -88,7 +89,19 @@ await 지점이므로, 실행 타임라인은 IR에서 정적으로 읽힌다.
 완료 대기). ② 한 브랜치가 실패하면 형제 브랜치에 취소를 전파하고, 전 브랜치
 종결 후 부모로 실패를 전파한다. ③ 부모의 취소(데드라인 초과 포함)는 전
 브랜치로 전파된다. ④ 브랜치는 병합 지점을 넘어 생존할 수 없다 — 고아 작업
-금지.
+금지. 동시성 상한은 `Policy.parallel N`이 선언돼 있으면 N, 없으면 그 블록의
+브랜치 수다. 같은 entity에 쓰는 두 브랜치가 한 블록 안에 있으면 컴파일
+거부다 — 병합 지점에 순서가 없는 블록 안에서 쓰기 순서에 결과가 의존하면
+그 결과는 실행마다 달라질 수 있기 때문이다(RFC-0012 §G12.2의 순서-의존
+바인딩 규칙과 충돌).
+
+> **인터프리터(mode A)가 이 계약을 실제로 집행하기 시작한 것은 2026-08-27
+> 개정(RFC-0041)부터다**(이슈 #108). 그 전에는 `parallel` 블록이 파싱만
+> 되고 실행 계획은 이 문단의 ①-④를 읽지 않았다 — 스텝이 그저 선언 순서로
+> 순차 실행됐다(`diagnostics.ENFORCEMENT[("policy","parallel")]`이
+> `unenforced`였던 이유). RFC-0041은 이 문단이 이미 약속한 계약을 mode A
+> 위에 실제로 구현한다 — 계약 자체를 바꾸지 않는다. mode B는 여전히
+> 손대지 않았다(RFC-0004 §5(#7), 계속 미결).
 
 **Effect 실행 의미.** Effect 대분류 6종 전부의 계약은 다음 표와 같다.
 
@@ -158,6 +171,7 @@ RFC-0001의 `Guard` 노드(2026-07-31 신설)는 피가드 항목 하나를 감�
 
 > 갱신됨: RFC-0013
 > 갱신됨: RFC-0032 (`Policy.rollback` 행)
+> 갱신됨: RFC-0041 (`Policy.parallel` 행 신설)
 
 Constraint 노드(RFC-0001: Policy·Security·Performance)의 런타임 의미.
 Security의 `mechanisms`는 컴파일러가 구현을 선택하는 입력이며(CHARTER §핵심
@@ -169,6 +183,7 @@ Security의 `mechanisms`는 컴파일러가 구현을 선택하는 입력이며(
 | `Policy.retry N` | 실패한 **step**의 재실행. 최대 N회 재시도(초기 시도는 별도 — `retry 3` = 실패 후 최대 3회 더 시도). 대기는 capped exponential backoff + full jitter. 재시도는 2중 게이트를 모두 통과할 때만: ① step이 소유한 Effect 전부가 아래 멱등 판정 표에서 멱등 ② 실패 유형이 아래 실패 유형 표에서 재시도 가능. 모든 재시도는 `Policy.timeout`의 잔여 데드라인 안에서만 수행한다 |
 | `Policy.rollback` | 실패 시 보상의 경계는 **Transaction 노드**다(§Execution Model Transaction 행). Phase 1은 이 노드를 선언할 문법이 없으므로, 그 공백 동안은 워크플로 실행 전체가 유일한 경계다: 실행이 실패로 종결하면(재시도 소진, 데드라인 초과, 또는 step 순회 자체를 중단시키는 구성 오류를 포함해 `status`가 `failed`로 확정되거나 예외가 전파되는 모든 경로) 그 실행에서 커밋되지 않은 모든 쓰기가 롤백된다 — 그리고 경계가 실행 전체이므로 "이미 커밋된 선행 Transaction"은 존재할 수 없다(있었다면 그것은 이전 실행이 커밋한 데이터이고, 이번 rollback의 대상이 아니다). 명시적 `Transaction` 노드가 도입되면 한 워크플로 안에 여러 개가 존재할 수 있고, 그때는 원래 서술대로 진행 중이던 것만 abort, 이미 커밋된 선행 Transaction들은 역순 보상 대상이 된다. Transaction 경계(현재는 실행 전체) 밖의 Effect(예: 외부 NetworkCall)는 여전히 자동 보상이 불가하다 — rollback이 보장하는 범위는 그 경계까지이며, 그 밖의 보상은 계약하지 않는다(한계는 §Open Questions ③과 연결) |
 | `Policy.timeout T` | workflow 실행 전체의 데드라인. 실행 시작 시각에 기산하고, 모든 하위 Effect 호출에 **잔여 데드라인을 전파**한다(호출받은 쪽은 잔여 시간을 자신의 타임아웃 상한으로 삼는다). 초과 시: in-flight Effect에 취소를 전파하고(아무도 읽지 않을 일을 계속하지 않는다), actor 메일박스의 해당 실행 작업을 폐기하며, workflow는 `TimedOut` 실패로 종결한다 |
+| `Policy.parallel N` | `parallel` 블록의 동시성 상한(§Execution Model Concurrency 문단). 선언값 N이 있으면 그 블록의 동시 실행 스텝 수는 N을 넘지 않는다 — 없으면 상한은 그 블록의 브랜치 수(자연 상한, 병목 없음). 블록 하나가 스코프다: 실행기는 블록 시작 시 만들어지고 병합 지점 통과 전에 반드시 종료한다(고아 작업 금지, §Execution Model ④). 한 브랜치가 실패하면 아직 시작하지 않은 형제 브랜치는 취소되고, 이미 시작한 브랜치는 자신의 현재 시도가 끝날 때까지 진행한 뒤 합류한다(재시도가 있는 브랜치는 **다음** 재시도부터 중단 — 스레드는 강제 종료할 수 없다). 보고는 완료 순서가 아니라 **선언 순서**다 — 병합 후 일괄 기록되므로 `steps <N>`은 순차 실행이었을 때와 같은 모양이다. `Policy.timeout`의 잔여 데드라인은 블록 전체에도 적용된다: 블록의 스텝들이 성공적으로 끝났어도 그 시점에 데드라인을 이미 넘겼으면 그 실행은 여전히 `TimedOut`으로 종결한다(RFC-0041) |
 | `Performance.cache T` | 해당 workflow의 CacheAccess `set`에 적용되는 TTL 예산. TTL의 소유권은 Performance 제약에 있다(RFC-0001 CacheAccess 행 — 중복 지정 금지). 런타임 계약: TTL 없는 `set`은 금지된다 — 모든 key는 TTL을 가진다(무효화가 유실돼도 TTL이 백스톱) |
 | `Performance.response X` | **SLO 선언이다 — 집행 대상이 아니다.** 런타임은 초과 요청을 차단하지 않는다(유효한 요청을 자기 손으로 실패시키는 것은 SLO 개선이 아니다). 대신 계측·경보한다: step/workflow duration histogram의 **p50/p95/p99**를 SLO와 비교하고 위반 시 경보를 발화한다. 평균 단독 비교는 금지 — 평균은 사용자가 실제로 겪는 꼬리 지연을 가린다 |
 

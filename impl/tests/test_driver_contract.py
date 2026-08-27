@@ -141,6 +141,26 @@ class QueryContractTest(ContractTestCase):
         self.assertEqual(seen["fake"], seen["sqlite"])
         self.assertEqual([row["id"] for row in seen["fake"]], ["0", "1", "2"])
 
+    def test_fake_and_sqlite_agree_on_a_predicate_order_and_limit(self):
+        """issue #116, D6: the same claim as `test_fake_and_sqlite_agree_on_
+        order`, extended to a `list where`/`order by`/`limit` query — the
+        two backends must return the same rows in the same order, not just
+        agree on the unfiltered case."""
+        seed = {"entity.link": {
+            "0": {"id": "0", "clicks": 5}, "1": {"id": "1", "clicks": 30},
+            "2": {"id": "2", "clicks": 20}, "3": {"id": "3", "clicks": 5},
+        }}
+        seen = {}
+        for backend in BACKENDS:
+            repository = self._repository(backend)
+            repository.seed(seed)
+            seen[backend] = repository.query(
+                "entity.link", predicate=[("clicks", ">=", 5)],
+                order=("clicks", True), limit=2)
+
+        self.assertEqual(seen["fake"], seen["sqlite"])
+        self.assertEqual([row["id"] for row in seen["fake"]], ["1", "2"])
+
 
 class SqliteDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
     """`SqliteRepositoryDriver` validated by the published TCK (issue #75) —

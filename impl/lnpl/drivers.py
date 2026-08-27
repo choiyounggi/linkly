@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import sqlite3
 import time
 import uuid
@@ -114,6 +115,15 @@ class RepositoryDriver:
     """The `postgres` capability's adapter contract.
 
     Reference implementation: `interp.FakeRepository` (in-memory, per run).
+
+    `supports_predicate` (issue #116, D5) — class attribute, absent by
+    default: opt in by setting it `True` to declare that `query`'s
+    `predicate`/`order`/`limit` are pushed down rather than ignored. A
+    driver that does not set it gets `interp.Interpreter`'s fallback
+    instead — `query(entity_id)` (the pre-#116 call), filtered/sorted/
+    limited in Python (`repo_policy.apply_predicate`) — the same opt-in
+    idiom `testing.RepositoryDriverTCK`'s optimistic-version conflict test
+    already uses for `observed_version`.
     """
 
     def seed(self, rows):
@@ -134,7 +144,7 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
-    def query(self, entity_id):
+    def query(self, entity_id, predicate=None, order=None, limit=None):
         """Every row for `entity_id`, ordered by row_key ascending.
 
         Empty list when the entity has no rows — never `None`, and never an
@@ -143,6 +153,19 @@ class RepositoryDriver:
         detail: `SqliteRepositoryDriver` orders by `ORDER BY row_key`, and any
         other implementation must agree with that order for a document to
         mean the same thing under either `--backend` (RFC-0025 §7).
+
+        `predicate`/`order`/`limit` (issue #116, D5) all default to `None`
+        — every pre-#116 caller's shape, unchanged. A driver that declares
+        `supports_predicate = True` is called with these when a `list
+        where`/`order by`/`limit` clause is present, and must push them
+        down; one that does not is never called with them (`interp.
+        Interpreter` filters/sorts/limits over a plain `query(entity_id)`
+        fetch instead). `predicate` is a list of `(field, op, value)`
+        3-tuples, ANDed together — `field` is a whitelisted column name
+        (compiler-validated, never raw text), `op` one of `<`/`<=`/`>`/
+        `>=`/`==`/`!=`, `value` the already-resolved concrete value to bind.
+        `order` is `(field, desc)` or `None`. `limit` is a positive `int` or
+        `None`.
         """
         raise NotImplementedError
 
@@ -283,17 +306,44 @@ class NetworkDriver:
     the contract now is safe. D8: these are observation headers, a runtime
     output, never author-declared — a driver applies them AFTER any
     capability-declared headers, so the runtime value always wins.
+
+    issue #109 widens the contract twice more, both times a breaking change
+    made once, deliberately, rather than layered on backward-compatibly (the
+    zero-external-implementations fact above still holds):
+
+      - `call` returns a 3-tuple, `(status, body, headers)` — `headers` is a
+        lower-cased-key dict of the response headers (D7), read by both the
+        driver's own Retry-After handling and, at the interpreter's
+        discretion, by a bound result.
+      - `call` takes an optional `path_args` — the already-resolved values
+        (not yet escaped) a `with <ref>...` call site bound at run time
+        (D6). A driver with a `path` template declared for this target
+        substitutes them positionally into `{}`, percent-encoding each one
+        (`urllib.parse.quote(safe="")`) so an argument value can never widen
+        or narrow the path's segment count.
+
+    A capability's `retry`/`breaker` configuration (D2/D5) lives in the same
+    `capabilities` entry `method`/`headers`/`path` already do — see
+    `HttpNetworkDriver`'s docstring for the entry's full shape. Both this
+    class's two implementations share one resilience core,
+    `_call_with_resilience`, so retry/backoff/jitter/breaker semantics can
+    never drift between them — the exact thing `NetworkDriverTCK` checks.
     """
 
-    def call(self, target, payload, timeout_ms, trace_headers=None):
-        """Call `target` once.
+    def call(self, target, payload, timeout_ms, trace_headers=None,
+             path_args=None):
+        """Call `target` once (an "attempt", `retry` widens this to more than
+        one — see the class docstring's D2/D5 note).
 
-        -> (status: int, body: dict). A response was received for every
-        status this returns, 5xx included — that is a value, not a fault
-        (RFC-0027 §3). Raise `DriverError` only when no response arrived at
-        all (connection refused, DNS failure, timeout). `timeout_ms` is this
-        one call's budget; a driver must never wait past it, and must never
-        treat "unset" as "wait forever" (RFC-0003 §Execution Model).
+        -> (status: int, body: dict, headers: dict). A response was received
+        for every status this returns, 5xx included — that is a value, not a
+        fault (RFC-0027 §3). Raise `DriverError` only when no response
+        arrived at all after every attempt this target's `retry`
+        configuration allows (connection refused, DNS failure, timeout), or
+        when its `breaker` is open (message contains `breaker-open`).
+        `timeout_ms` is EACH attempt's budget; a driver must never wait past
+        it on any one attempt, and must never treat "unset" as "wait
+        forever" (RFC-0003 §Execution Model).
         """
         raise NotImplementedError
 
@@ -326,6 +376,21 @@ _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
 # unchanged), so the sort key is extracted from the JSON blob at read time.
 _SELECT_SORTED = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
                   "ORDER BY json_extract(payload, ?), row_key")
+# issue #116, D5/D6: `list where`/`order by`/`limit` pushdown, assembled from
+# fixed literal fragments only — never a document-supplied field name or
+# value (STATEMENT TEXT IS CONSTANT, module docstring). A predicate term's
+# field rides in `json_extract`'s second argument (issue #99 D7's precedent,
+# just above); its value is an ordinary bound parameter; its comparator is
+# one of six fixed SQL operator strings, chosen by dict lookup from the
+# compiler's own whitelist (`condition.COMPARATORS`) — never document text.
+_SELECT_PREDICATE_OPS = {
+    "==": "=", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">=",
+}
+_SELECT_PREDICATE_BASE = "SELECT payload FROM lnpl_rows WHERE entity_id = ?"
+_SELECT_PREDICATE_TERM = " AND json_extract(payload, ?) %s ?"
+_SELECT_PREDICATE_ORDER = " ORDER BY json_extract(payload, ?)%s, row_key"
+_SELECT_PREDICATE_ORDER_DEFAULT = " ORDER BY row_key"
+_SELECT_PREDICATE_LIMIT = " LIMIT ?"
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
                      "VALUES (?, ?, ?)")
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
@@ -456,6 +521,12 @@ class SqliteRepositoryDriver(RepositoryDriver):
     is created and not re-asserted on every later open.
     """
 
+    # issue #116, D5/D6: pushes `query`'s predicate/order/limit down into
+    # SQL (bind parameters only — STATEMENT TEXT IS CONSTANT, module
+    # docstring), the same `query_sorted` precedent (issue #99, D7) already
+    # set for a sort field.
+    supports_predicate = True
+
     def __init__(self, path):
         self.raw_path = path
         resolved = self._resolve(path)
@@ -469,7 +540,15 @@ class SqliteRepositoryDriver(RepositoryDriver):
         self._in_transaction = False
         self._sql_transaction_open = False
         try:
-            self._conn = sqlite3.connect(self.path)
+            # issue #108 D4: a `parallel` block's steps run this driver from
+            # worker threads. The default `check_same_thread=True` would
+            # raise on any call from a thread other than the one that opened
+            # the connection; `False` lifts that, and `interp._state_lock`
+            # (held around every repository/cache call, not just this one) is
+            # what actually serializes access — RFC-0032's one-transaction-
+            # per-execution semantics are unchanged, only the thread that is
+            # allowed to reach this connection widens.
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
             self._conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
             if is_new:
                 self._conn.execute("PRAGMA journal_mode = WAL")
@@ -657,6 +736,34 @@ class SqliteRepositoryDriver(RepositoryDriver):
             raise DriverError("cannot record idempotency result for %r: %s"
                               % (key, exc)) from exc
 
+    def idempotency_release(self, workflow_id, key):
+        """Abandon an in-progress claim -- issue #118, D6 r2. A SEPARATE,
+        immediately-committed DELETE (same style as `idempotency_begin`/
+        `idempotency_finish` above), for exactly the outcome neither of
+        those two covers: a run that ended in a state the caller wants
+        RETRIED, not replayed and not left to self-heal via the TTL.
+
+        `/-/events/<slug>`'s transient (503) outcome calls this instead of
+        `idempotency_finish` -- calling `finish` there would make #113
+        replay 503 forever for this key (D6's original reasoning), but
+        leaving the claim merely unfinished has its own hole: the row stays
+        `in-progress` until the TTL (default 24h) clears it, so a redelivery
+        minutes later -- exactly what `Retry-After` asks the relay to do --
+        sees `in-progress` and gets 409, never a fresh run. Releasing the
+        claim outright, right after deciding 503, is what actually lets the
+        next delivery reclaim and re-run.
+
+        A DELETE against a key with no row (already released, never
+        claimed, or already finished) matches zero rows and raises
+        nothing -- release is idempotent, a no-op on an absent claim.
+        """
+        try:
+            self._conn.execute(_DELETE_IDEMPOTENCY, (workflow_id, key))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot release idempotency key %r: %s"
+                              % (key, exc)) from exc
+
     def execute(self, entity_id, operation, key):
         if operation in READ_OPS:
             return self._read(entity_id, key)
@@ -667,9 +774,28 @@ class SqliteRepositoryDriver(RepositoryDriver):
         raise DriverError("unsupported repository operation %r (accepted: %s)"
                           % (operation, ", ".join(ACCEPTED_OPS)))
 
-    def query(self, entity_id):
+    def query(self, entity_id, predicate=None, order=None, limit=None):
+        if predicate is None and order is None and limit is None:
+            sql, params = _SELECT_ALL_ROWS, (entity_id,)
+        else:
+            parts = [_SELECT_PREDICATE_BASE]
+            params = [entity_id]
+            for field, op, value in predicate or ():
+                parts.append(_SELECT_PREDICATE_TERM % _SELECT_PREDICATE_OPS[op])
+                params.append("$." + field)
+                params.append(value)
+            if order is not None:
+                field, desc = order
+                parts.append(_SELECT_PREDICATE_ORDER % (" DESC" if desc else ""))
+                params.append("$." + field)
+            else:
+                parts.append(_SELECT_PREDICATE_ORDER_DEFAULT)
+            if limit is not None:
+                parts.append(_SELECT_PREDICATE_LIMIT)
+                params.append(limit)
+            sql, params = "".join(parts), tuple(params)
         try:
-            found = self._conn.execute(_SELECT_ALL_ROWS, (entity_id,)).fetchall()
+            found = self._conn.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             raise DriverError("cannot query %s: %s" % (entity_id, exc)) from exc
         return [json.loads(row[0]) for row in found]
@@ -1039,25 +1165,244 @@ def audience_for_path(path):
 # the pool).
 DEFAULT_NETWORK_TIMEOUT_MS = 30_000
 
+# issue #109, D2: connection failures and these statuses are retried; every
+# other 4xx fails immediately (RFC 9110 §15.5's "the request should not be
+# retried without modification" default). 501 is carved out of the 5xx range
+# — Not Implemented will never succeed on a retry (Envoy/AWS SDK convention).
+_RETRYABLE_5XX_EXCLUDED = (501,)
+_RETRYABLE_4XX = (408, 429)
+
+
+def _is_retryable_status(status):
+    if status in _RETRYABLE_4XX:
+        return True
+    return 500 <= status < 600 and status not in _RETRYABLE_5XX_EXCLUDED
+
+
+def _retry_after_seconds(headers):
+    """The `Retry-After` response header, as whole seconds only (D3 — the
+    HTTP-date form is unsupported; parsing it buys nothing issue #109's DoD
+    asks for, so an unparsable value is silently ignored and the computed
+    backoff is used instead, same as if the header were absent)."""
+    value = (headers or {}).get("retry-after")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _monotonic_ms():
+    return time.monotonic() * 1000
+
+
+def _clock_now_fn(clock):
+    """Normalizes the constructor's `clock` (issue #109, D5) to a zero-arg
+    "now, in ms" callable. `None` falls back to the process's own monotonic
+    clock; a plain callable is used as-is (a test double); an object exposing
+    a `.now` attribute — `interp.Clock`/`interp.RealClock`'s exact shape,
+    RFC-0029 — is read fresh on every call, matching how `RealClock.now` is
+    itself a property. `drivers.py` cannot import `interp` (module docstring,
+    ONE DIRECTION), so this is duck-typed rather than an isinstance check.
+    """
+    if clock is None:
+        return _monotonic_ms
+    if callable(clock):
+        return clock
+    return lambda: clock.now
+
+
+class _Breaker:
+    """Per-capability in-process breaker state (issue #109, D5) — one
+    instance lives in the owning driver's `_breakers` dict for as long as the
+    driver does (RFC-0027 §1: a `NetworkDriver` is process-lifetime, so this
+    needs no separate persistence).
+
+    Consecutive failures count *calls* (this target's `call()` invocations),
+    not individual retry attempts within one call — `breaker after <N>`
+    reads as "N bad calls in a row", and a single call's own internal
+    retries already tried to make that one call succeed.
+    """
+
+    def __init__(self, threshold, window_ms):
+        self.threshold = threshold
+        self.window_ms = window_ms
+        self._consecutive_failures = 0
+        self._opened_at = None
+        self._half_open = False
+
+    def allow(self, now_ms):
+        if self._opened_at is None:
+            return True
+        if now_ms - self._opened_at >= self.window_ms:
+            self._half_open = True
+            return True
+        return False
+
+    def record_success(self):
+        self._consecutive_failures = 0
+        self._opened_at = None
+        self._half_open = False
+
+    def record_failure(self, now_ms):
+        if self._half_open:
+            # The one half-open probe failed — back to fully open immediately,
+            # not another `threshold` failures away (D5: half-open is a single
+            # trial, not a fresh closed state).
+            self._opened_at = now_ms
+            self._half_open = False
+            return
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.threshold:
+            self._opened_at = now_ms
+
+
+def _call_with_resilience(target, cap, clock_now, sleep_fn, rand, breakers,
+                          attempt_fn):
+    """The retry/backoff/jitter/Retry-After/breaker orchestration shared by
+    `FakeNetworkDriver.call` and `HttpNetworkDriver.call` (issue #109) — the
+    one place either the sharing is real or `NetworkDriverTCK` will observe
+    the two drivers grading the same declaration two different ways.
+
+    `attempt_fn()` makes exactly one raw attempt -> `(status, body,
+    headers)`, or raises `DriverError` for a connection-level failure (no
+    response at all). `cap` is `target`'s resolved capabilities entry (or
+    `None` — no declaration, RFC-0027's pre-#109 behaviour throughout).
+    `breakers` is the calling driver's own `{target: _Breaker}` state.
+    """
+    retry_cfg = (cap or {}).get("retry")
+    breaker_cfg = (cap or {}).get("breaker")
+    breaker = None
+    if breaker_cfg is not None:
+        breaker = breakers.get(target)
+        if breaker is None:
+            breaker = _Breaker(breaker_cfg["threshold"], breaker_cfg["window_ms"])
+            breakers[target] = breaker
+        if not breaker.allow(clock_now()):
+            raise DriverError(
+                "breaker-open: capability %r has failed %d consecutive "
+                "call(s) within its configured window — this call was "
+                "rejected without attempting it" % (target, breaker.threshold))
+    attempts = 1 + (retry_cfg["count"] if retry_cfg else 0)
+    result = None
+    exc = None
+    for attempt in range(1, attempts + 1):
+        headers = None
+        try:
+            status, body, headers = attempt_fn()
+            exc = None
+        except DriverError as caught:
+            exc = caught
+            status = None
+        failed = exc is not None or _is_retryable_status(status)
+        if not failed:
+            result = (status, body, headers)
+            break
+        if attempt == attempts:
+            break
+        if retry_cfg is not None:
+            delay_ms = retry_cfg["backoff_ms"] * (2 ** (attempt - 1))
+            if status in (429, 503):
+                retry_after_s = _retry_after_seconds(headers)
+                if retry_after_s is not None:
+                    delay_ms = max(delay_ms, retry_after_s * 1000)
+            if retry_cfg["jitter"]:
+                delay_ms = rand.uniform(0, delay_ms)
+            sleep_fn(delay_ms / 1000)
+    if breaker is not None:
+        if result is not None:
+            breaker.record_success()
+        else:
+            breaker.record_failure(clock_now())
+    if result is None:
+        if exc is not None:
+            raise exc
+        return status, body, headers
+    return result
+
+
+def _assemble_path(template, args):
+    """`path` template + already-resolved (not yet escaped) argument values
+    -> the substituted path (issue #109, D6). Each value is percent-encoded
+    with `urllib.parse.quote(safe="")` before it replaces one `{}` — a `/`
+    or `..` inside an argument becomes literal path-segment text, never a
+    path-injection escape into a neighbouring segment."""
+    import urllib.parse
+    out = template
+    for value in args:
+        out = out.replace("{}", urllib.parse.quote(str(value), safe=""), 1)
+    return out
+
 
 class FakeNetworkDriver(NetworkDriver):
     """Reference implementation (RFC-0027 §1). `stubs` is `{target: (status,
-    body)}`, built from a spec's `given call <target> returns <status>` lines
-    (RFC-0027 §7) or empty by default. An unstubbed target answers
-    deterministically — `(200, {})` — rather than raising, so a spec case
-    that names no stub is still reproducible.
+    body)}` or `{target: (status, body, headers)}`, built from a spec's
+    `given call <target> returns <status>` lines (RFC-0027 §7) or empty by
+    default. An unstubbed target answers deterministically — `(200, {}, {})`
+    — rather than raising, so a spec case that names no stub is still
+    reproducible.
+
+    issue #109: a `stubs` entry may also be a `list` of such tuples — one
+    scripted response per attempt, holding on the last item once the list is
+    exhausted — so a retry/breaker test can script "fails twice, then
+    recovers" the same way a real flaky server would, without a mock socket.
+    `capabilities` carries the same `retry`/`breaker`/`path` shape
+    `HttpNetworkDriver` reads (see its docstring); this driver applies them
+    through the identical `_call_with_resilience` core.
     """
 
-    def __init__(self, stubs=None):
+    def __init__(self, stubs=None, capabilities=None, clock=None, rand=None,
+                sleep=None):
         self.stubs = dict(stubs or {})
+        self._capabilities = dict(capabilities or {})
         # issue #107: every call recorded, trace headers included — the
-        # unit-test-facing way to assert what the runtime sent.
+        # unit-test-facing way to assert what the runtime sent. issue #109
+        # adds `path`: the assembled (escaped) path, or `None` when the call
+        # carried no `path_args` — grown once per ATTEMPT, so a retried
+        # call's entry count is itself evidence of how many attempts ran.
         self.received = []
+        self._attempt_index = {}
+        self._breakers = {}
+        self._clock_now = _clock_now_fn(clock)
+        self._rand = rand if rand is not None else random.Random()
+        self._sleep = sleep if sleep is not None else time.sleep
 
-    def call(self, target, payload, timeout_ms, trace_headers=None):
+    def _one_attempt(self, target, payload, trace_headers, path):
         self.received.append({"target": target, "payload": payload,
-                              "trace_headers": dict(trace_headers or {})})
-        return self.stubs.get(target, (200, {}))
+                              "trace_headers": dict(trace_headers or {}),
+                              "path": path})
+        stub = self.stubs.get(target, (200, {}))
+        if isinstance(stub, list):
+            idx = self._attempt_index.get(target, 0)
+            item = stub[min(idx, len(stub) - 1)]
+            self._attempt_index[target] = idx + 1
+        else:
+            item = stub
+        if len(item) == 2:
+            status, body = item
+            headers = {}
+        else:
+            status, body, headers = item
+        return status, body, headers
+
+    def call(self, target, payload, timeout_ms, trace_headers=None,
+             path_args=None):
+        cap = self._capabilities.get(target)
+        path = None
+        if path_args is not None:
+            template = cap.get("path") if cap else None
+            if template is None:
+                raise DriverError(
+                    "network target %r has path arguments but no `path` "
+                    "declared in its capabilities entry" % target)
+            path = _assemble_path(template, path_args)
+
+        def attempt():
+            return self._one_attempt(target, payload, trace_headers, path)
+
+        return _call_with_resilience(target, cap, self._clock_now, self._sleep,
+                                     self._rand, self._breakers, attempt)
 
     def close(self):
         pass
@@ -1081,17 +1426,33 @@ class HttpNetworkDriver(NetworkDriver):
     through the same entry validation before a connection opens.
 
     `endpoints`: {logical name -> URL}. `capabilities`: {logical name ->
-    {"method": "GET"/"POST", "headers": {...}}}, already resolved (secret
-    values substituted) by the caller — this class never reads the
-    environment or a capability declaration itself (issue #101's secrets
-    principle: the driver only ever sees a header VALUE, never an ENV name).
-    A target with no entry in `capabilities` defaults to POST/no extra
-    headers — the pre-#101 behaviour for a mapped-but-undeclared name.
+    {"method": "GET"/"POST"/"PUT"/"PATCH"/"DELETE", "headers": {...},
+    "retry": {"count", "backoff_ms", "jitter"}, "breaker": {"threshold",
+    "window_ms"}, "path": "<template>"}}, already resolved (secret values
+    substituted) by the caller — this class never reads the environment or a
+    capability declaration itself (issue #101's secrets principle: the
+    driver only ever sees a header VALUE, never an ENV name). `retry`/
+    `breaker`/`path` are each optional (issue #109) — their absence is the
+    pre-#109 behaviour throughout (no retry, no breaker, endpoint's own path
+    used verbatim). A target with no entry in `capabilities` defaults to
+    POST/no extra headers/no retry/no breaker/no path template — the
+    pre-#101 behaviour for a mapped-but-undeclared name.
+
+    `clock`/`rand`/`sleep` (issue #109, D2/D5) are the breaker's time source,
+    the jitter source, and the backoff waiter, respectively — each
+    constructor-injected so a test can hold time still, seed the draw, and
+    skip the actual wait. Defaults: the process's own monotonic clock,
+    `random.Random()`, and `time.sleep`.
     """
 
-    def __init__(self, endpoints=None, capabilities=None):
+    def __init__(self, endpoints=None, capabilities=None, clock=None,
+                rand=None, sleep=None):
         self._endpoints = dict(endpoints or {})
         self._capabilities = dict(capabilities or {})
+        self._breakers = {}
+        self._clock_now = _clock_now_fn(clock)
+        self._rand = rand if rand is not None else random.Random()
+        self._sleep = sleep if sleep is not None else time.sleep
 
     def _resolve(self, target):
         """target -> (url, method, headers). Raises DriverError for a
@@ -1110,11 +1471,11 @@ class HttpNetworkDriver(NetworkDriver):
                 % (target, target.upper()))
         cap = self._capabilities.get(target)
         method = cap["method"] if cap else "POST"
-        headers = dict(cap["headers"]) if cap else {}
+        headers = dict(cap.get("headers", {})) if cap else {}
         return url, method, headers
 
-    def call(self, target, payload, timeout_ms, trace_headers=None):
-        import http.client
+    def call(self, target, payload, timeout_ms, trace_headers=None,
+             path_args=None):
         import urllib.parse
 
         url, method, headers = self._resolve(target)
@@ -1132,16 +1493,38 @@ class HttpNetworkDriver(NetworkDriver):
                 "network target %r is not a resolvable URL (the http driver "
                 "needs `http(s)://host[:port]/path`; a logical name has no "
                 "address here)" % url)
+        cap = self._capabilities.get(target)
         path = urllib.parse.urlunsplit(("", "", parts.path or "/",
                                         parts.query, "")) or "/"
+        if path_args is not None:
+            template = cap.get("path") if cap else None
+            if template is None:
+                raise DriverError(
+                    "network target %r has path arguments but no `path` "
+                    "declared in its capabilities entry" % target)
+            path = _assemble_path(template, path_args)
         body = None
+        request_headers = dict(headers)
         if method != "GET":
             body = json.dumps(payload).encode("utf-8")
-            headers = dict(headers, **{"Content-Type": "application/json"})
+            request_headers["Content-Type"] = "application/json"
         # issue #107, D8: trace headers are merged in LAST, after any
         # capability-declared headers — the runtime's observation headers
-        # always win over an author's declaration, never the reverse.
-        headers.update(trace_headers or {})
+        # always win over an author's declaration, never the reverse. Fixed
+        # once here (not per retry attempt): a retried call resends the
+        # exact same request, headers included.
+        request_headers.update(trace_headers or {})
+
+        def attempt():
+            return self._one_http_attempt(parts, method, path, body,
+                                          request_headers, timeout_ms)
+
+        return _call_with_resilience(target, cap, self._clock_now, self._sleep,
+                                     self._rand, self._breakers, attempt)
+
+    def _one_http_attempt(self, parts, method, path, body, headers, timeout_ms):
+        import http.client
+
         try:
             conn = http.client.HTTPSConnection(
                 parts.hostname, parts.port, timeout=timeout_ms / 1000
@@ -1151,6 +1534,10 @@ class HttpNetworkDriver(NetworkDriver):
                 conn.request(method, path, body=body, headers=headers)
                 response = conn.getresponse()
                 raw = response.read()
+                # issue #109, D7: lower-cased keys — the one case an author's
+                # `Retry-After`/`retry-after`/`RETRY-AFTER` lookup, and this
+                # driver's own, always agree on.
+                response_headers = {k.lower(): v for k, v in response.getheaders()}
             finally:
                 conn.close()
         except (OSError, http.client.HTTPException) as exc:
@@ -1164,7 +1551,8 @@ class HttpNetworkDriver(NetworkDriver):
             # RFC-0027 §1: the value shape (dict) stays stable even when the
             # peer does not speak JSON.
             parsed = {}
-        return response.status, parsed if isinstance(parsed, dict) else {}
+        return (response.status, parsed if isinstance(parsed, dict) else {},
+               response_headers)
 
     def close(self):
         pass

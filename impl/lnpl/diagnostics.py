@@ -53,6 +53,9 @@ CODES = (
     "declared-not-bound",           # #101 a `call`/`request` target names no declared `capability http`
     "stored-row-shape-mismatch",    # #85  a read/find row is missing a declared field, or has the wrong type
     "rollback-escapes-network",     # #112 `policy rollback`'s service has a workflow step whose NetworkCall sits outside the transaction boundary
+    "retry-on-non-idempotent",      # #109 `capability http` declares `method post`/`patch` together with `retry`
+    "note-cap-exceeded",            # #111 a workflow has more than NOTE_CAP `note` annotations
+    "event-consume-cycle",          # #118 `consume by` + that workflow's own `emit` reaches the event again
 )
 
 # code -> grade (#52). One question decides every row:
@@ -121,6 +124,20 @@ SEVERITY_OF = {
     # (that code covers a fact the platform states about *itself*; this one
     # is about the *program's* shape).
     "rollback-escapes-network":  "warning",
+    # #109: a retry on a non-idempotent method risks duplicating the call's
+    # effect (a double charge, a double order) — dropping `retry`, switching
+    # to an idempotent method, or pairing it with an idempotency key (#113)
+    # each remove this, so `warning` (same test as `unknown-verb`).
+    "retry-on-non-idempotent":   "warning",
+    # #111: trimming `note`s below the cap removes this — same test as
+    # `unknown-verb`; the workflow still compiles and runs either way.
+    "note-cap-exceeded":         "warning",
+    # #118, D3: a cycle is a *static signal* for a possible runtime infinite
+    # dispatch loop, not proof of one — a guard inside the consuming workflow
+    # may break it at run time, so the program is not necessarily wrong.
+    # `warning`, not `info`: breaking the cycle (drop the `consume by`, or the
+    # `emit`) is an edit the author can make, same test as `unknown-verb`.
+    "event-consume-cycle":      "warning",
 }
 
 # How the runtime treats a declaration.
@@ -150,8 +167,13 @@ ENFORCEMENT = {
         (ENFORCED, "run_workflow opens a transaction before its first step "
                    "and rolls it back on any failure, discarding every "
                    "write (and outbox registration) that run made"),
+    # issue #108, RFC-0041: `run_workflow` now runs a `parallel` block's steps
+    # on a block-scoped `ThreadPoolExecutor`, fail-fast, capped at the
+    # declared value (or the block's own step count with no explicit cap).
     ("policy", "parallel"):
-        (UNENFORCED, "parsed, but the execution plan never reads it"),
+        (ENFORCED, "run_workflow executes a `parallel` block's steps "
+                   "concurrently, cancels the rest on the first failure, and "
+                   "caps concurrency at the declared value"),
     # Issue #25 gave `jwt` a real issue/verify path, and the status still reads
     # UNENFORCED because this diagnostic is emitted at COMPILE time, which does
     # not know which backend the program will run against. Naming the one path
@@ -175,6 +197,11 @@ ENFORCEMENT = {
         (MEASURED, "measured and reported per run, but an over-budget run is not blocked"),
     ("performance", "cache"):
         (ENFORCED, "owns the TTL budget every CacheAccess set is written with"),
+    # issue #108 D9: `policy parallel` (above) is what governs concurrent
+    # *execution* now; these three stay UNENFORCED because they are storage-
+    # access patterns (how a RepositoryCall is issued/batched), not execution
+    # order — that meaning waits on query predicates (issue #116's
+    # neighbourhood), out of this issue's scope.
     ("performance", "parallel"):
         (UNENFORCED, "parsed, but the execution plan never reads it"),
     ("performance", "prefetch"):

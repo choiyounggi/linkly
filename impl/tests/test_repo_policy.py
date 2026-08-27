@@ -11,8 +11,8 @@ import unittest
 from lnpl.interp import FakeRepository, Interpreter, RunError, sample_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
-from lnpl.repo_policy import (default_rows, repository_calls, row_key,
-                              seeded_entities)
+from lnpl.repo_policy import (apply_predicate, default_rows, repository_calls,
+                              row_key, seeded_entities)
 
 # Product is READ, Order is only CREATED — the two roles the seed must tell apart.
 CHECKOUT = """
@@ -283,6 +283,69 @@ class TestKeyedStore(unittest.TestCase):
                          {"affected": 1})
         self.assertEqual(repo.execute("entity.product", "delete", "entity.product#1"),
                          {"affected": 1})
+
+
+class TestApplyPredicate(unittest.TestCase):
+    """issue #116, D4/D5/D6: the shared filter/sort/limit semantics
+    `interp.FakeRepository.query`'s native path and the non-pushdown driver
+    fallback (`interp.Interpreter`) both defer to, so the two never
+    silently disagree on what a predicate/order/limit means."""
+
+    ROWS = [{"id": "a", "amount": 10}, {"id": "b", "amount": 30},
+           {"id": "c", "amount": 20}]
+
+    def test_no_predicate_order_or_limit_returns_rows_unchanged(self):
+        self.assertEqual(apply_predicate(list(self.ROWS)), self.ROWS)
+
+    def test_predicate_filters_by_a_single_term(self):
+        rows = apply_predicate(list(self.ROWS), predicate=[("amount", ">", 15)])
+        self.assertEqual([r["id"] for r in rows], ["b", "c"])
+
+    def test_predicate_conjunction_requires_every_term(self):
+        rows = apply_predicate(list(self.ROWS),
+                               predicate=[("amount", ">", 15), ("amount", "<", 25)])
+        self.assertEqual([r["id"] for r in rows], ["c"])
+
+    def test_predicate_referencing_a_missing_field_matches_nothing(self):
+        rows = apply_predicate(list(self.ROWS), predicate=[("nosuch", "==", 1)])
+        self.assertEqual(rows, [])
+
+    def test_predicate_with_an_unresolved_value_matches_nothing(self):
+        rows = apply_predicate(list(self.ROWS), predicate=[("amount", "==", None)])
+        self.assertEqual(rows, [])
+
+    def test_order_ascending(self):
+        rows = apply_predicate(list(self.ROWS), order=("amount", False))
+        self.assertEqual([r["id"] for r in rows], ["a", "c", "b"])
+
+    def test_order_descending(self):
+        rows = apply_predicate(list(self.ROWS), order=("amount", True))
+        self.assertEqual([r["id"] for r in rows], ["b", "c", "a"])
+
+    def test_order_ties_keep_row_key_ascending_regardless_of_desc(self):
+        tied = [{"id": "0", "amount": 5}, {"id": "1", "amount": 5},
+               {"id": "2", "amount": 5}]
+        self.assertEqual([r["id"] for r in apply_predicate(list(tied), order=("amount", True))],
+                         ["0", "1", "2"])
+        self.assertEqual([r["id"] for r in apply_predicate(list(tied), order=("amount", False))],
+                         ["0", "1", "2"])
+
+    def test_limit_caps_the_result(self):
+        rows = apply_predicate(list(self.ROWS), order=("amount", False), limit=2)
+        self.assertEqual([r["id"] for r in rows], ["a", "c"])
+
+    def test_limit_larger_than_the_row_count_is_not_an_error(self):
+        rows = apply_predicate(list(self.ROWS), limit=100)
+        self.assertEqual(len(rows), 3)
+
+    def test_predicate_order_and_limit_compose(self):
+        rows = apply_predicate(list(self.ROWS), predicate=[("amount", ">", 5)],
+                               order=("amount", True), limit=1)
+        self.assertEqual([r["id"] for r in rows], ["b"])
+
+    def test_empty_rows_is_not_an_error(self):
+        self.assertEqual(apply_predicate([], predicate=[("amount", ">", 0)],
+                                        order=("amount", False), limit=5), [])
 
 
 if __name__ == "__main__":
