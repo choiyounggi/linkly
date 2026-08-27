@@ -268,6 +268,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
 | **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
 | **`security encrypt <field>`** | 제거됨 — RFC-0035 §D3 참조(issue #127). 실제로 집행할 외부 드라이버가 0건이었던 것이 "드라이버 의존"이 아니라 항상 빈 집합이었다는 이유로, 닫힌 어휘에서 빠졌다. `Password` 마스킹(#43, 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 관측 채널 규칙)은 이 결정과 무관하게 그대로 남는다 |
+| **`NetworkDriver`의 커넥션 풀·`lnpl.networks` SPI 승격** | `HttpNetworkDriver`는 매 호출 연결을 열고 닫는다 — RFC-0037(이슈 #109)이 더한 것은 retry/backoff/jitter/서킷브레이커/경로 템플릿뿐이다. keep-alive 풀이 있는 실드라이버(`urllib3`/`httpx` 기반)를 `lnpl.drivers` 진입점(이슈 #75가 연 경계)으로 등록할 수 있게 SPI 표면을 여는 것은 이슈 #132가 소유한다 |
 
 `FakeRepository`의 `rollback`은 위 표에서 뺐다: 이슈 #120부터는 no-op이
 아니라 실제로 되돌린다. `begin()`이 `self.rows`의 스냅샷을 뜨고,

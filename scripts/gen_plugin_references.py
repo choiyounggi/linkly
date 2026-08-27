@@ -593,6 +593,10 @@ RFC_ROUTES = {
              "궁금하다 — 선언 여부와 무관하게 왜 항상 롤백되는지, 선언이 "
              "실제로 좌우하는 것(INFO trace 로그, `rollback-escapes-network` "
              "진단)이 무엇뿐인지", ()),
+    "0037": ("`capability http`에 재시도·서킷브레이커·경로 템플릿을 어떻게 "
+             "선언하는지, `NetworkDriver.call`이 왜 3-튜플이 됐는지 궁금하다 "
+             "— 재시도 대상 판정(408/429/5xx, 501 제외)·지수 백오프와 "
+             "jitter·Retry-After 반영·브레이커 half-open 규칙의 정본", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

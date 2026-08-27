@@ -47,5 +47,6 @@
 | RFC-0034 NetworkCall 보상(compensation) 방식 결정 — `compensate` 절 + `rollback-escapes-network` | (Draft) `policy rollback`을 선언한 워크플로에 `call`/`request`를 쓰고 싶다 — `rollback-escapes-network` 경고가 왜 나는지, `compensate` 절이 그 경고를 어떻게 침묵시킬지, outbox 방식을 왜 기각했는지 | `rfcs/0034-network-call-compensation.md` |
 | RFC-0035 인가 집행의 유보된 범위 — 워크플로 수준 role, `authorize`의 운명, `security encrypt` | (Draft) 워크플로마다 다른 `security role`을 왜 아직 못 쓰는지, `authorize` 동사가 왜 아직 선언과 연결되지 않았는지, `security encrypt`를 계속 써도 되는지 궁금하다 — 셋 다 이슈 #119가 미결로 남긴 질문이고, 이 RFC가 지금은 안 하는 이유와 재검토 조건을 적는다 | `rfcs/0035-authorization-enforcement-deferred-scope.md` |
 | RFC-0036 `policy rollback` 선언의 실제 효력 정정 | `policy rollback`을 선언해야 실패한 실행의 쓰기가 롤백되는지 궁금하다 — 선언 여부와 무관하게 왜 항상 롤백되는지, 선언이 실제로 좌우하는 것(INFO trace 로그, `rollback-escapes-network` 진단)이 무엇뿐인지 | `rfcs/0036-policy-rollback-declaration-effect.md` |
+| RFC-0037 아웃바운드 HTTP 회복성 계층 | `capability http`에 재시도·서킷브레이커·경로 템플릿을 어떻게 선언하는지, `NetworkDriver.call`이 왜 3-튜플이 됐는지 궁금하다 — 재시도 대상 판정(408/429/5xx, 501 제외)·지수 백오프와 jitter·Retry-After 반영·브레이커 half-open 규칙의 정본 | `rfcs/0037-http-resilience.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

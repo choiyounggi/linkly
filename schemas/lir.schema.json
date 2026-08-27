@@ -430,17 +430,65 @@
         "method": {
           "enum": [
             "get",
-            "post"
+            "post",
+            "put",
+            "patch",
+            "delete"
           ]
         },
         "auth": {
           "$ref": "#/$defs/httpCapabilityAuth"
+        },
+        "retry": {
+          "$ref": "#/$defs/httpCapabilityRetry"
+        },
+        "breaker": {
+          "$ref": "#/$defs/httpCapabilityBreaker"
+        },
+        "path": {
+          "type": "string"
         }
       },
       "required": [
         "kind",
         "id",
         "name"
+      ],
+      "additionalProperties": false
+    },
+    "httpCapabilityRetry": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "backoff_ms": {
+          "type": "integer"
+        },
+        "jitter": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "count",
+        "backoff_ms",
+        "jitter"
+      ],
+      "additionalProperties": false
+    },
+    "httpCapabilityBreaker": {
+      "type": "object",
+      "properties": {
+        "threshold": {
+          "type": "integer"
+        },
+        "window_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "threshold",
+        "window_ms"
       ],
       "additionalProperties": false
     },
@@ -845,6 +893,12 @@
         },
         "result": {
           "type": "string"
+        },
+        "path_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [

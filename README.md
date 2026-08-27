@@ -244,11 +244,11 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**~2,800 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**~2,950 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
-**37 RFCs — 34 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034 `Draft`.** RFC-0007 was formally
+**38 RFCs — 35 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -301,8 +301,9 @@ suite is defined against.
 | [0034 NetworkCall Compensation](rfcs/0034-network-call-compensation.md) | *(Draft)* Decides how to compensate a `NetworkCall` step outside the transaction boundary `policy rollback` protects: a future `compensate` clause silences the compiler's `rollback-escapes-network` warning (issue #112) when present, and stays the reported default otherwise. Rejects the outbox alternative — an async call cannot satisfy `call ... as <name>`'s synchronous result binding (RFC-0027 §2, RFC-0030). Decision only; no grammar changes yet. |
 | [0035 Authorization Enforcement — Deferred Scope](rfcs/0035-authorization-enforcement-deferred-scope.md) | Answers the three questions issue #119 left open once `security role` became real: workflow-level `security role` stays out for now (no measured need yet, revisit conditions stated); the `authorize` verb keeps its promoted `warning` grade with its (a)-vs-(b) final fate deferred to observed usage (criteria table included); `security encrypt` is decided for removal (its "driver-dependent" framing describes an always-empty set — zero external drivers exist), with migration guidance, actual removal scoped to a follow-up `tech-debt` issue. |
 | [0036 `policy rollback` Declaration Effect](rfcs/0036-policy-rollback-declaration-effect.md) | Corrects the documented effect of `policy rollback`: `run_workflow` rolls back every failed execution's writes unconditionally, regardless of declaration — the declaration only gates an INFO trace line and the compile-time `rollback-escapes-network` diagnostic (issue #112). `enforced` status is kept (the guarantee itself is real); only the rationale text was wrong. No behavior change. *Updates 0032 §실행 경계, §docs/ENFORCEMENT-MATRIX.md §B — policy rollback 행* |
+| [0037 Outbound HTTP Resilience](rfcs/0037-http-resilience.md) | `capability http` gains `retry <N> backoff <duration> [jitter]` (exponential backoff, full jitter, Retry-After-aware) and `breaker after <N> within <duration>` (in-process circuit breaker), `method` widens to `get/post/put/patch/delete`, and `path "<template>"` + `call ... with <ref>...` assembles an escaped URL path. `NetworkDriver.call` becomes a breaking 3-tuple, `(status, body, headers)`, done once for both implementations; `NetworkDriverTCK` checks the two never grade a declaration differently. No declaration is byte-identical to before. *Updates 0027 §Reference-level Specification/1* |
 
-Thirty-four are `Accepted`, two (`0033`, `0034`) are `Draft`; 0000 is superseded by 0007, which was itself formally
+Thirty-five are `Accepted`, two (`0033`, `0034`) are `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -362,7 +363,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 2823 tests in 74.800s
+Ran 2950 tests in 106.014s
 OK
 ```
 
