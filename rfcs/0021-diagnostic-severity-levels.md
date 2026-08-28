@@ -3,6 +3,7 @@
 ## Status
 
 - Status: **Accepted** (RFC-0021, 2026-08-07)
+- Updated-by: RFC-0042 (§Reference-level Specification/코드 → 등급 (정본), §Reference-level Specification/`--strict[=LEVEL]`)
 
 새 계약 표면이라 Supersedes도 Updates도 없다. 진단 채널 자체(RFC-0009 계열의
 `impl/lnpl/diagnostics.py`)와 `--strict`(이슈 #45)의 기존 의미는 그대로 두고,
