@@ -124,7 +124,7 @@ class ExtensionDiagnosticAppearsInCompileTest(unittest.TestCase):
         self.assertEqual(config, {})
         self.assertIsInstance(document, dict)
         self.assertEqual(set(document.keys()),
-                         {"lir_version", "module", "nodes"})
+                         {"lir_version", "module", "nodes", "provenance"})
         doc = json.loads(out)
         self.assertEqual(document["module"], doc["module"])
         self.assertEqual(document["nodes"], doc["nodes"])

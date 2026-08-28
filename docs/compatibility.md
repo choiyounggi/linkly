@@ -58,6 +58,19 @@ breaking change의 고지 방식은 전부 동일하다: 릴리스 태그의
 - **breaking**: 기존 필수 필드 제거·타입 변경, 또는 `lir_version` 상향
   (하위 소비자가 재검증 없이 파싱하면 깨질 수 있는 변경).
 
+**`provenance` 블록 (issue #136)**: `to_document()`가 내는 모든 문서의
+최상위 `provenance` 키 — `compiler` / `vocabulary_digest` /
+`enforcement_digest` / `extensions` 네 키로 고정된다. 위 "새 `kind`나
+선택 필드 추가는 breaking이 아니다" 보장 그대로 additive·optional이다 —
+`lir_version`은 올라가지 않았고, 이 키가 없는 구세대 문서도 여전히
+유효하다(`lnpl.provenance.check()`가 그 경우 보고를 `None`으로 채운다).
+`vocabulary_digest` / `enforcement_digest`는 정규화 직렬화(`sort_keys=True`,
+compact separators)의 sha256이며 `"sha256:"` 접두가 계약이다 — 접두·해시
+알고리즘의 변경은 breaking. 값 자체(다이제스트의 실제 16진수)는 계약이
+아니다: 어휘·집행 상수가 바뀌는 정상적인 커밋마다 달라진다. 서명이나
+증명(attestation)은 이 블록의 범위 밖이다 — 의미 세대 식별이 목적이지
+빌드 플랫폼 신뢰가 목적이 아니다.
+
 ### 3. sqlite 저장소 스키마 (`lnpl_rows` / `lnpl_outbox`)
 
 `--backend sqlite:<path>`가 여는 두 테이블. 정본은

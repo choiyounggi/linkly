@@ -366,7 +366,14 @@ class Module:
         return [self._nodes[i] for i in self._order]
 
     def to_document(self, version="0.1"):
-        return {"lir_version": version, "module": self.name, "nodes": self.nodes()}
+        # Lazy import: `provenance` pulls in `vocab`/`capabilities`, both of
+        # which import from this module at their own module level, so a
+        # top-level import here would cycle (issue #136 plan D4). By the time
+        # `to_document()` runs, `lower` is already fully loaded, so the cycle
+        # never forms.
+        from lnpl import provenance
+        return {"lir_version": version, "module": self.name, "nodes": self.nodes(),
+                "provenance": provenance.build()}
 
 
 def _node(kind, nid, **fields):

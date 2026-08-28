@@ -90,6 +90,9 @@ class TestSplitFixtureIRHash(unittest.TestCase):
         doc = lower(decls, "linkhub").to_document()
         with open(LINKHUB_GOLDEN, encoding="utf-8") as fh:
             golden = json.load(fh)
+        # `provenance` (issue #136) is excluded from golden comparisons — its
+        # digests are environment-dependent (docs/compatibility.md §2).
+        doc.pop("provenance")
         self.assertEqual(doc, golden)
 
     def test_cli_compile_accepts_a_directory_and_produces_the_split_module_name(self):

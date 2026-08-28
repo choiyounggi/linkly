@@ -166,7 +166,11 @@ class TestGoldenScenario(unittest.TestCase):
         # change has escaped its blast radius.
         with open(GOLDEN_IR, encoding="utf-8") as fh:
             committed = json.load(fh)
-        self.assertEqual(self.mod.to_document(), committed)
+        # `provenance` (issue #136) is excluded from golden comparisons — its
+        # digests are environment-dependent (docs/compatibility.md §2).
+        compiled = self.mod.to_document()
+        compiled.pop("provenance")
+        self.assertEqual(compiled, committed)
 
     def test_the_golden_still_compiles_rather_than_failing(self):
         # #36 must not become a hard error: the charter's own golden scenario

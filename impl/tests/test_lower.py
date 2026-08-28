@@ -1001,8 +1001,11 @@ class TestNoRegressionForRefinementFreeModules(unittest.TestCase):
         with open(os.path.join(REPO_ROOT, "examples", "login.lir.json"),
                   encoding="utf-8") as fh:
             golden = json.load(fh)
-        self.assertEqual(lower(parse(source), golden["module"]).to_document(),
-                         golden)
+        # `provenance` (issue #136) is excluded from golden comparisons — its
+        # digests are environment-dependent (docs/compatibility.md §2).
+        compiled = lower(parse(source), golden["module"]).to_document()
+        compiled.pop("provenance")
+        self.assertEqual(compiled, golden)
 
     def test_refinement_free_module_emits_no_refinement_nodes(self):
         self.assertEqual(refinements_of(ir(GOLDEN)), [])

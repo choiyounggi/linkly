@@ -78,7 +78,8 @@ class TestCliCompileJson(unittest.TestCase):
         self.assertEqual(err, "")
         doc = json.loads(out)
         self.assertEqual(set(doc.keys()),
-                         {"lir_version", "module", "nodes", "diagnostics"})
+                         {"lir_version", "module", "nodes", "diagnostics",
+                          "provenance"})
         self.assertEqual(doc["diagnostics"], [])
         self.assertGreater(len(doc["nodes"]), 0)
         self.assertEqual(doc["module"], "clean")

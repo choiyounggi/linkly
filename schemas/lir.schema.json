@@ -11,6 +11,38 @@
     "module": {
       "type": "string"
     },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "compiler": {
+          "type": "string"
+        },
+        "vocabulary_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "enforcement_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "compiler",
+        "vocabulary_digest",
+        "enforcement_digest",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
     "nodes": {
       "type": "array",
       "items": {

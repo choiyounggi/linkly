@@ -105,7 +105,13 @@ class GoldenPairContract:
     def test_source_compiles_to_the_committed_ir(self):
         with open(self.GOLDEN_IR, encoding="utf-8") as fh:
             committed = json.load(fh)
-        self.assertEqual(self.compile_source(), committed,
+        # `provenance` (issue #136) is excluded from the golden comparison —
+        # its digests are environment-dependent, so baking them into a
+        # committed fixture would make the fixture itself non-reproducible.
+        # The golden files stay provenance-free; only the live compile carries it.
+        compiled = dict(self.compile_source())
+        compiled.pop("provenance", None)
+        self.assertEqual(compiled, committed,
                          "%s is stale — regenerate it with `%s`"
                          % (os.path.relpath(self.GOLDEN_IR, REPO), self.REGEN_CMD))
 

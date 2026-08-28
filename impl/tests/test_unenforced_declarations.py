@@ -241,7 +241,11 @@ class TestGoldenScenario(unittest.TestCase):
         # regenerating and the change has escaped its blast radius.
         with open(GOLDEN_IR, encoding="utf-8") as fh:
             committed = json.load(fh)
-        self.assertEqual(self.mod.to_document(), committed)
+        # `provenance` (issue #136) is excluded from golden comparisons — its
+        # digests are environment-dependent (docs/compatibility.md §2).
+        compiled = self.mod.to_document()
+        compiled.pop("provenance")
+        self.assertEqual(compiled, committed)
 
     def test_the_constraint_nodes_still_carry_exactly_what_they_did(self):
         # Narrower than the golden comparison above, and aimed at this task's

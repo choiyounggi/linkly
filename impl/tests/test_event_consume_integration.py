@@ -202,6 +202,11 @@ class TestNoRegressionForConsumeFreeModules(unittest.TestCase):
             golden = json.load(fh)
 
         recompiled = lower(parse(source), "login").to_document()
+        # `provenance` (issue #136) is excluded from golden comparisons — its
+        # digests are environment-dependent, so the committed golden stays
+        # provenance-free (docs/compatibility.md §2).
+        recompiled = dict(recompiled)
+        recompiled.pop("provenance")
 
         self.assertEqual(golden, recompiled)
         event_node = next(n for n in recompiled["nodes"] if n["kind"] == "Event")
