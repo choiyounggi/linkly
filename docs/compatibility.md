@@ -26,6 +26,21 @@ breaking change의 고지 방식은 전부 동일하다: 릴리스 태그의
 - 검증: `lnpl compile <file> --strict=warning` — `warning` 등급 이상이면
   rc≠0 (issue #62, v0.5.0에서 기본 게이트로 승격).
 
+**기계 채널 — `lnpl compile --json` (issue #133)**: `--json`은 사람용
+`format_lines` 출력 대신 stdout에 결합 JSON 문서 하나만 낸다 —
+`{"lir_version", "module", "nodes", "diagnostics"}`. `diagnostics`의 각
+레코드는 `code` / `severity` / `where` / `subject` / `message` / `line`
+여섯 키로 고정된다(위 다섯 키 + RFC-0024 `line`) — 키 생략은 없다.
+
+- 진단이 0건이면 `"diagnostics": []`(`null` 금지). 컴파일이 문서를 만들지
+  못하는 실패(파스/lower 에러)에서는 `lir_version` / `module` / `nodes`가
+  `null`이고 `diagnostics`는 같은 형태로 `[]`다 — 빈 모듈이 성공적으로
+  내는 `"nodes": []`와는 구별된다. 하드 에러 메시지는 stderr로만 간다.
+- `--json` 유무는 채널만 바꾼다: exit code 의미는 동일하고, `--strict`와도
+  직교한다(`--json --strict`의 rc는 `--strict`만 준 경우와 같다).
+- 이 6키·null 규칙은 계약이다 — 키 추가는 breaking이 아니지만 키 삭제나
+  `null` 규칙 변경은 breaking이다.
+
 ### 2. Semantic IR 스키마 (`schemas/lir.schema.json`)
 
 `lnpl compile`이 내는 IR JSON의 정본 스키마. `lir_version` 필드가 스키마

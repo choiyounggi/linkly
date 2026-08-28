@@ -161,6 +161,8 @@ def _strict_rc(args, rc, diagnostics):
 
 
 def cmd_compile(args):
+    if args.json:
+        return _cmd_compile_json(args)
     doc, _, _, diagnostics = _compile(args.source)
     text = _dump(doc)
     if args.output:
@@ -170,6 +172,39 @@ def cmd_compile(args):
     else:
         sys.stdout.write(text)
     _emit_diagnostics(diagnostics)
+    return _strict_rc(args, 0, diagnostics)
+
+
+def _cmd_compile_json(args):
+    """`compile --json`: one combined IR+diagnostics document on stdout (#133).
+
+    Diagnostics are re-keyed to exactly the six RFC-0021 (5 keys) + RFC-0024
+    (`line`) fields — never `to_records`'s `suggestion` (RFC-0026), which is
+    not yet part of the frozen contract docs/compatibility.md §1 declares.
+
+    A hard failure (`_compile` cannot produce a document at all) keeps today's
+    exit code — the same (LexError, ParseError, LowerError) -> 2 mapping
+    `main()` applies for every other command — but still emits one JSON
+    document instead of leaving stdout empty, so a --json caller never has to
+    branch on "did anything print".
+    """
+    try:
+        doc, _, _, diagnostics = _compile(args.source)
+    except (LexError, ParseError, LowerError) as exc:
+        print("compile error: %s" % exc, file=sys.stderr)
+        sys.stdout.write(_dump({"lir_version": None, "module": None,
+                                 "nodes": None, "diagnostics": []}))
+        return 2
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(_dump(doc))
+    combined = dict(doc)
+    combined["diagnostics"] = [
+        {"code": d.code, "severity": d.severity, "where": d.where,
+         "subject": d.subject, "message": d.message, "line": d.line}
+        for d in diagnostics
+    ]
+    sys.stdout.write(_dump(combined))
     return _strict_rc(args, 0, diagnostics)
 
 
@@ -1367,6 +1402,10 @@ def main(argv=None):
     c.add_argument("-o", "--output")
     c.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
+    c.add_argument("--json", action="store_true",
+                    help="emit IR + diagnostics as one combined JSON document "
+                         "on stdout, 6-key diagnostics (RFC-0021 + RFC-0024 "
+                         "`line`) — channel only, exit code unchanged (#133)")
     c.set_defaults(func=cmd_compile)
 
     r = sub.add_parser("run", help="compile then execute (interpreter mode A)")
