@@ -16,7 +16,9 @@ import urllib.error
 import urllib.request
 
 from . import __version__
-from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
+from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
+                          format_lines_from_records, load_extensions,
+                          to_records)
 from .drivers import (DriverError, TokenError, audience_for_path,
                       open_network, open_repository, open_token_provider,
                       _is_url_literal)
@@ -100,16 +102,59 @@ def _dump(document):
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
 
 
-def _emit_diagnostics(diagnostics):
+def _emit_diagnostics(diagnostics, extra_records=()):
     """Show diagnostics on stderr — the one place any command prints them.
 
     stderr, not stdout: `compile` without `-o` writes the IR document to stdout,
     and a warning mixed into it would corrupt the artifact. The lines themselves
-    come from `diagnostics.format_lines`, so `compile` and `run` cannot drift
-    into two different reports of the same fact.
+    come from `diagnostics.format_lines_from_records` (the same rule
+    `diagnostics.format_lines` delegates to), so `compile` and `run` cannot
+    drift into two different reports of the same fact.
+
+    `extra_records` (RFC-0042, issue #138): extension diagnostics, already
+    normalized to `<prefix>/<code>` 6-key records by `_extension_diagnostics`
+    — appended after `diagnostics`' own records so stderr and `--json`'s
+    array show the same set, in the same order.
     """
-    for line in format_lines(diagnostics):
+    records = to_records(diagnostics) + list(extra_records)
+    for line in format_lines_from_records(records):
         print(line, file=sys.stderr)
+
+
+def _extension_diagnostics(document):
+    """Run every registered `lnpl.diagnostics` extension's `check` against
+    `document` — the compiled IR only, no source text or file path (RFC-0042
+    D7) — and return the list of 6-key records (`<prefix>/<code>`, the
+    extension's own registered severity) to merge into `compile`'s output.
+
+    Loading and validating the registry (`load_extensions`) is load-time —
+    any violation raises `ExtensionDiagnosticsError`, which the caller
+    handles as a hard failure. Once loaded, a `check` diagnostic whose code
+    its own extension never registered is an execution-time problem, not a
+    load-time one (RFC-0042 D6): that one diagnostic is dropped and warned
+    about on stderr, but the rest of that extension's diagnostics — and
+    every other extension — still make it through.
+    """
+    registry = load_extensions()
+    records = []
+    for prefix, entry in registry.items():
+        codes = entry["codes"]
+        for raw in entry["check"](document, {}):
+            bare = raw["code"]
+            if bare not in codes:
+                print("warning: extension %r emitted diagnostic %r, which "
+                      "it did not register — dropping (RFC-0042)"
+                      % (prefix, bare), file=sys.stderr)
+                continue
+            records.append({
+                "code": "%s/%s" % (prefix, bare),
+                "severity": codes[bare]["severity"],
+                "where": raw["where"],
+                "subject": raw["subject"],
+                "message": raw["message"],
+                "line": raw.get("line"),
+            })
+    return records
 
 
 STRICT_HELP = ("gate the exit code on diagnostics: bare `--strict` fails on any "
@@ -137,6 +182,15 @@ def _strict_level(value):
         % (", ".join(SEVERITIES), value))
 
 
+def _diagnostic_severity_and_code(d):
+    """`d` is either a `Diagnostic` (core) or a 6-key record dict (extension,
+    RFC-0042) — `_strict_rc` sees both once `compile`/`--json` merge them in,
+    so this is the one place that reads either shape."""
+    if isinstance(d, dict):
+        return d["severity"], d["code"]
+    return d.severity, d.code
+
+
 def _strict_rc(args, rc, diagnostics):
     """Under `--strict`, a clean exit carrying gating diagnostics becomes rc 2.
 
@@ -150,13 +204,24 @@ def _strict_rc(args, rc, diagnostics):
     `SEVERITIES` is ordered weakest-first, so the threshold is an index compare:
     bare `--strict` resolves to `info`, the lowest rung, which is exactly the
     "any diagnostic" behaviour that shipped in v0.3.0.
+
+    A `<prefix>/<code>` diagnostic (RFC-0042, issue #138) never participates
+    in this gate, however high its severity — installing an extension can
+    never turn a clean `--strict` exit red; there is no opt-in to change
+    that (RFC-0042 "하지 않는 것"). `compile`'s core diagnostics never carry
+    a `/`, so this skip is a no-op for every caller that never merges in
+    extension records — it only starts mattering once one does.
     """
     level = getattr(args, "strict", None)   # argparse already validated it
     if level is None or rc != 0:
         return rc
     floor = SEVERITIES.index(level)
-    if any(SEVERITIES.index(d.severity) >= floor for d in diagnostics):
-        return 2
+    for d in diagnostics:
+        severity, code = _diagnostic_severity_and_code(d)
+        if "/" in code:
+            continue
+        if SEVERITIES.index(severity) >= floor:
+            return 2
     return rc
 
 
@@ -164,6 +229,11 @@ def cmd_compile(args):
     if args.json:
         return _cmd_compile_json(args)
     doc, _, _, diagnostics = _compile(args.source)
+    try:
+        ext_records = _extension_diagnostics(doc)
+    except ExtensionDiagnosticsError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
     text = _dump(doc)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
@@ -171,8 +241,8 @@ def cmd_compile(args):
         print("wrote %s (%d nodes)" % (args.output, len(doc["nodes"])))
     else:
         sys.stdout.write(text)
-    _emit_diagnostics(diagnostics)
-    return _strict_rc(args, 0, diagnostics)
+    _emit_diagnostics(diagnostics, extra_records=ext_records)
+    return _strict_rc(args, 0, list(diagnostics) + ext_records)
 
 
 def _cmd_compile_json(args):
@@ -181,8 +251,11 @@ def _cmd_compile_json(args):
     Diagnostics are re-keyed to exactly the six RFC-0021 (5 keys) + RFC-0024
     (`line`) fields — never `to_records`'s `suggestion` (RFC-0026), which is
     not yet part of the frozen contract docs/compatibility.md §1 declares.
+    Extension diagnostics (RFC-0042, issue #138) are already exactly that
+    six-key shape and ride in the same array, `<prefix>/<code>` normalized.
 
-    A hard failure (`_compile` cannot produce a document at all) keeps today's
+    A hard failure (`_compile` cannot produce a document at all, or an
+    extension's `lnpl.diagnostics` registration is invalid) keeps today's
     exit code — the same (LexError, ParseError, LowerError) -> 2 mapping
     `main()` applies for every other command — but still emits one JSON
     document instead of leaving stdout empty, so a --json caller never has to
@@ -195,6 +268,13 @@ def _cmd_compile_json(args):
         sys.stdout.write(_dump({"lir_version": None, "module": None,
                                  "nodes": None, "diagnostics": []}))
         return 2
+    try:
+        ext_records = _extension_diagnostics(doc)
+    except ExtensionDiagnosticsError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        sys.stdout.write(_dump({"lir_version": None, "module": None,
+                                 "nodes": None, "diagnostics": []}))
+        return 2
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(_dump(doc))
@@ -203,9 +283,9 @@ def _cmd_compile_json(args):
         {"code": d.code, "severity": d.severity, "where": d.where,
          "subject": d.subject, "message": d.message, "line": d.line}
         for d in diagnostics
-    ]
+    ] + ext_records
     sys.stdout.write(_dump(combined))
-    return _strict_rc(args, 0, diagnostics)
+    return _strict_rc(args, 0, list(diagnostics) + ext_records)
 
 
 class WorkflowSelectionError(Exception):
