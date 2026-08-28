@@ -312,6 +312,19 @@ status completed
 | `--payload` | 실행 입력 JSON |
 | `--no-row` | 양쪽 모두 빈 저장소로 |
 
+### `vocab` — 벤더 중립 어휘 매니페스트 (issue #135)
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--json` | 명시적 안정형 — bare와 같은 문서를 낸다 |
+
+동사·키워드·의미 타입·선언 절·집행 매트릭스·진단 코드·예약어를 한 JSON
+문서로 낸다. 소비자가 기계/LLM뿐이므로 별도의 사람용 뷰는 없다 — bare와
+`--json`은 바이트 동일하다. 정본 함수는 `impl/lnpl/vocab.py`의
+`vocabulary_document()`이고, `lnpl_vocabulary` MCP 툴과
+`scripts/gen_plugin_references.py`(이 references/의 grammar·verbs·
+declarations·types 넷을 생성한다)가 같은 함수를 공유한다.
+
 ### `kb` — 지식 베이스 조회 (RFC-0005)
 
 | 플래그 | 뜻 |

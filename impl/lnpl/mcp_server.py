@@ -103,6 +103,12 @@ def tool_compile(arguments):
     }
 
 
+def tool_vocabulary(_arguments):
+    """벤더 중립 어휘 매니페스트를 돌려준다 — 입력 없음 (issue #135)."""
+    from lnpl.vocab import vocabulary_document
+    return vocabulary_document()
+
+
 def tool_kb_route(arguments):
     """작업 서술 하나를 KB 문서로 라우팅한다 (RFC-0005)."""
     from lnpl import kb as kb_mod
@@ -228,12 +234,25 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "lnpl_vocabulary",
+        "description": (
+            "Return the vendor-neutral vocabulary manifest — verbs, keywords, "
+            "semantic types, declaration clauses, the enforcement matrix, "
+            "diagnostic codes, and reserved words. Use this instead of the "
+            "Claude Code plugin's Korean reference markdown when no plugin is "
+            "loaded: the closed lexicon is not in any model's training data, "
+            "so a plausible-sounding verb parses and silently does nothing "
+            "(issue #36) unless it is checked against this manifest first."),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 HANDLERS = {
     "lnpl_compile": tool_compile,
     "lnpl_kb_route": tool_kb_route,
     "lnpl_spec": tool_spec,
+    "lnpl_vocabulary": tool_vocabulary,
 }
 
 

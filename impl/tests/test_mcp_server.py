@@ -204,6 +204,23 @@ class CompileToolTest(unittest.TestCase):
         self.assertNotIn("error", res)
 
 
+class VocabularyToolTest(unittest.TestCase):
+
+    def test_it_returns_the_same_document_the_cli_prints(self):
+        from lnpl.vocab import vocabulary_document
+        body = payload_of(call("lnpl_vocabulary", {}))
+        self.assertEqual(body, vocabulary_document())
+
+    def test_it_needs_no_arguments(self):
+        res = call("lnpl_vocabulary", {})
+        self.assertIs(res["result"]["isError"], False)
+
+    def test_diagnostics_carries_all_18_codes(self):
+        from lnpl.diagnostics import CODES
+        body = payload_of(call("lnpl_vocabulary", {}))
+        self.assertEqual(len(body["diagnostics"]), len(CODES))
+
+
 class KbRouteToolTest(unittest.TestCase):
 
     def test_it_routes_a_task_to_kb_documents(self):

@@ -29,6 +29,7 @@ from .repo_policy import default_rows, row_key
 from .backend import (BackendError, build as build_native, condition_field_names,
                       ran_step_indices, restore_skips, run_binary,
                       validation_effect_steps)
+from .vocab import vocabulary_document
 
 
 def _parse_fields(specs):
@@ -1354,6 +1355,14 @@ def cmd_diff(args):
     return 0 if ok else 1
 
 
+def cmd_vocab(args):
+    # `--json` is accepted but not branched on: the only consumers of this
+    # command are machines/LLMs, so there is no separate human-oriented view
+    # to build (issue #135) — bare and `--json` print the identical document.
+    sys.stdout.write(_dump(vocabulary_document()))
+    return 0
+
+
 def cmd_kb(args):
     packs = resolve_pack_roots(flag_packs=args.kb_pack,
                                env_value=os.environ.get("LNPL_KB_PACKS"))
@@ -1739,6 +1748,12 @@ def main(argv=None):
     cfc.add_argument("--config", default=None, metavar="PATH",
                      help="lnpl.toml path (default: ./lnpl.toml if present)")
     cfc.set_defaults(func=cmd_config_check)
+
+    vc = sub.add_parser("vocab",
+                        help="print the vendor-neutral vocabulary manifest (#135)")
+    vc.add_argument("--json", action="store_true",
+                    help="explicit stable form (default: same document)")
+    vc.set_defaults(func=cmd_vocab)
 
     kbp = sub.add_parser("kb", help="inspect the knowledge base (RFC-0005)")
     kbp.add_argument("--root", default=None)
