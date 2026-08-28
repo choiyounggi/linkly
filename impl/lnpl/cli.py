@@ -47,7 +47,7 @@ def _parse_fields(specs):
 from .agents import run_cycle
 from .config import load_config
 from .differential import DifferentialError, verify as verify_modes
-from .kb import KbError, KnowledgeBase
+from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
@@ -1297,7 +1297,9 @@ def cmd_diff(args):
 
 
 def cmd_kb(args):
-    kb = KnowledgeBase(root=args.root)
+    packs = resolve_pack_roots(flag_packs=args.kb_pack,
+                               env_value=os.environ.get("LNPL_KB_PACKS"))
+    kb = KnowledgeBase(root=args.root, packs=packs)
     if args.lint:
         problems = kb.lint()
         for p in problems:
@@ -1678,6 +1680,13 @@ def main(argv=None):
     kbp.add_argument("--lint", action="store_true", help="check RFC-0005 conformance")
     kbp.add_argument("--route", metavar="TASK", help="kb.route(task_description)")
     kbp.add_argument("--load", metavar="DOC_ID", help="kb.load(doc_id)")
+    kbp.add_argument("--kb-pack", action="append", default=None, metavar="DIR",
+                     help="a local KB pack root (repeatable; declaration "
+                          "order is priority — pack layering, issue #137). "
+                          "Also discovered via the `lnpl.kb` entry-points "
+                          "group and the LNPL_KB_PACKS env var (os.pathsep-"
+                          "separated); merge order: entry-points -> env -> "
+                          "this flag")
     kbp.set_defaults(func=cmd_kb)
 
     ag = sub.add_parser("agents", help="run the RFC-0006 agent cycle over a source")
