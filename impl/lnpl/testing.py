@@ -338,6 +338,71 @@ class RepositoryDriverTCK:
             self.driver.execute("widget", "read", "w-v1")["n"], 1)
 
 
+class CacheDriverTCK:
+    """Mix into a `unittest.TestCase` subclass, override `make_cache()` and
+    `advance(ms)` — see `CacheDriver`'s docstring (`lnpl.drivers`) for what
+    every implementation must agree on regardless of how it judges TTL
+    (clock comparison vs. the store's own native expiry).
+
+    `advance(ms)` moves time forward for TTL purposes: a fake driver ticks
+    its own injected clock, a real store waits (`time.sleep`) — the same
+    per-driver hook shape `RepositoryDriverTCK.make_driver()` uses for the
+    thing each driver must supply itself.
+    """
+
+    def make_cache(self):
+        raise NotImplementedError(
+            "CacheDriverTCK subclasses must override make_cache() to "
+            "return a fresh CacheDriver")
+
+    def advance(self, ms):
+        raise NotImplementedError(
+            "CacheDriverTCK subclasses must override advance(ms) to move "
+            "this driver's notion of time forward by ms")
+
+    def setUp(self):
+        self.cache = self.make_cache()
+        self.addCleanup(self.cache.close)
+
+    def test_a_set_value_is_then_gettable(self):
+        self.cache.set("k1", {"n": 1}, ttl_ms=60_000)
+
+        self.assertEqual(self.cache.get("k1"), {"n": 1})
+
+    def test_an_absent_key_returns_none_not_an_exception(self):
+        self.assertIsNone(self.cache.get("no-such-key"))
+
+    def test_ttl_expiry_returns_none_after_advancing_past_it(self):
+        self.cache.set("k2", "v", ttl_ms=10)
+
+        self.advance(20)
+
+        self.assertIsNone(self.cache.get("k2"))
+
+    def test_ttl_ms_zero_expires_immediately(self):
+        self.cache.set("k3", "v", ttl_ms=0)
+
+        self.assertIsNone(self.cache.get("k3"))
+
+    def test_an_empty_value_round_trips(self):
+        self.cache.set("k4", "", ttl_ms=60_000)
+
+        self.assertEqual(self.cache.get("k4"), "")
+
+    def test_overwriting_the_same_key_replaces_the_value(self):
+        self.cache.set("k5", "first", ttl_ms=60_000)
+        self.cache.set("k5", "second", ttl_ms=60_000)
+
+        self.assertEqual(self.cache.get("k5"), "second")
+
+    def test_invalidate_removes_the_key(self):
+        self.cache.set("k6", "v", ttl_ms=60_000)
+
+        self.cache.invalidate("k6")
+
+        self.assertIsNone(self.cache.get("k6"))
+
+
 NETWORK_TCK_TARGET = "TckTarget"
 
 
@@ -493,6 +558,38 @@ class NetworkDriverTCK:
         _status, _body, headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
 
         self.assertEqual(headers.get("x-request-id"), "abc123")
+
+    def test_headers_still_bind_for_a_non_2xx_response(self):
+        """The status/body/headers triple binds in full even when the
+        status is not 2xx (RFC-0027 §1: a response was received, that is a
+        value, not a fault) — `test_response_headers_reach_the_caller_
+        lower_cased` above only pins this for a 200, so a driver that
+        special-cased headers to 2xx responses only would pass that test
+        and still be wrong."""
+        driver = self.make_driver(
+            NETWORK_TCK_TARGET, {"method": "GET"},
+            [(500, {"error": "boom"}, {"retry-after": "5"})])
+        self.addCleanup(driver.close)
+
+        status, body, headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {"error": "boom"})
+        self.assertEqual(headers.get("retry-after"), "5")
+
+    # -- response body -------------------------------------------------------
+
+    def test_an_empty_response_body_round_trips(self):
+        """A body of `{}` is a value (RFC-0027 §1's "empty RowSet is a valid
+        binding" idea, applied to a response body) — it must reach the
+        caller as `{}`, not `None` or a driver-side default substitution."""
+        driver = self.make_driver(NETWORK_TCK_TARGET, {"method": "GET"},
+                                  [(200, {})])
+        self.addCleanup(driver.close)
+
+        _status, body, _headers = driver.call(NETWORK_TCK_TARGET, {}, 2000)
+
+        self.assertEqual(body, {})
 
     # -- timeout (opt-in — see make_slow_driver's docstring note above) -----
 

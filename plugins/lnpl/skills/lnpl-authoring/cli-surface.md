@@ -33,7 +33,8 @@ lnpl --version
 | `--json` | 결과와 트레이스를 JSON으로 |
 | `--no-row` | 빈 저장소로 시작한다(재시도 경로를 관측할 때) |
 | `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로) 또는 `sqlite:<path>`(파일에 남는 실제 저장소). 이슈 #25 |
-| `--network` | `NetworkCall` 드라이버. `fake`(기본, 결정적, I/O 없음) 또는 `http`(`http.client`로 실제 요청). RFC-0027, 이슈 #64 |
+| `--cache` | `redis` capability 드라이버. `fake`(기본, 인메모리, 실행마다 새로) 또는 등록된 `lnpl.caches` entry-point의 `<scheme>[:<arg>]`. 이슈 #131 |
+| `--network` | `NetworkCall` 드라이버. `fake`(기본, 결정적, I/O 없음), `http`(`http.client`로 실제 요청), 또는 등록된 `lnpl.networks` entry-point의 `<scheme>[:<arg>]`. RFC-0027, 이슈 #64, #132 |
 | `--endpoint` | `NAME=URL` (반복 가능). `--network http`에서 `call`/`request`의 논리명을 실제 URL로 매핑한다. `LNPL_ENDPOINT_<NAME>` 환경변수로도 줄 수 있고, `--endpoint`가 이긴다. 매핑 안 된 논리명이 있으면 기동이 rc 2로 실패한다(요청 중 실패보다 기동 실패). 이슈 #101 |
 | `--clock` | 시간 바인딩. `virtual`(기본, 결정적, 프로세스 로컬) 또는 `real`(단조 벽시계 — `CacheAccess` TTL을 실제 경과 시간에 묶는다). `spec`/`diff`에는 없다. RFC-0029, 이슈 #100 |
 | `--strict` | 위와 같다 |
@@ -57,6 +58,7 @@ lnpl trigger <src>.lnpl --schedule event.daily.rollup
 | `--schedule` | 필수. **스케줄 이벤트 노드 id**(`GetReport`가 아니라 `event.daily.rollup`). 이 모듈이 선언한 `on schedule` 이벤트가 아니면 유효한 id 전부와 함께 rc 2로 거부된다 |
 | `--payload` | `run`과 같다 |
 | `--backend` | `run`과 같다 |
+| `--cache` | `run`과 같다 |
 | `--network` | `run`과 같다 |
 | `--endpoint` | `run`과 같다 |
 | `--clock` | `run`과 같다 |
@@ -111,6 +113,7 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--host` | 바인드 주소 (기본 `127.0.0.1` — 루프백 전용) |
 | `--port` | TCP 포트, `0`이면 임시 포트 (기본 `8080`) |
 | `--backend` | `run`과 같다. `sqlite:<path>`를 주면 요청 사이에 상태가 남는다 |
+| `--cache` | `run`과 같다(기본 `fake`) — `--network`와 같은 모양으로 한 인스턴스가 모든 요청의 Interpreter에 공유된다(`CacheDriver`는 `repository`와 달리 요청별 트랜잭션 상태가 없다). 이슈 #131 |
 | `--network` | `run`과 같다. 이슈 #101 전에는 `serve`에 이 플래그 자체가 없어서 모든 요청이 `fake` 드라이버로 나갔다 |
 | `--endpoint` | `run`과 같다 — `--network http`에서 소켓을 바인드하기 전에 검사한다(백엔드·jwt 시크릿과 같은 자리). 이슈 #101 |
 | `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |

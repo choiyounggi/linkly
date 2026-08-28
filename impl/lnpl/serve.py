@@ -70,9 +70,10 @@ def _install_sigterm_handler(app):
 
 
 def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
-          token_provider=None, network=None, clock=None, log_format="text",
-          exporter=None, trust_incoming_trace=False, jwt_secret_env=None,
-          metrics=False, idempotency_ttl_ms=None, capture_on_failure=False):
+          token_provider=None, network=None, cache=None, clock=None,
+          log_format="text", exporter=None, trust_incoming_trace=False,
+          jwt_secret_env=None, metrics=False, idempotency_ttl_ms=None,
+          capture_on_failure=False):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -83,7 +84,11 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     turns the M3 presence check into real verification (M3a); omitted, the
     header is only checked for presence, which is what shipped with #26.
     `network` (issue #101) is a `NetworkDriver` every request's Interpreter
-    shares; omitted, each request gets its own FakeNetworkDriver. `clock`
+    shares; omitted, each request gets its own FakeNetworkDriver. `cache`
+    (issue #131) is a `CacheDriver` every request's Interpreter shares, the
+    same one-instance-shared-across-requests shape `network` already has
+    (a `CacheDriver` carries no per-request transaction state, unlike
+    `repository`); omitted, each request gets its own FakeCache. `clock`
     (issue #80) is a `Clock` every request's Interpreter shares; omitted,
     each request gets its own virtual `Clock()` — the pre-#80 default.
     `log_format` (issue #78) is "text" (default, silent — the pre-#78
@@ -99,7 +104,8 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
         kwargs["idempotency_ttl_ms"] = idempotency_ttl_ms
     app = make_wsgi_app(document, repository_factory=repository_factory,
                         token_provider=token_provider, network=network,
-                        clock=clock, log_format=log_format, exporter=exporter,
+                        cache=cache, clock=clock, log_format=log_format,
+                        exporter=exporter,
                         trust_incoming_trace=trust_incoming_trace,
                         jwt_secret_env=jwt_secret_env, metrics=metrics,
                         capture_on_failure=capture_on_failure,

@@ -57,6 +57,22 @@ DRIVERS_ENTRY_POINT_GROUP = "lnpl.drivers"
 # The closed table of network selectors `--network` accepts (RFC-0027 §1).
 NETWORKS = ("fake", "http")
 
+# The closed table of cache selectors `--cache` accepts.
+CACHES = ("fake",)
+
+# issue #131: the entry-points group an external package registers a
+# CacheDriver factory under (`[project.entry-points."lnpl.caches"]` in its
+# own pyproject.toml — `docs/backends.md` §8 has the shape, `lnpl.drivers`
+# mirrored). Built-in `fake` is matched before this group is ever consulted,
+# so a registered entry-point can never shadow it.
+CACHES_ENTRY_POINT_GROUP = "lnpl.caches"
+
+# issue #132: the entry-points group an external package registers a
+# NetworkDriver factory under (`[project.entry-points."lnpl.networks"]` in
+# its own pyproject.toml), `lnpl.drivers` mirrored. Built-ins (`NETWORKS`,
+# above) are matched first and always win.
+NETWORKS_ENTRY_POINT_GROUP = "lnpl.networks"
+
 # Every connection waits this long for a lock instead of raising at once.
 BUSY_TIMEOUT_MS = 5000
 
@@ -1615,6 +1631,60 @@ def open_repository(spec):
            ", ".join(_registered_scheme_names()) or "none"))
 
 
+def _cache_entry_points():
+    """Every entry-point registered under `lnpl.caches` — same stdlib
+    version split `_driver_entry_points()` handles."""
+    try:
+        return importlib_metadata.entry_points(group=CACHES_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            CACHES_ENTRY_POINT_GROUP, [])
+
+
+def _registered_cache_names():
+    return sorted(ep.name for ep in _cache_entry_points())
+
+
+def open_cache(spec, clock=None):
+    """`--cache`'s value -> a CacheDriver, or None for the default
+    (`open_repository`'s selector mirrored).
+
+    `None` means "the Interpreter builds its own `FakeCache(self.clock)`"
+    (`interp.py`'s existing fallback), which keeps the untouched path
+    byte-identical to what it was before this issue. The lookup is a closed
+    table with a defined miss, same as `open_repository`.
+
+    Beyond the built-in `fake`, `<scheme>` or `<scheme>:<arg>` (first `:`
+    split) is looked up in the `lnpl.caches` entry-points group (issue #131)
+    — an external package registers `scheme = "module:factory"`, and a
+    matching selector loads that factory and calls it with `arg`. `fake` is
+    matched first and always wins: it is checked above before any
+    entry-point lookup runs, so a package cannot register `fake` and shadow
+    it.
+
+    `clock` is accepted (unused by the built-in `fake` path, which defers to
+    the Interpreter's own clock via the `None` return) so a future
+    persistent driver that judges TTL by clock comparison rather than the
+    store's native expiry (`CacheDriver`'s docstring) has a stable
+    constructor slot to grow into without a signature change.
+    """
+    if spec == "fake":
+        return None
+    scheme, _, arg = spec.partition(":")
+    for entry_point in _cache_entry_points():
+        if entry_point.name == scheme:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "cache %r registered via entry-point %r failed to "
+                    "load: %s" % (spec, entry_point.value, exc)) from exc
+            return factory(arg)
+    raise ValueError(
+        "unknown cache %r (built-in: %s; registered entry-points: %s)"
+        % (spec, ", ".join(CACHES), ", ".join(_registered_cache_names()) or "none"))
+
+
 def _token_entry_points():
     """Every entry-point registered under `lnpl.tokens` — same stdlib
     version split `_driver_entry_points()` handles (`pyproject.toml`'s
@@ -1686,6 +1756,20 @@ def open_token_provider(name, secret=None, issuer=None):
            ", ".join(_registered_token_provider_names()) or "none"))
 
 
+def _network_entry_points():
+    """Every entry-point registered under `lnpl.networks` — same stdlib
+    version split `_driver_entry_points()` handles."""
+    try:
+        return importlib_metadata.entry_points(group=NETWORKS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            NETWORKS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_network_names():
+    return sorted(ep.name for ep in _network_entry_points())
+
+
 def open_network(spec, endpoints=None, capabilities=None):
     """`--network`'s value -> a NetworkDriver, or None for the default
     (RFC-0027 §1, the `open_repository` selector mirrored).
@@ -1696,10 +1780,28 @@ def open_network(spec, endpoints=None, capabilities=None):
     `endpoints`/`capabilities` (issue #101) are ignored for `fake` — the fake
     driver has no notion of either — and passed through to `HttpNetworkDriver`
     for `http`.
+
+    Beyond the two built-ins, `<scheme>:<arg>` (first `:` split) is looked up
+    in the `lnpl.networks` entry-points group (issue #132) — an external
+    package registers `scheme = "module:factory"`, and a matching selector
+    loads that factory and calls it with `arg`. `fake`/`http` are matched
+    first and always win: both checks run above before any entry-point
+    lookup, so a package cannot register either name and shadow it.
     """
     if spec == "fake":
         return None
     if spec == "http":
         return HttpNetworkDriver(endpoints=endpoints, capabilities=capabilities)
-    raise ValueError("unknown network %r (accepted: %s)"
-                     % (spec, ", ".join(NETWORKS)))
+    scheme, _, arg = spec.partition(":")
+    for entry_point in _network_entry_points():
+        if entry_point.name == scheme:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "network %r registered via entry-point %r failed to "
+                    "load: %s" % (spec, entry_point.value, exc)) from exc
+            return factory(arg)
+    raise ValueError(
+        "unknown network %r (built-in: %s; registered entry-points: %s)"
+        % (spec, ", ".join(NETWORKS), ", ".join(_registered_network_names()) or "none"))
