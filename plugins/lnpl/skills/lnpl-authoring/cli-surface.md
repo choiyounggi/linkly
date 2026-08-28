@@ -317,6 +317,7 @@ status completed
 | `--lint` | RFC-0005 적합성 검사 |
 | `--route` | `TASK` 서술을 문서 id 목록으로 |
 | `--load` | `DOC_ID`의 본문을 로드 |
+| `--kb-pack` | 로컬 KB 팩 루트 디렉터리(반복 가능, 선언 순서가 우선순위) — 코어를 포크하지 않고 얹는다(이슈 #137, `docs/kb-packs.md`). `lnpl.kb` entry-points 그룹과 `LNPL_KB_PACKS` 환경변수(`os.pathsep` 구분)로도 발견되며, 병합 순서는 entry-points → env → 이 플래그 |
 
 ### `agents` — RFC-0006 에이전트 사이클
 
