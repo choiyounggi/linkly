@@ -25,6 +25,12 @@ breaking change의 고지 방식은 전부 동일하다: 릴리스 태그의
 - **breaking**: 기존 `code`를 삭제·재의미부여, 또는 severity 매핑 변경.
 - 검증: `lnpl compile <file> --strict=warning` — `warning` 등급 이상이면
   rc≠0 (issue #62, v0.5.0에서 기본 게이트로 승격).
+- **확장 code**: RFC-0042가 `code`에 네임스페이스 축(`<prefix>/<code>`)을
+  연다. 위 보장·breaking 규칙은 bare(무슬래시) `code`에만 적용된다 — bare는
+  코어 전용 영구 예약이다(RFC-0042 §Reference-level Specification/코드 →
+  등급). **`<prefix>/<code>`의 존속·재의미부여·severity는 코어가 아니라 그
+  확장 자신의 보증이다.** 코어가 보증하는 것은 다섯 키 봉투 형태
+  (`code`/`severity`/`where`/`subject`/`message`)뿐이다.
 
 ### 2. Semantic IR 스키마 (`schemas/lir.schema.json`)
 

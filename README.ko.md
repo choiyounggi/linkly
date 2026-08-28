@@ -201,7 +201,7 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 **테스트 3,150여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 42편 — 39편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
+**RFC 43편 — 40편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -258,8 +258,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0039 `note` 동사 + canonical log line](rfcs/0039-note-verb-and-canonical-line.md) | `note "<template>" [with <ref>...]`가 Effect가 아닌 `Annotation` 노드로 lower된다(`respond`/`Response`와 같은 취급) — `condition._parse_format_rhs`를 그대로 재사용한다. 미바인딩 참조는 `null`로 기록될 뿐 실행을 실패시키지 않고, Password 타입 값은 기존 `mask_payload` chokepoint로 마스킹된다. 워크플로당 `note` 16개 초과는 컴파일 에러가 아니라 `note-cap-exceeded` 경고다. `--log-format json`의 canonical line에 `notes`/`effects`/`input_digest`가 존재할 때만 덧붙고, `lnpl serve --capture-on-failure`(기본 off)는 실패/500으로 끝난 실행의 줄에만 마스킹된 입력 payload를 싣는다. `_call_with_json_log`는 이제 끝까지 예외 안전하다 — `_respond`에 닿기도 전에 죽는 요청도 canonical line 한 줄을 낸다. |
 | [0040 이벤트 소비 계약](rfcs/0040-event-consumption-contract.md) | `event ... consume by <Workflow>`가 도착 시 워크플로를 실행한다 — RFC-0032가 이미 확정한 발행 쪽의 남은 소비 절반. `POST /-/events/<slug>`(예약 공간, RFC-0016 스케줄 트리거와 같은 모양)가 CloudEvents v1.0 구조화 봉투를 받고, 그 `id`가 멱등성 키다(이슈 #113의 `lnpl_idempotency` 테이블·API·TTL을 그대로 재사용, 두 번째 저장소 없음). 실행 결과는 정확히 3갈래로 매핑된다 — 200 성공, 503+`Retry-After` 일시적(데드라인, 또는 `RepositoryCall`/`NetworkCall` effect 실패), 422 영구적(Validation 거부, 비즈니스/가드 RunError, create 충돌) — 그리고 503은 `idempotency_finish`를 의도적으로 건너뛰어 재시도가 503을 영원히 재생하는 대신 새로 실행되게 한다. `consume by`와 그 워크플로 자신의 `emit` 사이의 순환은 정적 경고(`event-consume-cycle`)이지 컴파일 에러가 아니다. `lnpl relay`가 outbox를 드레인해 소비 라우트로 미는 레퍼런스 릴레이다(urllib만, 브로커 의존 없음). |
 | [0041 `parallel` 블록 실행](rfcs/0041-parallel-block-execution.md) | RFC-0003이 구조적 동시성으로 이미 약속했던 것을 mode A가 마침내 집행한다 — `parallel` 블록의 스텝이 블록 스코프 `ThreadPoolExecutor`에서 실행되고, fail-fast(한 브랜치 실패 시 시작 전인 나머지를 취소하고 블록 실패), 동시성 상한은 `policy parallel <N>`(기존 정책 이름에 새로 붙은 선택적 정수 인자 — 값이 없으면 블록 자신의 스텝 수로 폴백)이 정한다. 같은 entity에 쓰는 두 스텝이 한 블록에 있으면 컴파일 타임 `LowerError`가 두 줄번호를 함께 인용한다 — RFC-0012의 바인딩은 순서 의존적인데 `parallel` 블록에는 순서가 없기 때문이다. 보고는 완료 순서가 아니라 선언 순서를 유지해 `spec.py`의 `steps <N>`이 순차 실행과 같은 모양을 낸다. 각 스텝 스팬은 가상 `Clock`이 아니라 실제 벽시계 타임스탬프를 써서, 겹치는 형제 스팬이 실제 동시 실행의 증거가 된다. mode B는 손대지 않았다(RFC-0004 §5(#7) 계속 미결) — `differential`이 이제 `parallel`을 가진 워크플로의 리포트를 정확히 그 이유로 미검증 차원으로 표시한다. |
+| [0042 확장 진단 등록 — 네임스페이스·소유·게이팅](rfcs/0042-extension-diagnostics.md) | 확장이 자기 실패 모드를 언어의 어휘로 말할 자리가 생긴다 — 등록 코드는 `<prefix>/<code>` 형태(ESLint의 `plugin/rule` 컨벤션), bare(무슬래시) 코드는 영구히 코어 전용, prefix는 확장의 엔트리포인트 등록명 그 자체다. 한 prefix는 한 소유자만 가지며 중복 등록은 로드 시점에 거부된다 — Roslyn(dotnet/roslyn#40351)이 3rd party에는 세우지 못한 소유 규칙이다. 확장 코드는 `info`/`warning`만 선언할 수 있고 `error`는 등록 시점에 거부되며, `--strict` 게이팅에는 기본적으로 불참한다 — 확장 설치가 기존 프로그램의 rc를 바꿔서는 안 된다. 확장 진단기는 컴파일된 IR과 자기 설정만 보고 소스 텍스트는 보지 못한다. 코드 변경 없음 — 구현은 후속 태스크. *Updates RFC-0021 §Reference-level Specification/코드 → 등급 (정본), §Reference-level Specification/`--strict[=LEVEL]`* |
 
-38편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+39편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
