@@ -627,6 +627,86 @@ docstring) — `advance(ms)`는 그 둘 중 어느 쪽이든 드라이버가 스
 한다(§8의 `RepositoryDriverTCK`와 같은 이유: 믹스인 자신이 수집되면 훅이
 `NotImplementedError`를 내는 채로 단독 실행된다).
 
+
+## 11. SPI: 확장 진단 등록 (이슈 #138, RFC-0042)
+
+RFC-0042가 확정한 계약: 확장이 `impl/lnpl/diagnostics.py`의 닫힌 `CODES`에
+손대지 않고도 자기 실패 모드를 진단으로 낼 수 있게 한다. §8/§9와 같은
+형태다 — 코어는 `lnpl.diagnostics` entry-points 그룹을 열어 두고, `compile`
+(및 `--json`)이 IR을 만든 직후 등록된 모든 확장의 `check`를 그 IR 위에서
+돌린다.
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.diagnostics"]
+kafka = "my_lnpl_kafka:register"
+```
+
+`my_lnpl_kafka.register`는 **인자 없이** 호출되어 다음 형태의 dict를
+반환하는 콜러블이다:
+
+```python
+def register():
+    return {
+        "codes": {
+            "at-least-once": {"severity": "info",
+                              "description": "outbox relay is at-least-once only"},
+        },
+        "check": lambda document, config: [
+            {"code": "at-least-once", "where": "emit userCreated",
+             "subject": "emit userCreated",
+             "message": "...", "line": 12},
+        ],
+    }
+```
+
+entry-point의 이름 자체가 **prefix**다 — 별도로 선언하지 않는다. `check`가
+돌려주는 dict의 `code`는 bare(예: `"at-least-once"`)이고, 코어가
+`<prefix>/<code>`(예: `"kafka/at-least-once"`)로 정규화한다. `config`는
+예약 인자로 지금은 항상 `{}`다(설정 채널은 이번 범위 밖). `check`는
+컴파일된 IR 문서만 받는다 — 소스 텍스트나 파일 경로는 절대 넘어가지
+않는다(파서를 두 번째로 구현하게 만들지 않기 위해서다).
+
+### 로드 시점 검증
+
+`load_extensions()`가 다음을 전부 로드 시점에 거부한다(위반마다
+`ExtensionDiagnosticsError`, 메시지는 §8/§9와 같은 스타일 — **받은 값**·
+**어긴 규칙**·**그 순간까지 등록된 목록**을 함께 싣는다):
+
+- prefix가 `^[a-z][a-z0-9-]{1,15}$`를 만족하지 않음;
+- prefix가 `lnpl`/`core`(예약어)임;
+- 이미 등록된 prefix로 다른 확장이 로드됨(한 prefix, 한 소유자);
+- 어떤 code든 `severity`를 `error`로 선언함 — 확장은 `info`/`warning`만
+  쓸 수 있다.
+
+### 실행 시점 필터 — 미등록 code
+
+`check`가 자기 `codes`에 없는 code를 내면, 그 진단 하나만 결과에서 빠지고
+stderr에 경고 한 줄이 뜬다 — 확장 전체를 죽이지도, 조용히 삼키지도 않는다.
+이건 로드 시점 검증이 아니라 실행 시점 필터라 예외가 아니다.
+
+### `--strict` 불참
+
+`<prefix>/<code>` 진단은 severity와 무관하게 `--strict`의 문턱 비교에
+**절대** 들어가지 않는다 — 확장을 설치하는 행위만으로 이미 깨끗했던
+빌드의 종료 코드가 바뀌는 일은 없다. 참여를 여는 opt-in도 이 RFC는 만들지
+않는다(§Guide-level Explanation "하지 않는 것").
+
+### 가시성 — CLI `compile`/`--json` 경로만
+
+이 패스는 `cli.py`의 `compile`(및 `--json`)이 쓰는 공유 컴파일 헬퍼에서만
+실행된다. `wsgi.py`(`lnpl serve`)와 `mcp_server.py`의 별도 compile 경로는
+이번 범위 밖이다 — 두 경로에 확장 진단을 배선하는 것은 후속 이슈로 남는다.
+
+### TCK
+
+§8/§9와 달리 확장 진단에는 아직 `lnpl.testing`의 TCK가 없다 — 검증 항목이
+"진단 하나가 나온다"보다 훨씬 얕고(등록 계약과 실행 시점 필터뿐), 실제
+소비자가 생긴 뒤 필요하면 추가한다.
+
 ## 참고
 
 - 서빙 계층의 상태코드 매핑과 401 판정: `docs/serving.md`

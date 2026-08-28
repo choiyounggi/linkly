@@ -25,7 +25,9 @@ Visibility is the whole contract. Actually enforcing the declarations below is
 issue #25 and the roadmap, not this module.
 """
 
+import re
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 
 # The grade ladder, weakest first (#52). The tuple order *is* the ranking:
 # `--strict=<level>` gates on everything from that index up, so reordering these
@@ -139,6 +141,113 @@ SEVERITY_OF = {
     # `emit`) is an edit the author can make, same test as `unknown-verb`.
     "event-consume-cycle":      "warning",
 }
+
+
+# RFC-0042 (issue #138): extensions register diagnostics under `<prefix>/<code>`,
+# a namespace disjoint from `CODES` above — bare codes stay core-only forever,
+# and `<prefix>/<code>` never enters `CODES`/`SEVERITY_OF` (the extension's own
+# registration is that code's grade of record). `prefix` is the entry-point's
+# own name; there is no separate prefix declaration.
+DIAGNOSTICS_ENTRY_POINT_GROUP = "lnpl.diagnostics"
+
+_EXTENSION_PREFIX_RE = re.compile(r"^[a-z][a-z0-9-]{1,15}$")
+RESERVED_EXTENSION_PREFIXES = ("lnpl", "core")
+
+
+class ExtensionDiagnosticsError(Exception):
+    """A `lnpl.diagnostics` entry-point registration violates RFC-0042 —
+    raised at load time, before any diagnostic from it is ever emitted."""
+
+
+def _extension_entry_points():
+    """Every entry-point registered under `lnpl.diagnostics`, across the
+    stdlib API's version split `drivers._driver_entry_points()` also
+    handles: 3.10+ takes `group=` as a select filter; 3.9's `entry_points()`
+    takes no arguments and returns a `{group: [EntryPoint, ...]}` mapping
+    instead (`pyproject.toml`'s declared floor is 3.9)."""
+    try:
+        return importlib_metadata.entry_points(group=DIAGNOSTICS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            DIAGNOSTICS_ENTRY_POINT_GROUP, [])
+
+
+def load_extensions():
+    """Load and validate every registered `lnpl.diagnostics` extension,
+    returning `{prefix: {"codes": {"<code>": {"severity", "description"}},
+    "check": callable(document, config) -> list[dict]}}`.
+
+    Load-time validation (RFC-0042 Reference-level Spec) — every violation
+    raises `ExtensionDiagnosticsError` before compilation proceeds, never a
+    partial, half-loaded registry:
+
+    - the prefix (the entry-point's own name) must match
+      `^[a-z][a-z0-9-]{1,15}$`;
+    - `lnpl`/`core` are reserved and may not be used as a prefix;
+    - one prefix has one owner — a second registration under an
+      already-seen prefix is refused;
+    - an extension declaring `error` severity for any code is refused —
+      extensions may declare `info`/`warning` only.
+
+    Not cached: called fresh each time (the `lnpl.drivers`/`lnpl.tokens`
+    precedent), so a test can swap `importlib_metadata.entry_points` between
+    calls without a stale registry surviving it.
+    """
+    registry = {}
+    for ep in _extension_entry_points():
+        prefix = ep.name
+        if not _EXTENSION_PREFIX_RE.match(prefix):
+            raise ExtensionDiagnosticsError(
+                "extension prefix %r (entry-point %r) does not match %s "
+                "(RFC-0042); registered so far: %s"
+                % (prefix, ep.value, _EXTENSION_PREFIX_RE.pattern,
+                   ", ".join(sorted(registry)) or "none"))
+        if prefix in RESERVED_EXTENSION_PREFIXES:
+            raise ExtensionDiagnosticsError(
+                "extension prefix %r (entry-point %r) is reserved for the "
+                "core (RFC-0042); reserved prefixes: %s"
+                % (prefix, ep.value, ", ".join(RESERVED_EXTENSION_PREFIXES)))
+        if prefix in registry:
+            raise ExtensionDiagnosticsError(
+                "prefix %r (entry-point %r) is already owned by another "
+                "extension registered under the same name — one prefix, "
+                "one owner (RFC-0042); registered so far: %s"
+                % (prefix, ep.value, ", ".join(sorted(registry))))
+        try:
+            register = ep.load()
+        except Exception as exc:
+            raise ExtensionDiagnosticsError(
+                "extension %r (entry-point %r) failed to load: %s"
+                % (prefix, ep.value, exc)) from exc
+        result = register()
+        codes = result["codes"]
+        for code, meta in codes.items():
+            severity = meta.get("severity")
+            if severity not in ("info", "warning"):
+                raise ExtensionDiagnosticsError(
+                    "extension %r registered diagnostic %r with severity "
+                    "%r — extensions may declare 'info' or 'warning' only "
+                    "(RFC-0042); registered so far: %s"
+                    % (prefix, "%s/%s" % (prefix, code), severity,
+                       ", ".join(sorted(registry)) or "none"))
+        registry[prefix] = {"codes": codes, "check": result["check"]}
+    return registry
+
+
+def severity_of(code):
+    """Grade for any diagnostic code, bare or `<prefix>/<code>` (RFC-0042).
+
+    A bare code (no `/`) resolves through `SEVERITY_OF`, unchanged — `CODES`
+    stays the closed, core-only table it always was. A `<prefix>/<code>`
+    code resolves through whatever is currently registered under
+    `lnpl.diagnostics`: the extension's own registration is that code's
+    grade of record, since it never enters `CODES`/`SEVERITY_OF`.
+    """
+    if "/" not in code:
+        return SEVERITY_OF[code]
+    prefix, _, bare = code.partition("/")
+    return load_extensions()[prefix]["codes"][bare]["severity"]
+
 
 # How the runtime treats a declaration.
 ENFORCED = "enforced"        # the declaration changes what execution does
@@ -349,6 +458,32 @@ def to_records(diagnostics):
             for d in _records(diagnostics)]
 
 
+def format_lines_from_records(records):
+    """Plain dict records (code/severity/where/subject/message/line) -> the
+    lines to show a person, summary last. The record-shaped twin of
+    `format_lines`, for a caller that has already merged core diagnostics
+    (via `to_records`) with extension diagnostics (RFC-0042, issue #138) —
+    the latter are never `Diagnostic` instances, so they only exist in this
+    dict shape. `format_lines` itself delegates here so there stays one
+    rendering rule.
+    """
+    if not records:
+        return []
+    lines = [
+        ("%s: %s [%s] (line %d) %s — %s" % (r["severity"], r["code"], r["where"],
+                                            r["line"], r["subject"], r["message"])
+         if r["line"] is not None else
+         "%s: %s [%s] %s — %s" % (r["severity"], r["code"], r["where"],
+                                  r["subject"], r["message"]))
+        for r in records
+    ]
+    infos = sum(1 for r in records if r["severity"] == "info")
+    warnings = sum(1 for r in records if r["severity"] == "warning")
+    errors = sum(1 for r in records if r["severity"] == "error")
+    lines.append("%d info, %d warning(s), %d error(s)" % (infos, warnings, errors))
+    return lines
+
+
 def format_lines(diagnostics):
     """Diagnostics -> the lines to show a person, summary last.
 
@@ -357,19 +492,4 @@ def format_lines(diagnostics):
     same fact. No diagnostics means no output at all — not even a summary — so
     a clean module stays quiet.
     """
-    records = _records(diagnostics)
-    if not records:
-        return []
-    lines = [
-        ("%s: %s [%s] (line %d) %s — %s" % (d.severity, d.code, d.where,
-                                            d.line, d.subject, d.message)
-         if d.line is not None else
-         "%s: %s [%s] %s — %s" % (d.severity, d.code, d.where, d.subject,
-                                  d.message))
-        for d in records
-    ]
-    infos = sum(1 for d in records if d.severity == "info")
-    warnings = sum(1 for d in records if d.severity == "warning")
-    errors = sum(1 for d in records if d.severity == "error")
-    lines.append("%d info, %d warning(s), %d error(s)" % (infos, warnings, errors))
-    return lines
+    return format_lines_from_records(to_records(diagnostics))
