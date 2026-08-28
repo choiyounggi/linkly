@@ -707,6 +707,115 @@ stderr에 경고 한 줄이 뜬다 — 확장 전체를 죽이지도, 조용히 
 "진단 하나가 나온다"보다 훨씬 얕고(등록 계약과 실행 시점 필터뿐), 실제
 소비자가 생긴 뒤 필요하면 추가한다.
 
+## 12. SPI: 외부 생성기 등록 (이슈 #139)
+
+`README.md`가 Semantic IR을 허브라고 선언하는데, 그 허브에서 산출물을 뽑는
+쪽(OpenAPI 문서, 나아가 CHARTER §Auto Generation이 약속한 GraphQL·gRPC·
+Frontend SDK·k8s 매니페스트 등)이 전부 코어에 하드와이어돼 있으면 그 주장은
+실증된 적이 없다는 뜻이다. §5가 브로커 실바인딩에 대해 이미 말한 원칙 —
+"코어는 계약만 소유하고 실구현은 조직마다 다르다" — 이 생성물에도 그대로
+적용된다. 이 절이 여는 것은 자리뿐이다: GraphQL·gRPC·k8s 생성기 자체는
+코어가 만들지 않는다("통합 테스트 없는 바인딩 금지"와 같은 원칙, 이슈
+#115).
+
+계약은 [protoc 플러그인 모델](https://protobuf.dev/reference/cpp/api-docs/google.protobuf.compiler.plugin/)
+그대로다: 생성기는 `generate(document, options) -> {relative_path: bytes}`를
+반환하고, **그 맵을 실제 파일로 쓰는 것은 코어의 일**이다. 생성기에
+파일시스템 권한을 주지 않으면 덮어쓰기 정책·경로 이탈 검사를 코어가 한
+곳(`generators.run_generator`)에서만 소유할 수 있다 — protoc의
+`CodeGeneratorResponse`가 파일을 직접 안 쓰는 것과 같은 이유다.
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.generators"]
+graphql = "my_lnpl_graphql:generate"
+```
+
+`my_lnpl_graphql.generate`는 `(document, options)`를 받아
+`{relative_path: bytes}`를 반환하는 콜러블 **그 자체**다 — §8의 드라이버
+팩토리(`module:factory`가 인자를 받아 드라이버를 만드는 두 단계)와 달리
+protoc 플러그인 모델에는 생성마다 새로 만들 상태가 없어서 한 단계다.
+`document`는 `.lir.json`과 바이트 동일한 dict(provenance 포함, RFC-0042)를
+그대로 받는다 — 소스 텍스트나 파일 경로는 절대 넘어가지 않는다(파서를
+두 번째로 구현하게 만들지 않기 위해서다, §11과 같은 이유). `options`는
+예약 인자로 지금은 항상 `{}`다(옵션 채널은 이번 범위 밖 — 소비자 관측
+전 추측성 표면을 만들지 않는다).
+
+패키지가 설치돼 있으면:
+
+```
+lnpl generate graphql <src.lnpl> --out ./generated
+```
+
+이 그 팩토리를 찾아 부른다 — 코어 쪽에 이 이름에 대한 if문이 하나도 없다.
+`--out`은 필수다(cwd 산란 방지, 명시성).
+
+### 내장 이름은 절대 가려지지 않는다
+
+`resolve_generator`는 `openapi`를 entry-points 조회보다 **먼저** 검사한다.
+어떤 패키지가 `lnpl.generators`에 `openapi`라는 이름으로 등록해도 그 등록은
+결코 조회되지 않는다 — 내장이 섀도잉당하는 경로 자체가 없다
+(`test_generator_spi.py::BuiltinShadowingTest`).
+
+### 미등록 이름의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 이름은 rc 2로 거부되며,
+메시지가 **받은 값**·**내장 목록**·**그 순간 실제로 등록된 entry-points
+목록**(없으면 "none")을 함께 싣는다 — §8과 같은 "triple miss" 규율.
+
+### entry-point 로드 실패, 그리고 생성기 자신의 예외
+
+등록은 됐지만 그 값을 import할 수 없거나, 로드된 `generate()`가 스스로
+예외를 던지면, `GeneratorError`로 번역된다(원인 체인 보존) — §8의 "ONE
+ERROR TYPE OUT" 규칙이 여기서도 그대로 적용된다. `lnpl generate`의 종료
+코드는 `lnpl openapi` 등 다른 컴파일 계열 실패와 같은 rc 2다.
+
+### 코어 writer의 경로 이탈 거부
+
+생성기가 반환한 각 키는 `--out` 아래로 쓰이기 전에 검증된다: 절대경로,
+`..`로 `--out` 밖을 가리키는 경로, 심링크로 밖을 가리키는 경로는 전부
+거부되며(rc 2, 어떤 키가 왜 거부됐는지) — 검증은 아무것도 쓰기 전에 전부
+끝나므로, 키 하나가 이탈해도 나머지가 부분적으로 쓰이는 일은 없다. 빈
+`{}`는 유효한 반환이다 — 파일 0개, rc 0.
+
+### `openapi` — 내장 생성기이자 첫 독푸딩 사례
+
+`openapi.py`의 `generate_files(document, options)`가 이 SPI에 등록된
+내장 생성기다: 기존 `generate(document, version=...)`(cli.py/wsgi.py/여러
+테스트가 이름으로 import하는 그 함수)를 그대로 재사용해 얻은 스펙을
+`cli.py`의 `_dump`와 같은 직렬화(2-space JSON, `ensure_ascii=False`,
+LF 종료)로 bytes화해 `{"openapi.json": <bytes>}`를 반환한다 — 이름 충돌을
+피하려고 어댑터는 `generate`가 아니라 `generate_files`로 부른다. 기존
+`generate()`와 `lnpl openapi` 서브커맨드는 동작이 전혀 바뀌지 않았다:
+`lnpl generate openapi <src> --out <dir>`가 쓰는 `<dir>/openapi.json`은
+`lnpl openapi <src>`가 stdout에 내는 것과 바이트 단위로 동일하다
+(`test_generator_spi.py`의 차동 테스트).
+
+### TCK로 검증하기
+
+외부 생성기는 `lnpl.testing.GeneratorTCK`를 상속해 자기 CI에서 돌린다:
+
+```python
+import unittest
+from lnpl.testing import GeneratorTCK
+
+class MyGraphQLGeneratorTCKTest(GeneratorTCK, unittest.TestCase):
+    def make_generator(self):
+        return my_lnpl_graphql.generate
+    def make_out_dir(self):
+        ...  # a fresh, empty, writable directory; clean it up yourself
+```
+
+검증 항목: 결정성(같은 document 두 번 → 같은 맵), 그리고 코어 writer가
+공통으로 보장하는 세 가지 — 경로 이탈 키 거부, 빈 반환 허용, 생성기 자신의
+예외가 `GeneratorError` 하나로 번역되는 것. 뒤 세 가지는 어떤 생성기든
+`lnpl generate`가 쓰는 것과 같은 writer를 통과하기만 하면 공짜로 지켜지므로,
+`GeneratorTCK`는 그 셋을 고정 픽스처 생성기로 직접 증명한다(§8/§9의
+TCK처럼 대상 드라이버/생성기 자체를 매번 다시 검증하지 않는다).
+
 ## 참고
 
 - 서빙 계층의 상태코드 매핑과 401 판정: `docs/serving.md`

@@ -102,6 +102,18 @@ OpenAPI `x-lnpl-schedules` 메타데이터(기존 생성물)를 소비해 `lnpl 
 |--------|-----|
 | `-o` / `--output` | 문서를 파일로 |
 
+### `generate <name> <src.lnpl>... --out <dir>` — 등록된 생성기 실행 (`lnpl.generators` SPI, 이슈 #139)
+
+`name`은 등록된 생성기 이름(내장은 `openapi` 하나 — 그 자체가 이 SPI의 첫
+독푸딩 사례다), `<src.lnpl>...`는 `openapi`/`compile`과 같은 소스 인자다.
+생성기는 `{relative_path: bytes}`를 반환하고, 그 맵을 실제 파일로 쓰는 것은
+코어의 일이다(protoc 플러그인 모델) — `docs/backends.md` §12가 등록·경로
+이탈 거부·TCK를 자세히 다룬다.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--out` | 생성된 파일을 쓸 디렉터리(필수) |
+
 ### `serve` — OpenAPI 경로에 워크플로를 HTTP로 바인딩 (모드 A, 이슈 #26)
 
 ```

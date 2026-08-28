@@ -51,6 +51,7 @@ def _parse_fields(specs):
 from .agents import run_cycle
 from .config import load_config
 from .differential import DifferentialError, verify as verify_modes
+from .generators import GeneratorError, resolve_generator, run_generator
 from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
@@ -636,6 +637,19 @@ def cmd_openapi(args):
         print("wrote %s (%d path(s))" % (args.output, len(spec["paths"])))
     else:
         sys.stdout.write(text)
+    return 0
+
+
+def cmd_generate(args):
+    # options is fixed at {} (issue #139 D4): no flag exists yet to fill it
+    # from, and inventing one ahead of a real consumer is exactly the
+    # speculative surface this repo's SPIs avoid (drivers.py/wsgi.py/kb.py
+    # all open their entry-points groups the same way, with no options
+    # channel until one was needed).
+    doc = compile_source(args.source)
+    generator = resolve_generator(args.name)
+    written = run_generator(generator, doc, {}, args.out)
+    print("wrote %d file(s) to %s" % (len(written), args.out))
     return 0
 
 
@@ -1610,6 +1624,18 @@ def main(argv=None):
     oa.add_argument("-o", "--output")
     oa.set_defaults(func=cmd_openapi)
 
+    gn = sub.add_parser("generate",
+                        help="run a registered generator against the IR "
+                             "(lnpl.generators SPI, issue #139)")
+    gn.add_argument("name", help="registered generator name (e.g. openapi)")
+    gn.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given order), "
+                         "or a single directory (its *.lnpl, filename-sorted — "
+                         "RFC-0031, issue #77)")
+    gn.add_argument("--out", required=True,
+                    help="directory to write the generator's output under")
+    gn.set_defaults(func=cmd_generate)
+
     sv = sub.add_parser("serve",
                         help="serve workflows over HTTP at the OpenAPI paths "
                              "(interpreter mode A, fake backend)")
@@ -1886,7 +1912,7 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 2
     except (LexError, ParseError, LowerError, SpecError, OpenApiError,
-            ServeError, KbError, WsgiConfigError) as exc:
+            ServeError, KbError, WsgiConfigError, GeneratorError) as exc:
         print("compile error: %s" % exc, file=sys.stderr)
         return 2
     except RunError as exc:

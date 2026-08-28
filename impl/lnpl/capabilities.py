@@ -5,12 +5,13 @@
 유일한 소스다: `lnpl capabilities`(CLI), `lnpl_capabilities`(MCP) 둘 다 이
 함수 하나를 부른다.
 
-슬롯당 entry-point 발견은 drivers.py/wsgi.py/kb.py가 이미 갖고 있는 비공개
-발견 함수(`_driver_entry_points` 등)를 그대로 재사용한다 — 새 발견 로직을
-만들지 않고, 그 함수들의 시그니처도 바꾸지 않는다. 슬롯 이름은 계약이다:
-`repository`/`cache`/`network`/`token`/`exporter`/`kb`(issue #134 plan D1) —
-`diagnostics`(`lnpl.diagnostics`)와 `generators`(`lnpl.generators`)는 각각
-t-diag·t-gen이 소유하는 별도 카탈로그 행이라 여기 없다.
+슬롯당 entry-point 발견은 drivers.py/wsgi.py/kb.py/diagnostics.py/generators.py가
+이미 갖고 있는 비공개 발견 함수(`_driver_entry_points` 등)를 그대로 재사용한다 —
+새 발견 로직을 만들지 않고, 그 함수들의 시그니처도 바꾸지 않는다. 슬롯 이름은
+계약이다: `repository`/`cache`/`network`/`token`/`exporter`/`kb`(issue #134 plan
+D1), `diagnostics`(`lnpl.diagnostics`, issue #138)·`generators`(`lnpl.generators`,
+issue #139) — 뒤 두 행은 t-diag·t-gen이 각각 연 그룹을 얹은 것으로, 카탈로그
+표 형태(슬롯·그룹·내장·발견 함수 4-튜플)는 바뀌지 않는다(additive).
 
 로드 가능 여부는 여기서 독립적으로 판정한다: 각 entry point에 `.load()`를
 시도하고, 실패는 예외를 전파하지 않고 `loadable: false`로만 나열한다 —
@@ -19,7 +20,9 @@ t-diag·t-gen이 소유하는 별도 카탈로그 행이라 여기 없다.
 """
 
 from lnpl import __version__
+from lnpl import diagnostics as _diagnostics
 from lnpl import drivers as _drivers
+from lnpl import generators as _generators
 from lnpl import kb as _kb
 from lnpl import wsgi as _wsgi
 
@@ -36,6 +39,10 @@ SLOTS = (
      _drivers._token_entry_points),
     ("exporter", _wsgi.EXPORTERS_ENTRY_POINT_GROUP, _wsgi.EXPORTERS,
      _wsgi._exporter_entry_points),
+    ("generators", _generators.GENERATORS_ENTRY_POINT_GROUP,
+     _generators.BUILTIN_GENERATORS, _generators._generator_entry_points),
+    ("diagnostics", _diagnostics.DIAGNOSTICS_ENTRY_POINT_GROUP, (),
+     _diagnostics._extension_entry_points),
     ("kb", _kb.KB_ENTRY_POINT_GROUP, (), _kb._kb_pack_entry_points),
 )
 

@@ -61,8 +61,10 @@ feature unsupported.
 
 import base64
 import json
+import os
 
 from lnpl.drivers import DriverError, TokenError
+from lnpl.generators import GeneratorError, run_generator
 
 
 class RepositoryDriverTCK:
@@ -767,3 +769,80 @@ class TokenProviderTCK:
     def test_an_empty_token_is_rejected_not_crashed(self):
         with self.assertRaises(TokenError):
             self.provider.verify("", self.AUDIENCE)
+
+
+class GeneratorTCK:
+    """Mix into a `unittest.TestCase` subclass, override `make_generator()`
+    (and `make_document()`/`make_out_dir()` if the defaults do not fit) —
+    see `lnpl.generators`'s module docstring for the `generate(document,
+    options) -> {relative_path: bytes}` contract every implementation must
+    satisfy. `docs/backends.md` §12 has the external registration shape this
+    proves against (issue #139)::
+
+        import unittest
+        from lnpl.testing import GeneratorTCK
+
+        class MyGeneratorTCKTest(GeneratorTCK, unittest.TestCase):
+            def make_generator(self):
+                return my_package.generate
+            def make_out_dir(self):
+                ...  # a fresh, empty, writable directory; clean it up yourself
+
+    Determinism (`test_generate_is_deterministic`) exercises the generator
+    under test directly — every implementation must promise it independently.
+    The other three properties belong to the shared core writer
+    (`generators.run_generator`), not to any one generator, so they are
+    proven with fixed fixture generators defined right here rather than
+    `self.generator` — a conforming generator inherits them for free simply
+    by being run through the one writer every `lnpl generate` call uses.
+    """
+
+    def make_generator(self):
+        raise NotImplementedError(
+            "GeneratorTCK subclasses must override make_generator() to "
+            "return a generate(document, options) callable")
+
+    def make_document(self):
+        """A minimal, valid Semantic IR document — override if the generator
+        under test needs a richer one."""
+        return {"lir_version": "0.1.0", "module": "tck", "nodes": []}
+
+    def make_out_dir(self):
+        raise NotImplementedError(
+            "GeneratorTCK subclasses must override make_out_dir() to return "
+            "a fresh, empty, writable directory (and clean it up themselves "
+            "— this repo's tests use tempfile.mkdtemp(dir=.claude/tmp))")
+
+    def setUp(self):
+        self.generator = self.make_generator()
+        self.document = self.make_document()
+        self.out_dir = self.make_out_dir()
+
+    def test_generate_is_deterministic(self):
+        first = self.generator(self.document, {})
+        second = self.generator(self.document, {})
+        self.assertEqual(first, second)
+
+    def test_a_path_escaping_key_is_rejected_by_the_core_writer(self):
+        def escaping_generator(_document, _options):
+            return {"../escape.txt": b"x"}
+
+        with self.assertRaises(GeneratorError):
+            run_generator(escaping_generator, self.document, {}, self.out_dir)
+        self.assertEqual(os.listdir(self.out_dir), [])
+
+    def test_an_empty_return_writes_nothing(self):
+        def empty_generator(_document, _options):
+            return {}
+
+        written = run_generator(empty_generator, self.document, {}, self.out_dir)
+
+        self.assertEqual(written, [])
+        self.assertEqual(os.listdir(self.out_dir), [])
+
+    def test_a_raising_generator_is_translated_to_generator_error(self):
+        def broken_generator(_document, _options):
+            raise ValueError("boom")
+
+        with self.assertRaises(GeneratorError):
+            run_generator(broken_generator, self.document, {}, self.out_dir)

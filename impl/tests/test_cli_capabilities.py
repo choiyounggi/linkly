@@ -28,7 +28,8 @@ from unittest import mock
 from lnpl import cli
 from lnpl.capabilities import SLOTS, capabilities_document
 
-CONTRACT_SLOTS = {"repository", "cache", "network", "token", "exporter", "kb"}
+CONTRACT_SLOTS = {"repository", "cache", "network", "token", "exporter", "kb",
+                  "generators", "diagnostics"}
 
 # The group each slot resolves through, keyed the same way SLOTS is keyed —
 # used only to target fixture entry-points at the right slot without leaking
@@ -74,7 +75,7 @@ class TestCliCapabilities(unittest.TestCase):
 
     # ---- normal -----------------------------------------------------------
 
-    def test_json_flag_prints_a_valid_document_with_the_six_contract_slots(self):
+    def test_json_flag_prints_a_valid_document_with_the_eight_contract_slots(self):
         with registered():
             rc, out, err = _main(["capabilities", "--json"])
         self.assertEqual(rc, 0)
@@ -105,6 +106,8 @@ class TestCliCapabilities(unittest.TestCase):
         doc = json.loads(out)
         self.assertEqual(doc["slots"]["repository"]["builtin"], ["fake", "sqlite"])
         self.assertEqual(doc["slots"]["kb"]["builtin"], [])
+        self.assertEqual(doc["slots"]["generators"]["builtin"], ["openapi"])
+        self.assertEqual(doc["slots"]["diagnostics"]["builtin"], [])
 
     # ---- error --------------------------------------------------------------
 

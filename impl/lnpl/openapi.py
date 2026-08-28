@@ -27,6 +27,8 @@ Mapping (each row cites the IR that produces it):
                            same "reachable, not declared" rule D1 already uses)
 """
 
+import json
+
 from .diagnostics import ENFORCEMENT
 from .interp import _duration_ms
 from .refinements import BASE_CATEGORY, facets_for_base
@@ -269,6 +271,23 @@ def generate(document, version="0.1.0"):
     if schedules:
         spec["x-lnpl-schedules"] = schedules
     return spec
+
+
+def generate_files(document, options):
+    """Generator SPI adapter (`lnpl.generators`, issue #139) — `openapi` is
+    the built-in generator's dogfood case, registered by `generators.py`.
+
+    Reuses `generate()` unchanged and serializes with the exact byte shape
+    `cli.py`'s `_dump` uses (2-space JSON, `ensure_ascii=False`, LF-
+    terminated) so `lnpl generate openapi --out` and `lnpl openapi` produce
+    byte-identical output. Inlined rather than importing `cli._dump`: `cli.py`
+    already imports this module, so importing back would cycle.
+
+    `options` is accepted but unused — this generator has no options yet
+    (issue #139 D4 keeps the channel unopened until a real consumer needs it).
+    """
+    text = json.dumps(generate(document), indent=2, ensure_ascii=False) + "\n"
+    return {"openapi.json": text.encode("utf-8")}
 
 
 def _schedules(document):
