@@ -909,7 +909,7 @@ class LnplWsgiApp:
     """
 
     def __init__(self, document, routes, repository_factory=None,
-                 token_provider=None, network=None, clock=None,
+                 token_provider=None, network=None, cache=None, clock=None,
                  log_format="text", exporter=None, trust_incoming_trace=False,
                  jwt_secret_env=None, metrics_registry=None,
                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
@@ -931,6 +931,13 @@ class LnplWsgiApp:
         # Interpreter, the same as `token_provider`. `None` means "the
         # Interpreter builds its own FakeNetworkDriver" (RFC-0027 §1 default).
         self.network = network
+        # issue #131: a `CacheDriver` carries no per-request transaction
+        # state (unlike `repository`), so one instance is safe to share
+        # across every request's Interpreter — the same `network` shape
+        # just above. `None` means "the Interpreter builds its own
+        # FakeCache" (the pre-existing default for every caller that does
+        # not pass one).
+        self.cache = cache
         # issue #80: `None` keeps the pre-existing default — the Interpreter
         # builds its own virtual `Clock()` — byte-identical to before this
         # issue for every caller that does not pass one.
@@ -1692,7 +1699,7 @@ class LnplWsgiApp:
         interp = Interpreter(doc, clock=self.clock,
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
-                             network=self.network, claims=claims)
+                             network=self.network, cache=self.cache, claims=claims)
         # issue #111, D6: computed once, reused for the canonical line's
         # `input_digest` on both the escape path below and the normal
         # completion path — the same masking chokepoint the workflow-start
@@ -1836,7 +1843,7 @@ class LnplWsgiApp:
             interp = Interpreter(self.document, clock=self.clock,
                                  repo_rows=default_rows(self.document, workflow_id, data),
                                  correlation_id=correlation_id, repository=repository,
-                                 network=self.network, claims=claims)
+                                 network=self.network, cache=self.cache, claims=claims)
             try:
                 result = interp.run_workflow(workflow_id, data)
             except Exception:
@@ -1899,8 +1906,9 @@ class LnplWsgiApp:
 
 
 def make_wsgi_app(document, repository_factory=None, token_provider=None,
-                  network=None, clock=None, log_format="text", exporter=None,
-                  trust_incoming_trace=False, jwt_secret_env=None, metrics=False,
+                  network=None, cache=None, clock=None, log_format="text",
+                  exporter=None, trust_incoming_trace=False,
+                  jwt_secret_env=None, metrics=False,
                   idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
                   capture_on_failure=False):
     """An already-compiled `document` -> a WSGI callable.
@@ -1948,6 +1956,7 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
     return LnplWsgiApp(document, routes,
                        repository_factory=repository_factory,
                        token_provider=token_provider, network=network,
+                       cache=cache,
                        clock=clock, log_format=log_format, exporter=exporter,
                        trust_incoming_trace=trust_incoming_trace,
                        jwt_secret_env=jwt_secret_env,

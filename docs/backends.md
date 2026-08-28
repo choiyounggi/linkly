@@ -260,7 +260,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 
 | 하지 않는 것 | 왜 |
 |--------------|-----|
-| **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). 남은 이유는 다음 행뿐이다: 서버·드라이버 라이브러리가 이 계획을 세운 머신에 없다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — 실드라이버 자체는 #75(SPI 외부 공급)가 소유한다 |
+| **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). 남은 이유는 다음 행뿐이다: 서버·드라이버 라이브러리가 이 계획을 세운 머신에 없다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — SPI 표면(`lnpl.caches` entry-points, `open_cache`)은 이슈 #131이 열었다(§10); 실드라이버 자체를 싣는 외부 패키지는 여전히 이 레포 밖이다 |
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
 | **postgres / redis 서버 바인딩** | `psycopg2`/`redis` 자체는 이제 문제가 아니다(Testcontainers로 로컬에 서버를 띄울 수 있다) — 그 바인딩을 실을 `lnpl-postgres` 외부 레포와 그 레포의 Testcontainers CI가 아직 없다. 이슈 #115가 레포 안(TCK 강화) 절반만 완료했고, 이 절반은 후속 이슈로 등재돼 있다 |
 | **트랜잭션 경계 밖 `NetworkCall`의 보상** | `policy rollback`은 저장소 쓰기만 되돌린다(RFC-0032 §Open Questions ②) — `call`/`request`는 이미 나간 뒤라 되돌아가지 않는다. 컴파일러는 그 워크플로마다 `rollback-escapes-network`(warning, 이슈 #112)로 **신고만** 한다. 보상 방식은 RFC-0034(Draft)가 결정했고 구현은 후속(Batch B) |
@@ -269,7 +269,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
 | **브로커 → `consume by` 인입의 실바인딩(kafka 컨슈머 등)** | #88 원칙을 소비 쪽에 대칭 적용한 것(이슈 #118). 코어가 소유하는 것은 구독 선언(`consume by`)·인입 엔드포인트(`POST /-/events/<slug>`)·멱등/오류-분류 의미론뿐이다 — 브로커에서 읽어 그 엔드포인트를 찌르는 것은 `lnpl relay`(레퍼런스, urllib만) 또는 외부 릴레이 구현체의 몫이다. 실제 kafka 컨슈머 그룹·오프셋 관리는 이 레포 밖 |
 | **`security encrypt <field>`** | 제거됨 — RFC-0035 §D3 참조(issue #127). 실제로 집행할 외부 드라이버가 0건이었던 것이 "드라이버 의존"이 아니라 항상 빈 집합이었다는 이유로, 닫힌 어휘에서 빠졌다. `Password` 마스킹(#43, 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 관측 채널 규칙)은 이 결정과 무관하게 그대로 남는다 |
-| **`NetworkDriver`의 커넥션 풀·`lnpl.networks` SPI 승격** | `HttpNetworkDriver`는 매 호출 연결을 열고 닫는다 — RFC-0037(이슈 #109)이 더한 것은 retry/backoff/jitter/서킷브레이커/경로 템플릿뿐이다. keep-alive 풀이 있는 실드라이버(`urllib3`/`httpx` 기반)를 `lnpl.drivers` 진입점(이슈 #75가 연 경계)으로 등록할 수 있게 SPI 표면을 여는 것은 이슈 #132가 소유한다 |
+| **`NetworkDriver`의 커넥션 풀 실드라이버** | `HttpNetworkDriver`는 매 호출 연결을 열고 닫는다 — RFC-0037(이슈 #109)이 더한 것은 retry/backoff/jitter/서킷브레이커/경로 템플릿뿐이다. `lnpl.networks` entry-points SPI 표면 자체는 이슈 #132가 열었다(§10) — keep-alive 풀이 있는 실드라이버(`urllib3`/`httpx` 기반)를 그 표면에 등록하는 외부 패키지는 여전히 이 레포 밖이다 |
 
 **소비 측 대칭 경계 (이슈 #118).** 발행 쪽에서 이미 세운 경계 — 코어는 계약
 (테이블 스키마, drain/ack 의미론)만 소유하고 실제 브로커 바인딩은 릴레이의
@@ -523,6 +523,109 @@ RS256/ES256 실구현이 실제 IdP를 상대하려면 대개 JWKS(JSON Web Key 
 그 넷을 소유한다. `open_token_provider`의 factory가 인자를 받지 않는
 것(위 "등록" 절)도 같은 결정의 결과다: 코어는 어떤 형태의 JWKS 설정
 문자열도 파싱하지 않는다.
+
+## 10. SPI: 외부 캐시·네트워크 드라이버 등록 (이슈 #131 + #132)
+
+§8·§9와 같은 형태를 캐시(`redis`)와 네트워크(`NetworkCall`) 두 capability에
+연다. 두 경계 모두 §8의 `lnpl.drivers`와 같은 규율을 쓴다 — 내장 스킴이
+entry-points 조회보다 **먼저** 검사돼 절대 가려지지 않고(§9의 `hmac`처럼
+드러나게 거부하는 게 아니라 §8의 `sqlite`/`fake`처럼 조용히 이긴다), 미등록
+스킴의 메시지는 받은 값·내장 목록·등록된 entry-points 목록을 함께 싣고,
+entry-point 로드 실패는 `ImportError`를 그대로 흘리지 않고 `DriverError`로
+번역한다("ONE ERROR TYPE OUT").
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.caches"]
+redis = "my_lnpl_redis:make_cache"
+
+[project.entry-points."lnpl.networks"]
+pooled-http = "my_lnpl_pool:make_network"
+```
+
+`my_lnpl_redis.make_cache`/`my_lnpl_pool.make_network`는 `<arg>`(콜론 뒤
+원문 그대로) 하나를 받아 각각 `CacheDriver`/`NetworkDriver`를 반환하는
+콜러블이다 — `lnpl.drivers`의 `factory(<arg>)`와 같은 모양이지 `lnpl.tokens`의
+인자 없는 팩토리(§9)와는 다르다. 패키지가 설치돼 있으면 `--cache
+redis:<dsn>` 또는 `--network pooled-http:<config>`가 그 팩토리를 찾아
+부른다 — 코어 쪽에 이 스킴에 대한 if문이 하나도 없다.
+
+`run`/`trigger`/`serve` 셋 다 이렇게 연 드라이버를 실제로 쓴다. `run`/
+`trigger`는 `open_cache`/`open_network`의 결과를 곧장 `Interpreter(...)`의
+`cache=`/`network=` 인자로 넘긴다. `serve`는 `repository`와 다른 모양을
+쓴다 — `repository`는 요청마다 트랜잭션 상태가 있어 `repository_factory`로
+요청당 새로 열리지만(§8), `cache`/`network`는 요청별 상태가 없으므로
+`network`가 이미 그래왔듯(이슈 #101) 서버가 뜰 때 한 번 연 인스턴스
+하나를 모든 요청의 Interpreter가 공유한다(`serve()` → `make_wsgi_app()`
+→ `LnplWsgiApp` → 요청마다 새로 만드는 `Interpreter(...)` 두 곳 모두에
+같은 `self.cache`/`self.network`가 그대로 흘러간다).
+
+### 내장 스킴은 절대 가려지지 않는다
+
+`open_cache`는 `fake`를, `open_network`는 `fake`/`http`를 entry-points
+조회보다 **먼저** 검사한다. 어떤 패키지가 `lnpl.caches`에 `fake`라는 이름으로,
+또는 `lnpl.networks`에 `fake`/`http`라는 이름으로 등록해도 그 등록은 결코
+조회되지 않는다 — §8의 `sqlite`/`fake`와 같은 이유, 같은 보장이다
+(`test_cache_spi.py::BuiltinShadowingTest`,
+`test_network_spi.py::BuiltinShadowingTest`).
+
+`--network`는 이 SPI 이전부터 있던 두 값 `fake`/`http`를 인자 없이(콜론 없이)
+받아 왔다 — 그 bare 형태는 바이트 단위로 그대로다. `<scheme>:<arg>`는 이
+SPI가 새로 여는 형태이고, `http:<arg>`처럼 이미 내장 이름과 겹치는 스킴을
+`:`와 함께 쓰면 (아직 그 이름으로 등록된 entry-point가 없는 한) 미등록으로
+거부된다 — `http`만 내장이 가로채고 `http:...`는 가로채지 않는다.
+
+### 미등록 스킴의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 스킴은 `ValueError`로 거부되며,
+메시지가 **받은 값**·**내장 목록**(`open_cache`는 `fake`, `open_network`는
+`fake, http`)·**그 순간 실제로 등록된 entry-points 목록**(없으면 "none")을
+함께 싣는다.
+
+### entry-point 로드 실패
+
+등록은 됐지만 그 값(`module:attr`)을 import할 수 없으면 `open_cache`/
+`open_network` 둘 다 `ImportError`를 `DriverError`로 번역한다(원인 체인
+보존) — §8·§9와 같은 규칙.
+
+### TCK로 검증하기
+
+외부 캐시 드라이버는 `lnpl.testing.CacheDriverTCK`를 상속해 자기 CI에서
+돌린다:
+
+```python
+import unittest
+from lnpl.testing import CacheDriverTCK
+
+class MyRedisDriverTCKTest(CacheDriverTCK, unittest.TestCase):
+    def make_cache(self):
+        return MyRedisDriver(...)
+
+    def advance(self, ms):
+        time.sleep(ms / 1000)   # 또는 스토어 네이티브 만료를 그냥 기다린다
+```
+
+검증 항목: get/set 왕복, 부재 키는 예외가 아니라 `None`, TTL 만료(`advance`
+호출 후 `None`), `ttl_ms=0`은 즉시 만료, 빈 값(`""`) 왕복, 같은 키
+덮어쓰기, `invalidate`가 키를 지운다. `CacheDriver`의 TTL은 클록 비교로도
+스토어 네이티브 만료(예: Redis `SETEX`)로도 만족할 수 있다(`CacheDriver`
+docstring) — `advance(ms)`는 그 둘 중 어느 쪽이든 드라이버가 스스로
+"시간이 흘렀다"고 답하게 만드는 훅이다.
+
+외부 네트워크 드라이버는 기존 `lnpl.testing.NetworkDriverTCK`(이슈 #109,
+이 절보다 먼저 있었다)를 그대로 상속한다 — 이 태스크는 두 케이스만 보강했다: 비2xx
+응답에서도 `status`/`body`/`headers` 세 값이 전부 바인딩되는지(기존 케이스는
+200에서만 헤더를 확인했다), 그리고 빈 응답 바디(`{}`)가 `None`으로
+치환되지 않고 그대로 왕복하는지. 재시도·서킷브레이커·타임아웃·헤더 소문자화
+케이스는 이슈 #109 이후 그대로다.
+
+`CacheDriverTCK`/`NetworkDriverTCK` 둘 다 `unittest.TestCase`를 상속하지
+않는 순수 믹스인이다 — 구체 클래스가 `unittest.TestCase`와 다중 상속해야
+한다(§8의 `RepositoryDriverTCK`와 같은 이유: 믹스인 자신이 수집되면 훅이
+`NotImplementedError`를 내는 채로 단독 실행된다).
 
 ## 참고
 

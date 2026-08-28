@@ -17,7 +17,7 @@ import urllib.request
 
 from . import __version__
 from .diagnostics import Diagnostics, SEVERITIES, format_lines, to_records
-from .drivers import (DriverError, TokenError, audience_for_path,
+from .drivers import (DriverError, TokenError, audience_for_path, open_cache,
                       open_network, open_repository, open_token_provider,
                       _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
@@ -289,9 +289,12 @@ def cmd_run(args):
     clock = _open_clock(getattr(args, "clock", "virtual"))
     if clock is _REJECTED:
         return 2
+    cache = _open_cache(getattr(args, "cache", "fake"), clock=clock)
+    if cache is _REJECTED:
+        return 2
     try:
         interp = Interpreter(doc, repo_rows=rows, repository=repository,
-                             network=network, clock=clock)
+                             network=network, clock=clock, cache=cache)
         result = interp.run_workflow(target, payload)
         # Compile-time and run-time findings are one report, not two.
         diagnostics.extend(interp.diagnostics)
@@ -316,6 +319,8 @@ def cmd_run(args):
             repository.close()
         if network is not None:
             network.close()
+        if cache is not None:
+            cache.close()
 
 
 def _print_human(result, interp):
@@ -407,9 +412,12 @@ def cmd_trigger(args):
     clock = _open_clock(getattr(args, "clock", "virtual"))
     if clock is _REJECTED:
         return 2
+    cache = _open_cache(getattr(args, "cache", "fake"), clock=clock)
+    if cache is _REJECTED:
+        return 2
     try:
         interp = Interpreter(doc, repo_rows=rows, repository=repository,
-                             network=network, clock=clock)
+                             network=network, clock=clock, cache=cache)
         result = interp.run_workflow(target, payload)
         diagnostics.extend(interp.diagnostics)
         _print_human(result, interp)
@@ -421,6 +429,8 @@ def cmd_trigger(args):
             repository.close()
         if network is not None:
             network.close()
+        if cache is not None:
+            cache.close()
 
 
 # `every` -> a function of (hour, minute) -> the crontab 5-field expression.
@@ -644,6 +654,9 @@ def cmd_serve(args):
         return 2
     if probe is not None:
         probe.close()
+    cache = _open_cache(getattr(args, "cache", "fake"))
+    if cache is _REJECTED:
+        return 2
     jwt_secret_env = _resolve_jwt_secret_env(args, cfg)
     token_provider = _token_provider(jwt_secret_env,
                                      getattr(args, "jwt_issuer", None),
@@ -670,7 +683,7 @@ def cmd_serve(args):
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     idempotency_ttl_s = getattr(args, "idempotency_ttl", None)
     server = serve(doc, args.host, args.port, repository_factory=factory,
-                   token_provider=token_provider, network=network,
+                   token_provider=token_provider, network=network, cache=cache,
                    log_format=log_format, exporter=exporter,
                    trust_incoming_trace=getattr(args, "trust_incoming_trace", False),
                    jwt_secret_env=jwt_secret_env,
@@ -945,6 +958,16 @@ def _open_network(spec, endpoints=None, capabilities=None):
     try:
         return open_network(spec, endpoints=endpoints, capabilities=capabilities)
     except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
+def _open_cache(spec, clock=None):
+    """`--cache`'s value -> a CacheDriver, None for the fake, `_REJECTED` on
+    a bad selector — the `_open_backend` selector mirrored (issue #131)."""
+    try:
+        return open_cache(spec, clock=clock)
+    except (ValueError, DriverError) as exc:
         print("error: %s" % exc, file=sys.stderr)
         return _REJECTED
 
@@ -1421,7 +1444,8 @@ def main(argv=None):
     r.add_argument("--no-row", action="store_true",
                    help="start with an empty repository (exercises retry)")
     r.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
-    r.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    r.add_argument("--cache", default="fake", help="`redis` capability driver: `fake` (default, in-memory, per-run) or `<scheme>[:<arg>]` from a registered `lnpl.caches` entry-point")
+    r.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O), `http` (real requests via http.client), or `<scheme>[:<arg>]` from a registered `lnpl.networks` entry-point")
     r.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
                    help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME>, --endpoint wins)")
     r.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
@@ -1444,7 +1468,8 @@ def main(argv=None):
                          "the id each declared `on schedule` event derives")
     tg.add_argument("--payload", help="JSON file with the workflow input")
     tg.add_argument("--backend", default="fake", help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists")
-    tg.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    tg.add_argument("--cache", default="fake", help="`redis` capability driver: `fake` (default, in-memory, per-run) or `<scheme>[:<arg>]` from a registered `lnpl.caches` entry-point")
+    tg.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O), `http` (real requests via http.client), or `<scheme>[:<arg>]` from a registered `lnpl.networks` entry-point")
     tg.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
                     help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME>, --endpoint wins)")
     tg.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
@@ -1498,7 +1523,8 @@ def main(argv=None):
     sv.add_argument("--port", type=int, default=8080,
                     help="TCP port; 0 binds an ephemeral port (default: 8080)")
     sv.add_argument("--backend", default=None, help="capability backend: `fake` (default, in-memory, per-run) or `sqlite:<path>` for a store that persists. Falls back to lnpl.toml's `backend` (issue #114), then `fake`")
-    sv.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O) or `http` (real requests via http.client)")
+    sv.add_argument("--cache", default="fake", help="`redis` capability driver: `fake` (default, in-memory, per-run) or `<scheme>[:<arg>]` from a registered `lnpl.caches` entry-point")
+    sv.add_argument("--network", default="fake", help="NetworkCall driver: `fake` (default, deterministic, no I/O), `http` (real requests via http.client), or `<scheme>[:<arg>]` from a registered `lnpl.networks` entry-point")
     sv.add_argument("--endpoint", action="append", metavar="NAME=URL", default=[],
                     help="map a logical NetworkCall target to a URL under --network http (repeatable; also settable via LNPL_ENDPOINT_<NAME> or lnpl.toml's `endpoints` table, issue #114 — --endpoint wins, then LNPL_ENDPOINT_<NAME>, then the file)")
     sv.add_argument("--config", default=None, metavar="PATH",
