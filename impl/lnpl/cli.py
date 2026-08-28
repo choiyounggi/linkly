@@ -31,6 +31,7 @@ from .repo_policy import default_rows, row_key
 from .backend import (BackendError, build as build_native, condition_field_names,
                       ran_step_indices, restore_skips, run_binary,
                       validation_effect_steps)
+from .capabilities import capabilities_document
 from .vocab import vocabulary_document
 
 
@@ -1443,6 +1444,15 @@ def cmd_vocab(args):
     return 0
 
 
+def cmd_capabilities(args):
+    # `--json` mirrors `vocab`'s convention (issue #135): bare and `--json`
+    # print the identical document, since the only consumers are machines/LLMs
+    # (issue #134). Discovery never fails — a broken registration is listed
+    # `loadable: false`, so this always returns 0.
+    sys.stdout.write(_dump(capabilities_document()))
+    return 0
+
+
 def cmd_kb(args):
     packs = resolve_pack_roots(flag_packs=args.kb_pack,
                                env_value=os.environ.get("LNPL_KB_PACKS"))
@@ -1834,6 +1844,14 @@ def main(argv=None):
     vc.add_argument("--json", action="store_true",
                     help="explicit stable form (default: same document)")
     vc.set_defaults(func=cmd_vocab)
+
+    cap = sub.add_parser("capabilities",
+                         help="print the installed-extension catalog — "
+                              "repository/cache/network/token/exporter/kb "
+                              "(#134)")
+    cap.add_argument("--json", action="store_true",
+                     help="explicit stable form (default: same document)")
+    cap.set_defaults(func=cmd_capabilities)
 
     kbp = sub.add_parser("kb", help="inspect the knowledge base (RFC-0005)")
     kbp.add_argument("--root", default=None)

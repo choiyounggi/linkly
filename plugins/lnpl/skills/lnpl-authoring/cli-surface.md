@@ -325,6 +325,23 @@ status completed
 `scripts/gen_plugin_references.py`(이 references/의 grammar·verbs·
 declarations·types 넷을 생성한다)가 같은 함수를 공유한다.
 
+### `capabilities` — 설치 확장 카탈로그 (issue #134)
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--json` | 명시적 안정형 — bare와 같은 문서를 낸다 |
+
+`repository`/`cache`/`network`/`token`/`exporter`/`kb` 6슬롯 각각의 내장 이름과
+등록된 entry-point 이름·로드 가능 여부를 한 JSON 문서로 낸다(`pg_available_
+extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
+`--trace-exporter`에 틀린 값을 줘서 실패를 읽는 대신 미리 나열해서 본다. 로드
+실패는 예외를 던지지 않고 `loadable: false`로만 나열된다 — 이 카탈로그는
+진단이지 게이트가 아니라서 rc는 항상 0이다. bare와 `--json`은 바이트
+동일하다. 정본 함수는 `impl/lnpl/capabilities.py`의 `capabilities_document()`
+이고, `lnpl_capabilities` MCP 툴이 같은 함수를 공유한다. `lnpl-doctor` 스킬
+과는 별개다 — doctor는 CLI 설치·버전 같은 로컬 환경 건강을 보고, `capabilities`
+는 설치된 확장이 무엇인지에 대한 CLI 계약이다(이슈 #134 열린 질문).
+
 ### `kb` — 지식 베이스 조회 (RFC-0005)
 
 | 플래그 | 뜻 |

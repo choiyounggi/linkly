@@ -109,6 +109,12 @@ def tool_vocabulary(_arguments):
     return vocabulary_document()
 
 
+def tool_capabilities(_arguments):
+    """설치 확장 카탈로그를 돌려준다 — 입력 없음 (issue #134)."""
+    from lnpl.capabilities import capabilities_document
+    return capabilities_document()
+
+
 def tool_kb_route(arguments):
     """작업 서술 하나를 KB 문서로 라우팅한다 (RFC-0005)."""
     from lnpl import kb as kb_mod
@@ -246,6 +252,19 @@ TOOLS = [
             "(issue #36) unless it is checked against this manifest first."),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "lnpl_capabilities",
+        "description": (
+            "Return the installed-extension catalog: for each of the six "
+            "slots (repository, cache, network, token, exporter, kb), the "
+            "built-in names and every registered entry-point name with "
+            "whether it actually loads. Use this instead of trying a "
+            "`--backend`/`--cache`/`--network`/`--token-provider`/"
+            "`--trace-exporter` value and reading the failure — discovery "
+            "here never fails: a broken registration is listed "
+            "`loadable: false` rather than raising (issue #134)."),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 HANDLERS = {
@@ -253,6 +272,7 @@ HANDLERS = {
     "lnpl_kb_route": tool_kb_route,
     "lnpl_spec": tool_spec,
     "lnpl_vocabulary": tool_vocabulary,
+    "lnpl_capabilities": tool_capabilities,
 }
 
 
