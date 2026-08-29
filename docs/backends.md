@@ -832,6 +832,90 @@ class MyGraphQLGeneratorTCKTest(GeneratorTCK, unittest.TestCase):
 `GeneratorTCK`는 그 셋을 고정 픽스처 생성기로 직접 증명한다(§8/§9의
 TCK처럼 대상 드라이버/생성기 자체를 매번 다시 검증하지 않는다).
 
+## 13. SPI: 드라이버 집행 신고 (이슈 #138/#140, RFC-0043)
+
+§8/§9/§10이 여는 것은 "어느 드라이버가 로드되는가"뿐이다 — 그 드라이버가
+**어떻게** 행동하는지(전달 보증·격리 수준·캐시 스코프·클레임 구성)는 코어가
+알 방법이 없었다. RFC-0043이 여는 것은 새 entry-points 그룹이 아니라, §8/§9/
+§10이 이미 등록한 그 팩토리에 **선택적으로** 얹는 자기 신고 속성 하나다 —
+등록 자체는 바뀌지 않는다.
+
+### 신고하는 법
+
+`ep.load()`가 돌려주는 객체(팩토리 콜러블 자신, 또는 콜러블이 클래스일 때는
+그 클래스)에 클래스/정적 속성 `lnpl_enforcement: dict`를 얹는다:
+
+```python
+class KafkaOutboxRepository(RepositoryDriver):
+    lnpl_enforcement = {"delivery": "at-least-once"}
+
+    def __init__(self, arg):
+        ...
+
+def make_driver(arg):
+    return KafkaOutboxRepository(arg)
+```
+
+읽는 방법은 `getattr(loaded, "lnpl_enforcement", None)`뿐이다 — 인스턴스화도
+연결도 없다(§8이 `_registered_entries`에서 `ep.load()`까지만 하고 그치는
+것과 같은 층위). **`loaded`가 정확히 무엇을 가리키는지 확인하라**: 위
+예처럼 `pyproject.toml`이 `kafka = "my_pkg:make_driver"`로 등록했다면
+`ep.load()`는 `make_driver`를 돌려준다 — `lnpl_enforcement`는 그 함수
+객체에 얹어야 읽힌다. 클래스를 직접 entry-point 값으로 등록한다면(`kafka =
+"my_pkg:KafkaOutboxRepository"`, 클래스도 `Class(arg)`로 호출되는 콜러블이므로
+유효하다) 클래스 자신의 속성으로 얹으면 된다. 무엇을 등록했든 `ep.load()`가
+실제로 돌려주는 그 객체에 속성이 있어야 한다는 규칙은 하나다.
+
+없으면(`None`) "신고 없음"이고 진단이 나오지 않는다 — 선언을 강제하지 않는
+것과 강제 여부를 아예 말하지 않는 것은 다른 상태다. 내장 드라이버
+(`fake`/`sqlite`/`hmac` 등)는 이 속성을 갖지 않는다.
+
+### 신고 어휘 (닫힌 표, 코어 소유)
+
+| axis (dict key) | 값 형태 | 값 어휘 |
+|------------------|---------|---------|
+| `delivery` | scalar | `at-most-once` \| `at-least-once` \| `exactly-once` |
+| `isolation` | scalar | `read-uncommitted` \| `read-committed` \| `repeatable-read` \| `serializable` |
+| `cache_scope` | scalar | `process-local` \| `shared` |
+| `token_claims` | `list[str]` | 클레임 이름(자유 문자열) |
+
+모르는 키, 그리고 아는 키의 어휘 밖 값은 조용히 무시된다(경고 없음) —
+드라이버가 코어보다 새 축을 먼저 신고해도 로드 실패로 이어지지 않는다.
+`token_claims`가 `list[str]`이 아니면 마찬가지로 무시된다.
+
+### 코어가 진단을 합성하는 법
+
+드라이버마다 자기 `lnpl.diagnostics` 확장(§11)을 등록시키지 않는다 — 신고
+하나만 채우면 코드·등급·문구 조립은 코어가 한다. `capability postgres`/
+`redis`/`jwt`/`http <Name>` 선언은 각각 저장소/캐시/토큰/네트워크 슬롯을
+활성화하고(`impl/lnpl/capabilities.py`의 `CAPABILITY_SLOT`, `SLOTS`와
+같은 어휘), 슬롯이 활성화되면 그 슬롯의 entry-point 그룹에 **설치된 드라이버
+전부**를 대조한다 — `--backend`가 그 실행에 실제로 고를 드라이버가
+무엇인지는 추정하지 않는다. 진단 코드는 `<entry-point 이름>/<axis-code>`
+(scalar 축은 `<axis>-<값>`, `token_claims`는 고정 코드 `token-claims`),
+전원 `info`, `--strict`는 절대 참여하지 않는다(§11과 같은 비참여 규칙,
+`/`를 포함하는 모든 코드에 이미 적용된다).
+
+```
+$ lnpl compile app.lnpl
+info: kafka/delivery-at-least-once [line 12] emit userCreated — the
+installed kafka driver guarantees at-least-once delivery only; userCreated
+may be delivered more than once
+0 info, 0 warning(s), 0 error(s)
+```
+
+이 패스는 `capabilities.py`의 `enforcement_diagnostic_records(document)`가
+§11과 같은 공유 층위(`diagnostics.extension_diagnostic_records`) 끝에서
+호출되므로, `lnpl compile`/`wsgi.py`의 `build_app`/MCP `lnpl_compile` 세
+경로 모두 같은 레코드를 받는다(§11 "가시성" 절과 동일한 배선).
+
+### 카탈로그에서 보기
+
+`lnpl capabilities --json`의 `slots.<slot>.registered` 각 항목은 신고가
+있을 때만 `enforcement` 키를 얹는다 — `{axis: value}`, 신고가 없으면 키
+자체가 없다(빈 `dict`가 아니다). 실측 표 렌더링 계약은
+`docs/ENFORCEMENT-MATRIX.md` §B를 본다.
+
 ## 참고
 
 - 서빙 계층의 상태코드 매핑과 401 판정: `docs/serving.md`

@@ -140,6 +140,12 @@ class RepositoryDriver:
     limited in Python (`repo_policy.apply_predicate`) — the same opt-in
     idiom `testing.RepositoryDriverTCK`'s optimistic-version conflict test
     already uses for `observed_version`.
+
+    `lnpl_enforcement` (RFC-0043, issue #138/#140) — optional class/static
+    attribute, a `dict` reporting `isolation` (and, for an outbox-relay-style
+    repository driver, `delivery`) from the closed axis table in
+    `capabilities.py`. Absent by default: no report, no diagnostic
+    (`docs/backends.md` §8).
     """
 
     def seed(self, rows):
@@ -282,6 +288,11 @@ class CacheDriver:
 
     Either way `get`/`invalidate` need no clock — expiry already happened (or
     didn't) by the time they run.
+
+    `lnpl_enforcement` (RFC-0043, issue #138/#140) — optional class/static
+    attribute, a `dict` reporting `cache_scope` from the closed axis table in
+    `capabilities.py`. Absent by default: no report, no diagnostic
+    (`docs/backends.md` §8).
     """
 
     def get(self, key):
@@ -298,7 +309,13 @@ class CacheDriver:
 
 
 class TokenProvider:
-    """The `security jwt` capability's adapter contract."""
+    """The `security jwt` capability's adapter contract.
+
+    `lnpl_enforcement` (RFC-0043, issue #138/#140) — optional class/static
+    attribute, a `dict` reporting `token_claims` (a `list[str]`) from the
+    closed axis table in `capabilities.py`. Absent by default: no report, no
+    diagnostic (`docs/backends.md` §9).
+    """
 
     def issue(self, subject, audience, ttl_ms=None):
         """-> a compact JWS string."""

@@ -49,3 +49,21 @@ def register_partial_unknown_code():
 def register_empty():
     """Boundary: an extension that registers no codes and emits nothing."""
     return {"codes": {}, "check": lambda document, config: []}
+
+
+def register_reserved_bare_delivery():
+    """Invalid (RFC-0043 §검사 주체): the bare axis name `delivery` alone
+    matches the reserved enforcement-code pattern
+    (`^(delivery|isolation|cache-scope|token-claims)(-.+)?$`'s optional
+    suffix group) — rejected at load time regardless of severity."""
+    return {"codes": {"delivery": {"severity": "info", "description": "x"}},
+            "check": lambda document, config: []}
+
+
+def register_reserved_delivery_suffix():
+    """Invalid (RFC-0043 §검사 주체): a suffixed reserved code
+    (`delivery-<anything>`) is reserved too, not just the exact core
+    slugs — any driver-reported `delivery` value would collide."""
+    return {"codes": {"delivery-custom-value": {
+                "severity": "info", "description": "x"}},
+            "check": lambda document, config: []}

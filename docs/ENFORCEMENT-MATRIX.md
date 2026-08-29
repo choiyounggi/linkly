@@ -109,6 +109,30 @@ prefetch할지, batch로 낼지)를 말하는 저장소 접근 패턴 선언이�
 질의 술어(issue #116의 이웃)가 있어야 채워지고, 이번 이슈의 범위 밖이다 — 셋
 다 `unenforced`로 남는다.
 
+### 실측 열의 유일한 소스는 드라이버 신고다 (RFC-0043)
+
+위 표의 `status`/`근거`는 **코어가 코드로 아는 사실**(`impl/lnpl/diagnostics.py`의
+`ENFORCEMENT`)만 담는다 — 어떤 실제 postgres 드라이버가 `READ COMMITTED`로
+격리되는지, 어떤 kafka 아웃박스 릴레이가 `at-least-once`만 보장하는지는 이 표가
+알 수 있는 사실이 아니다. 그 자리는 RFC-0043(이슈 #138/#140)이 연 별도의
+경로가 채운다: 드라이버 팩토리가 `lnpl_enforcement`(class/static 속성, closed
+axis table — `delivery`/`isolation`/`cache_scope`/`token_claims`)로 자기
+행동을 **자기 신고**하면, `capability` 선언이 활성화하는 슬롯에 설치된 모든
+드라이버를 코어가 대조해 `<entry-point 이름>/<axis-code>` 진단(전원 `info`)을
+합성한다 — `impl/lnpl/capabilities.py`의 `enforcement_diagnostic_records`,
+`docs/backends.md`의 신고 SPI 절.
+
+**신고가 실측의 유일한 소스다 — 미신고와 unenforced는 다른 사실이다.**
+드라이버가 `lnpl_enforcement`를 채우지 않으면(내장 `fake`/`sqlite`를 포함해
+오늘 설치된 드라이버 대부분이 그렇다) 그 축에 대해 아무 진단도 나오지 않는다.
+그 침묵은 "이 드라이버는 그 축을 강제하지 않는다"는 뜻이 **아니다** — 위 §B
+표의 `unenforced`(코어가 실행 경로를 읽어서 아는 사실)와 혼동해서는 안 된다.
+신고 없음은 그저 "이 드라이버가 아직 말하지 않았다"는 뜻이고, `lnpl
+capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
+없는 것으로 나타난다(신고가 있을 때만 존재하는 additive 키 — 빈 `dict`가
+아니다). `lnpl compile`이 조용하다고 해서 그 드라이버가 순진하다고 읽어서는
+안 된다.
+
 ## C. 진단 코드
 
 | code | severity | 언제 나오나 | 어디서 나오나 |

@@ -193,6 +193,42 @@ class LoadTimeValidationTest(unittest.TestCase):
         self.assertIn("'error'", message)
         self.assertIn("'info' or 'warning'", message)
 
+    def test_reserved_enforcement_code_bare_axis_name_is_rejected(self):
+        """RFC-0043 §검사 주체: the reserved pattern is static — it rejects
+        regardless of whether any driver by this entry-point name actually
+        reports `delivery` this run."""
+        bad = entry_point("kafka",
+                          "tests.diagnostics_ext_fixture:register_reserved_bare_delivery")
+        with registered(bad):
+            with self.assertRaises(ExtensionDiagnosticsError) as caught:
+                diagnostics_module.load_extensions()
+
+        message = str(caught.exception)
+        self.assertIn("kafka/delivery", message)
+        self.assertIn("reserved enforcement-code pattern", message)
+
+    def test_reserved_enforcement_code_suffixed_is_rejected(self):
+        bad = entry_point("kafka",
+                          "tests.diagnostics_ext_fixture:register_reserved_delivery_suffix")
+        with registered(bad):
+            with self.assertRaises(ExtensionDiagnosticsError) as caught:
+                diagnostics_module.load_extensions()
+
+        message = str(caught.exception)
+        self.assertIn("kafka/delivery-custom-value", message)
+        self.assertIn("reserved enforcement-code pattern", message)
+
+    def test_existing_repo_corpus_code_is_not_caught_by_the_reserved_pattern(self):
+        """Regression guard for the corpus sweep plan T2 required before
+        adding this rule: `at-least-once` (this repo's only real
+        `lnpl.diagnostics` fixture code, used throughout this file) has a
+        different prefix shape and must keep loading — the reserved pattern
+        must not be so broad it catches the RFC-0042 fixture corpus."""
+        with registered(KAFKA_EP):
+            registry = diagnostics_module.load_extensions()
+
+        self.assertIn("at-least-once", registry["kafka"]["codes"])
+
     def test_load_time_rejection_surfaces_as_rc_2_through_compile(self):
         with mock.patch("lnpl.diagnostics.load_extensions",
                         side_effect=ExtensionDiagnosticsError("boom")):

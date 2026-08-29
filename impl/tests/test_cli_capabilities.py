@@ -132,6 +132,50 @@ class TestCliCapabilities(unittest.TestCase):
         self.assertEqual(doc["slots"]["generators"]["builtin"], ["openapi"])
         self.assertEqual(doc["slots"]["diagnostics"]["builtin"], [])
 
+    def test_a_reporting_driver_gets_an_additive_enforcement_key(self):
+        """RFC-0043 §매트릭스 실측 렌더링 1: a loadable driver whose
+        `lnpl_enforcement` validates gets the key, holding exactly the
+        validated report — the same one `enforcement_diagnostic_records`
+        would synthesize a diagnostic from (single source of truth)."""
+        reporting = entry_point(
+            GROUP_OF_SLOT["repository"], "postgres",
+            "tests.enforcement_spi_fixture:IsolationReportingDriver")
+        with registered(reporting):
+            rc, out, _err = _main(["capabilities", "--json"])
+        self.assertEqual(rc, 0)
+        doc = json.loads(out)
+        self.assertEqual(
+            doc["slots"]["repository"]["registered"],
+            [{"name": "postgres",
+              "entry_point": "tests.enforcement_spi_fixture:IsolationReportingDriver",
+              "version": None, "loadable": True,
+              "enforcement": {"isolation": "read-committed"}}])
+
+    def test_a_non_reporting_driver_has_no_enforcement_key(self):
+        """Boundary: `loadable: true` but no `lnpl_enforcement` — the key is
+        absent, never an empty `dict` (RFC-0043 §매트릭스 실측 렌더링 1)."""
+        demo = entry_point(GROUP_OF_SLOT["repository"], "demo", DEMO_VALUE)
+        with registered(demo):
+            rc, out, _err = _main(["capabilities", "--json"])
+        self.assertEqual(rc, 0)
+        doc = json.loads(out)
+        entry = doc["slots"]["repository"]["registered"][0]
+        self.assertEqual(entry["name"], "demo")
+        self.assertNotIn("enforcement", entry)
+
+    def test_an_unloadable_reporting_looking_entry_point_has_no_enforcement_key(self):
+        """Boundary: `loadable: false` means the driver was never imported,
+        so there is nothing to read `lnpl_enforcement` off of — no key,
+        regardless of what the (unreachable) module might have declared."""
+        broken = entry_point(GROUP_OF_SLOT["repository"], "broken", BROKEN_VALUE)
+        with registered(broken):
+            rc, out, _err = _main(["capabilities", "--json"])
+        self.assertEqual(rc, 0)
+        doc = json.loads(out)
+        entry = doc["slots"]["repository"]["registered"][0]
+        self.assertEqual(entry["loadable"], False)
+        self.assertNotIn("enforcement", entry)
+
     # ---- error --------------------------------------------------------------
 
     def test_an_unloadable_registered_entry_point_is_listed_false_not_raised(self):

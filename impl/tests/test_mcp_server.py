@@ -242,6 +242,37 @@ class CompileToolTest(unittest.TestCase):
         self.assertEqual(set(record.keys()),
                          {"code", "severity", "where", "subject", "message", "line"})
 
+    def test_an_rfc_0043_enforcement_diagnostic_rides_the_same_shared_pass(self):
+        # RFC-0043 (issue #138/#140 follow-up, t-wire's shared layer): the
+        # driver-enforcement bridge lives in
+        # `diagnostics.extension_diagnostic_records` — the exact function
+        # `lnpl_compile` already calls for the RFC-0042 case above — so it
+        # needs no `mcp_server.py` changes to reach this tool.
+        source = ("capability postgres\n"
+                  "entity Payment\n    field\n        id UUID\n\n"
+                  "event userCreated on Payment create\n"
+                  "service Checkout\n    database\n        postgres\n"
+                  "workflow Approve\n    create payment\n    emit userCreated\n")
+        driver_ep = importlib_metadata.EntryPoint(
+            name="kafka",
+            value="tests.enforcement_spi_fixture:DeliveryReportingDriver",
+            group="lnpl.drivers")
+
+        def fake_entry_points(**kwargs):
+            group = kwargs.get("group")
+            return [driver_ep] if group == "lnpl.drivers" else []
+
+        with mock.patch.object(importlib_metadata, "entry_points", fake_entry_points):
+            res = call("lnpl_compile", {"text": source})
+
+        self.assertIs(res["result"]["isError"], False)
+        body = payload_of(res)
+        by_code = {r["code"]: r for r in body["diagnostics"]}
+        self.assertIn("kafka/delivery-at-least-once", by_code)
+        record = by_code["kafka/delivery-at-least-once"]
+        self.assertEqual(record["severity"], "info")
+        self.assertIn("more than once", record["message"])
+
     def test_an_invalid_extension_registration_is_a_tool_error_not_a_crash(self):
         # Error: a load-time RFC-0042 violation raises
         # `ExtensionDiagnosticsError` from the shared helper — `tools/call`'s

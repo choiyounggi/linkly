@@ -154,6 +154,15 @@ DIAGNOSTICS_ENTRY_POINT_GROUP = "lnpl.diagnostics"
 _EXTENSION_PREFIX_RE = re.compile(r"^[a-z][a-z0-9-]{1,15}$")
 RESERVED_EXTENSION_PREFIXES = ("lnpl", "core")
 
+# RFC-0043 §검사 주체: the core's own synthesized `<entry-point>/<axis-code>`
+# codes (issue #138/#140) reserve this *code* pattern statically, under any
+# prefix — a `lnpl.diagnostics` extension may not register a code matching
+# it, whether or not a driver by the same entry-point name actually reports
+# anything this run. Static, not "does this driver report today", so load
+# success never depends on which drivers happen to be installed.
+_RESERVED_ENFORCEMENT_CODE_RE = re.compile(
+    r"^(delivery|isolation|cache-scope|token-claims)(-.+)?$")
+
 
 class ExtensionDiagnosticsError(Exception):
     """A `lnpl.diagnostics` entry-point registration violates RFC-0042 —
@@ -188,7 +197,13 @@ def load_extensions():
     - one prefix has one owner — a second registration under an
       already-seen prefix is refused;
     - an extension declaring `error` severity for any code is refused —
-      extensions may declare `info`/`warning` only.
+      extensions may declare `info`/`warning` only;
+    - a code matching `^(delivery|isolation|cache-scope|token-claims)
+      (-.+)?$` is refused under any prefix — reserved for the core's own
+      RFC-0043 driver-enforcement bridge (`capabilities.
+      enforcement_diagnostic_records`), statically, regardless of whether
+      any driver by that entry-point name actually reports anything this
+      run.
 
     Not cached: called fresh each time (the `lnpl.drivers`/`lnpl.tokens`
     precedent), so a test can swap `importlib_metadata.entry_points` between
@@ -223,6 +238,16 @@ def load_extensions():
         result = register()
         codes = result["codes"]
         for code, meta in codes.items():
+            if _RESERVED_ENFORCEMENT_CODE_RE.match(code):
+                raise ExtensionDiagnosticsError(
+                    "extension %r registered diagnostic %r, which matches "
+                    "the reserved enforcement-code pattern %s — no "
+                    "`lnpl.diagnostics` extension may register a code the "
+                    "core's own driver-enforcement bridge owns, under any "
+                    "prefix (RFC-0043); registered so far: %s"
+                    % (prefix, "%s/%s" % (prefix, code),
+                       _RESERVED_ENFORCEMENT_CODE_RE.pattern,
+                       ", ".join(sorted(registry)) or "none"))
             severity = meta.get("severity")
             if severity not in ("info", "warning"):
                 raise ExtensionDiagnosticsError(
@@ -239,11 +264,17 @@ def extension_diagnostic_records(document):
     """Run every registered `lnpl.diagnostics` extension's `check` against
     `document` — the compiled IR only, no source text or file path (RFC-0042
     D7) — and return the list of 6-key records (`<prefix>/<code>`, the
-    extension's own registered severity) to merge into a caller's diagnostics.
+    extension's own registered severity) to merge into a caller's
+    diagnostics, followed by the core's own RFC-0043 driver-enforcement
+    bridge records for the same document.
 
     The one shared definition behind `lnpl compile`, `wsgi.build_app`, and
     the MCP `lnpl_compile` tool (issue #140, docs/backends.md §11) — all
-    three read the same records for the same document.
+    three read the same records for the same document. RFC-0043 (issue
+    #138/#140 follow-up) rides the same shared layer rather than its own:
+    `capabilities.enforcement_diagnostic_records` is called last, via a
+    lazy (in-function) import — `capabilities.py` already imports this
+    module at top level, so a top-level import here would be circular.
 
     Loading and validating the registry (`load_extensions`) is load-time —
     any violation raises `ExtensionDiagnosticsError`, which the caller
@@ -272,6 +303,8 @@ def extension_diagnostic_records(document):
                 "message": raw["message"],
                 "line": raw.get("line"),
             })
+    from lnpl import capabilities as _capabilities
+    records.extend(_capabilities.enforcement_diagnostic_records(document))
     return records
 
 
