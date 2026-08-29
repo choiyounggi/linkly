@@ -26,6 +26,7 @@ issue #25 and the roadmap, not this module.
 """
 
 import re
+import sys
 from dataclasses import dataclass
 from importlib import metadata as importlib_metadata
 
@@ -232,6 +233,46 @@ def load_extensions():
                        ", ".join(sorted(registry)) or "none"))
         registry[prefix] = {"codes": codes, "check": result["check"]}
     return registry
+
+
+def extension_diagnostic_records(document):
+    """Run every registered `lnpl.diagnostics` extension's `check` against
+    `document` — the compiled IR only, no source text or file path (RFC-0042
+    D7) — and return the list of 6-key records (`<prefix>/<code>`, the
+    extension's own registered severity) to merge into a caller's diagnostics.
+
+    The one shared definition behind `lnpl compile`, `wsgi.build_app`, and
+    the MCP `lnpl_compile` tool (issue #140, docs/backends.md §11) — all
+    three read the same records for the same document.
+
+    Loading and validating the registry (`load_extensions`) is load-time —
+    any violation raises `ExtensionDiagnosticsError`, which the caller
+    handles as a hard failure. Once loaded, a `check` diagnostic whose code
+    its own extension never registered is an execution-time problem, not a
+    load-time one (RFC-0042 D6): that one diagnostic is dropped and warned
+    about on stderr, but the rest of that extension's diagnostics — and
+    every other extension — still make it through.
+    """
+    registry = load_extensions()
+    records = []
+    for prefix, entry in registry.items():
+        codes = entry["codes"]
+        for raw in entry["check"](document, {}):
+            bare = raw["code"]
+            if bare not in codes:
+                print("warning: extension %r emitted diagnostic %r, which "
+                      "it did not register — dropping (RFC-0042)"
+                      % (prefix, bare), file=sys.stderr)
+                continue
+            records.append({
+                "code": "%s/%s" % (prefix, bare),
+                "severity": codes[bare]["severity"],
+                "where": raw["where"],
+                "subject": raw["subject"],
+                "message": raw["message"],
+                "line": raw.get("line"),
+            })
+    return records
 
 
 def severity_of(code):

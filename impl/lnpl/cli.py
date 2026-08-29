@@ -17,8 +17,8 @@ import urllib.request
 
 from . import __version__
 from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
-                          format_lines_from_records, load_extensions,
-                          to_records)
+                          extension_diagnostic_records,
+                          format_lines_from_records, to_records)
 from .drivers import (DriverError, TokenError, audience_for_path, open_cache,
                       open_network, open_repository, open_token_provider,
                       _is_url_literal)
@@ -115,49 +115,13 @@ def _emit_diagnostics(diagnostics, extra_records=()):
     drift into two different reports of the same fact.
 
     `extra_records` (RFC-0042, issue #138): extension diagnostics, already
-    normalized to `<prefix>/<code>` 6-key records by `_extension_diagnostics`
+    normalized to `<prefix>/<code>` 6-key records by `extension_diagnostic_records`
     — appended after `diagnostics`' own records so stderr and `--json`'s
     array show the same set, in the same order.
     """
     records = to_records(diagnostics) + list(extra_records)
     for line in format_lines_from_records(records):
         print(line, file=sys.stderr)
-
-
-def _extension_diagnostics(document):
-    """Run every registered `lnpl.diagnostics` extension's `check` against
-    `document` — the compiled IR only, no source text or file path (RFC-0042
-    D7) — and return the list of 6-key records (`<prefix>/<code>`, the
-    extension's own registered severity) to merge into `compile`'s output.
-
-    Loading and validating the registry (`load_extensions`) is load-time —
-    any violation raises `ExtensionDiagnosticsError`, which the caller
-    handles as a hard failure. Once loaded, a `check` diagnostic whose code
-    its own extension never registered is an execution-time problem, not a
-    load-time one (RFC-0042 D6): that one diagnostic is dropped and warned
-    about on stderr, but the rest of that extension's diagnostics — and
-    every other extension — still make it through.
-    """
-    registry = load_extensions()
-    records = []
-    for prefix, entry in registry.items():
-        codes = entry["codes"]
-        for raw in entry["check"](document, {}):
-            bare = raw["code"]
-            if bare not in codes:
-                print("warning: extension %r emitted diagnostic %r, which "
-                      "it did not register — dropping (RFC-0042)"
-                      % (prefix, bare), file=sys.stderr)
-                continue
-            records.append({
-                "code": "%s/%s" % (prefix, bare),
-                "severity": codes[bare]["severity"],
-                "where": raw["where"],
-                "subject": raw["subject"],
-                "message": raw["message"],
-                "line": raw.get("line"),
-            })
-    return records
 
 
 STRICT_HELP = ("gate the exit code on diagnostics: bare `--strict` fails on any "
@@ -233,7 +197,7 @@ def cmd_compile(args):
         return _cmd_compile_json(args)
     doc, _, _, diagnostics = _compile(args.source)
     try:
-        ext_records = _extension_diagnostics(doc)
+        ext_records = extension_diagnostic_records(doc)
     except ExtensionDiagnosticsError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2
@@ -272,7 +236,7 @@ def _cmd_compile_json(args):
                                  "nodes": None, "diagnostics": []}))
         return 2
     try:
-        ext_records = _extension_diagnostics(doc)
+        ext_records = extension_diagnostic_records(doc)
     except ExtensionDiagnosticsError as exc:
         print("error: %s" % exc, file=sys.stderr)
         sys.stdout.write(_dump({"lir_version": None, "module": None,

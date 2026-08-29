@@ -695,11 +695,27 @@ stderr에 경고 한 줄이 뜬다 — 확장 전체를 죽이지도, 조용히 
 빌드의 종료 코드가 바뀌는 일은 없다. 참여를 여는 opt-in도 이 RFC는 만들지
 않는다(§Guide-level Explanation "하지 않는 것").
 
-### 가시성 — CLI `compile`/`--json` 경로만
+### 가시성 — CLI·wsgi·MCP 세 compile 경로 모두
 
-이 패스는 `cli.py`의 `compile`(및 `--json`)이 쓰는 공유 컴파일 헬퍼에서만
-실행된다. `wsgi.py`(`lnpl serve`)와 `mcp_server.py`의 별도 compile 경로는
-이번 범위 밖이다 — 두 경로에 확장 진단을 배선하는 것은 후속 이슈로 남는다.
+이 패스는 `diagnostics.py`의 `extension_diagnostic_records(document)` 하나로
+존재하고(이슈 #140), 컴파일된 IR 문서를 만드는 세 경로가 모두 그것을 부른다:
+
+- `cli.py`의 `compile`/`--json` — 코어 진단 뒤에 이어붙여 stderr report와
+  `--json` 배열 양쪽에 싣는다(위 "레코드 형태·순서" 참고).
+- `mcp_server.py`의 `lnpl_compile` 툴 — `to_records(module.diagnostics)`
+  뒤에 이어붙여 같은 순서로 응답의 `diagnostics` 배열에 싣는다. 레지스트리
+  로드가 RFC-0042를 어기면 `ExtensionDiagnosticsError`가 올라가고,
+  `tools/call`의 기존 컴파일 실패 처리(다른 어떤 컴파일 실패와도 동일한
+  경로)가 그것을 `isError` 응답으로 번역한다.
+- `wsgi.py`의 `build_app` — 컴파일된 `module.diagnostics`를 이 함수는
+  어디로도 내보내지 않으므로(로그도, 엔드포인트도, 앱 상태도 없다), 확장
+  레코드는 컴파일 직후 stderr에 한 줄씩 찍힌다 — `lnpl compile`의 stderr
+  report와 같은 `format_lines_from_records` 렌더링. 레지스트리 로드
+  실패는 `LowerError` 등 기존 컴파일 실패와 같은 경로로 `WsgiConfigError`가
+  되어 앱 구동 자체를 막는다(요청 시점 크래시가 아니다).
+
+세 경로 모두 같은 레코드(같은 등록·같은 필터링·같은 6키 형태)를 보되,
+포장(어디로 내보내는가)만 경로별로 다르다.
 
 ### TCK
 

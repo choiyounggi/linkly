@@ -79,8 +79,15 @@ def tool_compile(arguments):
     `path`가 디렉터리면 RFC-0031의 단일 정본 로더(`load_sources`)로 그 안의
     `*.lnpl`을 병합한다(issue #77) — `text`/`path` 파일 하나는 오늘과
     바이트 동일(`_read_source`가 그대로 처리한다).
+
+    확장 진단(RFC-0042, issue #140): `lnpl compile`과 같은 순서로 —
+    코어 진단 뒤에 `<prefix>/<code>` 레코드를 이어붙인다. 레지스트리 로드가
+    RFC-0042를 어기면 `ExtensionDiagnosticsError`가 그대로 올라가고,
+    `handle()`의 `tools/call` 공통 except가 다른 컴파일 실패(ParseError/
+    LowerError)와 똑같이 `isError` 응답으로 번역한다 — 여기서 따로 잡지 않는다.
     """
     _version, parse, lower, to_records = _lnpl()
+    from lnpl.diagnostics import extension_diagnostic_records
     path = arguments.get("path")
     if path is not None and arguments.get("text") is None and os.path.isdir(path):
         from lnpl.lower import load_sources
@@ -90,13 +97,14 @@ def tool_compile(arguments):
         source, origin = _read_source(arguments)
         decls = parse(source)
     module = lower(decls, arguments.get("module") or "mcp")
-    records = to_records(module.diagnostics)
+    document = module.to_document()
+    records = to_records(module.diagnostics) + extension_diagnostic_records(document)
     by_code = {}
     for rec in records:
         by_code[rec["code"]] = by_code.get(rec["code"], 0) + 1
     return {
         "source": origin,
-        "nodes": len(module.to_document()["nodes"]),
+        "nodes": len(document["nodes"]),
         "diagnostics": records,
         "counts": by_code,
         "unknown_verbs": by_code.get("unknown-verb", 0),
