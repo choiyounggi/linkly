@@ -19,6 +19,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import unittest
 from importlib import metadata as importlib_metadata
 from unittest import mock
@@ -208,6 +209,7 @@ class DeliveryDiagnosticTest(unittest.TestCase):
 
     def setUp(self):
         self.workdir = os.path.join(REPO, ".claude", "tmp", "enforcement-diag")
+        self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
 
     def test_the_140_sentence_appears_as_an_info_diagnostic(self):
         src = _write(self.workdir, "delivery.lnpl", DELIVERY_SRC)
@@ -330,6 +332,7 @@ class StrictNonParticipationTest(unittest.TestCase):
 
     def setUp(self):
         self.workdir = os.path.join(REPO, ".claude", "tmp", "enforcement-diag")
+        self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
 
     def test_strict_stays_rc_0_with_only_enforcement_diagnostics_present(self):
         src = _write(self.workdir, "strict.lnpl", DELIVERY_SRC)
