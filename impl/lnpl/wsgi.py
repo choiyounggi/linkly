@@ -35,7 +35,8 @@ from importlib import metadata as importlib_metadata
 from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
                       TokenError, _is_url_literal, audience_for_path,
                       open_repository)
-from .diagnostics import format_lines, to_records
+from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
+                          format_lines, format_lines_from_records, to_records)
 from .interp import (Interpreter, caller_view, mask_payload, open_clock,
                      refinement_index)
 from .lexer import LexError
@@ -2101,8 +2102,18 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     try:
         decls = load_sources(sources)
         document = lower(decls, _module_name(sources)).to_document()
-    except (OSError, LowerError, ParseError, LexError) as exc:
+        ext_records = extension_diagnostic_records(document)
+    except (OSError, LowerError, ParseError, LexError, ExtensionDiagnosticsError) as exc:
         raise WsgiConfigError("LNPL_SOURCE %r: %s" % (sources, exc)) from exc
+    # Extension diagnostics (RFC-0042, issue #140): `build_app` never surfaces
+    # `module.diagnostics` (the compiled module's own core diagnostics) to
+    # anything — no log, no endpoint, no app state — so there is no existing
+    # sink to merge the extension pass's records into. Print them to stderr,
+    # one line each, the same rendering `lnpl compile`'s stderr report uses
+    # (`format_lines_from_records`), right after the compile that produced
+    # `document` succeeds.
+    for line in format_lines_from_records(ext_records):
+        print(line, file=sys.stderr)
 
     if backend is None:
         backend = os.environ.get("LNPL_BACKEND", "fake")

@@ -13,13 +13,37 @@ the built callable — the D5 substitute for a real gunicorn startup log on a
 machine gunicorn is not installed on.
 """
 
+import contextlib
 import io
 import os
 import unittest
+from importlib import metadata as importlib_metadata
+from unittest import mock
 from wsgiref.validate import validator
 
 from lnpl import wsgi
+from lnpl import diagnostics as diagnostics_module
+from lnpl.diagnostics import ExtensionDiagnosticsError
 from lnpl.drivers import HmacTokenProvider
+
+EXT_GROUP = diagnostics_module.DIAGNOSTICS_ENTRY_POINT_GROUP
+
+
+def _entry_point(name, value):
+    return importlib_metadata.EntryPoint(name=name, value=value, group=EXT_GROUP)
+
+
+KAFKA_EP = _entry_point("kafka", "tests.diagnostics_ext_fixture:register_kafka")
+
+
+def registered(*entry_points):
+    """Patch `diagnostics_module.importlib_metadata.entry_points` — same
+    fixture-injection pattern `test_extension_diagnostics.py`/
+    `test_mcp_server.py` use — so `build_app`'s extension pass sees exactly
+    `entry_points`, regardless of what is actually installed."""
+    return mock.patch.object(
+        diagnostics_module.importlib_metadata, "entry_points",
+        lambda **_kwargs: list(entry_points))
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SHORTEN = os.path.join(REPO, "examples", "shorten.lnpl")
@@ -152,6 +176,17 @@ class BuildAppNormalTest(_EnvIsolatedTest):
                              endpoints={"PaymentGateway": "http://example.invalid/pay"})
         self.assertIsNotNone(app.network)
 
+    def test_normal_registered_extension_diagnostic_is_printed_to_stderr(self):
+        # RFC-0042, issue #140: `build_app` never surfaces its compiled
+        # module's own diagnostics anywhere, so there is no existing sink to
+        # merge the extension pass into — it prints to stderr instead, the
+        # same `format_lines_from_records` rendering `lnpl compile` uses.
+        err = io.StringIO()
+        with registered(KAFKA_EP), contextlib.redirect_stderr(err):
+            app = wsgi.build_app(sources=[SHORTEN])
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+        self.assertIn("info: kafka/at-least-once", err.getvalue())
+
 
 def _write_tmp(testcase, text, name="mod.lnpl"):
     import tempfile
@@ -208,6 +243,17 @@ class BuildAppErrorTest(_EnvIsolatedTest):
             wsgi.build_app(sources=[path],
                            endpoints={"PaymentGateway": "http://example.invalid/pay"})
 
+    def test_error_invalid_extension_registration_fails_the_launch(self):
+        # A load-time RFC-0042 violation raises `ExtensionDiagnosticsError`
+        # from the shared helper — `build_app` joins it to the same except
+        # tuple as LowerError/ParseError/etc., so it becomes the same failed-
+        # launch `WsgiConfigError`, never a request-time crash (D6).
+        with mock.patch("lnpl.diagnostics.load_extensions",
+                        side_effect=ExtensionDiagnosticsError("boom")):
+            with self.assertRaises(wsgi.WsgiConfigError) as caught:
+                wsgi.build_app(sources=[SHORTEN])
+        self.assertIn("boom", str(caught.exception))
+
 
 class BuildAppBoundaryTest(_EnvIsolatedTest):
 
@@ -217,6 +263,20 @@ class BuildAppBoundaryTest(_EnvIsolatedTest):
         app = wsgi.build_app()
         single_app = wsgi.build_app(sources=[LINKHUB_SINGLE])
         self.assertEqual(set(single_app.routes), set(app.routes))
+
+    def test_boundary_no_registered_extensions_prints_nothing_extra(self):
+        # Zero extensions installed — the extension pass appends nothing:
+        # `build_app`'s stderr is byte-identical to before this pass
+        # existed (here, only the pre-existing Idempotency-Key notice from
+        # the `fake` backend — unrelated to extension diagnostics).
+        baseline_err = io.StringIO()
+        with contextlib.redirect_stderr(baseline_err):
+            wsgi.build_app(sources=[SHORTEN])
+        ext_err = io.StringIO()
+        with registered(), contextlib.redirect_stderr(ext_err):
+            app = wsgi.build_app(sources=[SHORTEN])
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+        self.assertEqual(ext_err.getvalue(), baseline_err.getvalue())
 
     def test_boundary_wsgiref_validate_accepts_the_built_callable(self):
         """D5: no gunicorn on this machine — `wsgiref.validate`'s strict

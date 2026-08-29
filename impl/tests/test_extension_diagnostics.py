@@ -194,7 +194,7 @@ class LoadTimeValidationTest(unittest.TestCase):
         self.assertIn("'info' or 'warning'", message)
 
     def test_load_time_rejection_surfaces_as_rc_2_through_compile(self):
-        with mock.patch("lnpl.cli.load_extensions",
+        with mock.patch("lnpl.diagnostics.load_extensions",
                         side_effect=ExtensionDiagnosticsError("boom")):
             rc, out, err = _main(["compile", LOGIN])
 
@@ -203,12 +203,12 @@ class LoadTimeValidationTest(unittest.TestCase):
         self.assertEqual(out, "")
 
     def test_load_time_rejection_surfaces_as_rc_2_through_compile_json(self):
-        # `--json` is its own try/except around `_extension_diagnostics`
+        # `--json` is its own try/except around `extension_diagnostic_records`
         # (distinct from the non-json path above) — still emits the null
         # envelope on stdout so a --json caller never has to branch on
         # "did anything print" (mirrors the LexError/ParseError/LowerError
         # branch's existing contract).
-        with mock.patch("lnpl.cli.load_extensions",
+        with mock.patch("lnpl.diagnostics.load_extensions",
                         side_effect=ExtensionDiagnosticsError("boom")):
             rc, out, err = _main(["compile", LOGIN, "--json"])
 

@@ -19,13 +19,36 @@ import json
 import os
 import subprocess
 import unittest
+from importlib import metadata as importlib_metadata
+from unittest import mock
 
 from lnpl import __version__
+from lnpl import diagnostics as diagnostics_module
+from lnpl.diagnostics import ExtensionDiagnosticsError
 from lnpl.mcp_server import (INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
                              PARSE_ERROR, PROTOCOL_VERSION, TOOLS, serve)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PLUGIN = os.path.join(REPO, "plugins", "lnpl-mcp")
+
+EXT_GROUP = diagnostics_module.DIAGNOSTICS_ENTRY_POINT_GROUP
+
+
+def _entry_point(name, value):
+    return importlib_metadata.EntryPoint(name=name, value=value, group=EXT_GROUP)
+
+
+KAFKA_EP = _entry_point("kafka", "tests.diagnostics_ext_fixture:register_kafka")
+
+
+def registered(*entry_points):
+    """Patch `diagnostics_module.importlib_metadata.entry_points` — same
+    fixture-injection pattern `test_extension_diagnostics.py` uses — so
+    `lnpl_compile`'s extension pass sees exactly `entry_points`, regardless
+    of what is actually installed."""
+    return mock.patch.object(
+        diagnostics_module.importlib_metadata, "entry_points",
+        lambda **_kwargs: list(entry_points))
 
 NOISY = ("entity Note\n    field\n        id UUID\n\n"
          "workflow Save\n    validate note\n    return note\n")
@@ -202,6 +225,41 @@ class CompileToolTest(unittest.TestCase):
                             "workflow S\n    if x\n"})
         self.assertIs(res["result"]["isError"], True)
         self.assertNotIn("error", res)
+
+    def test_a_registered_extension_diagnostic_is_appended_after_core_ones(self):
+        # Normal (RFC-0042, issue #140): a registered `lnpl.diagnostics`
+        # extension's finding rides along in `lnpl_compile`'s own
+        # `diagnostics` array, `<prefix>/<code>` normalized, core records
+        # first — same merge order as `lnpl compile --json`.
+        with registered(KAFKA_EP):
+            res = call("lnpl_compile", {"text": CLEAN})
+        self.assertIs(res["result"]["isError"], False)
+        body = payload_of(res)
+        self.assertEqual(len(body["diagnostics"]), 1)
+        record = body["diagnostics"][0]
+        self.assertEqual(record["code"], "kafka/at-least-once")
+        self.assertEqual(record["severity"], "info")
+        self.assertEqual(set(record.keys()),
+                         {"code", "severity", "where", "subject", "message", "line"})
+
+    def test_an_invalid_extension_registration_is_a_tool_error_not_a_crash(self):
+        # Error: a load-time RFC-0042 violation raises
+        # `ExtensionDiagnosticsError` from the shared helper — `tools/call`'s
+        # existing generic except (the same one ParseError/LowerError hit)
+        # turns it into `isError`, never a server crash.
+        with mock.patch("lnpl.diagnostics.load_extensions",
+                        side_effect=ExtensionDiagnosticsError("boom")):
+            res = call("lnpl_compile", {"text": CLEAN})
+        self.assertIs(res["result"]["isError"], True)
+        self.assertIn("boom", res["result"]["content"][0]["text"])
+
+    def test_no_registered_extensions_leaves_diagnostics_unchanged(self):
+        # Boundary: zero extensions installed — the extension pass appends
+        # nothing, so `lnpl_compile`'s response is exactly what it was
+        # before this pass existed.
+        with registered():
+            body = payload_of(call("lnpl_compile", {"text": CLEAN}))
+        self.assertEqual(body["diagnostics"], [])
 
 
 class VocabularyToolTest(unittest.TestCase):
