@@ -82,16 +82,16 @@ def check(document):
     `missing_extensions` — there is nothing to compare, which is not the same
     as a mismatch.
     """
-    provenance = document.get("provenance")
-    if provenance is None:
+    prov_block = document.get("provenance")
+    if prov_block is None:
         return {"vocabulary_match": None, "enforcement_match": None,
                  "missing_extensions": {}}
 
-    vocabulary_match = provenance.get("vocabulary_digest") == _current_vocabulary_digest()
-    enforcement_match = provenance.get("enforcement_digest") == _current_enforcement_digest()
+    vocabulary_match = prov_block.get("vocabulary_digest") == _current_vocabulary_digest()
+    enforcement_match = prov_block.get("enforcement_digest") == _current_enforcement_digest()
 
     current_extensions = _current_extensions()
-    doc_extensions = provenance.get("extensions") or {}
+    doc_extensions = prov_block.get("extensions") or {}
     missing_extensions = {}
     for slot, doc_names in doc_extensions.items():
         currently_registered = set(current_extensions.get(slot, []))

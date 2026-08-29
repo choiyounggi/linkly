@@ -30,6 +30,11 @@ categories = ["Compliance"]
 - 팩이 내는 모든 문서 id는 자기 `doc_id_prefix + "-"`로 시작해야 한다 —
   ESLint의 `플러그인명/규칙명`과 같은 논리: 소유자가 이름에 박혀 있어야
   누가 낸 지침인지 id만 보고 안다.
+- 그 문서 id 선두는 **`doc_id_prefix`에서만 온다 — `name`이 아니다.** 위
+  예제는 `name = "acme-compliance"`와 `doc_id_prefix = "acme"`가 같은 선두
+  토큰("acme")을 우연히 공유할 뿐이다: `doc["pack"]`은 `name`을 싣고, 문서 id
+  접두는 `doc_id_prefix`를 싣는다 — 서로 다른 값이었다면 문서 id는
+  `doc_id_prefix` 쪽을 따랐을 것이다.
 
 ## 2. 발견 경로 (3중, 병합 순서 고정)
 

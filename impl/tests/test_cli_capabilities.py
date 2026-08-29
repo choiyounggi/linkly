@@ -48,6 +48,18 @@ def entry_point(group, name, value):
     return importlib_metadata.EntryPoint(name=name, value=value, group=group)
 
 
+def entry_point_with_version(group, name, value, version):
+    """A registered entry point whose owning distribution resolves, with the
+    given `version` — exercises the `version` field's normal (resolvable)
+    path. A hand-built `EntryPoint` (via `entry_point()` above) has no
+    `.dist` and so is the unresolvable/boundary path instead."""
+    class _FakeDist:
+        pass
+    fake_dist = _FakeDist()
+    fake_dist.version = version
+    return entry_point(group, name, value)._for(fake_dist)
+
+
 def registered(*entry_points):
     """Patch the real `importlib.metadata.entry_points` (shared by
     drivers.py/wsgi.py/kb.py) to return only `entry_points`, group-filtered —
@@ -100,6 +112,17 @@ class TestCliCapabilities(unittest.TestCase):
             expected = capabilities_document()
         self.assertEqual(json.loads(out), expected)
 
+    def test_a_registered_entry_point_with_a_resolvable_distribution_reports_its_version(self):
+        versioned = entry_point_with_version(GROUP_OF_SLOT["cache"], "versioned",
+                                             DEMO_VALUE, "0.2.1")
+        with registered(versioned):
+            rc, out, _err = _main(["capabilities", "--json"])
+        self.assertEqual(rc, 0)
+        doc = json.loads(out)
+        self.assertEqual(doc["slots"]["cache"]["registered"],
+                         [{"name": "versioned", "entry_point": DEMO_VALUE,
+                           "version": "0.2.1", "loadable": True}])
+
     def test_each_slot_reports_its_own_builtin_names(self):
         with registered():
             _rc, out, _err = _main(["capabilities", "--json"])
@@ -119,7 +142,8 @@ class TestCliCapabilities(unittest.TestCase):
         self.assertEqual(err, "")
         doc = json.loads(out)
         self.assertEqual(doc["slots"]["cache"]["registered"],
-                         [{"name": "broken", "loadable": False}])
+                         [{"name": "broken", "entry_point": BROKEN_VALUE,
+                           "version": None, "loadable": False}])
 
     def test_load_failure_in_one_slot_does_not_disturb_the_others(self):
         broken = entry_point(GROUP_OF_SLOT["network"], "broken", BROKEN_VALUE)

@@ -370,9 +370,10 @@ class KnowledgeBase:
                 problems.append("%s: frontmatter id is %r" % (doc_id, doc.get("id")))
             if doc.get("category") not in self.categories():
                 problems.append("%s: category %r is not a recognized "
-                                "category (core + packs: %s)"
+                                "category (core: %s; registered packs: %s)"
                                 % (doc_id, doc.get("category"),
-                                   ", ".join(self.categories())))
+                                   ", ".join(CATEGORIES),
+                                   _registered_pack_summary(self._packs)))
             if doc.get("status") not in STATUSES:
                 problems.append("%s: status %r is not draft/verified/deprecated"
                                 % (doc_id, doc.get("status")))

@@ -148,6 +148,18 @@ class ZeroPacksTest(unittest.TestCase):
         self.assertFalse(kb.verify("testing-widget", "9.9.9"))
         self.assertEqual(kb.lint(), [])
 
+    def test_lint_reports_an_unrecognized_category_as_a_triple(self):
+        root = make_core_kb(self, {
+            "testing-widget": {"category_dir": "testing", "category": "Nonexistent",
+                               "trigger": "widget gadget"},
+        })
+        kb = KnowledgeBase(root=root)
+        problems = kb.lint()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("testing-widget: category 'Nonexistent' is not a "
+                      "recognized category (core: %s; registered packs: none)"
+                      % ", ".join(CATEGORIES), problems)
+
 
 # ---- 1 pack --------------------------------------------------------------
 
@@ -187,6 +199,18 @@ class OnePackTest(unittest.TestCase):
 
     def test_lint_accepts_the_pack_and_its_new_category(self):
         self.assertEqual(self.kb.lint(), [])
+
+    def test_lint_lists_the_registered_pack_when_a_category_is_unrecognized(self):
+        _write_doc(os.path.join(self.pack_root, "compliance"), "acme-bogus",
+                   "Nonexistent", trigger="bogus")
+        _write_category_index(os.path.join(self.pack_root, "compliance"),
+                              [("acme-audit-log", "audit log retention"),
+                               ("acme-bogus", "bogus")])
+        kb = KnowledgeBase(root=self.core_root, packs=[self.pack_root])
+        problems = kb.lint()
+        self.assertIn("acme-bogus: category 'Nonexistent' is not a "
+                      "recognized category (core: %s; registered packs: "
+                      "acme(acme))" % ", ".join(CATEGORIES), problems)
 
 
 # ---- 2 packs ---------------------------------------------------------------

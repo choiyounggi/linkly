@@ -349,7 +349,11 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 `--trace-exporter`에 틀린 값을 줘서 실패를 읽는 대신 미리 나열해서 본다. 로드
 실패는 예외를 던지지 않고 `loadable: false`로만 나열된다 — 이 카탈로그는
 진단이지 게이트가 아니라서 rc는 항상 0이다. bare와 `--json`은 바이트
-동일하다. 정본 함수는 `impl/lnpl/capabilities.py`의 `capabilities_document()`
+동일하다. 등록 항목마다 `entry_point`(`module:attr` 형태의 entry-point 값)와
+`version`(그 entry-point를 소유한 배포판의 버전, 배포판을 확인할 수 없으면
+`null`)도 함께 실린다(`name`/`loadable`에 대한 additive 확장) — 어느 패키지가
+그 항목을 등록했고 몇 버전인지, `capabilities` 한 번 호출로 알 수 있다.
+정본 함수는 `impl/lnpl/capabilities.py`의 `capabilities_document()`
 이고, `lnpl_capabilities` MCP 툴이 같은 함수를 공유한다. `lnpl-doctor` 스킬
 과는 별개다 — doctor는 CLI 설치·버전 같은 로컬 환경 건강을 보고, `capabilities`
 는 설치된 확장이 무엇인지에 대한 CLI 계약이다(이슈 #134 열린 질문).

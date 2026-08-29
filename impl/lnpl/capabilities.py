@@ -47,9 +47,22 @@ SLOTS = (
 )
 
 
+def _entry_point_version(ep):
+    """`ep`'s owning distribution's version, or `None` when the distribution
+    can't be resolved (orphaned metadata, a hand-built `EntryPoint`, etc.) —
+    never raises (plan D4)."""
+    try:
+        dist = ep.dist
+        return dist.version if dist is not None else None
+    except Exception:
+        return None
+
+
 def _registered_entries(entry_points_fn):
-    """Name-sorted `{"name", "loadable"}` records — `.load()` failure never
-    propagates (plan D4); it is recorded as `loadable: false` instead."""
+    """Name-sorted `{"name", "entry_point", "version", "loadable"}` records —
+    `.load()` failure never propagates (plan D4); it is recorded as
+    `loadable: false` instead. `entry_point`/`version` are additive (issue
+    #134 follow-up, plan D4) — existing `name`/`loadable` keys are unchanged."""
     entries = []
     for ep in sorted(entry_points_fn(), key=lambda e: e.name):
         try:
@@ -57,7 +70,8 @@ def _registered_entries(entry_points_fn):
             loadable = True
         except Exception:
             loadable = False
-        entries.append({"name": ep.name, "loadable": loadable})
+        entries.append({"name": ep.name, "entry_point": ep.value,
+                        "version": _entry_point_version(ep), "loadable": loadable})
     return entries
 
 
