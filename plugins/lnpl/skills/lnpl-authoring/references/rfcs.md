@@ -54,5 +54,7 @@
 | RFC-0041 `parallel` 블록 실행 — mode A 구조적 동시성 집행 | `parallel` 블록의 스텝이 정말 동시 실행되는지, 한 브랜치가 실패하면 나머지가 어떻게 되는지 궁금하다 — `policy parallel <N>`이 동시성 상한을 어떻게 정하는지(값 없으면 무엇으로 폴백하는지), 같은 entity에 쓰는 두 스텝을 한 블록에 넣으면 왜 컴파일 에러인지, span 타임스탬프가 왜 이 블록 안에서만 벽시계를 쓰는지, mode B가 왜 여전히 순차이고 그것이 `diff`에 어떻게 나타나는지 | `rfcs/0041-parallel-block-execution.md` |
 | RFC-0042 확장 진단 등록 — 네임스페이스·소유·게이팅 | 확장이 자기 진단 코드를 등록하고 싶다 — `<prefix>/<code>`의 prefix가 왜 반드시 엔트리포인트 등록명 그 자체인지, 왜 `lnpl`·`core`가 예약어이고 bare 코드가 영구히 코어 전용인지, 확장이 왜 `error`를 선언할 수 없는지, `--strict`가 왜 확장 코드는 기본으로 건너뛰는지, 확장 진단기가 왜 소스 텍스트를 못 보고 컴파일된 IR과 자기 설정만 보는지 | `rfcs/0042-extension-diagnostics.md` |
 | RFC-0043 드라이버 집행 신고와 집행 매트릭스 연결 | 설치된 드라이버가 자기 전달 보증·격리 수준·캐시 스코프·토큰 클레임을 신고해 `lnpl compile` 진단으로 내고 싶다 — `lnpl_enforcement` 신고 SPI가 무엇을 받는지, capability 선언과 설치된 드라이버가 어떻게 매칭되는지, 합성 진단 코드가 왜 capability 이름이 아니라 드라이버의 entry-point 이름을 prefix로 쓰는지, `--strict`가 왜 이 코드도 건너뛰는지 | `rfcs/0043-driver-enforcement-reporting.md` |
+| RFC-0044 Money 산술 — minor-unit 코덱과 반올림 정책 | Money 필드를 minor-unit 정수로 계산하거나 spec에서 리터럴로 쓰고 싶다 — 왜 와이어·저장 표면은 그대로인지, exponent를 통화마다 어디서 가져오는지, `avg`의 나눗셈이 왜 `/`(RFC-0028)와 다른 반올림(half-to-even)을 쓰는지, 서로 다른 통화를 더하거나 비교하면 왜 컴파일 에러가 아니라 RunError인지 | `rfcs/0044-money-arithmetic.md` |
+| RFC-0045 RowSet 집계 확장 — avg/min/max | `avg`/`min`/`max`로 RowSet을 집계하고 싶다 — 어느 함수가 어느 선언 타입(Integer/DateTime/Money)을 받는지, 빈 RowSet에서 왜 `sum`/`count`는 0을 내고 `avg`/`min`/`max`는 실패하는지, `group by`가 왜 아직 없는지 | `rfcs/0045-rowset-aggregation-extension.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

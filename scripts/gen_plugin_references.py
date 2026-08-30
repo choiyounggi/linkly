@@ -638,6 +638,15 @@ RFC_ROUTES = {
              "설치된 드라이버가 어떻게 매칭되는지, 합성 진단 코드가 왜 "
              "capability 이름이 아니라 드라이버의 entry-point 이름을 prefix로 "
              "쓰는지, `--strict`가 왜 이 코드도 건너뛰는지", ()),
+    "0044": ("Money 필드를 minor-unit 정수로 계산하거나 spec에서 리터럴로 "
+             "쓰고 싶다 — 왜 와이어·저장 표면은 그대로인지, exponent를 "
+             "통화마다 어디서 가져오는지, `avg`의 나눗셈이 왜 `/`(RFC-0028)와 "
+             "다른 반올림(half-to-even)을 쓰는지, 서로 다른 통화를 더하거나 "
+             "비교하면 왜 컴파일 에러가 아니라 RunError인지", ()),
+    "0045": ("`avg`/`min`/`max`로 RowSet을 집계하고 싶다 — 어느 함수가 어느 "
+             "선언 타입(Integer/DateTime/Money)을 받는지, 빈 RowSet에서 왜 "
+             "`sum`/`count`는 0을 내고 `avg`/`min`/`max`는 실패하는지, "
+             "`group by`가 왜 아직 없는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")
