@@ -921,8 +921,59 @@ may be delivered more than once
 자체가 없다(빈 `dict`가 아니다). 실측 표 렌더링 계약은
 `docs/ENFORCEMENT-MATRIX.md` §B를 본다.
 
+## 14. 백업과 복원 (이슈 #147)
+
+### sqlite — 파일 복사는 무효, `.backup`/`VACUUM INTO`가 정본
+
+§3의 동시성 절이 세운 것대로, 이 드라이버는 파일을 만들 때 한 번
+`journal_mode=WAL`을 켠다. WAL 모드에서 최신 데이터의 일부는 메인
+`.db` 파일이 아니라 별도의 `-wal` 파일에 있다가 나중에 체크포인트로
+메인 파일에 합쳐진다 — SQLite 공식 문서가 그 파일 구조를 그대로
+설명한다([Write-Ahead Logging](https://sqlite.org/wal.html)). 그래서
+`cp store.db store.db.bak`처럼 메인 파일 하나만 복사하면 `-wal`에만
+있는 최근 커밋이 빠져 있거나, 체크포인트 도중이면 아예 일관되지 않은
+스냅샷을 얻는다 — 이 위험은 SQLite 공식 포럼에도 실측 사례로 기록돼
+있다([Hot backup database in WAL mode by coping](https://sqlite.org/forum/forumpost/2ea989bbe9)).
+
+정본은 둘 중 하나다:
+
+- **`sqlite3 store.db ".backup backup.db"`** (또는 언어 바인딩의
+  online backup API, `sqlite3_backup_init`/`_step`/`_finish`) — 쓰기를
+  막지 않고 트랜잭션적으로 일관된 스냅샷을 만든다
+  ([SQLite Backup API](https://sqlite.org/backup.html)).
+- **`VACUUM INTO 'backup.db'`** — 원본은 그대로 두고 vacuum(조각모음)된
+  새 파일을 만든다. backup API의 대안이며, 결과 파일이 최소 크기라
+  파일시스템 I/O가 더 적을 수 있다
+  ([`VACUUM` — SQLite Query Language](https://sqlite.org/lang_vacuum.html)).
+
+둘 다 이 드라이버가 여는 연결과 별개의 연결/프로세스로 실행한다 —
+`SqliteRepositoryDriver`는 백업용 API를 자체로 노출하지 않는다.
+
+### 연속 복제·PITR — Litestream
+
+한 번의 스냅샷이 아니라 지속적인 재해복구가 필요하면
+[Litestream](https://litestream.io/how-it-works/)을 쓴다. WAL
+체크포인트를 스스로 가로채 새 WAL 페이지를 오브젝트 스토리지(S3/R2/B2
+등)로 증분 스트리밍하고, 주기적으로 전체 스냅샷도 함께 둔다 — 복원은
+가장 가까운 스냅샷을 내려받은 뒤 그 뒤에 기록된 변경을 재생하는 것이다.
+백그라운드 프로세스로 이 sqlite 파일 옆에서 도는 것이라, `lnpl` 쪽
+코드 변경은 없다.
+
+### postgres 드라이버 — `pg_dump`/PITR에 위임
+
+`capability postgres` 슬롯에 외부 드라이버(예: `lnpl-postgres`,
+issue #121)를 등록해 postgres를 쓰는 배포는 백업도 postgres 자신의
+도구에 맡긴다: 논리 백업은 `pg_dump`/`pg_dumpall`, 연속 아카이빙과
+PITR은 WAL 아카이빙 기반의 별도 절차다 — `pg_dump`/`pg_dumpall`
+자체는 파일시스템 레벨 백업이 아니라서 연속 아카이빙의 일부로 쓸 수
+없다는 것이 PostgreSQL 공식 문서의 명시적 경고다
+([Continuous Archiving and Point-in-Time Recovery (PITR)](https://www.postgresql.org/docs/current/continuous-archiving.html)).
+이 레포는 그 드라이버를 구현하지 않는다 — `RepositoryDriver` SPI(§8)를
+구현하는 쪽의 책임이다.
+
 ## 참고
 
+- 마이그레이션(expand-contract) 절차와 `lnpl migrate`: `docs/migration.md`
 - 서빙 계층의 상태코드 매핑과 401 판정: `docs/serving.md`
 - 선언 ↔ 집행 매트릭스: `docs/ENFORCEMENT-MATRIX.md`
 - mode B 관측 계약(스킵 복원·`--field` 도달 범위·잔여): `rfcs/0022-mode-b-observation-surface.md`
