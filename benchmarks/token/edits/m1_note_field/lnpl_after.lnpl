@@ -1,0 +1,97 @@
+# linkhub.lnpl — 골든 시나리오 "LinkHub" (issue #66: 따라 쓸 모범 예제)
+#
+# 이 파일은 **따라 쓸 모범 예제다.** examples/login.lnpl과 정반대 방향이다 —
+# login.lnpl은 어휘 밖 동사 세 개를 의도적으로 남긴 회귀 픽스처(issue #36)지만,
+# 이 파일의 모든 스텝은 VERB_LEXICON 안에서 고른 동사라 전부 Effect를 낸다.
+# 새 `.lnpl`을 쓸 때 이 파일을 앵커로 복제하면, 무슨 방어가 왜 켜져 있는지까지
+# 그대로 따라온다.
+#
+# 이 파일이 조합하는 네 가지 방어:
+#   1. `pipeline`을 실사용한다(SaveBookmark의 `persist`) — 통제 어휘가 문서에만
+#      머물지 않는다.
+#   2. spec 블록 3개(정상/에러/경계)를 워크플로 둘에 나눠 쓴다 — 시나리오마다
+#      독립 블록(spec.md, issue #46).
+#   3. 전 spec 블록이 `effects complete`를 건다 — 사전에 없는 동사는 에러가
+#      아니라 no-op이라(verbs.md), 이 계약이 없으면 no-op 스텝도 스위트가
+#      초록으로 넘긴다(issue #39).
+#   4. 저장소를 바꾸는 SaveBookmark의 정상 케이스는 `rows Bookmark 1`을 건다 —
+#      "완료했다"와 "실제로 썼다"는 다른 주장이다.
+#
+# 기계(mechanism)인 선언과 서술(documentation)인 선언을 구분한다:
+#   기계 — Bookmark.id(행 키), Bookmark.url(refinement 프리셋 URL이 validate
+#          input에서 집행된다), Bookmark.visits(직접 선언한 refinement
+#          VisitCount, min 0), performance/cache 5m(CacheAccess set은 TTL
+#          없이 RunError), policy/retry 3(GetBookmark의 경계 케이스 — 빈
+#          저장소의 find가 재시도를 관측 가능하게 만든다. checkout.lnpl과 같은
+#          이유로 켠다)
+#   서술 — capability postgres/redis, event BookmarkSaved
+#
+# `pipeline`은 `merge`로 닫지 않는다(references/grammar.md §블록의 시작과
+# 종결) — 다음 제어 키워드가 나오거나 선언이 끝나는 자리에서 저절로 닫힌다.
+# 이 파일은 다음 제어 키워드를 두지 않으므로 `create bookmark` / `cache
+# bookmark` / `emit bookmarkSaved` 셋 다 `persist` 파이프라인 안에 있다 —
+# `pipeline` 뒤의 일반 스텝은 새 제어 키워드가 없으면 블록을 빠져나가지
+# 않는다(parser.py `_attach`).
+
+capability postgres
+capability redis
+
+refine VisitCount of Integer
+    min 0
+
+entity Bookmark
+    field
+        id UUID
+        url URL
+        title Text
+        owner UUID
+        savedAt DateTime
+        visits VisitCount
+        note Text
+
+event BookmarkSaved on Bookmark create
+
+service LinkHubService
+    policy
+        retry 3
+    performance
+        cache 5m
+
+workflow SaveBookmark
+    validate input
+    pipeline persist
+        create bookmark
+        cache bookmark
+        emit bookmarkSaved
+    spec
+        given
+            empty repository
+        when
+            saveBookmark
+        expect
+            completed
+            effects complete
+            rows Bookmark 1
+            cache written
+    spec
+        given
+            input.url not-a-url
+        when
+            saveBookmark
+        expect
+            failed
+            effects complete
+            error reason does not match URL's pattern
+
+workflow GetBookmark
+    validate input
+    find bookmark
+    spec
+        given
+            empty repository
+        when
+            getBookmark
+        expect
+            failed
+            effects complete
+            rows Bookmark 0
