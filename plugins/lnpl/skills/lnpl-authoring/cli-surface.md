@@ -281,6 +281,29 @@ lnpl db check <source...> --backend sqlite:<path>
 `db check`는 그 실시간 진단과 같은 판단 로직(`interp.row_shape_mismatches`,
 `check_semantic_type` 재사용)을 전체 저장소에 훑어 적용한 것뿐이다.
 
+### `migrate` — 부재 필드 배치 백필 + 스키마 세대 재스탬프 (이슈 #147)
+
+```
+lnpl migrate <source...> --entity <E> --set <field>=<value> --backend sqlite:<path> [--dry-run]
+```
+
+expand-contract 절차(`docs/migration.md`)의 "migrate" 단계: entity `<E>`의
+저장된 행 중 `<field>`가 **없는** 행에만 `<value>`를 채운다(expand
+의미론 — 이미 있는 값은 절대 덮어쓰지 않는다). 값은 그 필드의 선언 타입
+(Integer/Boolean/그 외 문자열류)으로 파싱해 `check_semantic_type`으로
+검증하고, 불일치·미선언 entity·미선언(또는 `derived`) 필드는 아무것도
+쓰지 않고 거부(rc 2)한다. 실제로 값을 쓴 행마다 payload 내부의
+`_schema_gen`(entity의 선언 필드 이름·타입 목록에서 결정적으로 계산한
+sha256 12자리) 을 재스탬프한다 — `lnpl_rows`/`lnpl_outbox` DDL은 바뀌지
+않는다. 전체 배치는 단일 트랜잭션이다.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--entity` | 대상 entity 이름 |
+| `--set` | `FIELD=VALUE` — FIELD가 없는 행에만 설정. FIELD는 앞뒤 공백을 자르고, VALUE는 원문 그대로(자르지 않음) 그 필드의 선언 타입으로 파싱한다 |
+| `--backend` | 필수. `sqlite:<path>`만 유효 — `fake`는 영속 저장소가 없어 거부(rc 2) |
+| `--dry-run` | 아무것도 쓰지 않고 scanned/updated/skipped 개수만 stdout에 JSON으로 출력 |
+
 ### `build` — 네이티브 바이너리로 컴파일 (모드 B)
 
 | 플래그 | 뜻 |

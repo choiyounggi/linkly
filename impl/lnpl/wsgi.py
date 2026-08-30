@@ -38,7 +38,7 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
 from .interp import (Interpreter, caller_view, mask_payload, open_clock,
-                     refinement_index)
+                     refinement_index, strip_schema_gen)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
@@ -1390,6 +1390,10 @@ class LnplWsgiApp:
         if row is None:
             return _json_response(start_response, 404,
                                   problem(404, "not-found", "no such row"))
+        # issue #147 D3: this read bypasses interp.py's own strip (it calls
+        # the repository directly), so the storage-layer stamp is stripped
+        # here instead — never observable in an HTTP response.
+        row = strip_schema_gen(row)
         entity_node = self.nodes[entity_id]
         masked = mask_payload(row, _entity_view(self.document, entity_node))
         # issue #113, D12: opt-in on the SAME `observed_version` attribute
@@ -1432,6 +1436,10 @@ class LnplWsgiApp:
                                              correlation_id=correlation_id))
             finally:
                 repository.close()
+        # issue #147 D3: this read bypasses interp.py's own strip (it calls
+        # the repository directly), so the storage-layer stamp is stripped
+        # here instead — never observable in an HTTP response.
+        rows = [strip_schema_gen(r) for r in rows]
         try:
             page, next_cursor = paginate(rows, field, entity_id, after, limit)
         except CursorError as exc:

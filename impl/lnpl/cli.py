@@ -26,6 +26,7 @@ from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
+from .migrate import MigrateError, run_migration
 from .parser import ParseError
 from .repo_policy import default_rows, row_key
 from .backend import (BackendError, build as build_native, condition_field_names,
@@ -948,6 +949,44 @@ def cmd_relay(args):
         repository.close()
 
 
+def cmd_migrate(args):
+    """`lnpl migrate <source...> --entity E --set field=value [--dry-run]
+    --backend sqlite:...` (issue #147): backfill `field` onto every row of
+    `E` that lacks it (expand semantics — an existing value is never
+    overwritten), re-stamping `_schema_gen`. Prints
+    `{"scanned", "updated", "skipped"}` as JSON; `--dry-run` counts without
+    writing. `--backend` is required and `fake` is rejected — the same
+    shape `cmd_db_check` already established for an operation meaningless
+    without a real store.
+    """
+    field_name, sep, raw_value = args.set.partition("=")
+    if not sep:
+        print("error: --set expects NAME=VALUE, got %r" % args.set,
+              file=sys.stderr)
+        return 2
+    doc = compile_source(args.source)
+    repository = _open_backend(args.backend)
+    if repository is _REJECTED:
+        return 2
+    if repository is None:
+        print("error: migrate needs a persistent --backend "
+              "(e.g. sqlite:./store.db) — `fake` has nothing to migrate",
+              file=sys.stderr)
+        return 2
+    try:
+        try:
+            result = run_migration(doc, repository, args.entity,
+                                   field_name.strip(), raw_value,
+                                   dry_run=args.dry_run)
+        except MigrateError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
+    finally:
+        repository.close()
+    sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+    return 0
+
+
 def cmd_db_check(args):
     """`lnpl db check <source...> --backend sqlite:...` — every stored row of
     every declared entity, checked against its declaration (issue #85).
@@ -1773,6 +1812,30 @@ def main(argv=None):
                      help="a persistent capability backend, e.g. "
                           "sqlite:./store.db (`fake` has no rows to check)")
     dbc.set_defaults(func=cmd_db_check)
+
+    mg = sub.add_parser("migrate",
+                        help="backfill one field onto every row of an "
+                             "entity that lacks it, re-stamping "
+                             "_schema_gen (issue #147)")
+    mg.add_argument("source", nargs="+",
+                    help="one or more .lnpl files (merged in the given "
+                         "order), or a single directory (its *.lnpl, "
+                         "filename-sorted — RFC-0031, issue #77)")
+    mg.add_argument("--entity", required=True, metavar="E",
+                    help="the declared entity name whose rows to scan")
+    mg.add_argument("--set", required=True, metavar="FIELD=VALUE",
+                    help="set FIELD to VALUE on every row currently "
+                         "missing it (expand semantics — an existing "
+                         "value is never overwritten). FIELD is trimmed; "
+                         "VALUE is taken verbatim (no trimming) and parsed "
+                         "as FIELD's declared type; a mismatch is refused")
+    mg.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                    help="a persistent capability backend, e.g. "
+                         "sqlite:./store.db (`fake` has nothing to migrate)")
+    mg.add_argument("--dry-run", action="store_true",
+                    help="report scanned/updated/skipped counts without "
+                         "writing anything")
+    mg.set_defaults(func=cmd_migrate)
 
     bd = sub.add_parser("build", help="compile to a native binary (mode B)")
     bd.add_argument("source", nargs="+",
