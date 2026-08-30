@@ -1,0 +1,258 @@
+{
+  "lir_version": "0.1",
+  "module": "linkhub",
+  "nodes": [
+    {
+      "base": "Integer",
+      "facets": {
+        "min": 0
+      },
+      "id": "refine.visit.count",
+      "kind": "Refinement",
+      "name": "VisitCount"
+    },
+    {
+      "base": "Text",
+      "facets": {
+        "maxLength": 2048,
+        "pattern": "^https?://[^\\s]+$"
+      },
+      "id": "refine.url",
+      "kind": "Refinement",
+      "name": "URL"
+    },
+    {
+      "children": [
+        "wf.save.bookmark",
+        "wf.get.bookmark"
+      ],
+      "constraints": [
+        "policy.link.hub",
+        "perf.link.hub"
+      ],
+      "id": "svc.link.hub",
+      "kind": "Service",
+      "line": 53,
+      "name": "LinkHubService",
+      "requires": [
+        "cap.postgres",
+        "cap.redis"
+      ]
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "url",
+          "type": "URL"
+        },
+        {
+          "name": "title",
+          "type": "Text"
+        },
+        {
+          "name": "owner",
+          "type": "UUID"
+        },
+        {
+          "name": "savedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "visits",
+          "type": "VisitCount"
+        }
+      ],
+      "id": "entity.bookmark",
+      "kind": "Entity",
+      "line": 42,
+      "name": "Bookmark"
+    },
+    {
+      "id": "event.bookmark.saved",
+      "kind": "Event",
+      "line": 51,
+      "name": "BookmarkSaved",
+      "source": {
+        "on": "create",
+        "ref": "entity.bookmark"
+      }
+    },
+    {
+      "children": [
+        "wf.save.bookmark.step.1",
+        "wf.save.bookmark.pipeline.1"
+      ],
+      "id": "wf.save.bookmark",
+      "kind": "Workflow",
+      "line": 59,
+      "name": "SaveBookmark"
+    },
+    {
+      "children": [
+        "wf.save.bookmark.step.1.check"
+      ],
+      "id": "wf.save.bookmark.step.1",
+      "kind": "WorkflowStep",
+      "line": 60,
+      "name": "validate input"
+    },
+    {
+      "id": "wf.save.bookmark.step.1.check",
+      "kind": "Validation",
+      "line": 60,
+      "rule": "semantic-types",
+      "target": "entity.bookmark"
+    },
+    {
+      "children": [
+        "wf.save.bookmark.step.2.repo"
+      ],
+      "id": "wf.save.bookmark.step.2",
+      "kind": "WorkflowStep",
+      "line": 62,
+      "name": "create bookmark"
+    },
+    {
+      "entity": "entity.bookmark",
+      "id": "wf.save.bookmark.step.2.repo",
+      "kind": "RepositoryCall",
+      "line": 62,
+      "operation": "create"
+    },
+    {
+      "children": [
+        "wf.save.bookmark.step.3.cache"
+      ],
+      "id": "wf.save.bookmark.step.3",
+      "kind": "WorkflowStep",
+      "line": 63,
+      "name": "cache bookmark"
+    },
+    {
+      "id": "wf.save.bookmark.step.3.cache",
+      "key": "bookmark:{id}",
+      "kind": "CacheAccess",
+      "line": 63,
+      "operation": "set"
+    },
+    {
+      "children": [
+        "wf.save.bookmark.step.4.emit"
+      ],
+      "id": "wf.save.bookmark.step.4",
+      "kind": "WorkflowStep",
+      "line": 64,
+      "name": "emit bookmarkSaved"
+    },
+    {
+      "event": "event.bookmark.saved",
+      "id": "wf.save.bookmark.step.4.emit",
+      "kind": "EventEmit",
+      "line": 64
+    },
+    {
+      "children": [
+        "wf.save.bookmark.step.2",
+        "wf.save.bookmark.step.3",
+        "wf.save.bookmark.step.4"
+      ],
+      "id": "wf.save.bookmark.pipeline.1",
+      "kind": "Pipeline",
+      "line": 61,
+      "name": "persist"
+    },
+    {
+      "children": [
+        "wf.get.bookmark.step.1",
+        "wf.get.bookmark.step.2"
+      ],
+      "id": "wf.get.bookmark",
+      "kind": "Workflow",
+      "line": 85,
+      "name": "GetBookmark"
+    },
+    {
+      "children": [
+        "wf.get.bookmark.step.1.check"
+      ],
+      "id": "wf.get.bookmark.step.1",
+      "kind": "WorkflowStep",
+      "line": 86,
+      "name": "validate input"
+    },
+    {
+      "id": "wf.get.bookmark.step.1.check",
+      "kind": "Validation",
+      "line": 86,
+      "rule": "semantic-types",
+      "target": "entity.bookmark"
+    },
+    {
+      "children": [
+        "wf.get.bookmark.step.2.repo"
+      ],
+      "id": "wf.get.bookmark.step.2",
+      "kind": "WorkflowStep",
+      "line": 87,
+      "name": "find bookmark"
+    },
+    {
+      "entity": "entity.bookmark",
+      "id": "wf.get.bookmark.step.2.repo",
+      "kind": "RepositoryCall",
+      "line": 87,
+      "operation": "read"
+    },
+    {
+      "id": "policy.link.hub",
+      "kind": "Policy",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "budgets": [
+        {
+          "metric": "cache",
+          "value": "5m"
+        }
+      ],
+      "id": "perf.link.hub",
+      "kind": "Performance"
+    },
+    {
+      "id": "cap.postgres",
+      "kind": "Capability",
+      "line": 36,
+      "name": "postgres"
+    },
+    {
+      "id": "cap.redis",
+      "kind": "Capability",
+      "line": 37,
+      "name": "redis"
+    }
+  ],
+  "provenance": {
+    "compiler": "0.6.0",
+    "enforcement_digest": "sha256:0db802fe5c93b4e02cbf90ba173045b76c3e037110167a6f24cf549f1219aa63",
+    "extensions": {
+      "cache": [],
+      "diagnostics": [],
+      "exporter": [],
+      "generators": [],
+      "kb": [],
+      "network": [],
+      "repository": [],
+      "token": []
+    },
+    "vocabulary_digest": "sha256:341f65bb3720d4458c738260f4010e9e2b868caae7baecbc40be6097835ce0e6"
+  }
+}
