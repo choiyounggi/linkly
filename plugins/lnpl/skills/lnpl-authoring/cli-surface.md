@@ -139,6 +139,8 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--idempotency-ttl` | `Idempotency-Key` 클레임 유지 시간(초). 기본 86400(24h) — 지나면 같은 키가 새 실행으로 취급된다. `--backend fake`에는 효과가 없다(영속 저장소가 없어 클레임을 남길 곳이 없다). 이슈 #113 |
 | `--config` | `lnpl.toml` 경로(이슈 #114). 기본 `./lnpl.toml` — 없으면 이 파일이 없던 때와 바이트 단위로 동일하게 동작한다(회귀 없음). `--config`로 명시한 경로가 없으면 그건 rc 2 에러 |
 | `--profile` | `[default]` 위에 얹을 `lnpl.toml` 프로파일 이름(이슈 #114). `LNPL_PROFILE` 환경변수로도 줄 수 있고 `--profile`이 이긴다. 생략하면 `[default]` 단독 |
+| `--rate-limit` | 프로세스 전역 토큰 버킷: 초당 N개, 버스트 용량도 N개. 기본 미지정(무제한 — 이슈 #148 이전 동작). `/-/` 경로는 면제. 초과 시 429 + `Retry-After`. 0 이하는 rc 2. 이슈 #148 |
+| `--grace-period` | SIGTERM 뒤 진행 중 요청을 몇 초까지 기다리다 종료할지. 기본 30(gunicorn `--graceful-timeout` 기본값과 맞춤). 신규 비-ops 요청은 이 값과 무관하게 즉시 503. 음수는 rc 2. 이슈 #148 |
 
 `--backend`/`--jwt-secret-env`/`--log-format`/`--trace-exporter`/`--endpoint`는
 각각 `lnpl.toml`의 `backend`/`[*.secrets].jwt`/`log_format`/`trace_exporter`/

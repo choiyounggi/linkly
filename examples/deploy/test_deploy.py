@@ -102,5 +102,60 @@ class DeployDockerfileTest(unittest.TestCase):
             assert exc.code == 400, f"expected 400, got {exc.code}"
 
 
+@unittest.skipUnless(shutil.which("docker") and shutil.which("openssl"),
+                     "docker and openssl both required")
+class NginxConfigTest(unittest.TestCase):
+    """issue #148: `nginx.conf` is a config file, not a running service --
+    `nginx -t` (the official `nginx:alpine` image, read-only bind mounts, no
+    container left running afterward) is the only way to verify it parses
+    without standing up a whole TLS-terminated stack. A throwaway
+    self-signed cert satisfies `ssl_certificate`'s existence check; `nginx
+    -t` validates syntax/references, not certificate trust."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.certs_dir = REPO_ROOT / ".claude" / "tmp" / "nginx-config-test-certs"
+        cls.certs_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+             "-keyout", str(cls.certs_dir / "privkey.pem"),
+             "-out", str(cls.certs_dir / "fullchain.pem"),
+             "-days", "1", "-nodes", "-subj", "/CN=localhost"],
+            check=True, capture_output=True, timeout=30,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.certs_dir, ignore_errors=True)
+
+    def test_normal_nginx_conf_syntax_is_valid(self):
+        result = subprocess.run(
+            ["docker", "run", "--rm",
+             "-v", f"{REPO_ROOT / 'examples' / 'deploy' / 'nginx.conf'}:/etc/nginx/conf.d/default.conf:ro",
+             "-v", f"{self.certs_dir}:/etc/nginx/certs:ro",
+             "nginx:alpine", "nginx", "-t"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, (
+            f"nginx -t failed (rc={result.returncode}):\n{result.stderr}")
+        assert "syntax is ok" in result.stderr, result.stderr
+        assert "test is successful" in result.stderr, result.stderr
+
+    def test_error_a_deliberately_broken_directive_fails_nginx_t(self):
+        # Boundary/negative control: proves the test above is actually
+        # exercising nginx's parser, not just "docker ran and exited 0."
+        broken = self.certs_dir / "broken.conf"
+        broken.write_text("server { listen 443 ssl; not_a_real_directive; }\n")
+        result = subprocess.run(
+            ["docker", "run", "--rm",
+             "-v", f"{broken}:/etc/nginx/conf.d/default.conf:ro",
+             "-v", f"{self.certs_dir}:/etc/nginx/certs:ro",
+             "nginx:alpine", "nginx", "-t"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode != 0, "a broken directive should fail nginx -t"
+        assert "not_a_real_directive" in result.stderr, result.stderr
+
+
 if __name__ == "__main__":
     unittest.main()

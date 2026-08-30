@@ -32,6 +32,7 @@ import json
 import os
 import random
 import sqlite3
+import threading
 import time
 import uuid
 from importlib import metadata as importlib_metadata
@@ -1476,12 +1477,24 @@ class HttpNetworkDriver(NetworkDriver):
     constructor-injected so a test can hold time still, seed the draw, and
     skip the actual wait. Defaults: the process's own monotonic clock,
     `random.Random()`, and `time.sleep`.
+
+    issue #148, D3: a keep-alive connection pool, one `http.client`
+    connection per `(scheme, host, port)` cached in a `threading.local` --
+    `http.client` connections are not thread-safe, and the workflow
+    interpreter runs each request's steps on whatever thread called it (the
+    dev server: one new thread per HTTP request; a real WSGI host's sync
+    worker: the same thread across many requests, where the pool actually
+    pays off). A cached connection the remote has silently closed (an idle
+    keep-alive timeout) gets ONE reconnect-retry before it counts as a
+    failure; a genuine failure discards the connection from the cache
+    rather than caching a known-broken one for the next call to fail on.
     """
 
     def __init__(self, endpoints=None, capabilities=None, clock=None,
                 rand=None, sleep=None):
         self._endpoints = dict(endpoints or {})
         self._capabilities = dict(capabilities or {})
+        self._local = threading.local()
         self._breakers = {}
         self._clock_now = _clock_now_fn(clock)
         self._rand = rand if rand is not None else random.Random()
@@ -1555,29 +1568,39 @@ class HttpNetworkDriver(NetworkDriver):
         return _call_with_resilience(target, cap, self._clock_now, self._sleep,
                                      self._rand, self._breakers, attempt)
 
-    def _one_http_attempt(self, parts, method, path, body, headers, timeout_ms):
-        import http.client
+    def _connection_cache(self):
+        """This thread's `{(scheme, host, port): connection}` map -- created
+        lazily so a thread that never made a call never allocates one."""
+        cache = getattr(self._local, "connections", None)
+        if cache is None:
+            cache = {}
+            self._local.connections = cache
+        return cache
 
-        try:
-            conn = http.client.HTTPSConnection(
-                parts.hostname, parts.port, timeout=timeout_ms / 1000
-            ) if parts.scheme == "https" else http.client.HTTPConnection(
-                parts.hostname, parts.port, timeout=timeout_ms / 1000)
-            try:
-                conn.request(method, path, body=body, headers=headers)
-                response = conn.getresponse()
-                raw = response.read()
-                # issue #109, D7: lower-cased keys — the one case an author's
-                # `Retry-After`/`retry-after`/`RETRY-AFTER` lookup, and this
-                # driver's own, always agree on.
-                response_headers = {k.lower(): v for k, v in response.getheaders()}
-            finally:
-                conn.close()
-        except (OSError, http.client.HTTPException) as exc:
-            # No response arrived at all — connect refused, DNS failure,
-            # timeout. A 5xx status never reaches this branch: the connection
-            # already succeeded by the time a status line exists (RFC-0027 §3).
-            raise DriverError(str(exc)) from exc
+    def _open_connection(self, parts, timeout_ms):
+        import http.client
+        if parts.scheme == "https":
+            return http.client.HTTPSConnection(parts.hostname, parts.port,
+                                               timeout=timeout_ms / 1000)
+        return http.client.HTTPConnection(parts.hostname, parts.port,
+                                          timeout=timeout_ms / 1000)
+
+    def _send_and_read(self, conn, method, path, body, headers, timeout_ms):
+        # A reused connection's socket already exists -- `conn.timeout` only
+        # takes effect at `connect()` time, so a call with a different
+        # `timeout_ms` than the one that opened the connection needs the
+        # live socket's timeout updated too, or every reuse would silently
+        # keep the FIRST call's deadline.
+        conn.timeout = timeout_ms / 1000
+        if conn.sock is not None:
+            conn.sock.settimeout(timeout_ms / 1000)
+        conn.request(method, path, body=body, headers=headers)
+        response = conn.getresponse()
+        raw = response.read()
+        # issue #109, D7: lower-cased keys — the one case an author's
+        # `Retry-After`/`retry-after`/`RETRY-AFTER` lookup, and this
+        # driver's own, always agree on.
+        response_headers = {k.lower(): v for k, v in response.getheaders()}
         try:
             parsed = json.loads(raw) if raw else {}
         except ValueError:
@@ -1587,8 +1610,55 @@ class HttpNetworkDriver(NetworkDriver):
         return (response.status, parsed if isinstance(parsed, dict) else {},
                response_headers)
 
+    def _one_http_attempt(self, parts, method, path, body, headers, timeout_ms):
+        """issue #148, D3: reuse this thread's cached connection to
+        `(scheme, host, port)` when one exists; open a fresh one otherwise.
+        A REUSED connection that fails gets exactly one reconnect-retry (it
+        may simply be stale — the remote closed an idle keep-alive
+        connection between our reuse and this request); a FRESH connection
+        that fails is a genuine failure, reported immediately. Either way,
+        a connection that ends up broken is closed and dropped from the
+        cache — never left there for the next call to fail on again."""
+        import http.client
+
+        key = (parts.scheme, parts.hostname, parts.port)
+        cache = self._connection_cache()
+        conn = cache.get(key)
+        reused = conn is not None
+        if conn is None:
+            conn = self._open_connection(parts, timeout_ms)
+        try:
+            result = self._send_and_read(conn, method, path, body, headers,
+                                         timeout_ms)
+        except (OSError, http.client.HTTPException) as exc:
+            conn.close()
+            cache.pop(key, None)
+            if not reused:
+                # No response arrived at all — connect refused, DNS failure,
+                # timeout. A 5xx status never reaches this branch: the
+                # connection already succeeded by the time a status line
+                # exists (RFC-0027 §3).
+                raise DriverError(str(exc)) from exc
+            conn = self._open_connection(parts, timeout_ms)
+            try:
+                result = self._send_and_read(conn, method, path, body,
+                                             headers, timeout_ms)
+            except (OSError, http.client.HTTPException) as exc2:
+                conn.close()
+                raise DriverError(str(exc2)) from exc2
+        cache[key] = conn
+        return result
+
     def close(self):
-        pass
+        """Closes and drops every connection THIS thread's cache holds.
+        Another thread's cached connections are that thread's to close —
+        the same limitation any thread-local pool has (issue #148, D3)."""
+        cache = getattr(self._local, "connections", None)
+        if not cache:
+            return
+        for conn in cache.values():
+            conn.close()
+        cache.clear()
 
 
 # --------------------------------------------------------------------------

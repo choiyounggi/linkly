@@ -741,6 +741,15 @@ def cmd_serve(args):
     if exporter is _REJECTED:
         return 2
 
+    rate_limit = getattr(args, "rate_limit", None)
+    if rate_limit is not None and rate_limit <= 0:
+        print("error: --rate-limit must be a positive number", file=sys.stderr)
+        return 2
+    grace_period_s = getattr(args, "grace_period", 30.0)
+    if grace_period_s < 0:
+        print("error: --grace-period must not be negative", file=sys.stderr)
+        return 2
+
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     idempotency_ttl_s = getattr(args, "idempotency_ttl", None)
     server = serve(doc, args.host, args.port, repository_factory=factory,
@@ -751,7 +760,8 @@ def cmd_serve(args):
                    metrics=getattr(args, "metrics", False),
                    idempotency_ttl_ms=(None if idempotency_ttl_s is None
                                        else idempotency_ttl_s * 1000),
-                   capture_on_failure=getattr(args, "capture_on_failure", False))
+                   capture_on_failure=getattr(args, "capture_on_failure", False),
+                   rate_limit=rate_limit, grace_period_s=grace_period_s)
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -1722,6 +1732,19 @@ def main(argv=None):
                          "payload to that run's canonical log line (--log-"
                          "format json only). Default: off — a successful "
                          "run never carries its payload into the log")
+    sv.add_argument("--rate-limit", type=float, default=None, metavar="N",
+                    help="a process-wide token bucket: N requests/second, "
+                         "burst capacity also N (issue #148, D1). Default: "
+                         "unlimited (the pre-#148 behavior). Not per-IP/"
+                         "distributed -- `/-/` ops paths are always exempt. "
+                         "Exceeding it is `429` + `Retry-After`")
+    sv.add_argument("--grace-period", type=float, default=30.0, metavar="SECONDS",
+                    help="on SIGTERM, how long to wait for in-flight "
+                         "requests to finish before stopping the server "
+                         "anyway (issue #148, D2). Default: 30 (matches "
+                         "gunicorn's own --graceful-timeout default). New "
+                         "non-ops requests are rejected 503 immediately, "
+                         "regardless of this value")
     sv.set_defaults(func=cmd_serve)
 
     tk = sub.add_parser("token",
