@@ -334,11 +334,12 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 - 실제 백엔드를 쓸 때: 요청마다 **자기 연결**을 열고(`sqlite3` 연결은 만든 스레드에
   묶인다) `finally`에서 닫는다 — 응답을 쓴 **다음에** 닫으므로, 클라이언트가 응답을
   받은 시점에 서버가 아직 정리 중일 수 있다.
-- 종료(dev 서버): SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. 워커 스레드는 데몬이라
-  진행 중 요청을 기다리지 않는다. **graceful shutdown·TLS 종단·워커 풀
-  관리는 dev 서버의 책임이 아니다** — 아래 "운영 배치" 절의 WSGI 호스트가
-  가진다(D4). 이슈 #110: SIGTERM은 `/-/readyz`를 즉시 503으로 뒤집을 뿐,
-  이 판단을 바꾸지 않는다 — 아래 "운영 표면" 절.
+- 종료(dev 서버): SIGINT(Ctrl-C) → 소켓을 닫고 rc 0. **TLS 종단·워커 풀
+  관리는 여전히 dev 서버의 책임이 아니다** — 아래 "운영 배치" 절의 WSGI
+  호스트+nginx가 가진다. SIGTERM은 다르다(이슈 #148, D2가 이슈 #110의 D4를
+  이 한 가지에서만 뒤집는다): `/-/readyz`를 즉시 503으로 뒤집는 것(이슈
+  #110, 아래 "운영 표면" 절)에 더해, 이 모듈 자신이 그레이스풀 드레인을
+  수행하고 나서 종료한다 — 아래 "SIGTERM 그레이스풀 드레인" 절.
 - SSE 구독(#103)은 스레드-퍼-요청/워커 모델에서 특히 무겁다 — 연결이 열려
   있는 한 그 워커를 계속 점유한다. `wsgi.SSE_POLL_INTERVAL_S`(기본 0.2s)로
   `lnpl_outbox`를 폴링하고, `wsgi.SSE_IDLE_TIMEOUT_S`(기본 30s) 동안 새 행이
@@ -452,6 +453,69 @@ kind}`, RFC-0003)가 소스에서부터 이 계약을 막아 왔고, 이 issue�
 env-var 표면까지 넓히지 않는다. `/-/healthz`/`/-/readyz` 자체는 `build_app()`
 경로에서도 그대로 뜬다 — 둘 다 `make_wsgi_app()` 안에서 무조건 합류하는
 `build_ops_routes`가 만들기 때문이다(위).
+
+## Rate limit — `--rate-limit` (이슈 #148)
+
+`--rate-limit N` (기본: 미지정 = 무제한, 이슈 #148 이전 동작) — 프로세스
+전역 토큰 버킷 하나, `rate == capacity == N`(초당 N개, 버스트도 N개까지).
+분산/per-IP 한도가 아니다 — 프록시 뒤에서 클라이언트 주소는
+`X-Forwarded-For` 신뢰 문제 없이는 식별할 수 없고, 그건 이 이슈가 아니라
+#143(레디스 캐시) 후속의 범위다. 여러 lnpl serve 프로세스를 앞단
+로드밸런서 뒤에 둔다면, 진짜 전역 한도는 그 게이트웨이(nginx
+`limit_req`, 클라우드 API 게이트웨이 등)에서 걸어야 한다 — 이 프로세스
+내부 버킷은 그 앞단이 없는 단일 인스턴스 배치를 위한 최소 방어선이다.
+
+**`/-/` 경로는 전부 면제된다** — k8s 프로브가 429를 맞으면 안 되므로
+(위 "운영 표면" 절과 같은 이유).
+
+초과 시 `429` + `Retry-After: <N>`(정수 초, `ceil(부족 토큰 / rate)`) +
+`application/problem+json`(`code: "rate-limited"`). `429` +
+`Retry-After`는 RFC 6585 §4의 권고를 따른다(RFC 6585, *Additional HTTP
+Status Codes*, https://datatracker.ietf.org/doc/html/rfc6585 — "MAY include
+a Retry-After header indicating how long to wait before making a new
+request").
+
+```jsonc
+{"title": "rate limit exceeded", "status": 429, "code": "rate-limited",
+ "detail": "rate limit exceeded, retry after 1s"}
+```
+
+## SIGTERM 그레이스풀 드레인 — `--grace-period` (이슈 #148)
+
+이슈 #110(D11, D4)은 SIGTERM을 `/-/readyz` 503 플래그로만 다뤘고, 실제
+드레인·종료는 "dev 서버의 일이 아니다"로 남겨 뒀다. 이슈 #148은 그 경계를
+드레인 한 가지에서만 좁힌다 — `lnpl serve` 자신이 이제:
+
+1. SIGTERM 즉시: `/-/readyz` 503(이슈 #110, 변경 없음).
+2. `/-/`가 아닌 새 요청은 라우팅/인증/워크플로 실행 어느 것도 타지 않고
+   즉시 `503` + `Retry-After: 1` + `application/problem+json`
+   (`code: "shutting-down"`)로 거부된다 — k8s apiserver의
+   `shutdown-send-retry-after` 옵션과 같은 패턴(요청을 드레인 창에서
+   거부하고 `Retry-After`를 준다, kubernetes/kubernetes#101257,
+   https://github.com/kubernetes/kubernetes/pull/101257)이지만 상태
+   코드는 다르다 — apiserver는 `429`를 쓰는 반면, 여기는 `503`을 쓴다.
+   "이 요청 하나가 너무 잦다"(429의 의미)가 아니라 "이 서버 인스턴스
+   자체가 트래픽을 받지 않는다"는 의미가 정확해서다 — 이슈 #118의
+   `event-retry-later` 503 선례(위 "이벤트 소비" 절)와 같은 판단이다.
+3. 진행 중이던 요청(WSGI 진입~이탈)은 계속 처리된다. 그 수가 0이 되거나
+   `--grace-period` 초(기본 30 — 아래 gunicorn 기본값과 맞춤)가 지나면,
+   먼저 온 조건에 서버가 실제로 멈춘다(`server.shutdown()`) — 드레인이
+   끝나서 멈추든 유예가 다 돼서 멈추든, 어느 쪽인지 stderr 한 줄로
+   구분해 남긴다.
+
+```jsonc
+{"title": "the server is draining connections before shutdown", "status": 503,
+ "code": "shutting-down",
+ "detail": "the server is shutting down; retry against another instance"}
+```
+
+**gunicorn 배치에서는 코드가 바뀌지 않는다** — `graceful_timeout`(기본
+**30초**, gunicorn 공식 문서 https://gunicorn.org/reference/settings/ 의
+"Generally, the default of thirty seconds should suffice")이 SIGTERM 뒤
+워커가 진행 중 요청을 마칠 시간을 이미 준다. `--grace-period`의 기본값
+30을 여기 맞춘 것은, 같은 이름의 문제(SIGTERM 후 얼마나 기다릴까)를
+gunicorn 경로와 dev-서버 경로가 서로 다른 직관의 숫자로 답하지 않게
+하기 위해서다.
 
 ## 관측 — `--log-format` / `TraceExporter` (이슈 #78)
 
@@ -627,12 +691,15 @@ lnpl config check <src>.lnpl... [--profile staging] [--config lnpl.toml]
 
 ## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
 
-`lnpl serve`의 dev 서버는 TLS도, graceful shutdown도, 다중 프로세스 워커
-풀도 없다(D4 — 일부러 만들지 않았다). 운영에서는 요청 처리 코어를 노출하는
-`impl/lnpl/wsgi.py`의 `build_app()` 팩토리를 표준 WSGI 호스트에 넘긴다 —
-여기서는 stdlib 밖 도구인 gunicorn을 예로 쓴다(프로젝트 의존성으로 추가하지
-않는다; stdlib-only 원칙은 `impl/lnpl` 자체에 대한 것이지, 그것을 호스팅하는
-별도 프로세스에 대한 것이 아니다).
+`lnpl serve`의 dev 서버는 TLS도, 다중 프로세스 워커 풀도 없다(D4 — 일부러
+만들지 않았다; 위 "운영 성질" 절). graceful shutdown은 이슈 #148로
+예외다 — dev 서버 자신이 SIGTERM 그레이스풀 드레인을 한다(위 해당 절).
+운영에서는 요청 처리 코어를 노출하는 `impl/lnpl/wsgi.py`의 `build_app()`
+팩토리를 표준 WSGI 호스트에 넘긴다 — 여기서는 stdlib 밖 도구인 gunicorn을
+예로 쓴다(프로젝트 의존성으로 추가하지 않는다; stdlib-only 원칙은
+`impl/lnpl` 자체에 대한 것이지, 그것을 호스팅하는 별도 프로세스에 대한
+것이 아니다). TLS 종단은 `examples/deploy/nginx.conf`(이슈 #148)가 참조를
+준다 — `examples/deploy/README.md` "TLS 종단" 절.
 
 ```bash
 pip install gunicorn   # 이 저장소의 의존성이 아니다 — 배치 환경에서 설치

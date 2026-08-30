@@ -596,6 +596,30 @@ SPI가 새로 여는 형태이고, `http:<arg>`처럼 이미 내장 이름과 �
 `open_network` 둘 다 `ImportError`를 `DriverError`로 번역한다(원인 체인
 보존) — §8·§9와 같은 규칙.
 
+### 커넥션 풀은 드라이버가 소유한다 (이슈 #148)
+
+`NetworkDriver`/`RepositoryDriver` SPI는 풀링을 규정하지 않는다 —
+`call(target, payload, timeout_ms, ...)`/`execute(...)` 시그니처는 이
+이슈로 바뀌지 않았고(§1의 세 계약 그대로), 커넥션을 매 호출 새로 열지
+재사용할지는 전적으로 **드라이버 구현체 자신의 책임**이다. 코어는 한
+인스턴스를 공유해서 넘길 뿐(바로 위 "등록" 절 — `network`/`cache`는
+서버가 뜰 때 한 번 열려 모든 요청의 Interpreter가 공유한다) 그 인스턴스
+내부에서 풀을 어떻게 관리하는지는 들여다보지 않는다.
+
+내장 `HttpNetworkDriver`(`impl/lnpl/drivers.py`)가 그 참조 구현이다 —
+`(scheme, host, port)`별로 `threading.local`에 캐싱된 keep-alive
+연결 하나(`http.client`는 스레드 안전이 아니라서 스레드-지역 이상으로
+넓힐 수 없다), 재사용하다 stale로 판명되면 1회 재연결-재시도, 그래도
+실패하면 캐시에서 폐기 — 이 파일이 세운 패턴이지 SPI가 요구하는 계약은
+아니다. 외부 드라이버가 자기 나름의 풀을 들고 오는 것도 똑같이 유효하다
+— 예를 들어 postgres 백엔드(§3, §14의 postgres 드라이버 절)가 실제
+connection pool이 필요하다면 `psycopg_pool.ConnectionPool` 같은
+드라이버-네이티브 풀을 그 구현 내부에 두면 된다. `close()`가 무엇을
+정리하는지도 마찬가지로 드라이버 재량이다 — `HttpNetworkDriver.close()`는
+**호출한 스레드가 캐싱해 둔 연결만** 닫는다(다른 스레드가 열어 둔 연결은
+그 스레드의 `close()`가 닫아야 한다 — 스레드-지역 풀이 갖는 근본적인
+한계이지 버그가 아니다).
+
 ### TCK로 검증하기
 
 외부 캐시 드라이버는 `lnpl.testing.CacheDriverTCK`를 상속해 자기 CI에서

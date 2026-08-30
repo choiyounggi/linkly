@@ -104,9 +104,43 @@ $ docker stop linkly-deploy-smoke-run && docker rmi linkly-deploy-smoke
 200/404(`shorten-service` 예제)와 같은 성질을 `linkhub` 서비스에 대해
 재확인한다.
 
+## TLS 종단 — `nginx.conf` (이슈 #148)
+
+`examples/deploy/nginx.conf`는 이 컨테이너 앞에 두는 참조 nginx 설정이다
+— TLS 종단(Mozilla intermediate 프로파일, TLS 1.2+1.3), http→https
+리다이렉트, gunicorn(포트 8000)으로의 리버스 프록시, `/-/` ops 경로
+패스스루(k8s 프로브가 nginx를 거쳐도 인증·rate limit에 걸리지 않아야
+한다 — `docs/serving.md` "Rate limit" 절의 `/-/` 면제와 같은 이유)를
+담는다. 위 Dockerfile과 마찬가지로 이 저장소의 CI/릴리스 대상이 아니라
+시작점이다 — `server_name`과 `ssl_certificate`/`ssl_certificate_key`
+경로를 실제 도메인·인증서로 바꿔야 데모를 벗어난다.
+
+```bash
+docker run -d --rm -p 8000:8000 --name linkly-deploy-smoke-run linkly-deploy-smoke
+
+docker run -d --rm --network host \
+  -v "$PWD/examples/deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro" \
+  -v "/path/to/fullchain.pem:/etc/nginx/certs/fullchain.pem:ro" \
+  -v "/path/to/privkey.pem:/etc/nginx/certs/privkey.pem:ro" \
+  --name linkly-deploy-nginx nginx:alpine
+
+curl -sk https://127.0.0.1/-/healthz
+# -> {"status": "ok"}
+```
+
+문법만 검증하려면(인증서 없이, 컨테이너를 계속 띄우지 않고) `nginx -t`를
+직접 돌린다 — `test_deploy.py::NginxConfigTest`가 이 절차를 자동화한다
+(자체 서명 인증서 1회 생성 → 정상 설정 검증 + 일부러 깨뜨린 설정이
+실패하는지 대조).
+
+`--grace-period`(기본 30 — `docs/serving.md` "SIGTERM 그레이스풀 드레인"
+절)와 nginx의 `proxy_read_timeout 30s`를 이 파일이 맞춰 둔 이유도 같은
+문서에 있다: 롤링 업데이트 중 gunicorn이 드레인을 마칠 시간을 nginx가
+먼저 포기하고 502를 내지 않게 하기 위해서다.
+
 ## 이 참조가 다루지 않는 것
 
 CI, 이미지 레지스트리 push, k8s 매니페스트는 이 이슈의 범위 밖이다
-(#87 out-of-scope — 후속 이슈로 남는다). TLS 종단·워커 풀 관리는
-`docs/serving.md`가 이미 명시한 대로 gunicorn(+ 필요하면 nginx)의 책임이지
-이 Dockerfile의 책임이 아니다.
+(#87 out-of-scope — 후속 이슈로 남는다). 워커 풀 관리는 `docs/serving.md`가
+이미 명시한 대로 gunicorn의 책임이지 이 Dockerfile의 책임이 아니다 —
+TLS 종단은 위 "TLS 종단" 절의 `nginx.conf`가 참조를 준다.
