@@ -248,6 +248,15 @@ All three roadmap phases are complete.
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
+**Real backend drivers live outside this repo, by design.** The core owns only the
+driver contracts and their TCK; actual bindings are external packages registered
+through the `lnpl.drivers` entry-points group and selected with
+`--backend <scheme>:<arg>` ([docs/backends.md](docs/backends.md) §8). The first such
+package is [lnpl-postgres](https://github.com/choiyounggi/lnpl-postgres) — a
+PostgreSQL `RepositoryDriver` (psycopg 3) that runs this repo's TCK against a real
+postgres server in its own Testcontainers CI, per the "no binding without integration
+tests" rule ([issue #121](https://github.com/choiyounggi/linkly/issues/121)).
+
 **44 RFCs — 41 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0033/0034 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the

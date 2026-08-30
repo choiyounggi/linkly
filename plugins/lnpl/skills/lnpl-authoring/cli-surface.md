@@ -32,7 +32,7 @@ lnpl --version
 | `--workflow` | 실행할 **워크플로 노드 id**. 없으면 첫 번째 |
 | `--json` | 결과와 트레이스를 JSON으로 |
 | `--no-row` | 빈 저장소로 시작한다(재시도 경로를 관측할 때) |
-| `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로) 또는 `sqlite:<path>`(파일에 남는 실제 저장소). 이슈 #25 |
+| `--backend` | capability 백엔드. `fake`(기본, 인메모리, 실행마다 새로), `sqlite:<path>`(파일에 남는 실제 저장소), 또는 등록된 `lnpl.drivers` entry-point의 `<scheme>:<arg>` — 실사례는 외부 패키지 [`lnpl-postgres`](https://github.com/choiyounggi/lnpl-postgres)의 `postgres:<dsn>`(`docs/backends.md` §8). 이슈 #25, #75 |
 | `--cache` | `redis` capability 드라이버. `fake`(기본, 인메모리, 실행마다 새로) 또는 등록된 `lnpl.caches` entry-point의 `<scheme>[:<arg>]`. 이슈 #131 |
 | `--network` | `NetworkCall` 드라이버. `fake`(기본, 결정적, I/O 없음), `http`(`http.client`로 실제 요청), 또는 등록된 `lnpl.networks` entry-point의 `<scheme>[:<arg>]`. RFC-0027, 이슈 #64, #132 |
 | `--endpoint` | `NAME=URL` (반복 가능). `--network http`에서 `call`/`request`의 논리명을 실제 URL로 매핑한다. `LNPL_ENDPOINT_<NAME>` 환경변수로도 줄 수 있고, `--endpoint`가 이긴다. 매핑 안 된 논리명이 있으면 기동이 rc 2로 실패한다(요청 중 실패보다 기동 실패). 이슈 #101 |

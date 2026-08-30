@@ -262,7 +262,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 |--------------|-----|
 | **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). 남은 이유는 다음 행뿐이다: 서버·드라이버 라이브러리가 이 계획을 세운 머신에 없다. `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — SPI 표면(`lnpl.caches` entry-points, `open_cache`)은 이슈 #131이 열었다(§10); 실드라이버 자체를 싣는 외부 패키지는 여전히 이 레포 밖이다 |
 | **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
-| **postgres / redis 서버 바인딩** | `psycopg2`/`redis` 자체는 이제 문제가 아니다(Testcontainers로 로컬에 서버를 띄울 수 있다) — 그 바인딩을 실을 `lnpl-postgres` 외부 레포와 그 레포의 Testcontainers CI가 아직 없다. 이슈 #115가 레포 안(TCK 강화) 절반만 완료했고, 이 절반은 후속 이슈로 등재돼 있다 |
+| **postgres / redis 서버 바인딩** | 코어가 싣지 않는다는 사실은 그대로다 — 그게 §8의 경계 설계다. postgres 쪽은 경계 밖 절반이 채워졌다: 외부 레포 [`lnpl-postgres`](https://github.com/choiyounggi/lnpl-postgres)가 `lnpl.drivers`에 `postgres = "lnpl_postgres:make_driver"`로 등록되는 `RepositoryDriver`(psycopg 3)를 싣고, 이 레포의 TCK를 자기 Testcontainers CI에서 실 postgres 서버로 통과시킨다(이슈 #115의 레포 안 절반=TCK 강화에 이은 이슈 #121, 2026-08-30 완료). redis 쪽 외부 패키지는 여전히 없다(위 `redis` 행) |
 | **트랜잭션 경계 밖 `NetworkCall`의 보상** | `policy rollback`은 저장소 쓰기만 되돌린다(RFC-0032 §Open Questions ②) — `call`/`request`는 이미 나간 뒤라 되돌아가지 않는다. 컴파일러는 그 워크플로마다 `rollback-escapes-network`(warning, 이슈 #112)로 **신고만** 한다. 보상 방식은 RFC-0034(Draft)가 결정했고 구현은 후속(Batch B) |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
@@ -375,6 +375,11 @@ postgres = "my_lnpl_postgres:make_driver"
 `RepositoryDriver`를 반환하는 콜러블이다. 패키지가 설치돼 있으면
 `--backend postgres:<dsn>`이 그 팩토리를 찾아 부른다 — 코어 쪽에 이 스킴에 대한
 if문이 하나도 없다.
+
+이 모양의 실사례가 [`lnpl-postgres`](https://github.com/choiyounggi/lnpl-postgres)다
+(이슈 #121) — `postgres = "lnpl_postgres:make_driver"`로 등록하는
+`RepositoryDriver`(psycopg 3)이고, 자기 Testcontainers CI가 실 postgres 서버로
+이 레포의 TCK를 돌린다("통합 테스트 없는 바인딩 금지"의 첫 이행 사례).
 
 ### 내장 스킴은 절대 가려지지 않는다
 
