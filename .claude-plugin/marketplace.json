@@ -17,7 +17,7 @@
       },
       "source": "./plugins/lnpl",
       "homepage": "https://github.com/choiyounggi/linkly",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "tags": [
         "lnpl",
         "linkly",
@@ -37,7 +37,7 @@
       },
       "source": "./plugins/lnpl-dev",
       "homepage": "https://github.com/choiyounggi/linkly",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "tags": [
         "linkly",
         "contributor",
@@ -56,7 +56,7 @@
       },
       "source": "./plugins/lnpl-mcp",
       "homepage": "https://github.com/choiyounggi/linkly",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "tags": [
         "lnpl",
         "linkly",

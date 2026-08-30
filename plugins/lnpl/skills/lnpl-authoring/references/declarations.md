@@ -2,7 +2,7 @@
 
 # 선언과 집행 (ENFORCEMENT)
 
-> lnpl 0.5.0 기준.
+> lnpl 0.6.0 기준.
 
 선언했다고 집행되는 것이 아니다. 아래 표가 정본이다 — `enforced`만 실행을 바꾼다. `measured`는 관측·보고하되 막지 않고, `unenforced`는 런타임이 완전히 무시한다(issue #38).
 

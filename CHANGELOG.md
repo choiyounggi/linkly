@@ -9,29 +9,70 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-30
+"The extensibility release." Every seam the platform owns is now an open,
+TCK-guarded SPI surface, and the first external driver package exists to
+prove the boundary works.
+
 ### Added
 - Reference deployment story (issue #87): `examples/deploy/Dockerfile` +
   `.dockerignore` (measured `docker build`/`run`/`curl` boot of
   `lnpl.wsgi:build_app()` under gunicorn), `docs/compatibility.md`, and
   `docs/RELEASING.md`.
+- SPI surfaces: repository drivers via `lnpl.drivers` entry-points + a
+  published TCK (#75), caches/networks (#131, #132), token providers for
+  external IdP trust (#119 B), generators with openapi re-entry (#139),
+  extension diagnostics registration per RFC-0042 (#138, #140), and the
+  RFC-0043 driver enforcement self-report SPI.
+- The first external driver package proving that boundary:
+  [lnpl-postgres](https://github.com/choiyounggi/lnpl-postgres) — TCK
+  hardening in-repo (#115), the external repo with its own Testcontainers
+  CI (#121).
+- Language: multi-file compilation unit (RFC-0031, #77), `list ... where` /
+  `order by` / `limit` with driver pushdown (#116), row-set model +
+  list/sum/count aggregation (#65), `note` verb + canonical log line
+  widening (#111).
+- Serving: `serve` restructured into a WSGI callable (#80), workflow
+  execution wrapped in a transaction boundary (#79), 409 conflict +
+  `Idempotency-Key` replay + `ETag`/`If-Match` (#113), k8s ops surface
+  `/-/healthz|readyz|metrics` (#110), CloudEvents `consume by` ingress +
+  reference relay (#118), external triggers for `event schedule` (#81),
+  NetworkDriver + `call`/`request` result binding (RFC-0027, #64, #76),
+  HTTP resilience — retry/backoff/jitter, circuit breaker, path templates
+  (#109).
+- Observability: `--log-format json` + TraceExporter SPI (#78), W3C
+  traceparent propagation (#107), actual evaluation values recorded on
+  guard skip (#83).
+- Runtime: `parallel` block execution — fail-fast, concurrency cap,
+  write-conflict refusal (#108).
+- Tooling and discovery: `lnpl.toml` profile config + `lnpl config check`
+  (#114), `lnpl capabilities` catalog (#134), `lnpl vocab --json` +
+  `lnpl_vocabulary`/`lnpl_spec` MCP tools (#135), `lnpl compile --json`
+  (#133), deterministic `.lir.json` provenance block (#136), KB pack
+  layering (#137), `lnpl db check` + stored-row shape warning (#85).
 
-### Note — first enterprise-hardening orchestration run (2026-08-24)
-15 issues (#90–#104, PR #105) closed as one integrated branch, merged before
-this entry. Source: `gh pr view 105`.
-- **Fixed**: #90 http driver target validation, #91 `unknown-entity`
+### Changed
+- **Breaking**: `security encrypt` removed from the closed vocabulary
+  (RFC-0035 §D3, #127) — touches the closed-vocabulary contract in
+  [docs/compatibility.md](docs/compatibility.md).
+- `security role` is now enforced, with caller namespaces (#119 A).
+- README's suite-size claim is a ±5% band instead of an exact count (#124).
+
+### Note — orchestration runs folded into this release
+- First enterprise-hardening run (2026-08-24): 15 issues (#90–#104, PR #105)
+  closed as one integrated branch. Source: `gh pr view 105`.
+  **Fixed**: #90 http driver target validation, #91 `unknown-entity`
   diagnostic, #98 event-source-mismatch/orphaned diagnostics, #104 mode B
-  sysroot resolution (env-caused failures only — see PR #105 body for the
-  exact count and its derivation).
-- **Added**: #93 `*`/`/` arithmetic + alternative guards (RFC-0028), #94
-  `format` verb, #96 `respond` verb, #97 `create ... as` result binding
-  (RFC-0030), #99 GET single/list surfaces, #100 dual clock contract
-  (RFC-0029), #101 `capability http` + endpoint mapping, #102 outbox
-  persistence + `lnpl outbox drain/ack`, #103 SSE subscriptions.
-- **Changed**: #92 optimistic concurrency (`_version` conditional writes),
-  #95 `derived` field write-direction separation.
-- Full suite count and RFC count at this point: see PR #105 body directly
-  (this file does not restate merge-time snapshots that go stale — those
-  numbers belong to the PR record, not to a changelog entry with no tag).
+  sysroot resolution. **Added**: #93 `*`/`/` arithmetic + alternative guards
+  (RFC-0028), #94 `format` verb, #96 `respond` verb, #97 `create ... as`
+  result binding (RFC-0030), #99 GET single/list surfaces, #100 dual clock
+  contract (RFC-0029), #101 `capability http` + endpoint mapping, #102
+  outbox persistence + `lnpl outbox drain/ack`, #103 SSE subscriptions.
+  **Changed**: #92 optimistic concurrency, #95 `derived` write-direction
+  separation.
+- Extensibility-axis run (2026-08-30): #131–#139 + RFC-0043 merged at
+  `60cbbaf`. Merge-time suite/RFC snapshots belong to the PR and commit
+  records, not to this file.
 
 ## [0.5.0] — 2026-08-17
 "The safe-defaults release." Closed issues #60–#63, #66, #67.
@@ -177,7 +218,8 @@ when its condition became true (fixed in #5, after this tag). RFC-0008 G8's
 condition-field plumbing was only correct for exactly two condition fields
 (fixed in #4, after this tag).
 
-[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.6.0
 [0.5.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.5.0
 [0.4.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.4.0
 [0.3.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.3.0
