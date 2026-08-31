@@ -195,6 +195,48 @@ def _schema_name(entity):
             if entity.get("namespace") else entity["name"])
 
 
+WHOLE_ENTITY_RULE = "semantic-types"
+
+
+def _entity_for_target(effect, entities):
+    """Resolve a `Validation` node back to the entity it validates.
+
+    `lower.py`'s `_derive_effect` Validation branch emits exactly two shapes,
+    and it labels which is which in `rule`:
+
+      whole payload   target=`<entity id>`          rule=`semantic-types`
+      one field       target=`<entity id>.<field>`  rule=`<the field's type>`
+
+    So invert that labelling rather than parsing the dotted `target` — the
+    segment count is not a reliable signal and never was. An entity id is not
+    fixed-width: `OrderItem` derives `entity.order.item` (3 segments) with no
+    namespace at all, and RFC-0033 prefixes a namespace on top
+    (`entity.billing.order`). The original fixed two-segment slice rebuilt an
+    id no entity has, so the lookup missed and `_operation` dropped that
+    operation's `requestBody` without a word.
+
+    Reading `target` alone cannot fix that, because the two shapes genuinely
+    collide: a module declaring `OrderItem` *and* an `Order` with a field
+    named `item` produces `entity.order.item` for both `validate orderitem`
+    (whole `OrderItem`) and `validate item` (the `item` field of `Order`).
+    Any pure string rule — longest prefix, shortest prefix, exact-first —
+    silently gets one of the two wrong. `rule` is what tells them apart, and
+    it cannot be spoofed by a field type: a type is a `PascalName`
+    (`PASCAL_RE`, lower.py), so no declared type can ever be the lowercase,
+    hyphenated `semantic-types`.
+
+    Returns `None` when the id names no declared entity, which is what the
+    caller already treated as "no request body".
+    """
+    target = effect["target"]
+    by_id = {e["id"]: e for e in entities}
+    if effect.get("rule") == WHOLE_ENTITY_RULE:
+        return by_id.get(target)
+    # Field form: exactly one trailing segment is the field name, so strip
+    # one — never a fixed count from the front.
+    return by_id.get(target.rpartition(".")[0])
+
+
 def generate(document, version="0.1.0"):
     """Semantic IR document -> an OpenAPI 3.1 dict."""
     nodes = {n["id"]: n for n in document["nodes"]}
@@ -463,9 +505,7 @@ def _operation(wf, service, con, nodes, entities, refined):
         for child_id in step.get("children", []):
             effect = nodes[child_id]
             if effect["kind"] == "Validation":
-                target = effect["target"]
-                entity_id = ".".join(target.split(".")[:2])
-                request_entity = next((e for e in entities if e["id"] == entity_id), None)
+                request_entity = _entity_for_target(effect, entities)
 
     response_schema = _response_schema(steps, nodes, entities, refined)
 
