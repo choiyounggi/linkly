@@ -39,6 +39,17 @@ EXEMPT = {
 }
 
 
+# 레포에 커밋되지 않고 개발 환경이 만드는 이름 — 존재 단언에서 뺀다.
+# `make_tree`는 이미 `if not os.path.exists(src): continue`로 부재를 견디므로
+# 없다고 해서 뮤턴트 트리가 깨지지 않는다. 강제하면 신규 체크아웃과 CI(3.11~3.13
+# 게이트, 이슈 #141)에서 **반드시** 실패한다 — 실제로 그 게이트의 첫 실행이
+# 이걸로 세 잡 전부 빨간불이었다.
+UNTRACKED = {
+    # `scripts/dev_doctor.sh`가 안내하는 워크트리별 venv. 심볼릭 링크로만 쓰인다.
+    ".venv",
+}
+
+
 # 레포 루트를 담는 관례적 이름. `test_packaging.py`는 `ROOT`를 쓴다.
 ROOT_NAMES = ("REPO", "ROOT")
 
@@ -108,10 +119,19 @@ class MutationTreeCoversTestReadsTest(unittest.TestCase):
                                 "REPO 상대 경로를 거의 못 찾았다 — 스캔이 무의미하다")
 
     def test_every_copied_name_exists_in_the_repo(self):
-        # 오타로 넣은 이름은 조용히 아무것도 복사하지 않는다.
+        # 오타로 넣은 이름은 조용히 아무것도 복사하지 않는다. `UNTRACKED`는
+        # 오타가 아니라 환경이 만드는 이름이라 제외한다.
         for name in TREE_CONTENTS:
+            if name in UNTRACKED:
+                continue
             self.assertTrue(os.path.exists(os.path.join(REPO, name)),
                             "TREE_CONTENTS의 %s가 레포에 없다" % name)
+
+    def test_untracked_names_are_actually_listed_for_copying(self):
+        # 예외가 죽은 항목이 되지 않게 고정한다 — `UNTRACKED`에만 있고
+        # `TREE_CONTENTS`에 없으면 아무것도 면제하지 않는 빈 규칙이다.
+        for name in UNTRACKED:
+            self.assertIn(name, TREE_CONTENTS)
 
 
 class ScanBehaviourTest(unittest.TestCase):
