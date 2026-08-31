@@ -42,9 +42,9 @@ import sys
 import tempfile
 
 from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
-                            Presence, Ref, encode_instant, guard_condition_text,
+                            Ref, encode_instant, guard_condition_text,
                             is_instant_text, looks_like_instant, parse_condition,
-                            references, value_to_string)
+                            references)
 from lnpl.interp import (RunError, refinement_index, sample_payload,
                          validate_effect)
 # The seed/key policy both modes read (issue #35). Imported, never restated: a

@@ -81,7 +81,7 @@ def check_document(filename, text):
         return problems
     number = m.group(1)
 
-    first = next((l for l in text.split("\n") if l.strip()), "")
+    first = next((line for line in text.split("\n") if line.strip()), "")
     title = TITLE_RE.match(first.strip())
     if not title:
         problems.append(("§3", "첫 줄이 `# RFC-NNNN: <제목>` 형식이 아니다"))

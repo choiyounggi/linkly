@@ -2275,7 +2275,9 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
         except (ValueError, DriverError) as exc:
             raise WsgiConfigError("LNPL_BACKEND %r: %s" % (backend, exc)) from exc
         probe.close()
-        repository_factory = lambda spec=backend: open_repository(spec)
+
+        def repository_factory(spec=backend):
+            return open_repository(spec)
 
     if jwt_secret_env is None:
         jwt_secret_env = os.environ.get("LNPL_JWT_SECRET_ENV")

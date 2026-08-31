@@ -369,7 +369,7 @@ class Trace:
     def to_dict(self):
         out = {"correlation_id": self.correlation_id,
                "span": self.root.to_dict() if self.root else None,
-               "metrics": [{"name": n, "labels": l, "value": v} for n, l, v in self.metrics],
+               "metrics": [{"name": n, "labels": label, "value": v} for n, label, v in self.metrics],
                "logs": self.logs}
         # issue #107: keys added only when set, so a non-HTTP run's
         # to_dict() (trace_id/span_id/trace_link/tracestate all `None`)

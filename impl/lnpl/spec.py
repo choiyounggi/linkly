@@ -58,9 +58,9 @@ def extract(decls, module_name):
         for i, block in enumerate(blocks, 1):
             label = ("a spec" if len(blocks) == 1
                      else "spec block %d" % i)
-            given = [" ".join(l.tokens) for l in block["given"]]
-            when = [" ".join(l.tokens) for l in block["when"]]
-            expect = [" ".join(l.tokens) for l in block["expect"]]
+            given = [" ".join(line.tokens) for line in block["given"]]
+            when = [" ".join(line.tokens) for line in block["when"]]
+            expect = [" ".join(line.tokens) for line in block["expect"]]
             if not when:
                 raise SpecError("workflow %s: %s needs a `when` section"
                                 % (d.name, label))

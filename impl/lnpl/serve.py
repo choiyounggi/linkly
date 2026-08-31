@@ -28,9 +28,12 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 
 from .wsgi import (  # re-exported for backward compatibility — every name
     # below already had callers outside this module before issue #80.
+    # _parse_limit/_TITLES are excluded from __all__ (private-looking names)
+    # but test_serve_get.py/test_serve_backend.py import them directly from
+    # this module, so they stay re-exported here despite looking unused.
     CursorError, DEFAULT_LIMIT, MAX_BODY_BYTES, MAX_LIMIT, ServeError,
-    SSE_IDLE_TIMEOUT_S, SSE_POLL_INTERVAL_S, WsgiConfigError, _parse_limit,
-    _TITLES, build_routes, decode_cursor, encode_cursor, make_wsgi_app,
+    SSE_IDLE_TIMEOUT_S, SSE_POLL_INTERVAL_S, WsgiConfigError, _parse_limit,  # noqa: F401
+    _TITLES, build_routes, decode_cursor, encode_cursor, make_wsgi_app,  # noqa: F401
     map_result, paginate, problem,
 )
 

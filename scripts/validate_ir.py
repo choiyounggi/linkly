@@ -889,7 +889,7 @@ def self_test_meta():
 
     for which, owned in CONSTRAINT_OWNERS:
         validator = jsonschema.Draft202012Validator(disable_constraint(schema, which))
-        now_valid = [l for l in labels if validator.is_valid(negatives[l])]
+        now_valid = [label for label in labels if validator.is_valid(negatives[label])]
         if now_valid == [owned]:
             print("CONTROL OK: disabling {} lets exactly its own case through".format(which))
             print("    -> {}".format(owned))

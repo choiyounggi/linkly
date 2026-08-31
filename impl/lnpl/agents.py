@@ -16,7 +16,7 @@ import re
 
 from .lower import derive_id
 from .protocol import (CHILDREN_ALLOWED, REFERENCE_KEYS, ROLES, RpcError, Server,
-                       _structure_fault, attachments, moves, node_references,
+                       _structure_fault, attachments, moves,
                        reference_only_edit)
 from .spec import EXPECTATIONS, SPEC_VERSION
 

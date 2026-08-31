@@ -34,6 +34,16 @@ from .backend import (BackendError, build as build_native, condition_field_names
                       validation_effect_steps)
 from .capabilities import capabilities_document
 from .vocab import vocabulary_document
+from .agents import run_cycle
+from .config import load_config
+from .differential import DifferentialError, verify as verify_modes
+from .generators import GeneratorError, resolve_generator, run_generator
+from .kb import KbError, KnowledgeBase, resolve_pack_roots
+from .openapi import OpenApiError, _slug, generate as generate_openapi
+from .serve import ServeError, WsgiConfigError, build_routes, serve
+from .wsgi import (ExporterError, open_exporter, open_log_format,
+                   resolve_schedule_triggers, _schedule_events)
+from .spec import SpecError, extract, run_manifest
 
 
 def _parse_fields(specs):
@@ -49,16 +59,6 @@ def _parse_fields(specs):
             raise ValueError("--field %s: value must be an integer, got %r"
                              % (name.strip(), raw))
     return out
-from .agents import run_cycle
-from .config import load_config
-from .differential import DifferentialError, verify as verify_modes
-from .generators import GeneratorError, resolve_generator, run_generator
-from .kb import KbError, KnowledgeBase, resolve_pack_roots
-from .openapi import OpenApiError, _slug, generate as generate_openapi
-from .serve import ServeError, WsgiConfigError, build_routes, serve
-from .wsgi import (ExporterError, open_exporter, open_log_format,
-                   resolve_schedule_triggers, _schedule_events)
-from .spec import SpecError, extract, run_manifest
 
 
 def _entities(doc):

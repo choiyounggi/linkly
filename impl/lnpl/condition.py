@@ -54,8 +54,11 @@ from typing import Optional, Tuple, Union
 # The token tables live in `lexer` because that is what the generated reference
 # (`plugins/lnpl/skills/lnpl-authoring/references/grammar.md`) is rendered from.
 # Spelling them a second time here is how the reference and the parser drift.
+# PAYLOAD_NAMESPACE is re-exported here — interp.py and several lower.py call
+# sites import it via `from .condition import PAYLOAD_NAMESPACE`, not from
+# lexer directly.
 from .lexer import (AGG_FUNCS, ARITH_OPS, COMPARATORS, DURATION_UNIT_MS,
-                    INT64_MAX, INT64_MIN, LOGICAL_OPS, PAYLOAD_NAMESPACE,
+                    INT64_MAX, INT64_MIN, LOGICAL_OPS, PAYLOAD_NAMESPACE,  # noqa: F401
                     duration_ms_or_none)
 
 LOGICAL_AND = LOGICAL_OPS[0]

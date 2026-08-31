@@ -1290,35 +1290,35 @@ def lower(decls, module_name):
         constraints = []
         if "policy" in d.clauses:
             pid = ".".join([KIND_PREFIX["Policy"]] + segs)
-            rules = [_parse_policy_line(l.tokens, l.lineno) for l in d.clauses["policy"]]
+            rules = [_parse_policy_line(line.tokens, line.lineno) for line in d.clauses["policy"]]
             if any(r["name"] == "rollback" for r in rules):
                 rollback_services.add(id(d))
             constraint_nodes.append(_node("Policy", pid, rules=rules))
             constraints.append(pid)
             _declaration_diagnostics(
                 mod.diagnostics, "policy",
-                [(r["name"], l.lineno)
-                 for r, l in zip(rules, d.clauses["policy"])], pid)
+                [(r["name"], line.lineno)
+                 for r, line in zip(rules, d.clauses["policy"])], pid)
         if "security" in d.clauses:
             secid = ".".join([KIND_PREFIX["Security"]] + segs)
-            mechs = [_parse_security_line(l.tokens, l.lineno) for l in d.clauses["security"]]
+            mechs = [_parse_security_line(line.tokens, line.lineno) for line in d.clauses["security"]]
             constraint_nodes.append(_node("Security", secid, mechanisms=mechs))
             constraints.append(secid)
             # `role admin` is the same declaration as `role owner` as far as
             # enforcement goes, so the head token is the subject.
             _declaration_diagnostics(
                 mod.diagnostics, "security",
-                [(m.split(" ", 1)[0], l.lineno)
-                 for m, l in zip(mechs, d.clauses["security"])], secid)
+                [(m.split(" ", 1)[0], line.lineno)
+                 for m, line in zip(mechs, d.clauses["security"])], secid)
         if "performance" in d.clauses:
             perfid = ".".join([KIND_PREFIX["Performance"]] + segs)
-            budgets = [_parse_perf_line(l.tokens, l.lineno) for l in d.clauses["performance"]]
+            budgets = [_parse_perf_line(line.tokens, line.lineno) for line in d.clauses["performance"]]
             constraint_nodes.append(_node("Performance", perfid, budgets=budgets))
             constraints.append(perfid)
             _declaration_diagnostics(
                 mod.diagnostics, "performance",
-                [(b["metric"], l.lineno)
-                 for b, l in zip(budgets, d.clauses["performance"])], perfid)
+                [(b["metric"], line.lineno)
+                 for b, line in zip(budgets, d.clauses["performance"])], perfid)
         # issue #99, D2: `expose list <Entity> by <field>` -> one Expose node
         # per line, ids scoped under the service the same way `goal` lines
         # become numbered BusinessRule nodes below. Expose nodes ride in
@@ -1791,7 +1791,7 @@ def _check_parallel_write_conflict(emitted, registry, workflow_name):
                 "and a `parallel` block has no order); split them across "
                 "separate steps or serialize them outside the block"
                 % (workflow_name, len(steps), entity_name,
-                   ", ".join(str(l) for l in lines)))
+                   ", ".join(str(line) for line in lines)))
 
 
 def _steps_outside_guards(node_id, by_id):
@@ -2226,7 +2226,7 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     is also why `input.` is the spelling worth preferring — it is checked.
     """
     from .condition import (Aggregate, ConditionError, FormatCall, Lit,
-                            PAYLOAD_NAMESPACE, parse_condition,
+                            parse_condition,
                             parse_value_or_aggregate, references)
     from .repo_policy import binding_name
 
@@ -2365,7 +2365,7 @@ def _check_list_predicate(node, registry, scope, workflow_name):
     workflow's binding state (`by_binding`/`read_entities`), so it runs here,
     in the same post-pass every other guard-shaped check already runs in.
     """
-    from .condition import Ref, parse_value
+    from .condition import parse_value
 
     entity = registry[node["entity"]]
     fields_by_name = {f["name"]: f for f in entity["fields"]}
