@@ -301,7 +301,7 @@ sha256 12자리) 을 재스탬프한다 — `lnpl_rows`/`lnpl_outbox` DDL은 바
 
 | 플래그 | 뜻 |
 |--------|-----|
-| `--entity` | 대상 entity 이름 |
+| `--entity` | 대상 entity 이름. RFC-0033 네임스페이스 레이아웃에서 같은 짧은 이름을 두 네임스페이스가 선언하면 정규화 철자(`billing.Order` — 생성된 OpenAPI의 스키마 키와 같은 철자)로 지정해야 한다. 짧은 이름이 모호하면 후보를 나열하고 거부(rc 2)한다 — 추측하지 않는다 |
 | `--set` | `FIELD=VALUE` — FIELD가 없는 행에만 설정. FIELD는 앞뒤 공백을 자르고, VALUE는 원문 그대로(자르지 않음) 그 필드의 선언 타입으로 파싱한다 |
 | `--backend` | 필수. `sqlite:<path>`만 유효 — `fake`는 영속 저장소가 없어 거부(rc 2) |
 | `--dry-run` | 아무것도 쓰지 않고 scanned/updated/skipped 개수만 stdout에 JSON으로 출력 |

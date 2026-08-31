@@ -348,3 +348,162 @@ class ConcurrentWriteDuringPerRowRereadTest(MigrateTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+NS_BILLING = """entity Order
+    field
+        id UUID
+        status Text
+"""
+
+NS_SHIPPING = """entity Order
+    field
+        id UUID
+        status Text
+        carrier Text
+"""
+
+ORDER_1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+
+class NamespacedEntityResolutionTest(unittest.TestCase):
+    """RFC-0033 (#146) x `lnpl migrate` (#147).
+
+    RFC-0033 makes "same short name, different namespace" a legal non-
+    collision and `migrate` accepts a directory, so a bare `--entity Order`
+    can name two entities at once. Resolution used to match `node["name"]`
+    and take the first hit, which backfilled the wrong entity's rows with no
+    error and no log line, and left the second entity unreachable under every
+    spelling. These pin the refusal and the qualified spelling; the single-
+    namespace cases pin that unambiguous layouts are untouched.
+    """
+
+    def setUp(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        self.dir = box.name
+        self.db = os.path.join(self.dir, "store.db")
+
+    def _write(self, relpath, text):
+        path = os.path.join(self.dir, "src", relpath)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def _src(self):
+        return os.path.join(self.dir, "src")
+
+    def _both_namespaces(self):
+        self._write("billing/order.lnpl", NS_BILLING)
+        self._write("shipping/order.lnpl", NS_SHIPPING)
+
+    def _doc(self):
+        return cli.compile_source([self._src()])
+
+    def _entity(self, qualified):
+        doc = self._doc()
+        return next(n for n in doc["nodes"]
+                    if n["kind"] == "Entity"
+                    and "%s.%s" % (n.get("namespace"), n["name"]) == qualified)
+
+    def _seed(self, entity_id, *rows):
+        driver = SqliteRepositoryDriver(self.db)
+        try:
+            driver.seed({entity_id: {row_key(entity_id, r): r for r in rows}})
+        finally:
+            driver.close()
+
+    def _raw(self, entity_id, row_id):
+        driver = SqliteRepositoryDriver(self.db)
+        try:
+            found = driver._conn.execute(
+                "SELECT payload FROM lnpl_rows WHERE entity_id = ? AND row_key = ?",
+                (entity_id, row_key(entity_id, {"id": row_id}))).fetchone()
+        finally:
+            driver.close()
+        return json.loads(found[0]) if found else None
+
+    def _migrate(self, entity_arg, *extra):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["migrate", self._src(), "--entity", entity_arg,
+                           "--backend", "sqlite:" + self.db, *extra])
+        return rc, out.getvalue(), err.getvalue()
+
+    # (에러) 모호한 짧은 이름은 추측하지 않고 거부한다 — 이 결함의 본체.
+    def test_an_ambiguous_bare_name_is_refused_not_guessed(self):
+        self._both_namespaces()
+        rc, _, err = self._migrate("Order", "--set", "status=new")
+
+        self.assertNotEqual(0, rc)
+        self.assertIn("ambiguous", err)
+
+    def test_the_refusal_names_every_candidate(self):
+        self._both_namespaces()
+        rc, _, err = self._migrate("Order", "--set", "status=new")
+
+        self.assertNotEqual(0, rc)
+        self.assertIn("billing.Order", err)
+        self.assertIn("shipping.Order", err)
+
+    # (정상) 정규화된 이름은 정확히 그 엔티티에 도달한다.
+    def test_a_qualified_name_reaches_the_second_namespace(self):
+        self._both_namespaces()
+        shipping = self._entity("shipping.Order")
+        self._seed(shipping["id"], {"id": ORDER_1, "carrier": "ups"})
+
+        rc, out, err = self._migrate("shipping.Order", "--set", "status=new")
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual({"scanned": 1, "updated": 1, "skipped": 0},
+                         json.loads(out))
+        self.assertEqual("new", self._raw(shipping["id"], ORDER_1)["status"])
+
+    def test_a_qualified_name_does_not_touch_the_other_namespace(self):
+        self._both_namespaces()
+        billing = self._entity("billing.Order")
+        shipping = self._entity("shipping.Order")
+        self._seed(billing["id"], {"id": ORDER_1})
+        self._seed(shipping["id"], {"id": ORDER_1, "carrier": "ups"})
+
+        rc, _, err = self._migrate("shipping.Order", "--set", "status=new")
+
+        self.assertEqual(0, rc, err)
+        self.assertIsNone(self._raw(billing["id"], ORDER_1).get("status"))
+
+    # (경계) 네임스페이스가 하나뿐이면 짧은 이름이 그대로 동작한다.
+    def test_a_bare_name_still_resolves_when_only_one_namespace_declares_it(self):
+        self._write("billing/order.lnpl", NS_BILLING)
+        billing = self._entity("billing.Order")
+        self._seed(billing["id"], {"id": ORDER_1})
+
+        rc, out, err = self._migrate("Order", "--set", "status=new")
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual({"scanned": 1, "updated": 1, "skipped": 0},
+                         json.loads(out))
+
+    def test_a_namespaced_entity_is_reachable_by_its_bare_name_too(self):
+        self._write("billing/order.lnpl", NS_BILLING)
+        billing = self._entity("billing.Order")
+        self._seed(billing["id"], {"id": ORDER_1})
+
+        rc, _, err = self._migrate("billing.Order", "--set", "status=new")
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual("new", self._raw(billing["id"], ORDER_1)["status"])
+
+    # (에러) 존재하지 않는 이름은 여전히 undeclared로 거부된다.
+    def test_an_unknown_qualified_name_is_still_undeclared(self):
+        self._both_namespaces()
+        rc, _, err = self._migrate("warehouse.Order", "--set", "status=new")
+
+        self.assertNotEqual(0, rc)
+        self.assertIn("no declared entity", err)
+
+    def test_a_namespace_qualifier_on_a_flat_entity_is_undeclared(self):
+        self._write("billing/order.lnpl", NS_BILLING)
+        rc, _, err = self._migrate("shipping.Order", "--set", "status=new")
+
+        self.assertNotEqual(0, rc)
+        self.assertIn("no declared entity", err)

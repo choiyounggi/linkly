@@ -1845,7 +1845,10 @@ def main(argv=None):
                          "order), or a single directory (its *.lnpl, "
                          "filename-sorted — RFC-0031, issue #77)")
     mg.add_argument("--entity", required=True, metavar="E",
-                    help="the declared entity name whose rows to scan")
+                    help="the declared entity name whose rows to scan; "
+                         "qualify it (billing.Order) when a namespace "
+                         "layout declares the same short name more than "
+                         "once (RFC-0033)")
     mg.add_argument("--set", required=True, metavar="FIELD=VALUE",
                     help="set FIELD to VALUE on every row currently "
                          "missing it (expand semantics — an existing "

@@ -26,11 +26,48 @@ class MigrateError(Exception):
     """
 
 
+def _qualified_name(node):
+    """`billing.Order` when the node carries a namespace, else `Order`.
+
+    Same spelling `openapi._schema_name` puts in `components/schemas`, so the
+    name a user reads out of a generated spec is the name `--entity` accepts.
+    """
+    return ("%s.%s" % (node["namespace"], node["name"])
+            if node.get("namespace") else node["name"])
+
+
 def _resolve_entity(doc, name):
-    for node in doc.get("nodes", []):
-        if node["kind"] == "Entity" and node["name"] == name:
-            return node
-    return None
+    """Find the entity `--entity` names, or refuse if the name is ambiguous.
+
+    RFC-0033 makes "same short name, different namespace" a legal *non*-
+    collision, and `lnpl migrate` takes a directory, so a bare `Order` can
+    name two different entities at once (`billing.Order`, `shipping.Order`).
+    Matching on `node["name"]` alone and returning the first hit silently
+    backfilled whichever happened to be declared first — a write to the wrong
+    entity's rows, with no error and no log line, and the second entity was
+    not reachable under any spelling.
+
+    So accept the qualified name too, and when a bare name matches more than
+    one entity, refuse and list the candidates rather than pick one: issue
+    #147 D5's "does not guess, refuses" rule, the same rule `MigrateError`
+    above already states. A bare name that matches exactly one entity still
+    resolves — an unqualified single-namespace or pre-RFC-0033 layout behaves
+    exactly as before.
+
+    Returns `None` when nothing matches; the caller reports that as an
+    undeclared entity.
+    """
+    entities = [n for n in doc.get("nodes", []) if n["kind"] == "Entity"]
+    exact = [n for n in entities if _qualified_name(n) == name]
+    if exact:
+        return exact[0]
+    bare = [n for n in entities if n["name"] == name]
+    if len(bare) > 1:
+        raise MigrateError(
+            "entity name %r is ambiguous across namespaces (%s) — name one "
+            "of them exactly" % (name, ", ".join(sorted(
+                _qualified_name(n) for n in bare))))
+    return bare[0] if bare else None
 
 
 def _resolve_field(entity_node, name):
