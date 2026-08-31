@@ -482,12 +482,36 @@ class ByteIdenticalGuaranteeTest(unittest.TestCase):
     """D4: a compile unit with no subdirectories is byte-identical to the
     pre-RFC-0033 compiler (fixtures committed from `3c1db72`)."""
 
+    # `provenance` 안에서 릴리스마다 반드시 달라지는 두 필드. 이것만 비교에서
+    # 뺀다 — 어휘·IR이 아니라 버전 도장이기 때문이다. `compiler`는 `__version__`
+    # 그 자체이고, `vocabulary_digest`는 `vocab.vocabulary_document()`를 해시하는데
+    # 그 문서의 첫 키가 `"lnpl_version": __version__`이다(vocab.py). 즉 둘 다
+    # 버전 bump만으로 바뀐다.
+    #
+    # 픽스처를 현재 컴파일러로 다시 뽑는 방법은 쓰지 않는다 — 그러면 이 테스트가
+    # 현재 출력을 현재 출력과 비교하게 되어 무엇을 바꾸든 통과한다(D4 보장 소멸).
+    # `enforcement_digest`는 버전과 무관하므로 계속 비교한다.
+    VERSION_STAMPED = ("compiler", "vocabulary_digest")
+
+    def _strip_version_stamps(self, document):
+        copy = dict(document)
+        provenance = dict(copy["provenance"])
+        for key in self.VERSION_STAMPED:
+            provenance.pop(key)
+        copy["provenance"] = provenance
+        return copy
+
     def _assert_matches_fixture(self, decls_source, module_name, fixture_name):
         doc = lower(load_sources(decls_source), module_name).to_document()
         with open(os.path.join(FIXTURE_DIR, fixture_name + ".json"),
                   encoding="utf-8") as fh:
             baseline = json.load(fh)
-        self.assertEqual(doc, baseline)
+        # 뺀 필드가 조용히 사라지지 않게 양쪽 모두에 존재함을 먼저 고정한다.
+        for key in self.VERSION_STAMPED:
+            self.assertIn(key, doc["provenance"])
+            self.assertIn(key, baseline["provenance"])
+        self.assertEqual(self._strip_version_stamps(doc),
+                         self._strip_version_stamps(baseline))
 
     def test_linkhub_single_file(self):
         self._assert_matches_fixture(LINKHUB_SINGLE, "linkhub", "linkhub_single")

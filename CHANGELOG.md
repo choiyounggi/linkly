@@ -8,6 +8,8 @@ This project does not yet follow Semantic Versioning strictly (0.x —
 see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
+
+## [0.7.0] — 2026-08-31
 "The production-readiness release." The 0.6.0 extensibility work is now
 backed by a release pipeline, measured token claims, and a serving surface
 hardened for real traffic.
@@ -258,7 +260,8 @@ when its condition became true (fixed in #5, after this tag). RFC-0008 G8's
 condition-field plumbing was only correct for exactly two condition fields
 (fixed in #4, after this tag).
 
-[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.7.0
 [0.6.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.6.0
 [0.5.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.5.0
 [0.4.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.4.0

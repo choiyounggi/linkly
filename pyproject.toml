@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lnpl"
-version = "0.6.0"
+version = "0.7.0"
 description = "LNPL — the surface language, Semantic IR, and runtime of the linkly LLM-native programming platform"
 readme = "README.md"
 requires-python = ">=3.9"
