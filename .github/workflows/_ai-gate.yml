@@ -243,9 +243,14 @@ jobs:
           #   anthropic_organization_id: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           use_sticky_comment: true # D11
           prompt: ${{ steps.build_prompt.outputs.text }}
-          claude_args: >-
+          # 블록 스타일과 인자 순서를 dev-loop의 `wiki-agent-gate.yml`과
+          # 맞춘다 — 그쪽은 같은 액션·같은 OAuth 토큰 방식으로 실제 통과하고
+          # 있는 설정이라, 여기서 다른 부분을 남겨두면 실패 원인을 좁힐 수
+          # 없다. `|`(literal)로 인자를 줄마다 두고 `--allowedTools`를 따옴표로
+          # 감싼 형태다.
+          claude_args: |
+            --allowedTools "Read,Grep,Glob"
             --json-schema '${{ steps.schema.outputs.compact }}'
-            --allowedTools Read,Grep,Glob
 
       - name: 판정 환경 준비
         if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
