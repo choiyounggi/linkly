@@ -8,7 +8,6 @@ RFC/README/docs 산문에 박힌 ```lnpl 코드 블록이 실제로 컴파일되
 import contextlib
 import importlib.util
 import io
-import os
 import subprocess
 import tempfile
 import unittest
