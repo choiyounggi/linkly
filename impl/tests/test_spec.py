@@ -1,9 +1,10 @@
 """`spec` blocks become a test-suite artifact, not IR nodes (RFC-0002 A.4-2)."""
 
 import os
+import tempfile
 import unittest
 
-from lnpl.lower import lower
+from lnpl.lower import lower, load_sources
 from lnpl.parser import parse
 from lnpl.spec import SpecError, extract, run_manifest, _payload_from_given
 
@@ -298,6 +299,76 @@ class TestEntityStateExpectation(unittest.TestCase):
     def test_an_undeclared_entity_is_refused(self):
         with self.assertRaises(SpecError):
             run_shop(["valid product"], ["rows Widget 1"])
+
+
+NS_BILLING_ORDER = "entity Order\n    field\n        id UUID\n        status Text\n"
+NS_SHIPPING_ORDER = ("entity Order\n    field\n        id UUID\n"
+                     "        status Text\n        carrier Text\n")
+NS_SHOP_TEMPLATE = """
+entity Product
+    field
+        id UUID
+        stock Integer
+        name Text
+entity Order
+    field
+        id UUID
+        total Money
+workflow Checkout
+    find product
+    when product.stock > 0
+    create order
+    spec
+        given
+            valid product
+        when
+            checkout
+        expect
+%s
+"""
+
+
+class TestNamespacedEntityStateExpectation(unittest.TestCase):
+    """`rows <Name> <N>` across RFC-0033 namespaces — issue #151.
+
+    `billing/`, `shipping/`, and the workflow's own `shop/` namespace each
+    declare an `Order`, so a bare `rows Order N` cannot tell which is meant
+    and refuses instead of guessing — the same rule `migrate._resolve_entity`
+    already pins (issue #147), now shared via `resolve.resolve_node`.
+    """
+
+    def _run(self, expect_line):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        src = os.path.join(box.name, "src")
+
+        def write(relpath, text):
+            path = os.path.join(src, relpath)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+
+        write("billing/order.lnpl", NS_BILLING_ORDER)
+        write("shipping/order.lnpl", NS_SHIPPING_ORDER)
+        write("shop/checkout.lnpl",
+              NS_SHOP_TEMPLATE % ("            " + expect_line))
+        decls = load_sources(src)
+        doc = lower(decls, "src").to_document()
+        return run_manifest(extract(decls, "src"), doc)
+
+    def test_an_ambiguous_bare_name_is_refused_not_guessed(self):
+        with self.assertRaises(SpecError) as ctx:
+            self._run("rows Order 3")
+
+        message = str(ctx.exception)
+        self.assertIn("billing.Order", message)
+        self.assertIn("shipping.Order", message)
+        self.assertIn("shop.Order", message)
+
+    def test_a_qualified_name_resolves_the_right_namespace(self):
+        passed, failed, lines = self._run("rows billing.Order 0")
+
+        self.assertEqual(failed, 0, lines)
 
 
 class TestEventExpectation(unittest.TestCase):

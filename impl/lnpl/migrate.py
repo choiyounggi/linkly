@@ -15,6 +15,7 @@ from .drivers import DriverError
 from .interp import (RunError, SCHEMA_GEN_KEY, check_semantic_type,
                      refinement_index, schema_generation)
 from .repo_policy import row_key
+from .resolve import AmbiguousName, resolve_node
 
 
 class MigrateError(Exception):
@@ -24,16 +25,6 @@ class MigrateError(Exception):
     refuses" rule (issue #147 D5). Also raised, after a `rollback()`, for a
     `DriverError` the store itself reports mid-batch.
     """
-
-
-def _qualified_name(node):
-    """`billing.Order` when the node carries a namespace, else `Order`.
-
-    Same spelling `openapi._schema_name` puts in `components/schemas`, so the
-    name a user reads out of a generated spec is the name `--entity` accepts.
-    """
-    return ("%s.%s" % (node["namespace"], node["name"])
-            if node.get("namespace") else node["name"])
 
 
 def _resolve_entity(doc, name):
@@ -55,31 +46,14 @@ def _resolve_entity(doc, name):
     exactly as before.
 
     Returns `None` when nothing matches; the caller reports that as an
-    undeclared entity.
+    undeclared entity. Delegates to `resolve.resolve_node` (issue #151) —
+    `MigrateError` is this module's own contract, so `AmbiguousName` is
+    caught and rewrapped here rather than let the shared module raise it.
     """
-    entities = [n for n in doc.get("nodes", []) if n["kind"] == "Entity"]
-    exact = [n for n in entities if _qualified_name(n) == name]
-    if len(exact) > 1:
-        # `namespace + "." + name` is a plain concatenation, and nothing in the
-        # parser constrains either half against a literal dot, so two distinct
-        # entities can share one qualified spelling (namespace `a.b` + `C`, and
-        # namespace `a` + `b.C`). They have distinct ids, so the compiler is
-        # right not to reject them -- but no `--entity` string can tell them
-        # apart, and picking one would be the same silent wrong-entity write
-        # this function exists to prevent. Refuse and name the ids.
-        raise MigrateError(
-            "entity name %r is ambiguous — %s share that qualified name; "
-            "rename one so it can be addressed" % (name, ", ".join(sorted(
-                n["id"] for n in exact))))
-    if exact:
-        return exact[0]
-    bare = [n for n in entities if n["name"] == name]
-    if len(bare) > 1:
-        raise MigrateError(
-            "entity name %r is ambiguous across namespaces (%s) — name one "
-            "of them exactly" % (name, ", ".join(sorted(
-                _qualified_name(n) for n in bare))))
-    return bare[0] if bare else None
+    try:
+        return resolve_node(doc, "Entity", name)
+    except AmbiguousName as exc:
+        raise MigrateError("entity name %s" % exc)
 
 
 def _resolve_field(entity_node, name):

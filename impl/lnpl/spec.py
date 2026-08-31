@@ -23,6 +23,7 @@ from .drivers import FakeNetworkDriver
 from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import COMPARATORS
 from .repo_policy import binding_name, default_rows
+from .resolve import AmbiguousName, resolve_node
 
 SPEC_VERSION = "0.1"
 
@@ -172,10 +173,13 @@ def _expect_result(phrase, result, _interp):
 
 
 def _entity_id_for(interp, name):
-    for node in interp.doc["nodes"]:
-        if node["kind"] == "Entity" and node.get("name") == name:
-            return node["id"]
-    raise SpecError("no entity named %r is declared" % name)
+    try:
+        node = resolve_node(interp.doc, "Entity", name)
+    except AmbiguousName as exc:
+        raise SpecError(str(exc))
+    if node is None:
+        raise SpecError("no entity named %r is declared" % name)
+    return node["id"]
 
 
 def _expect_rows(phrase, _result, interp):
@@ -204,12 +208,13 @@ def _expect_emitted(phrase, _result, interp):
     tokens = phrase.split()
     if len(tokens) < 2:
         raise SpecError("unsupported emitted expectation: %r" % phrase)
-    event_id = None
-    for node in interp.doc["nodes"]:
-        if node["kind"] == "Event" and node.get("name") == tokens[1]:
-            event_id = node["id"]
-    if event_id is None:
+    try:
+        event_node = resolve_node(interp.doc, "Event", tokens[1])
+    except AmbiguousName as exc:
+        raise SpecError(str(exc))
+    if event_node is None:
         raise SpecError("no event named %r is declared" % tokens[1])
+    event_id = event_node["id"]
     emissions = [e for e in interp.outbox if e["event"] == event_id]
 
     if len(tokens) == 2:
