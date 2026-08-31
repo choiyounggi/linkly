@@ -1228,6 +1228,12 @@ def lower(decls, module_name):
                 raise LowerError(
                     "line %d: unknown field modifier %r — `derived` is the "
                     "only one (issue #95)" % (line.lineno, line.tokens[2]))
+            if not WORD_RE.match(line.tokens[0]):
+                raise LowerError(
+                    "line %d: field name %r must be a lowercase word — "
+                    "`<name> <Type>` where <name> starts with a lowercase "
+                    "letter followed by letters or digits only (%s)"
+                    % (line.lineno, line.tokens[0], WORD_RE.pattern))
             field = {"name": line.tokens[0],
                     "type": _resolve_type(line.tokens[1], refined_names,
                                           used_presets, line.lineno)}
