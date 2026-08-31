@@ -8,6 +8,46 @@ This project does not yet follow Semantic Versioning strictly (0.x —
 see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
+"The production-readiness release." The 0.6.0 extensibility work is now
+backed by a release pipeline, measured token claims, and a serving surface
+hardened for real traffic.
+
+### Added
+- CI/CD: GitHub Actions PR gate across Python 3.11–3.13 and a tag-driven
+  release workflow, plus `scripts/check_version_sync.py` so the package
+  version and the plugin manifests cannot drift apart (issue #141).
+  Publishing to PyPI is deliberately out of scope for this release.
+- `benchmarks/token/`: measured token/edit-cost comparison against an
+  equivalent FastAPI implementation (`equiv/`, `edits/`, `measure_tokens.py`)
+  and a `pass@k` harness (`passk/harness.py`), with the protocol and results
+  written up in `PROTOCOL.md`/`REPORT.md` (issue #142). The harness is
+  committed; running it against a live model API is left to the operator.
+- RFC-0044 (Money arithmetic on integer minor units) and RFC-0045
+  (`avg`/`min`/`max` row-set aggregation) accepted (issue #145).
+  Implementation follows separately — these entries record the accepted
+  designs only.
+- Directory namespaces and `internal/` visibility per RFC-0033: a source
+  tree's directory layout now names entities (`billing/order.lnpl` ->
+  `billing.Order`), and `internal/` marks a namespace as private to its own
+  subtree (issue #146). Single-file compilation is byte-identical, pinned by
+  fixtures under `impl/tests/lnpl_fixtures/rfc0033_byte_identical/`.
+- `lnpl migrate` with an expand-contract migration model, a `_schema_gen`
+  stamp carried on the payload so a running server can tell which schema
+  generation it is serving, and a WAL backup guide (`docs/migration.md`,
+  issue #147).
+- Serving hardening for production traffic: request rate limiting, graceful
+  drain on `SIGTERM`, network-driver keep-alive connection pooling, and a
+  reference nginx TLS front-end (`examples/deploy/nginx.conf`) — issue #148.
+
+### Fixed
+- OpenAPI generation silently omitted `requestBody` for any entity whose id
+  is not exactly two dotted segments. `_operation` rebuilt the id with a
+  fixed `target.split(".")[:2]` slice, which names no real entity for a
+  multi-word entity (`OrderItem` -> `entity.order.item`) or an RFC-0033
+  namespaced one (`entity.billing.order`); the lookup missed and the request
+  schema was dropped with no error. Resolution now follows the `rule` field
+  the lowering pass already records rather than parsing the target string
+  (issue #146).
 
 ## [0.6.0] — 2026-08-30
 "The extensibility release." Every seam the platform owns is now an open,
