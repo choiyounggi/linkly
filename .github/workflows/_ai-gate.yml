@@ -174,6 +174,32 @@ jobs:
             echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
+      # `--json-schema`는 파일 경로가 아니라 **인라인 JSON**을 받는다
+      # (`claude --help`: "JSON Schema for structured output validation.
+      # Example: {\"type\":\"object\",...}"). 경로를 넘기면 액션이
+      # `--json-schema is not valid JSON: JSON Parse error: Unexpected
+      # identifier "schemas"`로 죽는다 — PR #157에서 실측했다.
+      #
+      # 스키마 파일은 계속 진실의 원천으로 두고(판정 스크립트가 같은 파일을
+      # 읽는다) 여기서 `jq -c`로 한 줄로 압축해 넘긴다. 압축본에는 공백이
+      # 없으므로 인자 분리에 걸리지 않는다.
+      - name: 스키마 인라인화
+        id: schema
+        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
+        run: |
+          # `del(.title)`: 그 값("AI gate verdict")이 이 스키마에서 공백을
+          # 담은 유일한 자리다. 액션의 인자 분리기가 따옴표를 어떻게 다루는지
+          # 확정할 수 없으므로, 따옴표 처리에 기대는 대신 **공백 자체를
+          # 없앤다**. title은 검증에 쓰이지 않는 메타데이터이고, 판정
+          # 스크립트는 이 인라인 사본이 아니라 파일 원본을 읽으므로 검증
+          # 의미론은 그대로다.
+          COMPACT=$(jq -c 'del(.title)' schemas/ai-gate-verdict.schema.json)
+          case "$COMPACT" in
+            *\ *) echo "::error::인라인 스키마에 공백이 남아 있다 — 인자 분리에 걸린다"; exit 1 ;;
+          esac
+          printf 'compact=%s\n' "$COMPACT" >> "$GITHUB_OUTPUT"
+          printf 'inlined schema: %s bytes, no whitespace\n' "${#COMPACT}"
+
       - name: Claude Code 게이트 실행
         id: claude
         if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
@@ -209,7 +235,7 @@ jobs:
           use_sticky_comment: true # D11
           prompt: ${{ steps.build_prompt.outputs.text }}
           claude_args: >-
-            --json-schema schemas/ai-gate-verdict.schema.json
+            --json-schema '${{ steps.schema.outputs.compact }}'
             --allowedTools Read,Grep,Glob
 
       - name: 판정 환경 준비
