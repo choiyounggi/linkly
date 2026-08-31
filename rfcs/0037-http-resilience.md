@@ -4,6 +4,7 @@
 
 - Status: **Accepted** (RFC-0037, 2026-08-27)
 - Updates: RFC-0027 §Reference-level Specification/1 (`NetworkDriver` 계약)
+- Updated-by: RFC-0046 (§Examples)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. RFC-0027 §Reference-level
 Specification/1이 `NetworkDriver.call`의 계약(`-> (status, body)`, 메서드 고정
@@ -207,7 +208,11 @@ path_args=[...])`에 넘긴다 — 이스케이프(`urllib.parse.quote(safe="")`
 
 ## Examples
 
-<!-- lnpl-check: skip — drift: RFC의 대표 예제(## Examples)가 실제로 컴파일되지 않는다. `when paymentResult.status == 200`(내부 21번째 줄) 가드 아래 `find order`/`call OrdersApi ...` 두 줄을 나란히 인덴트했지만, 가드는 스텝 하나만 소유할 수 있다(컴파일러: "this line is indented as if it were inside the `when` guard ... but a guard owns exactly one step or block ... Wrap the steps in a `pipeline` block"). 조각도 자리표시자도 아니다 — 실제 수정은 이 예제를 pipeline 블록으로 감싸는 RFC-0007 Updates 개정이 필요하다(본 태스크 범위 밖, RFC 본문은 고치지 않는다). 부수적으로 `method post`+`retry` 조합이 retry-on-non-idempotent 경고도 함께 낸다 — 이건 본문이 바로 아래서 "경고이지 거부가 아니다"라고 직접 서술하는 의도된 부분이라 경고 자체는 무해하다 -->
+**RFC-0046 §Reference-level Specification/1**이 이 절을 갱신한다(RFC-0007
+§2.2) — 대표 예제의 치환 후 최종 텍스트는 그쪽을 본다. 아래 인라인 사본은
+갱신 대상 원문 그대로 남아 있으므로 여전히 컴파일되지 않는다.
+
+<!-- lnpl-check: skip — drift: RFC의 대표 예제(## Examples)가 실제로 컴파일되지 않는다. `when paymentResult.status == 200`(내부 21번째 줄) 가드 아래 `find order`/`call OrdersApi ...` 두 줄을 나란히 인덴트했지만, 가드는 스텝 하나만 소유할 수 있다(컴파일러: "this line is indented as if it were inside the `when` guard ... but a guard owns exactly one step or block ... Wrap the steps in a `pipeline` block"). 조각도 자리표시자도 아니다 — 실제 수정은 이 예제를 pipeline 블록으로 감싸는 RFC-0007 Updates 개정이 필요하다(본 태스크 범위 밖, RFC 본문은 고치지 않는다). 부수적으로 `method post`+`retry` 조합이 retry-on-non-idempotent 경고도 함께 낸다 — 이건 본문이 바로 아래서 "경고이지 거부가 아니다"라고 직접 서술하는 의도된 부분이라 경고 자체는 무해하다 — RFC-0046 §Reference-level Specification/1이 이 절을 갱신한다(RFC-0007 §2.2). 이 인라인 사본은 원문 그대로 남으므로 이 마커도 남는다. -->
 ```lnpl
 capability http PaymentGateway
     method post

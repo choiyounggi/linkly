@@ -647,6 +647,11 @@ RFC_ROUTES = {
              "선언 타입(Integer/DateTime/Money)을 받는지, 빈 RowSet에서 왜 "
              "`sum`/`count`는 0을 내고 `avg`/`min`/`max`는 실패하는지, "
              "`group by`가 왜 아직 없는지", ()),
+    "0046": ("RFC-0037/0008/0014의 `## Examples` 예제를 그대로 따라 썼는데 "
+             "컴파일이 안 되거나 이상하게 조용하다 — 세 예제의 치환 후 최종 "
+             "텍스트가 어디 있는지, `pipeline` 블록이 왜 필요한지, "
+             "`examples/guarded.lnpl`과 왜 동기화됐는지, `until` 0라운드가 "
+             "왜 아무 표지도 안 남기던 문제였는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

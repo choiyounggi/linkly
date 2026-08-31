@@ -4,7 +4,7 @@
 
 - Status: **Accepted** (RFC-0014, 2026-08-06)
 - Updates: RFC-0008 §Reference-level Specification/2. Guard Runtime Semantics
-- Updated-by: RFC-0027 (§Reference-level Specification/2.4 스킵 레코드), RFC-0028 (§Reference-level Specification/2)
+- Updated-by: RFC-0027 (§Reference-level Specification/2.4 스킵 레코드), RFC-0028 (§Reference-level Specification/2), RFC-0046 (§Examples)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 가드의 실행 의미론은
 RFC-0003 §Guard에 있었으나 RFC-0008 §2가 그 절을 이미 갱신했으므로, **효력 있는
@@ -167,6 +167,10 @@ RFC-0004의 요구가 shape을 결정한다.
 
 ## Examples
 
+**RFC-0046 §Reference-level Specification/3**이 "예 2"를 갱신한다(RFC-0007
+§2.2) — 치환 후 최종 텍스트는 그쪽을 본다. 아래 예 2의 인라인 사본은
+갱신 대상 원문 그대로 남아 있으므로 여전히 컴파일되지 않는다.
+
 ### 예 1 — `when`이 거짓인 실행 (t1 F-5 / t2 F-6 동형)
 
 ```lnpl
@@ -192,7 +196,7 @@ workflow PlaceOrder
 
 ### 예 2 — `until`이 0라운드인 실행 (t4 F-9)
 
-<!-- lnpl-check: skip — drift: `step <이름>`은 pre-RFC-0002 폐기 문법이다 — Start/Loop/End는 실제 동사가 아니라 라운드 계수 의미론을 설명하려는 자리표시 스텝 이름인데, 미선언 동사는 강한 실패가 아니라 no-op 경고로 통과한다(컴파일러: "warning: unknown-verb ... step ... is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op"). 조각도 자리표시자(`...`)도 아니다 — 그럴듯한 낱말이 파싱에 성공하고 아무것도 하지 않는, AGENTS.md가 말하는 바로 그 실패 모드가 이 문서 예제 자체에서 재현된다. Accepted RFC 본문 직접 수정 금지 — 올바른 수정은 현재 문법으로 다시 쓰는 RFC-0007 Updates 개정이다 -->
+<!-- lnpl-check: skip — drift: `step <이름>`은 pre-RFC-0002 폐기 문법이다 — Start/Loop/End는 실제 동사가 아니라 라운드 계수 의미론을 설명하려는 자리표시 스텝 이름인데, 미선언 동사는 강한 실패가 아니라 no-op 경고로 통과한다(컴파일러: "warning: unknown-verb ... step ... is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op"). 조각도 자리표시자(`...`)도 아니다 — 그럴듯한 낱말이 파싱에 성공하고 아무것도 하지 않는, AGENTS.md가 말하는 바로 그 실패 모드가 이 문서 예제 자체에서 재현된다. Accepted RFC 본문 직접 수정 금지 — 올바른 수정은 현재 문법으로 다시 쓰는 RFC-0007 Updates 개정이다 — RFC-0046 §Reference-level Specification/3이 이 절을 갱신한다(RFC-0007 §2.2). 이 인라인 사본은 원문 그대로 남으므로 이 마커도 남는다. -->
 ```lnpl
 workflow W
     step Start
