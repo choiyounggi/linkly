@@ -90,7 +90,11 @@ def _install_sigterm_handler(app, server, grace_period_s):
         server.shutdown()
 
     def _on_sigterm(signum, frame):
-        app.shutting_down = True
+        # issue #150: `begin_shutdown()` sets the flag under `_inflight_cv`
+        # (same lock `_admit()` checks it under) -- a bare attribute
+        # assignment here raced the WSGI gate/increment. Still no I/O in
+        # the handler itself, just the lock acquire.
+        app.begin_shutdown()
         threading.Thread(target=_drain_then_shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, _on_sigterm)
 
