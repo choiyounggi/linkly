@@ -1,0 +1,70 @@
+name: AI gates (정합성)
+
+# 정합성 AI 게이트 2종의 호출부다. 판정 배관은 여기에 없다 —
+# `.github/workflows/_ai-gate.yml`(재사용 워크플로)이 전부 가지고 있고, 이
+# 파일은 게이트 이름·프롬프트 파일·advisory 여부만 넘긴다. 로스터와 승격
+# 절차는 `docs/CI-GATES.md`에 있다(이 파일 이름을 그 문서가 두 곳에서
+# 지목하므로 이름을 바꾸지 말 것).
+#
+# D2: 트리거는 `pull_request` **하나뿐**이다. 포크의 코드를 시크릿이 있는
+# 베이스 컨텍스트로 끌어오는 `_target` 변종은 이 레포의 AI 게이트에서 쓰지
+# 않는다 — 그 이름을 이 파일에서 grep하면 0건이어야 한다. 포크 PR 자체는
+# `_ai-gate.yml`의 `if:`가 걸러낸다.
+
+on:
+  pull_request:
+    # D3: 워크플로 수준 필터는 두 게이트가 보는 경로의 **합집합**이다. 파일
+    # 하나에 잡이 둘 들어가는데, 재사용 워크플로를 부르는 잡의 `if:`는 변경
+    # 파일 목록을 볼 수 없어서 잡별 경로 필터를 쓸 수 없다.
+    #
+    # 그래서 `rfcs/`만 바뀐 PR에서도 `golden-approval` 잡이 돈다. 그때
+    # 에이전트가 `examined.files`를 비운 채 `pass`를 내면
+    # `scripts/ai_gate_verdict.py`가 exit 3(공허한 통과)을 내고, exit 3은
+    # advisory 여부와 무관하게 잡을 실패시킨다. 두 프롬프트가 "실제로 읽은
+    # 파일은 결론이 '관련 변경 없음'이어도 전부 싣는다"를 명시적으로
+    # 지시해서 이 경우를 처리한다(D4) — `expect_nonempty: false`로 보호를
+    # 끄지 않는다(D5).
+    paths:
+      - "rfcs/**"
+      - "impl/lnpl/**"
+      - "examples/**"
+
+# 호출부가 permissions를 선언하지 않으면 재사용 워크플로가 쓸 수 있는 토큰
+# 범위의 상한이 레포 기본값이 된다. 이 레포의 기본값은 read다
+# (`gh api repos/:owner/:repo/actions/permissions/workflow` →
+# "default_workflow_permissions":"read"). `_ai-gate.yml`은
+# `pull-requests: write`를 선언하는데(스티키 코멘트), 호출부가 그 범위를
+# 열어주지 않으면 그것을 얻을 수 없다 — 게이트가 돌아도 아무것도 남기지
+# 못한다. 아래는 `_ai-gate.yml`이 요구하는 것과 **정확히 같은 범위**이고
+# 권한 확대가 아니다. `release.yml`도 잡별 permissions를 쓰는 같은 관용구다.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  rfc-conformance:
+    uses: ./.github/workflows/_ai-gate.yml
+    with:
+      gate_name: rfc-conformance
+      prompt_file: .github/ai-gates/rfc-conformance.md
+      # D6: advisory로 시작한다. 승격은 `docs/CI-GATES.md`의 절차(약 50 PR·
+      # 수용률 80%)를 거쳐 이 한 줄을 뒤집는 일이다.
+      blocking: false
+      # D5: 공허한 통과 탐지를 켠 채로 둔다. D4가 이걸 성립시킨다.
+      expect_nonempty: true
+      paths_note: "rfcs/** 와 impl/lnpl/** 의 변경분"
+    # D7: `secrets: inherit`을 쓰지 않는다. 이 게이트가 무엇에 의존하는지
+    # 호출부에서 눈에 보여야 한다.
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  golden-approval:
+    uses: ./.github/workflows/_ai-gate.yml
+    with:
+      gate_name: golden-approval
+      prompt_file: .github/ai-gates/golden-approval.md
+      blocking: false
+      expect_nonempty: true
+      paths_note: "examples/** 골든 산출물"
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
