@@ -427,10 +427,16 @@ NOOP_CONTROL = ("CONTROL (must survive): reword a docstring",
 # the baseline gate, which exits rc=1 in ~35s having measured nothing at all.
 # That is outwardly indistinguishable from "a mutant survived" except by how
 # fast it finished, so anything a test reads belongs in this tuple.
+#
+# `CHANGELOG.md` and `.github` arrived with `scripts/changelog_section.py`
+# (issue #154): `test_changelog_section.py` reads the real CHANGELOG.md to
+# pin the 0.7.0 section against it, and `test_release_workflow.py` reads
+# `.github/workflows/release.yml`'s source text for wiring assertions.
 TREE_CONTENTS = ("impl", "examples", "qa", "schemas", "scripts", "kb", "rfcs", "docs",
                  "plans", "mlir", "CHARTER.md", ".venv",
                  "plugins", ".claude-plugin", "AGENTS.md", "CLAUDE.md",
-                 "pyproject.toml", "README.md", "README.ko.md")
+                 "pyproject.toml", "README.md", "README.ko.md",
+                 "CHANGELOG.md", ".github")
 
 
 def make_tree(dest):
