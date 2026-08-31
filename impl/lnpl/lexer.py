@@ -64,11 +64,11 @@ GUARD_ALT_KEYWORD = "or"
 # The assignment step, `set <reference> to <value>`.
 ASSIGN_KEYWORDS = ("set", "to")
 
-# RFC-0025 aggregate functions — a `set`'s right-hand side may be `sum <ref>` or
-# `count <ref>` instead of a `Value`. They do not combine with arithmetic
-# (`sum x + 1` is not a `Value`), so they are their own alternative rather than
-# an `Operand`.
-AGG_FUNCS = ("sum", "count")
+# RFC-0025/RFC-0045 aggregate functions — a `set`'s right-hand side may be
+# `sum <ref>` / `count <ref>` / `avg <ref>` / `min <ref>` / `max <ref>` instead
+# of a `Value`. They do not combine with arithmetic (`sum x + 1` is not a
+# `Value`), so they are their own alternative rather than an `Operand`.
+AGG_FUNCS = ("sum", "count", "avg", "min", "max")
 
 # The reserved namespace naming the run's input payload: `input.quantity`.
 PAYLOAD_NAMESPACE = "input"
