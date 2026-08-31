@@ -18,7 +18,7 @@ import unittest
 
 from lnpl.lower import (LoaderError, LowerError, derive_id, load_sources,
                         lower)
-from lnpl.openapi import generate as generate_openapi
+from lnpl.openapi import _entity_for_target, generate as generate_openapi
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TMP_ROOT = os.path.join(REPO, ".claude", "tmp")
@@ -298,6 +298,184 @@ class OpenApiSchemaNamingTest(_TmpDirCase):
         openapi = generate_openapi(doc)
         for name in openapi["components"]["schemas"]:
             self.assertNotIn(".", name)
+
+
+SERVICE_AND_CREATE_WF = (
+    "\nservice Shop\n    goal\n        accept one\n\n"
+    "workflow CreateIt\n    validate %s\n    create %s\n")
+
+
+class ValidationTargetResolutionTest(_TmpDirCase):
+    """r2 F1: `_operation` resolves a `Validation` node's `target` back to its
+    entity to attach `requestBody`. It used to rebuild the id with a fixed
+    two-segment slice, which names no real entity as soon as the id has more
+    segments — a multi-word entity name (`OrderItem` -> `entity.order.item`,
+    true since long before RFC-0033) or an RFC-0033 namespace prefix
+    (`entity.billing.order`). The lookup missed and the operation lost its
+    `requestBody` silently, so these assert the body is present AND points at
+    the right schema — asserting only "no exception" would not have caught it.
+    """
+
+    def _post_ops(self, source_arg, module="shop"):
+        doc = lower(load_sources(source_arg), module).to_document()
+        openapi = generate_openapi(doc)
+        return {path: ops["post"] for path, ops in openapi["paths"].items()
+                if "post" in ops}
+
+    def _sole_request_ref(self, ops):
+        bodied = [op for op in ops.values() if "requestBody" in op]
+        self.assertEqual(len(bodied), 1, "expected exactly one POST with a body")
+        return bodied[0]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+
+    def test_a_namespaced_entity_keeps_its_request_body(self):
+        self._write("billing/order.lnpl",
+                    "entity Order\n    field\n        id UUID\n        total Text\n"
+                    + SERVICE_AND_CREATE_WF % ("order", "order"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/billing.Order")
+
+    def test_a_flat_single_word_entity_is_unchanged(self):
+        # The control: a 2-segment id is exactly the case the old fixed slice
+        # got right, so it must resolve identically after the fix.
+        self._write("a.lnpl",
+                    "entity Order\n    field\n        id UUID\n        total Text\n"
+                    + SERVICE_AND_CREATE_WF % ("order", "order"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/Order")
+
+    def test_a_flat_multi_word_entity_keeps_its_request_body(self):
+        # Boundary: 3-segment id with NO namespace — the pre-RFC-0033 half of
+        # this defect, which the fixed slice also silently dropped.
+        self._write("a.lnpl",
+                    "entity OrderItem\n    field\n        id UUID\n        sku Text\n"
+                    + SERVICE_AND_CREATE_WF % ("orderitem", "orderitem"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/OrderItem")
+
+    def test_a_field_level_validation_resolves_to_its_owning_entity(self):
+        # `validate <field>` targets `<entity id>.<field>`, one segment deeper
+        # again — and under a namespace that is 4 segments.
+        self._write("billing/order.lnpl",
+                    "entity Order\n    field\n        id UUID\n        total Text\n"
+                    + SERVICE_AND_CREATE_WF % ("total", "order"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/billing.Order")
+
+    def test_an_internal_entity_resolves_from_its_own_namespace(self):
+        # `internal/` boundary: visibility narrows, but the id/target shape is
+        # the parent namespace's, so resolution must still land.
+        self._write("billing/internal/ledger.lnpl",
+                    "entity Ledger\n    field\n        id UUID\n        balance Integer\n")
+        self._write("billing/use.lnpl", SERVICE_AND_CREATE_WF % ("ledger", "ledger"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/billing.Ledger")
+
+    def test_a_whole_entity_validation_of_a_multi_word_name_resolves(self):
+        # `Order` (`entity.order`) is a dotted prefix of `OrderItem`
+        # (`entity.order.item`), so resolving by prefix search could land on
+        # `Order`. A whole-entity validation must still name `OrderItem`.
+        self._write("a.lnpl",
+                    "entity Order\n    field\n        id UUID\n        total Text\n\n"
+                    "entity OrderItem\n    field\n        id UUID\n        sku Text\n"
+                    + SERVICE_AND_CREATE_WF % ("orderitem", "orderitem"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/OrderItem")
+
+    def test_a_field_target_colliding_with_another_entity_id_resolves_to_its_owner(self):
+        # r2 audit: `Order` with a field named `item`, alongside an
+        # `OrderItem` entity, makes `validate item` emit target
+        # `entity.order.item` — byte-identical to `OrderItem`'s OWN id. The
+        # body must be `Order` (whose field was validated); resolving the
+        # target string alone silently answered `OrderItem`.
+        self._write("a.lnpl",
+                    "entity Order\n    field\n        id UUID\n        item Text\n\n"
+                    "entity OrderItem\n    field\n        id UUID\n        sku Text\n"
+                    + SERVICE_AND_CREATE_WF % ("item", "order"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/Order")
+
+    def test_the_colliding_whole_entity_form_still_resolves_to_the_other_entity(self):
+        # The twin of the case above, same declarations and the SAME target
+        # string, differing only in `rule` — proving the two are told apart
+        # by the label and not by the id text.
+        self._write("a.lnpl",
+                    "entity Order\n    field\n        id UUID\n        item Text\n\n"
+                    "entity OrderItem\n    field\n        id UUID\n        sku Text\n"
+                    + SERVICE_AND_CREATE_WF % ("orderitem", "orderitem"))
+        ref = self._sole_request_ref(self._post_ops(self.tmpdir))
+        self.assertEqual(ref, "#/components/schemas/OrderItem")
+
+
+class EntityForTargetUnitTest(unittest.TestCase):
+    """r2 F1, at the unit the resolution actually lives in.
+
+    `_entity_for_target` takes the whole Validation node because `target`
+    alone is ambiguous: the two shapes `lower.py` emits can produce the same
+    string, and only `rule` separates them.
+    """
+
+    ENTITIES = [{"id": "entity.order", "name": "Order"},
+                {"id": "entity.order.item", "name": "OrderItem"},
+                {"id": "entity.billing.order", "name": "Order"}]
+
+    @staticmethod
+    def _whole(target):
+        return {"target": target, "rule": "semantic-types"}
+
+    @staticmethod
+    def _field(target, ftype="Text"):
+        return {"target": target, "rule": ftype}
+
+    def test_a_whole_entity_target_resolves_to_that_entity(self):
+        self.assertEqual(
+            _entity_for_target(self._whole("entity.billing.order"),
+                               self.ENTITIES)["id"],
+            "entity.billing.order")
+
+    def test_a_field_target_resolves_to_its_owning_entity(self):
+        self.assertEqual(
+            _entity_for_target(self._field("entity.billing.order.total"),
+                               self.ENTITIES)["id"],
+            "entity.billing.order")
+
+    def test_one_target_string_resolves_two_ways_by_rule(self):
+        # The core of the r2 audit finding, isolated: identical `target`,
+        # opposite answers, decided only by `rule`.
+        target = "entity.order.item"
+        self.assertEqual(
+            _entity_for_target(self._whole(target), self.ENTITIES)["id"],
+            "entity.order.item")
+        self.assertEqual(
+            _entity_for_target(self._field(target), self.ENTITIES)["id"],
+            "entity.order")
+
+    def test_a_deep_field_target_strips_exactly_one_segment(self):
+        self.assertEqual(
+            _entity_for_target(self._field("entity.order.item.sku"),
+                               self.ENTITIES)["id"],
+            "entity.order.item")
+
+    def test_an_unmatched_target_returns_none(self):
+        self.assertIsNone(
+            _entity_for_target(self._whole("entity.nosuch"), self.ENTITIES))
+
+    def test_no_entities_at_all_returns_none(self):
+        self.assertIsNone(_entity_for_target(self._whole("entity.order"), []))
+
+    def test_a_shared_segment_prefix_is_not_a_match(self):
+        # `entity.orders` must not resolve to `entity.order` — the id has to
+        # match whole, not by character prefix.
+        self.assertIsNone(
+            _entity_for_target(self._whole("entity.orders"), self.ENTITIES))
+
+    def test_a_node_without_a_rule_is_read_as_the_field_form(self):
+        # Defensive boundary: every Validation node `lower.py` emits carries
+        # `rule`, so this only pins the absent-key path to a deterministic
+        # answer instead of a KeyError.
+        self.assertEqual(
+            _entity_for_target({"target": "entity.order.item"},
+                               self.ENTITIES)["id"],
+            "entity.order")
 
 
 class ByteIdenticalGuaranteeTest(unittest.TestCase):
