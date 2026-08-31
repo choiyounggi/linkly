@@ -1,0 +1,62 @@
+name: AI gates (quality)
+
+# 품질 AI 게이트 2종의 호출부. 판정 배관은 여기 없다 —
+# `.github/workflows/_ai-gate.yml`이 전부 가지고 있고(포크 차단, SHA 핀,
+# 시크릿/변경파일 0건 skip, `scripts/ai_gate_verdict.py`의 exit code 판정),
+# 이 파일은 게이트 이름·프롬프트 파일·advisory 여부만 넘긴다.
+# 로스터와 승격 절차는 `docs/CI-GATES.md`.
+#
+# D2: 트리거는 `pull_request` 하나뿐이다. 포크 PR을 베이스 레포 컨텍스트에서
+# 돌리는 트리거는 쓰지 않는다 — 포크 코드 체크아웃 + 시크릿은 RCE·시크릿 유출
+# 패턴이고, 포크 PR 차단은 `_ai-gate.yml`의 잡 조건이 이미 맡고 있다.
+#
+# D3: `paths` 필터가 없다 — 두 게이트 모두 모든 PR에서 돈다.
+# `prose-factcheck`은 정의상 모든 PR의 산문을 보고, 잡 둘이 한 파일에 있으므로
+# `test-quality`도 같이 돈다. 그래서 `test-quality`는 테스트를 하나도 건드리지
+# 않은 PR에서도 실행된다 — 그 경우에도 프롬프트가 "읽은 파일을 전부
+# `examined.files`에 싣고 `examined.note`에 그 사실을 적는다"를 강제한다(D4).
+# 비워서 `pass`를 내면 `expect_nonempty: true` 때문에 exit 3(공허한 통과)로
+# 잡이 죽는다 — advisory여도 죽는다(exit 2·3은 blocking과 무관).
+
+on:
+  pull_request:
+
+# `_ai-gate.yml`이 워크플로 레벨에 `contents: read` + `pull-requests: write`를
+# 선언한다(`use_sticky_comment`가 PR 코멘트를 쓴다). 재사용 워크플로의 권한은
+# 호출부가 가진 GITHUB_TOKEN 범위를 넘을 수 없으므로, 호출부가 아무것도
+# 선언하지 않으면 레포 기본값이 그 상한이 된다 — 기본값이 read-only면
+# `workflow_call` 자체가 죽고, 그 죽음은 advisory와 무관하다. 이 레포는
+# `release.yml`에서 이미 필요한 잡마다 권한을 명시하는 관례를 쓴다. 여기 적힌
+# 둘은 `_ai-gate.yml`이 요구하는 것과 정확히 같은 범위다 — 권한을 넓히지 않는다.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test-quality:
+    uses: ./.github/workflows/_ai-gate.yml
+    with:
+      gate_name: test-quality
+      prompt_file: .github/ai-gates/test-quality.md
+      # D6: advisory로 시작한다. 승격은 docs/CI-GATES.md의 절차(약 50 PR,
+      # 수용률 80% 이상)를 거쳐 이 한 줄을 true로 뒤집는 일이다.
+      blocking: false
+      # D5: D4가 성립시켜 준다 — 어떤 PR에서도 읽은 파일이 실리므로
+      # 공허한 통과 보호를 끌 이유가 없다.
+      expect_nonempty: true
+      paths_note: "impl/tests/** 의 변경분"
+    # D7: `secrets: inherit` 금지. 이 게이트가 무엇에 의존하는지 호출부에서
+    # 보여야 하고, 재사용 워크플로에 필요 없는 시크릿까지 넘기지 않는다.
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  prose-factcheck:
+    uses: ./.github/workflows/_ai-gate.yml
+    with:
+      gate_name: prose-factcheck
+      prompt_file: .github/ai-gates/prose-factcheck.md
+      blocking: false
+      expect_nonempty: true
+      paths_note: "PR 산문과 diff 전체"
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
