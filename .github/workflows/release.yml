@@ -98,21 +98,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # issue #154: the tag name is untrusted input from outside the repo
+      # (github.ref_name). Never interpolate `${{ }}` directly into a `run:`
+      # block — GitHub's script-injection hardening guide requires routing
+      # such values through an intermediate env var first:
+      # https://docs.github.com/en/actions/reference/security/secure-use
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
 
       - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
 
+      - name: Extract release notes from CHANGELOG (issue #154)
+        run: |
+          python scripts/changelog_section.py "$TAG" > notes.md
+          python scripts/changelog_section.py "$TAG" --title > title.txt
+
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/* \
-            --title "linkly ${{ github.ref_name }}" \
-            --notes "See CHANGELOG.md for details."
+          gh release create "$TAG" dist/* \
+            --title "$(cat title.txt)" \
+            --notes-file notes.md
 
   # Scaffolded, disabled: PyPI publishing needs a Trusted Publisher registered
   # at https://pypi.org/manage/project/<name>/settings/publishing/ first
