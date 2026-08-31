@@ -35,7 +35,7 @@ class PyprojectTest(unittest.TestCase):
         self.assertEqual(self.cfg["project"]["version"], lnpl.__version__)
 
     def test_requires_python_floor_declared(self):
-        self.assertEqual(self.cfg["project"]["requires-python"], ">=3.9")
+        self.assertEqual(self.cfg["project"]["requires-python"], ">=3.11")
 
     def test_runtime_dependency_set_is_exactly_jsonschema(self):
         # 의존을 늘리지 않는다는 제약을 테스트로 고정한다.

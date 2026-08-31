@@ -1669,7 +1669,7 @@ def _driver_entry_points():
     """Every entry-point registered under `lnpl.drivers`, across the stdlib
     API's version split: 3.10+ takes `group=` as a select filter; 3.9's
     `entry_points()` takes no arguments and returns a `{group: [EntryPoint,
-    ...]}` mapping instead (`pyproject.toml`'s declared floor is 3.9).
+    ...]}` mapping instead (`pyproject.toml`'s declared floor is 3.11).
     """
     try:
         return importlib_metadata.entry_points(group=DRIVERS_ENTRY_POINT_GROUP)
@@ -1775,7 +1775,7 @@ def open_cache(spec, clock=None):
 def _token_entry_points():
     """Every entry-point registered under `lnpl.tokens` — same stdlib
     version split `_driver_entry_points()` handles (`pyproject.toml`'s
-    declared floor is 3.9)."""
+    declared floor is 3.11)."""
     try:
         return importlib_metadata.entry_points(group=TOKENS_ENTRY_POINT_GROUP)
     except TypeError:

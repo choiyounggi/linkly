@@ -7,13 +7,23 @@ name = "lnpl"
 version = "0.7.0"
 description = "LNPL — the surface language, Semantic IR, and runtime of the linkly LLM-native programming platform"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = ["jsonschema"]
 
 [project.scripts]
 lnpl = "lnpl.cli:main"
 
+# Pinned exactly, not floated: a new ruff release can add rules to a selected
+# family, which turns a green CI red with no change to this repo's code.
+[project.optional-dependencies]
+lint = ["ruff==0.16.5"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["impl/lnpl"]
 force-include = { "mlir/lnpl.irdl.mlir" = "lnpl/assets/mlir/lnpl.irdl.mlir", "mlir/llvm.pin" = "lnpl/assets/mlir/llvm.pin", "kb" = "lnpl/assets/kb" }
+
+# No `target-version` here on purpose: ruff derives it from `requires-python`
+# above, so the Python floor stays declared in exactly one place.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

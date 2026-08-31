@@ -167,7 +167,7 @@ def load_config(path=None, profile=None):
         return ResolvedConfig()
 
     # Imported here, not at module level: `tomllib` is stdlib-only from
-    # Python 3.11 (this project supports >=3.9, `pyproject.toml`), and
+    # Python 3.11 (this project supports >=3.11, `pyproject.toml`), and
     # `cli.py` imports this module unconditionally at its own top level —
     # a module-level `import tomllib` would break `python -m lnpl` under
     # the walk-up-failed module-fallback path (`lnpl-diagnostics.sh` step

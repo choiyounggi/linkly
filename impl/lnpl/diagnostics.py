@@ -174,7 +174,7 @@ def _extension_entry_points():
     stdlib API's version split `drivers._driver_entry_points()` also
     handles: 3.10+ takes `group=` as a select filter; 3.9's `entry_points()`
     takes no arguments and returns a `{group: [EntryPoint, ...]}` mapping
-    instead (`pyproject.toml`'s declared floor is 3.9)."""
+    instead (`pyproject.toml`'s declared floor is 3.11)."""
     try:
         return importlib_metadata.entry_points(group=DIAGNOSTICS_ENTRY_POINT_GROUP)
     except TypeError:

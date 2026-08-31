@@ -111,7 +111,7 @@ def _load_pack_manifest(pack_root):
         raise KbError("pack at %r has no pack.toml manifest" % pack_root)
 
     # Imported here, not at module level — tomllib is stdlib-only from Python
-    # 3.11 (this project supports >=3.9, pyproject.toml), and cli.py imports
+    # 3.11 (this project supports >=3.11, pyproject.toml), and cli.py imports
     # this module unconditionally at its own top level. A module-level
     # `import tomllib` would break `python -m lnpl` under the
     # walk-up-failed module-fallback path on any interpreter below 3.11, even
@@ -182,7 +182,7 @@ def _scan_category_docs(root):
 def _kb_pack_entry_points():
     """Every entry-point registered under `lnpl.kb`, across the stdlib API's
     version split — same pattern `drivers.py::_driver_entry_points` uses
-    (`pyproject.toml`'s declared floor is 3.9)."""
+    (`pyproject.toml`'s declared floor is 3.11)."""
     try:
         return importlib_metadata.entry_points(group=KB_ENTRY_POINT_GROUP)
     except TypeError:
