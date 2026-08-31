@@ -193,7 +193,16 @@ jobs:
           # 없앤다**. title은 검증에 쓰이지 않는 메타데이터이고, 판정
           # 스크립트는 이 인라인 사본이 아니라 파일 원본을 읽으므로 검증
           # 의미론은 그대로다.
-          COMPACT=$(jq -c 'del(.title)' schemas/ai-gate-verdict.schema.json)
+          # `$schema`도 뗀다. 액션 안의 검증기가 draft 2020-12 메타스키마를
+          # 모른다 — PR #157 실측: 'no schema with key or ref
+          # "https://json-schema.org/draft/2020-12/schema"'. 이 스키마가 쓰는
+          # 키워드는 type/required/properties/enum/items/minLength/minimum/
+          # additionalProperties뿐이고 전부 draft-07에서도 같은 의미라,
+          # 메타스키마 선언만 빼면 검증기가 자기 기본 draft로 해석한다.
+          # 파일 원본은 `$schema`를 유지하고 scripts/ai_gate_verdict.py가
+          # Draft202012Validator로 그 파일을 검증하므로, 판정 계층의 의미론은
+          # 이 인라인 사본과 무관하게 그대로다.
+          COMPACT=$(jq -c 'del(.title, ."$schema")' schemas/ai-gate-verdict.schema.json)
           case "$COMPACT" in
             *\ *) echo "::error::인라인 스키마에 공백이 남아 있다 — 인자 분리에 걸린다"; exit 1 ;;
           esac
