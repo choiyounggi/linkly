@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI gate verdict",
+  "type": "object",
+  "required": ["gate", "verdict", "examined", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "gate": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verdict": {
+      "enum": ["pass", "fail"]
+    },
+    "examined": {
+      "type": "object",
+      "required": ["files", "note"],
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "file", "claim", "evidence"],
+        "properties": {
+          "severity": {
+            "enum": ["blocker", "warning"]
+          },
+          "file": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "suggestion": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
