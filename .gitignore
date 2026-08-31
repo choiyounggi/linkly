@@ -12,3 +12,8 @@ dist/
 *.egg-info/
 /scale-corpus*/
 /graphify-out/
+
+# `uv run` byproduct. This repo builds with hatchling and CI installs with
+# pip; uv is only ever a local convenience runner, so a lockfile here would
+# declare a toolchain the project does not actually use.
+uv.lock
