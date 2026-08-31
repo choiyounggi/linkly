@@ -507,3 +507,27 @@ class NamespacedEntityResolutionTest(unittest.TestCase):
 
         self.assertNotEqual(0, rc)
         self.assertIn("no declared entity", err)
+
+    # (경계) 정규화 이름조차 모호할 수 있다 — namespace `a.b`+`C` 와 `a`+`b.C`.
+    def test_a_colliding_qualified_name_is_refused_too(self):
+        self._write(os.path.join("a.b", "c.lnpl"),
+                    "entity C\n    field\n        id UUID\n        status Text\n")
+        self._write(os.path.join("a", "bc.lnpl"),
+                    "entity b.C\n    field\n        id UUID\n        status Text\n")
+
+        rc, _, err = self._migrate("a.b.C", "--set", "status=new")
+
+        self.assertNotEqual(0, rc)
+        self.assertIn("ambiguous", err)
+
+    def test_the_colliding_refusal_names_both_ids(self):
+        self._write(os.path.join("a.b", "c.lnpl"),
+                    "entity C\n    field\n        id UUID\n        status Text\n")
+        self._write(os.path.join("a", "bc.lnpl"),
+                    "entity b.C\n    field\n        id UUID\n        status Text\n")
+
+        rc, _, err = self._migrate("a.b.C", "--set", "status=new")
+
+        self.assertNotEqual(0, rc)
+        self.assertIn("entity.a.b.c", err)
+        self.assertIn("entity.a.b..c", err)

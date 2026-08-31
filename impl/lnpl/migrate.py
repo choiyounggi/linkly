@@ -59,6 +59,18 @@ def _resolve_entity(doc, name):
     """
     entities = [n for n in doc.get("nodes", []) if n["kind"] == "Entity"]
     exact = [n for n in entities if _qualified_name(n) == name]
+    if len(exact) > 1:
+        # `namespace + "." + name` is a plain concatenation, and nothing in the
+        # parser constrains either half against a literal dot, so two distinct
+        # entities can share one qualified spelling (namespace `a.b` + `C`, and
+        # namespace `a` + `b.C`). They have distinct ids, so the compiler is
+        # right not to reject them -- but no `--entity` string can tell them
+        # apart, and picking one would be the same silent wrong-entity write
+        # this function exists to prevent. Refuse and name the ids.
+        raise MigrateError(
+            "entity name %r is ambiguous — %s share that qualified name; "
+            "rename one so it can be addressed" % (name, ", ".join(sorted(
+                n["id"] for n in exact))))
     if exact:
         return exact[0]
     bare = [n for n in entities if n["name"] == name]
