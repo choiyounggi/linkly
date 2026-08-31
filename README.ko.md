@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 3,335여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 3,511여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 44편 — 41편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0033/0034는 `Draft`.** RFC-0007은
+**RFC 46편 — 44편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -249,7 +249,7 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0030 `create` 결과 바인딩과 payload 시드](rfcs/0030-create-result-binding-and-payload-seed.md) | `create <명사> as <이름>`이 RFC-0027의 결과 바인딩 표기를 확장해 생성 행에 `set`/`format`/`respond`를 쓸 수 있게 한다. 별개로, `as` 유무와 무관하게 생성 행이 payload의 동명 비-`derived` 필드로 시드된다 — "뼈대 행" 갭의 해소. `as` 없는 `create`는 컴파일 표면에서 이전과 바이트 동일하다(`result` 필드도, 새 스코프 편입도 없다). *0012 §G12.2·§G12.5 갱신* |
 | [0031 다중 파일 컴파일 단위](rfcs/0031-multi-file-compilation-unit.md) | 컴파일 단위가 파일 집합으로 확장된다 — `lnpl <cmd> <src...>`는 명시한 파일들을 인자 순서로 병합하고, `lnpl <cmd> <dir>`은 그 디렉터리의 `*.lnpl`을 파일명 정렬로 수집한다. 선언 이름은 전역 유일 — 서로 다른 파일에서 이름이 겹치면 거부하며 두 `<파일>:<줄>` 위치를 함께 병기한다. 문법·lexer는 불변이고, 소스 인자 1개는 바이트 동일하다. *0004 §Reference-level Specification(파이프라인 표 S1 행) 갱신* |
 | [0032 트랜잭션 경계와 rollback 집행](rfcs/0032-transaction-boundary-and-rollback-enforcement.md) | 워크플로 실행이 암묵적 트랜잭션 하나가 된다(명시적 `Transaction` IR 노드는 아직 없다) — 성공 시 commit, 실패 시 rollback(실패한 실행이 등록한 이벤트 emission 포함). `policy rollback`은 `unenforced`에서 `enforced`로 승격된다. *0003 §Execution Model·§Policy Enforcement·§Examples 갱신* |
-| [0033 선언 이름공간 — 디렉터리 스코프와 internal/ 가시성](rfcs/0033-namespace-directories.md) | *(Draft)* 하위 디렉터리를 가진 디렉터리가 네임스페이스 루트가 된다 — 1단계 하위 디렉터리 이름이 곧 그 안 선언들의 네임스페이스이고, 이름이 정확히 `internal`인 디렉터리는 가시성을 그 부모로 좁힌다. 문법 변경 0개, 전부 경로에서 유도. 선언 이름은 이제 전역이 아니라 네임스페이스 안에서만 유일하면 되고, 네임스페이스 없는(오늘의) 컴파일 단위는 바이트 동일이다. 실측이 먼저다(`docs/scale-pressure-measurement.md`): 엔티티 50개·명사 풀 10개에서 이름 충돌 40건. *0031 §Guide-level Explanation·§Reference-level Specification(`load_sources`) 갱신* |
+| [0033 선언 이름공간 — 디렉터리 스코프와 internal/ 가시성](rfcs/0033-namespace-directories.md) | 하위 디렉터리를 가진 디렉터리가 네임스페이스 루트가 된다 — 1단계 하위 디렉터리 이름이 곧 그 안 선언들의 네임스페이스이고, 이름이 정확히 `internal`인 디렉터리는 가시성을 그 부모로 좁힌다. 문법 변경 0개, 전부 경로에서 유도. 선언 이름은 이제 전역이 아니라 네임스페이스 안에서만 유일하면 되고, 네임스페이스 없는(오늘의) 컴파일 단위는 바이트 동일이다. 실측이 먼저다(`docs/scale-pressure-measurement.md`): 엔티티 50개·5개 도메인이 공용 명사 4개(`Order`/`Item`/`Status`/`Event`) 풀에서 독립적으로 뽑을 때 이름 충돌 11건 — 도메인 전용 이름은 전혀 충돌하지 않았다. *0031 §Guide-level Explanation·§Reference-level Specification(`load_sources`) 갱신* |
 | [0034 NetworkCall 보상(compensation) 결정](rfcs/0034-network-call-compensation.md) | *(Draft)* `policy rollback`이 보호하는 트랜잭션 경계 밖의 `NetworkCall` 스텝을 어떻게 보상할지 결정한다 — 향후 도입될 `compensate` 절이 있으면 컴파일러의 `rollback-escapes-network` 경고(이슈 #112)를 침묵시키고, 없으면 그 경고가 기본으로 남는다. outbox 대안은 기각 — 비동기 호출은 `call ... as <이름>`의 동기 결과 바인딩(RFC-0027 §2, RFC-0030)을 만족할 수 없다. 결정만, 문법 변경은 아직 없다. |
 | [0035 인가 집행의 유보된 범위](rfcs/0035-authorization-enforcement-deferred-scope.md) | `security role`이 실제로 집행되면서 issue #119가 미결로 남긴 세 질문에 답한다 — 워크플로 수준 `security role`은 지금은 도입하지 않는다(실측된 수요 없음, 재검토 조건 명시), `authorize` 동사는 승격된 `warning` 등급을 유지한 채 최종 운명((a) 선언 연결 대 (b) 폐기)을 실사용 관측으로 미룬다(판단 기준 표 포함), `security encrypt`는 제거를 결정한다("드라이버 의존"은 외부 드라이버가 0건인 공집합에 대한 서술이라 기각) — 마이그레이션 안내를 적고, 실제 제거는 후속 `tech-debt` 이슈로 넘긴다. |
 | [0036 `policy rollback` 선언의 실제 효력 정정](rfcs/0036-policy-rollback-declaration-effect.md) | `policy rollback`의 문서화된 효력을 정정한다 — `run_workflow`는 선언 여부와 무관하게 실패한 모든 실행의 쓰기를 무조건 롤백한다. 선언이 실제로 좌우하는 것은 INFO trace 로그 한 줄과 컴파일 타임 `rollback-escapes-network` 진단(issue #112)뿐이다. `enforced` 상태는 유지한다(보장 자체는 실재한다) — 틀린 것은 설명문뿐이었다. 동작 변경 없음. *0032 §실행 경계·§docs/ENFORCEMENT-MATRIX.md §B — policy rollback 행 갱신* |
@@ -260,8 +260,10 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0041 `parallel` 블록 실행](rfcs/0041-parallel-block-execution.md) | RFC-0003이 구조적 동시성으로 이미 약속했던 것을 mode A가 마침내 집행한다 — `parallel` 블록의 스텝이 블록 스코프 `ThreadPoolExecutor`에서 실행되고, fail-fast(한 브랜치 실패 시 시작 전인 나머지를 취소하고 블록 실패), 동시성 상한은 `policy parallel <N>`(기존 정책 이름에 새로 붙은 선택적 정수 인자 — 값이 없으면 블록 자신의 스텝 수로 폴백)이 정한다. 같은 entity에 쓰는 두 스텝이 한 블록에 있으면 컴파일 타임 `LowerError`가 두 줄번호를 함께 인용한다 — RFC-0012의 바인딩은 순서 의존적인데 `parallel` 블록에는 순서가 없기 때문이다. 보고는 완료 순서가 아니라 선언 순서를 유지해 `spec.py`의 `steps <N>`이 순차 실행과 같은 모양을 낸다. 각 스텝 스팬은 가상 `Clock`이 아니라 실제 벽시계 타임스탬프를 써서, 겹치는 형제 스팬이 실제 동시 실행의 증거가 된다. mode B는 손대지 않았다(RFC-0004 §5(#7) 계속 미결) — `differential`이 이제 `parallel`을 가진 워크플로의 리포트를 정확히 그 이유로 미검증 차원으로 표시한다. |
 | [0042 확장 진단 등록 — 네임스페이스·소유·게이팅](rfcs/0042-extension-diagnostics.md) | 확장이 자기 실패 모드를 언어의 어휘로 말할 자리가 생긴다 — 등록 코드는 `<prefix>/<code>` 형태(ESLint의 `plugin/rule` 컨벤션), bare(무슬래시) 코드는 영구히 코어 전용, prefix는 확장의 엔트리포인트 등록명 그 자체다. 한 prefix는 한 소유자만 가지며 중복 등록은 로드 시점에 거부된다 — Roslyn(dotnet/roslyn#40351)이 3rd party에는 세우지 못한 소유 규칙이다. 확장 코드는 `info`/`warning`만 선언할 수 있고 `error`는 등록 시점에 거부되며, `--strict` 게이팅에는 기본적으로 불참한다 — 확장 설치가 기존 프로그램의 rc를 바꿔서는 안 된다. 확장 진단기는 컴파일된 IR과 자기 설정만 보고 소스 텍스트는 보지 못한다. 코드 변경 없음 — 구현은 후속 태스크. *Updates RFC-0021 §Reference-level Specification/코드 → 등급 (정본), §Reference-level Specification/`--strict[=LEVEL]`* |
 | [0043 드라이버 집행 신고](rfcs/0043-driver-enforcement-reporting.md) | 설치된 드라이버가 실제로 무엇을 보장하는지 말할 자리가 생긴다 — 드라이버 팩토리가 클래스 속성 `lnpl_enforcement`(코어 소유의 네 축 `delivery`/`isolation`/`cache_scope`/`token_claims`를 담는 dict)를 가질 수 있고, entry-point 로드 시점에 인스턴스화·연결 없이 읽힌다. 컴파일은 capability가 활성화한 슬롯(`postgres`/`redis`/`jwt`/`http` → `repository`/`cache`/`token`/`network`, 이슈 #134 슬롯 어휘 재사용)에 설치된 드라이버 전부를 대조한다 — `--backend`가 실행 시점에 무엇을 고를지 추정하지 않는다. 관련 IR 노드마다 `<entry-point 이름>/<axis-code>` 형태의 `info` 진단 하나를 합성한다 — prefix는 capability 키워드가 아니라 드라이버 자신의 등록명이라서, `capability postgres` 프로그램도 설치된 것이 kafka면 `kafka/`로 시작하는 진단을 낼 수 있다. `--strict`는 이 코드를 게이팅하지 않는다(RFC-0042와 동일 규칙). `lnpl capabilities --json`에 additive `enforcement` 필드가 더해지고, `docs/ENFORCEMENT-MATRIX.md`는 신고가 실측의 유일한 소스라는 계약을 진다. 코드 변경 없음 — 구현은 후속 태스크. RFC-0042 Open Question 2를 해소한다 — 독립 RFC(References RFC-0042/RFC-0021)이지 Updates가 아니다. |
+| [0044 Money 산술 — minor-unit 코덱과 반올림 정책](rfcs/0044-money-arithmetic.md) | Money가 와이어를 건드리지 않고 평가기를 얻는다: JSON 모양(`{amount, currency}`)은 그대로지만, 평가 전용 채널이 부호 있는 64비트 minor-unit 정수로 인코딩하고 소수 자릿수(0/2/3자리)는 닫힌 ISO 4217 버킷 테이블에서 찾는다. 새 `MoneyLiteral` 토큰(`100.50USD`)으로 `spec`이 Money 필드를 시딩·단언할 수 있다 — 소수 자릿수는 통화의 지수와 정확히 일치해야 하고, 저작 리터럴에는 반올림이 없다. 집계 나눗셈(`avg`, RFC-0045)은 half-to-even으로 반올림해 `/`의 기존 절삭 규칙(RFC-0028, 그대로)과 의도적으로 비대칭이다. 통화가 다른 비교·덧셈은 컴파일 에러가 아니라 런타임 `RunError`다 — 통화는 선언된 차원이 아니라 행 데이터다(RFC-0016 §3 차원 표는 불변; Money는 여전히 guard/`set` 산술에 쓸 수 없다). 코드 변경 없음 — 구현은 후속 태스크. 독립 RFC — RFC-0015 Open Question 4와 RFC-0028 Open Question 2를 해소한다. |
+| [0045 RowSet 집계 확장 — avg/min/max](rfcs/0045-rowset-aggregation-extension.md) | `AggFunc`가 `sum`/`count`에서 `sum`/`count`/`avg`/`min`/`max`로 늘어난다: `sum`/`avg`는 이제 같은 통화 Money 필드도 받고(RFC-0044의 평가기), `min`/`max`는 Integer/DateTime/Money를 새로 받으며, `sum`(DateTime)은 여전히 무의미하다고 거부된다. 빈 RowSet에서도 `sum`/`count`는 기존대로 `0`을 내지만, `avg`/`min`/`max`는 자연스러운 항등원이 없어 조용히 값을 추측하는 대신 `RunError`로 실패한다. `group by`와 `avg`(DateTime)는 명시적으로 미결로 남긴다 — 아직 실측된 필요가 없고, 필요해지면 작은 후속 RFC로 연다. mode B는 여전히 집계 값을 계산하지 않는다(RFC-0025 §10의 근거가 불변이라 이 RFC는 재인용하지 않는다). 코드 변경 없음 — 구현은 후속 태스크. *RFC-0025 §Reference-level Specification/2. 집계 표현식 문법, §Reference-level Specification/3. 정적 거부 갱신* |
 
-39편이 `Accepted`, 2편(`0033`, `0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+44편이 `Accepted`, 1편(`0034`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -318,7 +320,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 3335 tests in 108.866s
+Ran 3511 tests in 121.059s
 OK
 ```
 

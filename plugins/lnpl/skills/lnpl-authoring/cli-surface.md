@@ -139,6 +139,8 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--idempotency-ttl` | `Idempotency-Key` 클레임 유지 시간(초). 기본 86400(24h) — 지나면 같은 키가 새 실행으로 취급된다. `--backend fake`에는 효과가 없다(영속 저장소가 없어 클레임을 남길 곳이 없다). 이슈 #113 |
 | `--config` | `lnpl.toml` 경로(이슈 #114). 기본 `./lnpl.toml` — 없으면 이 파일이 없던 때와 바이트 단위로 동일하게 동작한다(회귀 없음). `--config`로 명시한 경로가 없으면 그건 rc 2 에러 |
 | `--profile` | `[default]` 위에 얹을 `lnpl.toml` 프로파일 이름(이슈 #114). `LNPL_PROFILE` 환경변수로도 줄 수 있고 `--profile`이 이긴다. 생략하면 `[default]` 단독 |
+| `--rate-limit` | 프로세스 전역 토큰 버킷: 초당 N개, 버스트 용량도 N개. 기본 미지정(무제한 — 이슈 #148 이전 동작). `/-/` 경로는 면제. 초과 시 429 + `Retry-After`. 0 이하는 rc 2. 이슈 #148 |
+| `--grace-period` | SIGTERM 뒤 진행 중 요청을 몇 초까지 기다리다 종료할지. 기본 30(gunicorn `--graceful-timeout` 기본값과 맞춤). 신규 비-ops 요청은 이 값과 무관하게 즉시 503. 음수는 rc 2. 이슈 #148 |
 
 `--backend`/`--jwt-secret-env`/`--log-format`/`--trace-exporter`/`--endpoint`는
 각각 `lnpl.toml`의 `backend`/`[*.secrets].jwt`/`log_format`/`trace_exporter`/
@@ -280,6 +282,29 @@ lnpl db check <source...> --backend sqlite:<path>
 `stored-row-shape-mismatch`(warning), 아래 "진단은 어디를 가리키나" 참고.
 `db check`는 그 실시간 진단과 같은 판단 로직(`interp.row_shape_mismatches`,
 `check_semantic_type` 재사용)을 전체 저장소에 훑어 적용한 것뿐이다.
+
+### `migrate` — 부재 필드 배치 백필 + 스키마 세대 재스탬프 (이슈 #147)
+
+```
+lnpl migrate <source...> --entity <E> --set <field>=<value> --backend sqlite:<path> [--dry-run]
+```
+
+expand-contract 절차(`docs/migration.md`)의 "migrate" 단계: entity `<E>`의
+저장된 행 중 `<field>`가 **없는** 행에만 `<value>`를 채운다(expand
+의미론 — 이미 있는 값은 절대 덮어쓰지 않는다). 값은 그 필드의 선언 타입
+(Integer/Boolean/그 외 문자열류)으로 파싱해 `check_semantic_type`으로
+검증하고, 불일치·미선언 entity·미선언(또는 `derived`) 필드는 아무것도
+쓰지 않고 거부(rc 2)한다. 실제로 값을 쓴 행마다 payload 내부의
+`_schema_gen`(entity의 선언 필드 이름·타입 목록에서 결정적으로 계산한
+sha256 12자리) 을 재스탬프한다 — `lnpl_rows`/`lnpl_outbox` DDL은 바뀌지
+않는다. 전체 배치는 단일 트랜잭션이다.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--entity` | 대상 entity 이름. RFC-0033 네임스페이스 레이아웃에서 같은 짧은 이름을 두 네임스페이스가 선언하면 정규화 철자(`billing.Order` — 생성된 OpenAPI의 스키마 키와 같은 철자)로 지정해야 한다. 짧은 이름이 모호하면 후보를 나열하고 거부(rc 2)한다 — 추측하지 않는다 |
+| `--set` | `FIELD=VALUE` — FIELD가 없는 행에만 설정. FIELD는 앞뒤 공백을 자르고, VALUE는 원문 그대로(자르지 않음) 그 필드의 선언 타입으로 파싱한다 |
+| `--backend` | 필수. `sqlite:<path>`만 유효 — `fake`는 영속 저장소가 없어 거부(rc 2) |
+| `--dry-run` | 아무것도 쓰지 않고 scanned/updated/skipped 개수만 stdout에 JSON으로 출력 |
 
 ### `build` — 네이티브 바이너리로 컴파일 (모드 B)
 

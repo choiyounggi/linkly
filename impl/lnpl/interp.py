@@ -17,6 +17,8 @@ What is enforced here (RFC-0003 §Policy Enforcement):
              (issue #108)
 """
 
+import hashlib
+import json
 import threading
 import time
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
@@ -962,6 +964,43 @@ def _value_text(value):
     return value_to_string(value)
 
 
+SCHEMA_GEN_KEY = "_schema_gen"
+
+
+def schema_generation(entity_node):
+    """sha256 12-hex digest of `entity_node`'s declared, non-derived (name,
+    type) field pairs, sorted (issue #147). Deterministic and timestamp-free
+    — `provenance.py`'s own digest precedent (no build-host/wall-clock
+    identifiers, only the compiled shape), narrowed to one entity's fields
+    rather than the whole document. A `derived` field is excluded: it is
+    never persisted (see `row_shape_mismatches`), so it cannot be part of a
+    stored row's shape.
+    """
+    fields = sorted((f["name"], f["type"]) for f in entity_node.get("fields", [])
+                    if not f.get("derived"))
+    encoded = json.dumps(fields, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
+
+
+def strip_schema_gen(row):
+    """Drop the `_schema_gen` reserved key before a stored row reaches any
+    observable surface (issue #147 D3): a binding, a RowSet, a `respond`, an
+    HTTP response. The key is a storage-layer implementation detail the
+    `RepositoryDriver` SPI itself never knows about — every driver stores and
+    returns it like any other payload key — so every caller that reads a row
+    back from a repository is the one responsible for stripping it here.
+
+    Mutates `row` in place and returns it, rather than rebuilding a plain
+    `dict` — `SqliteRepositoryDriver._read`'s result carries an
+    `observed_version` attribute (`_VersionedRow`) that `persist()`'s
+    optimistic lock (issue #92) and `wsgi.py`'s ETag (issue #113 D12) both
+    read afterward; rebuilding would silently drop it.
+    """
+    if isinstance(row, dict):
+        row.pop(SCHEMA_GEN_KEY, None)
+    return row
+
+
 def mask_payload(payload, entity_node):
     """Replace values whose declared semantic type is masked (RFC-0003 §Observability).
 
@@ -1506,10 +1545,27 @@ class Interpreter:
                 raise RunError(
                     "assignment target %r names no declared entity, so the "
                     "write has no row to address" % target)
+            entity_node = self.nodes.get(entity_id)
+            stamped = entity_node is not None and not isinstance(self.repo, FakeRepository)
+            if stamped:
+                # issue #147 D2/D3: mutate `row` in place rather than
+                # `dict(row, ...)` — a real driver's read binds a
+                # `_VersionedRow`, and a plain-dict copy would silently drop
+                # its `observed_version`, turning every conditional UPDATE
+                # into an unconditional one (issue #92's optimistic lock).
+                # Reverted in `finally`, so the stamp never becomes an
+                # observable field of a live run. `FakeRepository` is
+                # skipped — it has no cross-run identity for a "schema
+                # generation" to track, and its own contract tests assert a
+                # stored row's exact content.
+                row[SCHEMA_GEN_KEY] = schema_generation(entity_node)
             try:
                 self.repo.persist(entity_id, row_key(entity_id, payload), row)
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
+            finally:
+                if stamped:
+                    row.pop(SCHEMA_GEN_KEY, None)
             child.attrs["target"] = target
             child.attrs["value"] = value
             self.trace.log("INFO", "assignment applied",
@@ -1556,6 +1612,9 @@ class Interpreter:
                                    entity=effect["entity"])
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
+            # issue #147 D3: never expose the storage-layer stamp through a
+            # RowSet — `list`'s only observable surface for stored rows.
+            rows = [strip_schema_gen(r) for r in rows]
             child.attrs["row_count"] = len(rows)
             entity_node = self.nodes.get(effect["entity"])
             if entity_node is not None:
@@ -1572,6 +1631,9 @@ class Interpreter:
                                         row_key(effect["entity"], payload))
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
+            # issue #147 D3: never expose the storage-layer stamp through a
+            # `read` binding — the row's only observable surface here.
+            row = strip_schema_gen(row)
             child.attrs["found"] = row is not None
             if effect["operation"] == "read" and isinstance(row, dict):
                 # RFC-0012 §G12.2: a completed read binds its row into the
@@ -1624,10 +1686,22 @@ class Interpreter:
                         if fname in payload:
                             seeded[fname] = payload[fname]
                 if len(seeded) > 1:
+                    # issue #147 D2/D3: `FakeRepository` is skipped (see the
+                    # Assignment branch above for why); `seeded` is mutated
+                    # in place and reverted in `finally` — it is what
+                    # `bindings[effect["result"]]` exposes below, and the
+                    # stamp must never reach that surface.
+                    stamped = (entity_node is not None
+                              and not isinstance(self.repo, FakeRepository))
+                    if stamped:
+                        seeded[SCHEMA_GEN_KEY] = schema_generation(entity_node)
                     try:
                         self.repo.persist(effect["entity"], created_key, seeded)
                     except DriverError as exc:
                         raise RunError(str(exc)) from exc
+                    finally:
+                        if stamped:
+                            seeded.pop(SCHEMA_GEN_KEY, None)
                 if effect.get("result"):
                     bindings[effect["result"]] = _CreatedRow(seeded, effect["entity"])
         elif kind == "CacheAccess":

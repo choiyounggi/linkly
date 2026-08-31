@@ -235,21 +235,43 @@ class LoaderError(LowerError):
 
 
 def load_sources(paths):
-    """The single loader every LNPL consumer shares (RFC-0031, issue #77).
+    """The single loader every LNPL consumer shares (RFC-0031, issue #77;
+    namespace/`internal` layout: RFC-0033).
 
     `paths` — a sequence of file paths, or a single directory path. A lone
-    directory has its `*.lnpl` files collected in filename-sorted order;
-    anything else is treated as an explicit file list, merged in the given
-    order. Returns `list[Decl]` — exactly what `parser.parse()` already
-    returns for one file, concatenated in merge order — so `lower()` and
-    every other decls consumer needs no change.
+    directory is inspected once to decide its layout (RFC-0033 §Reference-level
+    "네임스페이스 유도"):
 
-    A name declared in two different files is rejected: `LoaderError` names
-    both `<file>:<line>` locations. A name repeated within the *same* file is
-    not this function's concern — that is whatever `lower()` already did
-    with it (e.g. the entity/refine namespace check, RFC-0011 A.7(e)); this
-    check only fires across a file boundary, so a single-file call can never
-    trigger it (RFC-0031 D7: one source argument stays byte-identical).
+    - `*.lnpl` files directly under it -> **no namespace** (RFC-0031's
+      original behavior, byte-identical): those files are collected in
+      filename-sorted order, and any sibling subdirectories are ignored
+      (mixed file+directory is not a namespace layout — files win).
+    - zero `*.lnpl` files directly under it, only subdirectories -> a
+      **namespace root**: each 1st-level subdirectory (visited in
+      name-sorted order) becomes a namespace for the `*.lnpl` files inside
+      it (see `_namespace_files`), including a nested `internal/` — the one
+      extra level of depth RFC-0033 allows.
+
+    Anything else (an explicit list of paths, even a single non-directory
+    path) is a plain file list, merged in the given order with no namespace
+    — RFC-0031's original explicit-list behavior, unchanged.
+
+    Returns `list[Decl]` — exactly what `parser.parse()` already returns for
+    one file, concatenated in merge order, with each `Decl`'s `.namespace`/
+    `.internal` set from its file's path — so `lower()` and every other
+    decls consumer needs no change beyond reading those two attributes.
+
+    A declaration name repeated in two different files *within the same
+    namespace* (namespace `None` counts as one) is rejected: `LoaderError`
+    names both `<file>:<line>` locations, using the RFC-0033 qualified name
+    (`<namespace>.<name>`, or the bare name when unnamespaced — byte-identical
+    to pre-RFC-0033's message). The same name in two *different* namespaces
+    is not a collision (RFC-0033's core relaxation). A name repeated within
+    the *same* file is not this function's concern — that is whatever
+    `lower()` already did with it (e.g. the entity/refine namespace check,
+    RFC-0011 A.7(e)); this check only fires across a file boundary, so a
+    single-file call can never trigger it (RFC-0031 D7: one source argument
+    stays byte-identical).
 
     A bare `str` is accepted as shorthand for `[str]` (one path) — a plain
     string is itself a sequence of characters, and every pre-RFC-0031 caller
@@ -264,11 +286,21 @@ def load_sources(paths):
 
     if len(paths) == 1 and os.path.isdir(paths[0]):
         directory = paths[0]
-        names = sorted(name for name in os.listdir(directory)
-                       if name.endswith(".lnpl"))
-        if not names:
-            raise LoaderError("directory %r has no .lnpl files" % directory)
-        files = [os.path.join(directory, name) for name in names]
+        top_files = sorted(name for name in os.listdir(directory)
+                           if name.endswith(".lnpl"))
+        if top_files:
+            files = [(os.path.join(directory, name), None, False)
+                     for name in top_files]
+        else:
+            namespaces = sorted(
+                name for name in os.listdir(directory)
+                if os.path.isdir(os.path.join(directory, name)))
+            if not namespaces:
+                raise LoaderError("directory %r has no .lnpl files" % directory)
+            files = []
+            for namespace in namespaces:
+                files.extend(_namespace_files(
+                    os.path.join(directory, namespace), namespace))
     else:
         # An explicit list mixing in a directory is not "a single directory"
         # (the branch above) and not a file list either — reject it with a
@@ -279,24 +311,73 @@ def load_sources(paths):
                 raise LoaderError(
                     "%r is a directory — give a directory alone, or list "
                     ".lnpl files explicitly, not both" % path)
-        files = paths
+        files = [(path, None, False) for path in paths]
 
     merged = []
-    declared_in = {}  # decl name -> (file, lineno) of its first-seen file
-    for path in files:
+    declared_in = {}  # (namespace, decl name) -> (file, lineno) of first sighting
+    for path, namespace, internal in files:
         with open(path, encoding="utf-8") as fh:
             source = fh.read()
         file_decls = parse(source)
         for decl in file_decls:
-            prior = declared_in.get(decl.name)
+            decl.namespace = namespace
+            decl.internal = internal
+            key = (namespace, decl.name)
+            prior = declared_in.get(key)
             if prior is not None and prior[0] != path:
                 raise LoaderError(
                     "duplicate declaration %r: first declared at %s:%d, "
                     "again at %s:%d"
-                    % (decl.name, prior[0], prior[1], path, decl.lineno))
-            declared_in.setdefault(decl.name, (path, decl.lineno))
+                    % (_qualified_name(namespace, decl.name),
+                       prior[0], prior[1], path, decl.lineno))
+            declared_in.setdefault(key, (path, decl.lineno))
         merged.extend(file_decls)
     return merged
+
+
+def _qualified_name(namespace, name):
+    """RFC-0033: the display/id form of a declared name — `<namespace>.<name>`
+    when namespaced, the bare name otherwise (byte-identical to pre-RFC-0033
+    for the `namespace=None` case, which is every call before RFC-0033)."""
+    return "%s.%s" % (namespace, name) if namespace else name
+
+
+def _namespace_files(ns_dir, namespace):
+    """RFC-0033: the `(path, namespace, internal)` triples one 1st-level
+    namespace directory contributes, filename-sorted (RFC-0031's determinism
+    rule, extended to the whole namespace subtree so the merge order is
+    reproducible regardless of `internal/`'s presence).
+
+    A subdirectory of `ns_dir` other than exactly `internal` is a namespace
+    layout nested past the one level RFC-0033 allows (`billing/eu/order.lnpl`)
+    and is rejected; so is anything inside `internal/` that is itself a
+    directory — `internal/` gets no further subdirectories of its own
+    (RFC-0033 §Reference-level "네임스페이스 유도": "깊이는 `internal/` 한
+    층까지만 허용한다").
+    """
+    entries = []  # (sort key, absolute path, internal)
+    for name in sorted(os.listdir(ns_dir)):
+        full = os.path.join(ns_dir, name)
+        if os.path.isdir(full):
+            if name != "internal":
+                raise LoaderError(
+                    "%r is nested more than one directory level below "
+                    "namespace %r — RFC-0033 allows only an `internal/` "
+                    "directory there" % (full, namespace))
+            for iname in sorted(os.listdir(full)):
+                ifull = os.path.join(full, iname)
+                if os.path.isdir(ifull):
+                    raise LoaderError(
+                        "%r is nested inside `internal/` — RFC-0033 gives "
+                        "`internal/` no subdirectories of its own" % ifull)
+                if iname.endswith(".lnpl"):
+                    entries.append((os.path.join("internal", iname), ifull, True))
+        elif name.endswith(".lnpl"):
+            entries.append((name, full, False))
+    if not entries:
+        raise LoaderError("namespace directory %r has no .lnpl files" % ns_dir)
+    entries.sort(key=lambda e: e[0])
+    return [(path, namespace, internal) for _, path, internal in entries]
 
 
 def split_pascal(name):
@@ -332,11 +413,20 @@ def derive_segments(name, kind):
     return parts
 
 
-def derive_id(name, kind):
-    """R2: full node id for a declaration."""
+def derive_id(name, kind, namespace=None):
+    """R2 + RFC-0033: full node id for a declaration.
+
+    `namespace`, when given, inserts its `split_pascal` segments between the
+    kind prefix and the name's own segments — `entity Order` in namespace
+    `billing` becomes `entity.billing.order` (RFC-0033 §Reference-level
+    "`derive_id`"). `namespace=None` — every call before RFC-0033, and every
+    call in a compile unit with no subdirectories — yields the exact
+    pre-RFC-0033 id: byte-identical.
+    """
     if kind not in KIND_PREFIX:
         raise LowerError("no id prefix defined for kind %r" % kind)
-    return ".".join([KIND_PREFIX[kind]] + derive_segments(name, kind))
+    ns_segs = split_pascal(namespace) if namespace else []
+    return ".".join([KIND_PREFIX[kind]] + ns_segs + derive_segments(name, kind))
 
 
 class Module:
@@ -1153,7 +1243,7 @@ def lower(decls, module_name):
                 "line %d: entity %r would bind as %r, which RFC-0015 reserves "
                 "for the run's input payload (`input.<field>`) — rename the "
                 "entity" % (decl.lineno, decl.name, PAYLOAD_NAMESPACE))
-        eid = derive_id(decl.name, "Entity")
+        eid = derive_id(decl.name, "Entity", decl.namespace)
         if eid in registry:
             raise LowerError("two entities derive the same id %r" % eid)
         registry[eid] = {"decl": decl, "id": eid, "name": decl.name, "fields": fields}
@@ -1308,8 +1398,11 @@ def lower(decls, module_name):
         mod.add(n)
 
     for ent in registry.values():
+        # RFC-0033: `namespace` rides the node only when set — `_node` drops
+        # `None` fields, so a compile unit with no subdirectories emits the
+        # exact pre-RFC-0033 Entity node (byte-identical `to_document()`).
         mod.add(_node("Entity", ent["id"], name=ent["name"], fields=ent["fields"],
-                      line=ent["decl"].lineno))
+                      namespace=ent["decl"].namespace, line=ent["decl"].lineno))
 
     # issue #118, D1: workflow ids known before any workflow is lowered — the
     # names are already in `by_kind["workflow"]` from parsing, and `consume
@@ -1370,7 +1463,8 @@ def lower(decls, module_name):
     emits_by_workflow = {}
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
-        ctx = _WfContext(wid, registry, mod.diagnostics, http_caps, base_of)
+        ctx = _WfContext(wid, registry, mod.diagnostics, http_caps, base_of,
+                         namespace=d.namespace)
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
                       line=d.lineno))
@@ -1417,10 +1511,17 @@ def lower(decls, module_name):
 class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
-    def __init__(self, wid, registry, diagnostics, http_caps=None, base_of=None):
+    def __init__(self, wid, registry, diagnostics, http_caps=None, base_of=None,
+                namespace=None):
         self.wid = wid
         self.registry = registry
         self.diagnostics = diagnostics
+        # RFC-0033 §Reference-level "짧은 이름 해소": the declaring workflow's
+        # own namespace (`None` for a compile unit with no subdirectories —
+        # every call before RFC-0033), so `_resolve_entity`/`_derive_assignment`/
+        # `_derive_respond` can prefer an entity in this same namespace, and
+        # `internal/` visibility can tell "same namespace" from "other".
+        self.namespace = namespace
         # issue #116: `list <Entity> where ...`'s left-side field validation
         # needs the declared-type -> base map to apply the same Integer/
         # DateTime (order comparisons) and any-type (equality) rules
@@ -1503,13 +1604,15 @@ class _WfContext:
         obj = line.tokens[1] if len(line.tokens) > 1 else None
         if verb == ASSIGN_VERB:
             derived = _derive_assignment(
-                step_id, line, self._registry_with_create_bindings())
+                step_id, line, self._registry_with_create_bindings(),
+                namespace=self.namespace)
         elif verb == FORMAT_VERB:
             derived = _derive_format(
                 step_id, line, self._registry_with_create_bindings())
         elif verb == RESPOND_VERB:
             derived = _derive_respond(
-                step_id, line, self._registry_with_create_bindings())
+                step_id, line, self._registry_with_create_bindings(),
+                namespace=self.namespace)
         elif verb == NOTE_VERB:
             derived = _derive_note(step_id, line)
         else:
@@ -1519,7 +1622,8 @@ class _WfContext:
                                      step_text=" ".join(line.tokens),
                                      http_caps=self.http_caps,
                                      verb_sink=self.network_verbs,
-                                     base_of=self.base_of)
+                                     base_of=self.base_of,
+                                     namespace=self.namespace)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -2768,7 +2872,7 @@ class _Scope:
 
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                    diagnostics=None, step_text=None, http_caps=None,
-                   verb_sink=None, base_of=None):
+                   verb_sink=None, base_of=None, namespace=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`) — every
@@ -2807,7 +2911,8 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
         # declared entity, and it is not #91's "unknown entity" failure mode.
         validation_diagnostics = None if obj == PAYLOAD_NAMESPACE else diagnostics
         ent = _resolve_entity(registry, obj, verb, lineno,
-                              diagnostics=validation_diagnostics, step_text=step_text)
+                              diagnostics=validation_diagnostics, step_text=step_text,
+                              namespace=namespace)
         field_names = [f["name"] for f in ent["fields"]]
         if obj and obj in field_names:
             ftype = next(f["type"] for f in ent["fields"] if f["name"] == obj)
@@ -2820,7 +2925,8 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
 
     if kind == "RepositoryCall":
         ent = _resolve_entity(registry, obj, verb, lineno,
-                              diagnostics=diagnostics, step_text=step_text)
+                              diagnostics=diagnostics, step_text=step_text,
+                              namespace=namespace)
         if fixed["operation"] == "create" and rest:
             # issue #97 / RFC-0012 Updates: `create <noun> as <name>` reuses
             # RFC-0027 §2's result-binding notation and its two static checks
@@ -2863,7 +2969,7 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     if kind == "CacheAccess":
         base = obj
         if base is None:
-            ent = _resolve_entity(registry, None, verb, lineno)
+            ent = _resolve_entity(registry, None, verb, lineno, namespace=namespace)
             base = ent["id"].split(".")[-1]
         return _node(kind, eid, key="%s:{id}" % base, operation=fixed["operation"],
                     line=lineno)
@@ -2970,7 +3076,7 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
 
 
-def _derive_assignment(step_id, line, registry):
+def _derive_assignment(step_id, line, registry, namespace=None):
     """`set <binding>.<field> to <value>` -> an Assignment Effect node (RFC-0015).
 
     `set` is in `VERB_LEXICON` like every other verb — one closed table is what
@@ -3026,6 +3132,7 @@ def _derive_assignment(step_id, line, registry):
         raise LowerError(
             "line %d: assignment target %r names field %r, which entity %s does "
             "not declare" % (line.lineno, target, field, entity["name"]))
+    _check_internal_visibility(entity, namespace, line.lineno, "set", target)
 
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Assignment"])
     return _node("Assignment", eid, target=target,
@@ -3096,7 +3203,7 @@ def _derive_format(step_id, line, registry):
                  line=line.lineno)
 
 
-def _derive_respond(step_id, line, registry):
+def _derive_respond(step_id, line, registry, namespace=None):
     """`respond <ref> [<ref>...]` -> a Response node (issue #96, D1).
 
     A flat FieldMask over References — no nesting, no aliases, no conditions,
@@ -3140,6 +3247,7 @@ def _derive_respond(step_id, line, registry):
                 "line %d: respond reference %r names field %r, which entity "
                 "%s does not declare"
                 % (line.lineno, ref, field, entity["name"]))
+        _check_internal_visibility(entity, namespace, line.lineno, "respond", ref)
 
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Response"])
     return _node("Response", eid, refs=list(refs), line=line.lineno)
@@ -3178,7 +3286,28 @@ def _derive_note(step_id, line):
                  refs=[ref.name for ref in fmt.args], line=line.lineno)
 
 
-def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=None):
+def _check_internal_visibility(entity, namespace, lineno, verb, obj):
+    """RFC-0033 §Reference-level "`internal/` 가시성 검사": reject a step that
+    references a `Decl` whose `internal` flag is set from any namespace other
+    than the one that declared it. `namespace == decl.namespace` covers both
+    "same namespace" and the no-namespace case (`None == None`) — a `Decl`
+    can only be `internal` when it has a namespace, so this is a no-op
+    (byte-identical) whenever nothing in the compile unit is namespaced.
+    """
+    decl = entity["decl"]
+    if decl.internal and decl.namespace != namespace:
+        raise LoaderError(
+            "line %d: `%s %s` references %r, declared `internal` to "
+            "namespace %r — not visible from %s (RFC-0033 `internal/` "
+            "visibility)"
+            % (lineno, verb, obj or "", entity["name"], decl.namespace,
+               ("namespace %r" % namespace) if namespace
+               else "outside any namespace"))
+    return entity
+
+
+def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=None,
+                    namespace=None):
     """Pick the entity a step operates on.
 
     The object names it when there is a choice; with exactly one entity declared
@@ -3192,17 +3321,55 @@ def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=Non
     `unknown-entity` warning first, symmetric to `unknown-verb` (#36/#82). An
     object that is ambiguous across >1 declared entity keeps raising, as
     before: that case is not a silent pass and is out of #91's scope.
+
+    RFC-0033 §Reference-level "짧은 이름 해소": `obj` matching more than one
+    declared entity's bare/qualified form is new — only reachable once a
+    namespace layout lets two entities share a bare name (`load_sources`
+    still forbids it within one namespace, so every pre-RFC-0033 call, and
+    every call in a compile unit with no subdirectories, has at most one
+    match here and falls straight through to the unchanged loop below).
+    When it happens: an entity in the step's OWN namespace (`namespace`,
+    threaded down from the declaring workflow) wins if exactly one does;
+    otherwise a `LowerError` lists only the entities whose bare name
+    actually collided (RFC-0033's fix for issue #117 measurement item 4 —
+    not the whole registry).
     """
     if not registry:
         raise LowerError("line %d: `%s` needs an entity in scope, and the module "
                          "declares none" % (lineno, verb))
     if obj:
+        bare_matches = [ent for ent in registry.values()
+                        if obj == ent["id"].split(".", 1)[1].replace(".", "")
+                        or obj == "".join(split_pascal(ent["name"]))]
+        if len(bare_matches) > 1:
+            same_ns = [ent for ent in bare_matches
+                      if ent["decl"].namespace == namespace]
+            if len(same_ns) == 1:
+                return _check_internal_visibility(
+                    same_ns[0], namespace, lineno, verb, obj)
+            by_qualified = sorted(
+                bare_matches,
+                key=lambda ent: _qualified_name(ent["decl"].namespace, ent["name"]))
+            candidates = [_qualified_name(ent["decl"].namespace, ent["name"])
+                         for ent in by_qualified]
+            # The example token is the RFC's "bare id, no dots" form (the
+            # same one `_resolve_entity`'s own match check above accepts as
+            # an explicit qualified reference) — lowercase, unlike the
+            # display-qualified `candidates` list above.
+            example_token = by_qualified[0]["id"].split(".", 1)[1].replace(".", "")
+            raise LowerError(
+                "line %d: `%s %s` does not say which entity it means — "
+                "declared in %d namespaces (%s). Name the entity with its "
+                "namespace prefix (e.g. `%s %s`) or move the step into one "
+                "of those namespaces."
+                % (lineno, verb, obj, len(candidates), ", ".join(candidates),
+                   verb, example_token))
         for ent in registry.values():
             if obj == ent["id"].split(".", 1)[1].replace(".", "") \
                or obj == "".join(split_pascal(ent["name"])):
-                return ent
+                return _check_internal_visibility(ent, namespace, lineno, verb, obj)
             if obj in [f["name"] for f in ent["fields"]]:
-                return ent
+                return _check_internal_visibility(ent, namespace, lineno, verb, obj)
         if len(registry) == 1:
             ent = next(iter(registry.values()))
             if diagnostics is not None:
@@ -3218,9 +3385,10 @@ def _resolve_entity(registry, obj, verb, lineno, diagnostics=None, step_text=Non
                     message="%s — '%s' names no declared entity; declared: %s"
                             " — did you mean '%s'?"
                             % (text, obj, suggestion, suggestion))
-            return ent
+            return _check_internal_visibility(ent, namespace, lineno, verb, obj)
     if len(registry) == 1:
-        return next(iter(registry.values()))
+        return _check_internal_visibility(
+            next(iter(registry.values())), namespace, lineno, verb, obj)
     raise LowerError(
         "line %d: `%s %s` does not say which entity it means, and this module "
         "declares %d (%s). Name the entity as the step's object."

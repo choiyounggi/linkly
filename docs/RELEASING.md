@@ -1,18 +1,22 @@
 # 릴리스 절차
 
-이 저장소에 릴리스 파이프라인(CI/CD)은 없다 — 태그와 GitHub Release는
-수동으로 만든다(issue #87 시점 기준: v0.1.0–v0.5.0 전부 이 절차). 이 문서는
-그 수동 절차를 순서대로 고정한다.
+PR 게이트와 태그 릴리스는 `.github/workflows/ci.yml`·`release.yml`로
+자동화되어 있다(issue #141; 그 전 v0.1.0–v0.5.0은 issue #87 시점 기준 전부
+수동 절차였다). 이 문서는 그 자동화가 대신하지 않는 나머지 단계(버전 bump,
+CHANGELOG, 릴리스 노트 본문)와, 자동화가 실패했을 때의 로컬 재현·수동 폴백을
+순서대로 고정한다.
 
 ## 절차
 
-1. **완료 게이트를 통과시킨다.** `main`에서:
+1. **완료 게이트를 통과시킨다.** PR과 `main` push마다 `ci.yml`이 자동으로
+   돌린다. 로컬 재현(`main`에서):
    ```
    bash scripts/dev_doctor.sh
    PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl \
      2>&1 | grep -E "^(OK|FAILED|Ran )"
    .venv/bin/python scripts/rfc_lint.py
    .venv/bin/python scripts/gen_plugin_references.py --check
+   .venv/bin/python scripts/check_version_sync.py
    ```
    전부 통과해야 한다. 실패하면 릴리스하지 않는다.
 
@@ -30,10 +34,16 @@
 
 4. **커밋한다.** 버전 bump + CHANGELOG 갱신을 하나의 커밋으로.
 
-5. **태그를 만들고 GitHub Release를 발행한다.**
+5. **태그를 push하면 GitHub Release가 자동 발행된다.**
    ```
    git tag vX.Y.Z
    git push origin vX.Y.Z
+   ```
+   `release.yml`이 게이트 재실행 → `python -m build`로 sdist+wheel 빌드 →
+   `gh release create`까지 수행한다. PyPI 발행은 아직 비활성이다(워크플로의
+   `publish-pypi` 잡 주석 참고 — Trusted Publisher 미등록, 사용자 결정으로
+   이번 단계 범위 밖). 자동화가 실패하면 수동으로:
+   ```
    gh release create vX.Y.Z --title "linkly vX.Y.Z — <한 줄 테마>" \
      --notes-file <CHANGELOG.md의 해당 절에서 뽑은 본문>
    ```
@@ -49,3 +59,9 @@
 - 과거 5개 릴리스(v0.1.0–v0.5.0)의 소급 CHANGELOG 작성 근거는
   `gh release view <tag>`이며, [CHANGELOG.md](../CHANGELOG.md) 상단에
   같은 원칙이 적혀 있다.
+- `ci.yml`·`release.yml`은 `impl/tests/test_repo_state.py`를 discovery에서
+  모듈명으로 명시 제외한다 — 그 파일은 issue #35의 최외곽 회귀라 mode B
+  MLIR/LLVM 툴체인 없이는 무의미하고, 자기 docstring에 "never skips, on
+  purpose"라고 적혀 있어 skipUnless 가드를 달지 않는다(issue #141 1단계에는
+  이 CI가 그 툴체인을 설치하지 않는다). 후속 mode-B 툴체인 CI 잡이 생기면
+  이 제외를 제거한다.

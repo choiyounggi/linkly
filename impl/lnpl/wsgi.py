@@ -24,6 +24,7 @@ import binascii
 import hashlib
 import http.client
 import json
+import math
 import os
 import sys
 import threading
@@ -38,7 +39,7 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
 from .interp import (Interpreter, caller_view, mask_payload, open_clock,
-                     refinement_index)
+                     refinement_index, strip_schema_gen)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
@@ -832,6 +833,8 @@ _TITLES = {
     "cloudevents-invalid": "the CloudEvents envelope is invalid",
     "event-rejected": "the event was permanently rejected",
     "event-retry-later": "processing failed transiently -- retry after backing off",
+    "rate-limited": "rate limit exceeded",
+    "shutting-down": "the server is draining connections before shutdown",
 }
 
 
@@ -860,6 +863,46 @@ def _json_response(start_response, status, body, content_type="application/probl
     header_list.extend(headers)
     start_response(_status_line(status), header_list)
     return [payload]
+
+
+class TokenBucket:
+    """issue #148, D1: one process-wide token bucket -- `rate` tokens/second
+    refill, `capacity` is both the burst ceiling and the starting balance
+    (a freshly started server admits a full burst immediately, the same
+    posture a freshly opened gate would). Not per-IP/distributed (out of
+    scope -- a proxy-supplied client address is not trustworthy without a
+    configured trusted-proxy list, and that is issue #143's follow-up, not
+    this one's).
+
+    `clock` is injectable (defaults to `time.monotonic`) so a test can hold
+    time still or advance it deterministically, the same shape
+    `HttpNetworkDriver`'s own `clock`/`rand`/`sleep` injection already uses
+    (drivers.py).
+    """
+
+    def __init__(self, rate, capacity, clock=None):
+        self._rate = rate
+        self._capacity = capacity
+        self._tokens = float(capacity)
+        self._clock = clock if clock is not None else time.monotonic
+        self._last = self._clock()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        """One token spent -> `None`. Empty -> the `Retry-After` seconds
+        (a positive int, `ceil(deficit / rate)` -- issue #148, D1's own
+        formula) the caller should send back to the client instead."""
+        with self._lock:
+            now = self._clock()
+            elapsed = now - self._last
+            self._last = now
+            if elapsed > 0:
+                self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+            if self._tokens >= 1:
+                self._tokens -= 1
+                return None
+            deficit = 1 - self._tokens
+            return max(1, math.ceil(deficit / self._rate))
 
 
 def _read_json_body(environ, start_response):
@@ -914,7 +957,7 @@ class LnplWsgiApp:
                  log_format="text", exporter=None, trust_incoming_trace=False,
                  jwt_secret_env=None, metrics_registry=None,
                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
-                 capture_on_failure=False):
+                 capture_on_failure=False, rate_limit=None):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
@@ -989,6 +1032,19 @@ class LnplWsgiApp:
         # line, so turning this on does not make every request's log line
         # dominate on cost the way an unconditional payload would.
         self.capture_on_failure = capture_on_failure
+        # issue #148, D1: `None` (default, `--rate-limit` off) means every
+        # request is admitted -- the pre-#148 behavior. Set, `rate` and
+        # `capacity` are both this same value (D1: burst == rate).
+        self._rate_limiter = (TokenBucket(rate_limit, rate_limit)
+                              if rate_limit is not None else None)
+        # issue #148, D2: incremented on WSGI entry, decremented on exit
+        # (list body: immediately; SSE generator: when the stream ends) --
+        # `wait_for_drain` blocks on this reaching 0 so a SIGTERM's drain
+        # thread (serve.py) knows when it is safe to stop the server. A
+        # `Condition` (not a bare counter+poll) so the drain thread wakes on
+        # the exact decrement instead of polling on a timer.
+        self._inflight = 0
+        self._inflight_cv = threading.Condition()
         if repository_factory is None:
             print(
                 "lnpl serve: Idempotency-Key support is disabled -- the "
@@ -1031,19 +1087,105 @@ class LnplWsgiApp:
 
         return parsed["trace_id"], new_span_id(), None, tracestate, parsed["flags"]
 
+    def _inflight_incr(self):
+        with self._inflight_cv:
+            self._inflight += 1
+
+    def _inflight_decr(self):
+        with self._inflight_cv:
+            self._inflight -= 1
+            self._inflight_cv.notify_all()
+
+    def wait_for_drain(self, timeout):
+        """Block until in-flight requests reach 0, or `timeout` seconds pass
+        -- whichever comes first (issue #148, D2c). `True` = drained, `False`
+        = the timeout won (the caller, serve.py's drain thread, shuts down
+        either way -- this only decides which log line it prints)."""
+        deadline = time.monotonic() + timeout
+        with self._inflight_cv:
+            while self._inflight > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._inflight_cv.wait(remaining)
+        return True
+
+    def _reject_if_shutting_down(self, start_response):
+        """issue #148, D2b: a NEW non-ops request made after SIGTERM is
+        rejected outright -- `503` + `Retry-After`, the k8s apiserver
+        shutdown-send-retry-after pattern, matching the existing
+        `event-retry-later` 503 precedent's fixed 1-second value (issue
+        #118). Never dispatched to routing/auth/the workflow itself."""
+        if not self.shutting_down:
+            return None
+        return _json_response(start_response, 503,
+                              problem(503, "shutting-down",
+                                     "the server is shutting down; retry "
+                                     "against another instance"),
+                              headers=(("Retry-After", "1"),))
+
+    def _check_rate_limit(self, start_response):
+        """issue #148, D1: `None` -> admitted. Otherwise the already-built
+        429 response, `Retry-After` set to the bucket's own wait estimate."""
+        if self._rate_limiter is None:
+            return None
+        retry_after = self._rate_limiter.acquire()
+        if retry_after is None:
+            return None
+        return _json_response(start_response, 429,
+                              problem(429, "rate-limited",
+                                     "rate limit exceeded, retry after %ds"
+                                     % retry_after),
+                              headers=(("Retry-After", str(retry_after)),))
+
+    def _inflight_wrap(self, body):
+        """A list body decrements immediately (the response is already fully
+        built); an SSE generator decrements only once the stream actually
+        ends -- the same "count it until the connection really closes"
+        shape `_log_sse_then` already uses for its own request-log line."""
+        if isinstance(body, list):
+            self._inflight_decr()
+            return body
+        return self._inflight_generator(body)
+
+    def _inflight_generator(self, generator):
+        try:
+            for chunk in generator:
+                yield chunk
+        finally:
+            self._inflight_decr()
+
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
         path_info = environ.get("PATH_INFO", "")
         query = environ.get("QUERY_STRING", "")
         raw_path = path_info + ("?" + query if query else "")
-        if self.log_format == "json":
-            return self._call_with_json_log(environ, start_response, method,
-                                            path_info, query, raw_path)
-        if method == "POST":
-            return self._do_post(environ, start_response, path_info, raw_path)
-        if method == "GET":
-            return self._do_get(environ, start_response, path_info, query, raw_path)
-        return self._reject_non_post(start_response, path_info, raw_path)
+        # issue #148, D1/D2: `/-/` ops paths (healthz/readyz/metrics) are
+        # exempt from BOTH gates -- a k8s probe getting 429 is worse than
+        # the probe that exemption exists to serve reliably, and readyz is
+        # exactly how a probe is meant to observe the drain (D11, unchanged).
+        if not path_info.startswith("/-/"):
+            rejected = self._reject_if_shutting_down(start_response)
+            if rejected is not None:
+                return rejected
+            limited = self._check_rate_limit(start_response)
+            if limited is not None:
+                return limited
+        self._inflight_incr()
+        try:
+            if self.log_format == "json":
+                body = self._call_with_json_log(environ, start_response, method,
+                                                path_info, query, raw_path)
+            elif method == "POST":
+                body = self._do_post(environ, start_response, path_info, raw_path)
+            elif method == "GET":
+                body = self._do_get(environ, start_response, path_info, query, raw_path)
+            else:
+                body = self._reject_non_post(start_response, path_info, raw_path)
+        except BaseException:
+            self._inflight_decr()
+            raise
+        return self._inflight_wrap(body)
 
     def _call_with_json_log(self, environ, start_response, method, path_info,
                             query, raw_path):
@@ -1390,6 +1532,10 @@ class LnplWsgiApp:
         if row is None:
             return _json_response(start_response, 404,
                                   problem(404, "not-found", "no such row"))
+        # issue #147 D3: this read bypasses interp.py's own strip (it calls
+        # the repository directly), so the storage-layer stamp is stripped
+        # here instead — never observable in an HTTP response.
+        row = strip_schema_gen(row)
         entity_node = self.nodes[entity_id]
         masked = mask_payload(row, _entity_view(self.document, entity_node))
         # issue #113, D12: opt-in on the SAME `observed_version` attribute
@@ -1432,6 +1578,10 @@ class LnplWsgiApp:
                                              correlation_id=correlation_id))
             finally:
                 repository.close()
+        # issue #147 D3: this read bypasses interp.py's own strip (it calls
+        # the repository directly), so the storage-layer stamp is stripped
+        # here instead — never observable in an HTTP response.
+        rows = [strip_schema_gen(r) for r in rows]
         try:
             page, next_cursor = paginate(rows, field, entity_id, after, limit)
         except CursorError as exc:
@@ -1911,7 +2061,7 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                   exporter=None, trust_incoming_trace=False,
                   jwt_secret_env=None, metrics=False,
                   idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
-                  capture_on_failure=False):
+                  capture_on_failure=False, rate_limit=None):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -1963,7 +2113,8 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                        jwt_secret_env=jwt_secret_env,
                        metrics_registry=MetricsRegistry() if metrics else None,
                        idempotency_ttl_ms=idempotency_ttl_ms,
-                       capture_on_failure=capture_on_failure)
+                       capture_on_failure=capture_on_failure,
+                       rate_limit=rate_limit)
 
 
 # --------------------------------------------------------------------------

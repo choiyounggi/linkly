@@ -36,7 +36,8 @@ class ParseError(Exception):
 class Decl:
     """One top-level declaration with its clauses and body items."""
 
-    __slots__ = ("kind", "name", "lineno", "clauses", "items", "extra")
+    __slots__ = ("kind", "name", "lineno", "clauses", "items", "extra",
+                 "namespace", "internal")
 
     def __init__(self, kind, name, lineno):
         self.kind = kind          # entity | service | workflow | event | capability | refine
@@ -45,6 +46,11 @@ class Decl:
         self.clauses = {}         # clause keyword -> [Line]
         self.items = []           # workflow body: [Line]
         self.extra = {}           # event source, capability version
+        # RFC-0033: not set by the parser (grammar is unchanged) — `load_sources`
+        # computes these from the file's path and assigns them after parsing.
+        # `None`/`False` here is what every pre-RFC-0033 `Decl` already had.
+        self.namespace = None     # 1st-level directory name, or None
+        self.internal = False     # True if declared under a `.../internal/` dir
 
     def __repr__(self):
         return "Decl(%s %s)" % (self.kind, self.name)

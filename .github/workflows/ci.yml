@@ -1,0 +1,72 @@
+name: CI
+
+# issue #141 phase 1: the automated form of docs/RELEASING.md's completion
+# gate. `scripts/dev_doctor.sh` is a local contributor-environment doctor
+# (interpreter/venv/toolchain presence) and does not run here — a GitHub-hosted
+# runner is provisioned fresh every time, so those checks are moot in CI.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gate:
+    name: gate (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install .
+
+      - name: Test suite (mode B toolchain excluded — issue #141 phase 1)
+        run: |
+          # impl/tests/test_repo_state.py is excluded here by literal module
+          # name, not by filename pattern. Its own module docstring documents
+          # "This module never skips, on purpose": it is issue #35's outermost
+          # regression and the MLIR/LLVM toolchain is the only thing that
+          # exercises its mode-B half, so it must NOT gain a skipUnless guard —
+          # that would let the coverage evaporate silently on any machine
+          # without the toolchain (see AGENTS.md's note on mode B failures).
+          # This runner does not install that toolchain in phase 1 of issue
+          # #141, so the module is excluded here instead — loudly, by name.
+          # Remove this exclusion once a mode-B toolchain CI job exists.
+          echo "excluded from CI discovery (mode B toolchain unavailable, issue #141 phase 1): tests.test_repo_state"
+          PYTHONPATH=impl python3 <<'PY'
+          import os
+          import sys
+          import unittest
+
+          EXCLUDED = {"test_repo_state"}
+          loader = unittest.TestLoader()
+          suite = unittest.TestSuite()
+          for fname in sorted(os.listdir("impl/tests")):
+              if not (fname.startswith("test_") and fname.endswith(".py")):
+                  continue
+              module = fname[:-3]
+              if module in EXCLUDED:
+                  continue
+              suite.addTests(loader.loadTestsFromName("tests." + module))
+
+          runner = unittest.TextTestRunner(verbosity=1)
+          result = runner.run(suite)
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PY
+
+      - name: RFC lint
+        run: python scripts/rfc_lint.py
+
+      - name: Plugin reference drift check
+        run: python scripts/gen_plugin_references.py --check
+
+      - name: Version sync check (issue #141)
+        run: python scripts/check_version_sync.py

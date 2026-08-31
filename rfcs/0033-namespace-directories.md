@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0033, 2026-08-30)
 - Updates: RFC-0031 §Guide-level Explanation (전역 유일 이름 규칙 — 네임스페이스가
   있는 컴파일 단위에서는 네임스페이스 내 유일로 완화), RFC-0031
   §Reference-level Specification > 로더: `load_sources(paths)` (중복 선언 검사가
@@ -252,7 +252,9 @@ issue #122를 함께 닫거나(검사가 실제로 살아났다면) 갱신해야
 동일한 id를 낸다. `examples/login.lir.json`은 이 RFC로 재생성이
 필요하지 않다.
 
-**골든 인접 예제 — 네임스페이스 레이아웃(가상 트랜스크립트, 미구현)**:
+**골든 인접 예제 — 네임스페이스 레이아웃** (구현됨; entity 노드 순서는 `load_sources`의
+파일명 정렬 규칙대로이므로 아래 트랜스크립트와 한 글자 차이 — 실제 산출은
+`impl/tests/test_namespace_directories.py`가 검증한다):
 
 ```
 $ find shop -name '*.lnpl'
