@@ -80,7 +80,25 @@ AI 게이트 4종은 전부 **advisory**로 시작한다(`_ai-gate.yml`의 `bloc
 
 ## `ANTHROPIC_API_KEY` 등록 절차와 OIDC 대안
 
-### 기본: API 키를 리포지토리 시크릿으로 등록
+### 자격증명은 셋 중 하나 — API 키 / OAuth 토큰 / OIDC 페더레이션
+
+`_ai-gate.yml`은 `anthropic_api_key`와 `claude_code_oauth_token`을 **둘 다**
+선언하고, 둘 중 **하나만 있으면** 게이트가 돈다. "시크릿 존재 확인" 스텝이
+둘 다 비었을 때만 skip으로 판정하고, 어느 쪽으로 인증했는지 로그에 찍는다.
+
+| 방식 | 등록할 시크릿 이름 | 성격 |
+|---|---|---|
+| API 키 | `ANTHROPIC_API_KEY` | console.anthropic.com에서 발급. 사용량 과금 |
+| OAuth 토큰 | `CLAUDE_CODE_OAUTH_TOKEN` | `claude setup-token`으로 발급. 구독에 묶인다 |
+| OIDC 페더레이션 | (정적 시크릿 없음) | 아래 절 참고. 저장되는 자격증명이 없어 가장 안전 |
+
+둘 다 등록돼 있으면 API 키가 우선한다.
+
+**이름을 바꿔 달면 안 된다.** OAuth 토큰을 `ANTHROPIC_API_KEY`라는 이름으로
+등록하면 액션이 그 값을 `ANTHROPIC_API_KEY` 환경변수로 넘기는데, OAuth
+토큰은 `CLAUDE_CODE_OAUTH_TOKEN`으로 가야 하므로 인증이 실패한다.
+
+### API 키를 리포지토리 시크릿으로 등록
 
 이 레포는 지금 시크릿이 하나도 등록돼 있지 않다(`gh secret list` → 0건). 등록
 전까지 모든 AI 게이트는 `_ai-gate.yml`의 "시크릿 존재 확인" 스텝에서

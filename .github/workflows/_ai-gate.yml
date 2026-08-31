@@ -44,6 +44,12 @@ on:
     secrets:
       anthropic_api_key:
         required: false
+      claude_code_oauth_token:
+        description: >-
+          `claude setup-token`이 발급하는 Claude Code OAuth 토큰.
+          `anthropic_api_key`의 대안이며 둘 중 하나만 있으면 된다.
+          둘 다 있으면 액션이 알아서 고르므로 여기서는 둘 다 넘긴다.
+        required: false
 
 permissions:
   contents: read
@@ -74,12 +80,23 @@ jobs:
         id: check_secret
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
         run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
+          # 자격증명은 둘 중 하나면 된다. 액션(action.yml 기준)이 두 입력을
+          # 각각 ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN 환경변수로 넘기고
+          # OAuth 토큰은 API 키의 대안으로 명시돼 있다. 그러므로 여기서
+          # 하나만 검사하면, 다른 하나로 등록한 레포에서 게이트가 조용히
+          # 건너뛰어진다.
+          if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "SKIPPED: ANTHROPIC_API_KEY not configured"
+            echo "SKIPPED: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is configured"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            if [ -n "$ANTHROPIC_API_KEY" ]; then
+              echo "auth: anthropic_api_key"
+            else
+              echo "auth: claude_code_oauth_token"
+            fi
           fi
 
       # 시크릿이 없으면 아래 스텝이 전부 건너뛰어지는데, 그것만으로는 잡이
@@ -171,6 +188,7 @@ jobs:
         uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
         with:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
+          claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
           # D9: 기본 배선은 anthropic_api_key다. Anthropic 조직이 GitHub OIDC
           # 워크로드 아이덴티티 페더레이션을 설정하면(docs/CI-GATES.md 참고)
           # 위 줄을 지우고 아래 셋으로 바꾼다(그리고 permissions에 id-token: write 추가):

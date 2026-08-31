@@ -49,6 +49,7 @@ jobs:
     # 보여야 하고, 재사용 워크플로에 필요 없는 시크릿까지 넘기지 않는다.
     secrets:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   prose-factcheck:
     uses: ./.github/workflows/_ai-gate.yml
@@ -60,3 +61,4 @@ jobs:
       paths_note: "PR 산문과 diff 전체"
     secrets:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
