@@ -48,6 +48,7 @@ sqlite에 남는 행은 `{"id": "entity.order#3f25..."}` — 키만 있는 뼈�
 `call <target> as <name>`(RFC-0027)이 이미 확립한 결과 바인딩 표기를
 저장소 동사로 확장한다:
 
+<!-- lnpl-check: skip — fragment: 조각: entity Order 선언 없이 create-as 표기만 보여줌(컴파일러: 'create' appears before any declaration) -->
 ```lnpl
 create order as newOrder
 set newOrder.total to product.price * input.quantity
@@ -226,6 +227,7 @@ workflow PlaceOrder
 
 ### 컴파일 거부 — 이름 충돌
 
+<!-- lnpl-check: skip — fragment: 의도적 컴파일 거부 예시("컴파일 거부 — 이름 충돌" 절), 실패가 문서의 주장 그 자체 -->
 ```lnpl
 create order as order
 ```
@@ -235,6 +237,7 @@ name — a result binding cannot share a name with it (RFC-0027 §2)`
 
 ### 컴파일 거부 — `as` 없는 생성 행에 쓰기 (회귀 확인)
 
+<!-- lnpl-check: skip — fragment: 의도적 컴파일 거부 예시("컴파일 거부 — as 없는 생성 행" 절), 실패가 문서의 주장 그 자체 -->
 ```lnpl
 create order
 set order.total to 1

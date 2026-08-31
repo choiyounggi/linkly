@@ -199,6 +199,7 @@ RFC-0004의 differential 등가 판정에 다음 항목을 실행 순서 분류�
 
 조건식 두 형태를 실증하는 새 시나리오. `examples/guarded.lnpl`:
 
+<!-- lnpl-check: skip — drift: `inputs`/`step <이름>`/`guard when`/`effect`/`kind` 문법은 pre-RFC-0002 폐기 문법이다 — 미선언 동사는 강한 실패가 아니라 no-op 경고로 통과하지만(컴파일러: "warning: unknown-verb ... inputs ... is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op"), 이 예제가 여전히 참이라는 뜻은 아니다. 실제 `examples/guarded.lnpl`(이 절이 가리키는 그 파일)은 현재 문법(validate/find/cache/call, `references/grammar.md`)으로 완전히 다시 쓰여 있어 이 인라인 사본과 어긋난다. Accepted RFC 본문 직접 수정 금지(AGENTS.md, RFC-0007 Updates 절차 대상) — 올바른 수정은 이 절을 현재 examples/guarded.lnpl과 동기화하는 RFC-0007 Updates 개정이다 -->
 ```lnpl
 workflow RetrieveWithCache
   inputs

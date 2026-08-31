@@ -216,6 +216,7 @@ status를 낸다." **스케줄의 실제 발화는 어느 모드도 관측하지
 
 30일 환불 창, 경계 포함(`<=`는 포함이다):
 
+<!-- lnpl-check: skip — fragment: 조각: entity Payment/Refund 선언 없이 워크플로 본문만 보여줌(컴파일러: `read` needs an entity in scope) -->
 ```lnpl
 workflow RefundPayment
     read payment
@@ -233,6 +234,7 @@ workflow RefundPayment
 
 거부되는 형태:
 
+<!-- lnpl-check: skip — fragment: 의도적으로 컴파일 거부되는 형태를 나열한 목록("거부되는 형태" 절), 실패가 문서의 주장 그 자체 -->
 ```lnpl
 when payment.createdAt <= 43200m       # instant vs scalar — 컴파일 거부
 when payment.createdAt + input.requestedAt <= 30d   # instant + instant — 거부

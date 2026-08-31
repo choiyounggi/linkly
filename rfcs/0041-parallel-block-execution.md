@@ -62,6 +62,7 @@ Concurrency 문단과 `Policy Enforcement`의 `Policy.parallel` 행은 RFC-0027
 저자는 아무것도 새로 배우지 않는다 — `parallel` … `merge` 블록은 이미 쓸 수
 있었다. 달라지는 것은 그 블록이 실제로 하는 일뿐이다:
 
+<!-- lnpl-check: skip — fragment: 조각: workflow/capability 선언 없이 parallel 블록 모양만 보여줌(컴파일러: 'parallel' appears before any declaration) -->
 ```lnpl
 parallel
     call PricingService as pricing
@@ -87,6 +88,7 @@ merge
 안에는 순서가 없으므로, 두 스텝이 같은 행을 쓰면 어느 쪽이 "이겼는지"가
 실행마다 달라진다 — 컴파일러가 이것을 거부한다:
 
+<!-- lnpl-check: skip — fragment: 조각: workflow Restock/entity Product 선언 없이 같은-entity 쓰기 충돌 모양만 보여줌(컴파일러: 'parallel' appears before any declaration) -->
 ```lnpl
 parallel
     update product          # line 12

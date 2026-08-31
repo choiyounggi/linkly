@@ -78,6 +78,7 @@ event OrderPlaced on Order create
 대상 워크플로가 선언돼 있지 않으면 컴파일 에러다 — 후보 워크플로 목록과
 함께 거부된다(추측하지 않는다, `emit`의 미선언-이벤트 거부와 같은 관례).
 
+<!-- lnpl-check: skip — fragment: 조각: 대상 워크플로 FulfillOrder 선언 없이 consume-by-미선언 형태만 보여줌(컴파일러: not a declared workflow) -->
 ```lnpl
 event OrderPlaced
     consume by Ghost
@@ -127,6 +128,7 @@ lnpl relay orders.lnpl --backend sqlite:./store.db \
 `emit`하면, 무한 재디스패치 가능성을 컴파일 타임에 알려준다(경고, 에러는
 아니다 — 가드가 실제로는 그 경로를 막을 수 있어서다).
 
+<!-- lnpl-check: skip — fragment: 조각: entity Order 선언 없이 순환 경고 예시만 보여줌(컴파일러: `validate` needs an entity in scope) -->
 ```lnpl
 event OrderPlaced
     consume by FulfillOrder

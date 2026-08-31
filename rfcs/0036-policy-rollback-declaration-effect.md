@@ -172,6 +172,7 @@ RFC-0032 §Examples 타임라인 C가 이미 이 경로(재시도 소진 후 rol
 나란한 대조군을 든다: `policy.login`에서 `rollback` 절 하나만 뺀 가상의
 변형이다(골든 자체는 바뀌지 않는다).
 
+<!-- lnpl-check: skip — fragment: 자리표시자 `...` 포함, 완전한 문법이 아님(컴파일러: unknown policy '...') -->
 ```lnpl
 service LoginServiceNoRollbackDecl
     policy

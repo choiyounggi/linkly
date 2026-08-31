@@ -67,6 +67,7 @@ entity Payment
 새로 쓸 수 있게 되는 것은 `spec`의 `given`/`expect` 자리에 쓰는 **Money 리터럴**
 하나다 — RFC-0016이 기간에 `30d`를 준 것과 같은 자리, 같은 모양의 결정이다.
 
+<!-- lnpl-check: skip — fragment: 조각: workflow 선언 없이 spec의 given/expect 자리만 보여줌(컴파일러: 'spec' appears before any declaration) -->
 ```lnpl
     spec
         given

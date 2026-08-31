@@ -64,6 +64,7 @@ Questions 3:
 저자가 새로 쓸 수 있게 되는 것은 세 집계 함수다. 문법 자리는 기존 `sum`/`count`와
 완전히 같다 — `set <target> to <func> <ref>`.
 
+<!-- lnpl-check: skip — fragment: 조각: entity Report/Payment 선언 없이 워크플로 본문만 보여줌(컴파일러: `find` needs an entity in scope) -->
 ```lnpl
 workflow SummarizePayments
     find report
@@ -223,6 +224,7 @@ RFC는 그 텍스트를 한 글자도 바꾸지 않는다.
 
 ### 골든 인접 예제 — 결제 집계 (RFC-0007 §6, 골든이 다루지 않는 기능)
 
+<!-- lnpl-check: skip — drift: RFC가 여는 `avg`/`min`/`max` 집계 문법이 컴파일러에 구현돼 있지 않다(컴파일러: "unsupported operand form 'avg payment.amount' ... a value is `<operand>` or `<operand> +|- <operand>` — RFC-0015 does not nest arithmetic"). `sum`/`count`만 피연산자 형태로 인식되고 avg/min/max는 문법 자체가 없다 — 조각도 자리표시자도 아니다, RFC가 주장하는 문법을 컴파일러가 아직 못 받는다. 독립 재현: entity를 온전히 선언한 별도 스니펫으로도 `max`/`min`이 같은 "unsupported operand form" 오류로 거부됨을 확인(.orchestration/verify/t2-doc-snippet-gate.md 참조) -->
 ```lnpl
 capability postgres
 
@@ -273,6 +275,7 @@ workflow SummarizePayments
 
 ### 동점 반올림 — half-to-even이 절삭과 갈리는 지점
 
+<!-- lnpl-check: skip — fragment: 조각: workflow 선언 없이 spec의 given/expect 자리만 보여줌(컴파일러: 'spec' appears before any declaration) -->
 ```lnpl
     spec
         given
@@ -293,6 +296,7 @@ workflow SummarizePayments
 
 ### 빈 RowSet — `avg`/`min`/`max`는 실패, `sum`/`count`는 0
 
+<!-- lnpl-check: skip — fragment: 조각: workflow 선언 없이 spec의 given/expect 자리만 보여줌(컴파일러: 'spec' appears before any declaration) -->
 ```lnpl
     spec
         given
@@ -310,6 +314,7 @@ workflow SummarizePayments
 
 ### 정적 거부 — DateTime `sum`, 미지원 타입의 `min`/`max`
 
+<!-- lnpl-check: skip — fragment: 조각: entity Session은 선언되지만 집계 대상 entity Report가 선언되지 않음(컴파일러: assignment target 'report.total' names 'report', which is not a declared entity) -->
 ```lnpl
 entity Session
     field

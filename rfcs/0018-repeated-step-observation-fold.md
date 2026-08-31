@@ -96,6 +96,7 @@ RFC-0017 §Reference-level Specification 제약 2가 이 두 줄을 이미 지�
 
 이슈 #51 본문의 재현이다.
 
+<!-- lnpl-check: skip — fragment: 조각: entity Token 선언 없이 재현 스텝만 보여줌(컴파일러: `find` needs an entity in scope) -->
 ```lnpl
 workflow Repro
     find token

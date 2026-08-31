@@ -192,6 +192,7 @@ workflow PlaceOrder
 
 ### 예 2 — `until`이 0라운드인 실행 (t4 F-9)
 
+<!-- lnpl-check: skip — drift: `step <이름>`은 pre-RFC-0002 폐기 문법이다 — Start/Loop/End는 실제 동사가 아니라 라운드 계수 의미론을 설명하려는 자리표시 스텝 이름인데, 미선언 동사는 강한 실패가 아니라 no-op 경고로 통과한다(컴파일러: "warning: unknown-verb ... step ... is outside VERB_LEXICON: this step derives no Effect and runs as a descriptive no-op"). 조각도 자리표시자(`...`)도 아니다 — 그럴듯한 낱말이 파싱에 성공하고 아무것도 하지 않는, AGENTS.md가 말하는 바로 그 실패 모드가 이 문서 예제 자체에서 재현된다. Accepted RFC 본문 직접 수정 금지 — 올바른 수정은 현재 문법으로 다시 쓰는 RFC-0007 Updates 개정이다 -->
 ```lnpl
 workflow W
     step Start

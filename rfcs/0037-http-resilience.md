@@ -49,6 +49,7 @@ HTTP_AUTH_KINDS = ("bearer", "apikey")
 RFC-0027/이슈 #101 시절 그대로 동작한다(재시도 0, 브레이커 없음, 경로는
 `endpoint`의 것 그대로):
 
+<!-- lnpl-check: skip — fragment: 의도적 warning 예시 — 본문이 몇 줄 아래에서 "method post/patch에 retry를 같이 선언하면 컴파일이 retry-on-non-idempotent 경고를 낸다"고 직접 서술한다. --strict=warning 게이트가 경고도 위반으로 잡으므로 마커가 필요하지만, 컴파일러 동작 자체는 문서가 말하는 그대로다 -->
 ```lnpl
 capability http PaymentGateway
     method post
@@ -206,6 +207,7 @@ path_args=[...])`에 넘긴다 — 이스케이프(`urllib.parse.quote(safe="")`
 
 ## Examples
 
+<!-- lnpl-check: skip — drift: RFC의 대표 예제(## Examples)가 실제로 컴파일되지 않는다. `when paymentResult.status == 200`(내부 21번째 줄) 가드 아래 `find order`/`call OrdersApi ...` 두 줄을 나란히 인덴트했지만, 가드는 스텝 하나만 소유할 수 있다(컴파일러: "this line is indented as if it were inside the `when` guard ... but a guard owns exactly one step or block ... Wrap the steps in a `pipeline` block"). 조각도 자리표시자도 아니다 — 실제 수정은 이 예제를 pipeline 블록으로 감싸는 RFC-0007 Updates 개정이 필요하다(본 태스크 범위 밖, RFC 본문은 고치지 않는다). 부수적으로 `method post`+`retry` 조합이 retry-on-non-idempotent 경고도 함께 낸다 — 이건 본문이 바로 아래서 "경고이지 거부가 아니다"라고 직접 서술하는 의도된 부분이라 경고 자체는 무해하다 -->
 ```lnpl
 capability http PaymentGateway
     method post
@@ -244,6 +246,7 @@ workflow ChargeCard
 
 ### 컴파일 거부 — 경로 인자 개수 불일치
 
+<!-- lnpl-check: skip — fragment: 의도적 컴파일 거부 예시("컴파일 거부 — 경로 인자 개수 불일치" 절), 실패가 문서의 주장 그 자체 -->
 ```lnpl
     call OrdersApi with order.id order.sku as r
 ```
