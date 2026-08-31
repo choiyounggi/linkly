@@ -189,6 +189,18 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
+          # `github_token`을 넘기지 않으면 액션이 GitHub App 토큰을 OIDC로
+          # 발급받으려 하고, 그러려면 `id-token: write`가 필요하다 —
+          # 실측(PR #157): "Could not fetch an OIDC token. Did you remember to
+          # add `id-token: write`?"로 액션이 죽었다.
+          #
+          # `id-token: write`는 이 워크플로의 OIDC 토큰을 OIDC를 신뢰하는
+          # 임의의 서비스와 교환할 수 있게 하는 실질적 권한 확대다. 이 게이트가
+          # 필요한 것은 PR에 코멘트를 다는 것뿐이고 그 범위는 위 `permissions`
+          # 블록이 이미 정확히 주고 있으므로, 내장 GITHUB_TOKEN을 넘겨
+          # OIDC 경로 자체를 쓰지 않는다. (D9의 페더레이션 대안을 쓸 때는
+          # 그때 `id-token: write`를 추가한다 — 그건 자격증명 방식의 선택이다.)
+          github_token: ${{ github.token }}
           # D9: 기본 배선은 anthropic_api_key다. Anthropic 조직이 GitHub OIDC
           # 워크로드 아이덴티티 페더레이션을 설정하면(docs/CI-GATES.md 참고)
           # 위 줄을 지우고 아래 셋으로 바꾼다(그리고 permissions에 id-token: write 추가):
