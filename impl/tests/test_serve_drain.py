@@ -132,6 +132,89 @@ class DrainRejectionTest(unittest.TestCase):
         self.assertNotEqual(503, status)
 
 
+class AdmitAtomicityTest(unittest.TestCase):
+    """issue #150: the shutdown-gate check and the in-flight increment must
+    happen inside one `_inflight_cv` hold, so a request that gets past the
+    gate is already counted before a concurrent SIGTERM's drain thread can
+    observe `_inflight == 0`. `_admit()`/`begin_shutdown()` are the atomic
+    replacement for the old read-flag-then-increment interleaving."""
+
+    def test_normal_admit_succeeds_and_counts_when_not_shutting_down(self):
+        app = make_wsgi_app(_doc(OPEN_SRC))
+
+        admitted = app._admit()
+
+        self.assertTrue(admitted)
+        self.assertEqual(1, app._inflight)
+
+    def test_error_admit_fails_and_does_not_count_once_shutting_down(self):
+        app = make_wsgi_app(_doc(OPEN_SRC))
+        app.begin_shutdown()
+
+        admitted = app._admit()
+
+        self.assertFalse(admitted)
+        self.assertEqual(0, app._inflight)
+
+    def test_core_admit_blocks_on_the_inflight_lock_before_reading_the_flag(self):
+        """The race this issue closes: SIGTERM's flag-set slipping in between
+        a gate check and the increment. Holding `_inflight_cv` on the main
+        thread and proving a concurrent `_admit()` call blocks on it (rather
+        than reading `shutting_down` first) is the deterministic, lock-based
+        stand-in for that race -- no repeated-run stress test (issue #150's
+        own report: not reproduced, found by reading).
+
+        The invariant this pins down is `assertEqual([False], results)` +
+        `assertEqual(0, app._inflight)`, not `assertTrue(t.is_alive())` on
+        its own -- a version of `_admit()` that reads the flag before taking
+        the lock still passes the `is_alive()` check (it blocks on the lock
+        too, just after already having read a stale `False`), but then
+        wrongly returns `True` and leaves `_inflight` at 1. Keep all three
+        assertions (review r1, N1)."""
+        app = make_wsgi_app(_doc(OPEN_SRC))
+        results = []
+
+        def call_admit():
+            results.append(app._admit())
+
+        with app._inflight_cv:
+            t = threading.Thread(target=call_admit)
+            t.start()
+            t.join(0.2)
+            self.assertTrue(t.is_alive())  # still blocked on _inflight_cv
+
+            app.shutting_down = True
+
+        t.join(2.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual([False], results)
+        self.assertEqual(0, app._inflight)
+
+    def test_boundary_wait_for_drain_does_not_complete_while_an_admitted_request_is_open(self):
+        app = make_wsgi_app(_doc(OPEN_SRC))
+        app._admit()
+        app.begin_shutdown()
+
+        drained = app.wait_for_drain(0.1)
+
+        self.assertFalse(drained)
+
+    def test_error_inflight_is_decremented_when_check_rate_limit_raises(self):
+        """issue #150 review r1, F1: `_check_rate_limit` runs after `_admit()`
+        has already counted the request, and it calls `start_response` (a
+        WSGI server callback outside this app's control) on its 429 path --
+        an exception there must not leak the count permanently, or
+        `wait_for_drain` can never observe zero again."""
+        app = make_wsgi_app(_doc(OPEN_SRC))
+
+        with mock.patch.object(app, "_check_rate_limit",
+                               side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                call_wsgi(app, "POST", "/rollup/get-report", body=b"{}")
+
+        self.assertEqual(0, app._inflight)
+
+
 class SigtermIntegrationTest(unittest.TestCase):
     """Real `serve()` + real `signal.signal(SIGTERM, ...)` wiring -- confirms
     the drain thread actually calls `server.shutdown()` (stopping

@@ -224,7 +224,6 @@ RFC는 그 텍스트를 한 글자도 바꾸지 않는다.
 
 ### 골든 인접 예제 — 결제 집계 (RFC-0007 §6, 골든이 다루지 않는 기능)
 
-<!-- lnpl-check: skip — drift: RFC가 여는 `avg`/`min`/`max` 집계 문법이 컴파일러에 구현돼 있지 않다(컴파일러: "unsupported operand form 'avg payment.amount' ... a value is `<operand>` or `<operand> +|- <operand>` — RFC-0015 does not nest arithmetic"). `sum`/`count`만 피연산자 형태로 인식되고 avg/min/max는 문법 자체가 없다 — 조각도 자리표시자도 아니다, RFC가 주장하는 문법을 컴파일러가 아직 못 받는다. 독립 재현: entity를 온전히 선언한 별도 스니펫으로도 `max`/`min`이 같은 "unsupported operand form" 오류로 거부됨을 확인(.orchestration/verify/t2-doc-snippet-gate.md 참조) -->
 ```lnpl
 capability postgres
 

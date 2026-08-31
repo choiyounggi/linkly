@@ -148,6 +148,18 @@ class TestAggregateGrammar(unittest.TestCase):
         with self.assertRaises(ConditionError):
             parse_assignment("set report.totalClicks to sum 1")
 
+    def test_avg_min_max_parse_to_aggregates(self):
+        """RFC-0045 §1: `AGG_FUNCS` widens to include `avg`/`min`/`max`, and
+        `condition.py` needs no change to parse them (F1/F2)."""
+        for func in ("avg", "min", "max"):
+            with self.subTest(func=func):
+                target, rhs = parse_assignment(
+                    "set report.stat to %s link.clicks" % func)
+                self.assertEqual(target, "report.stat")
+                self.assertIsInstance(rhs, Aggregate)
+                self.assertEqual(rhs.func, func)
+                self.assertEqual(rhs.ref.name, "link.clicks")
+
 
 class TestAggregateLowering(unittest.TestCase):
     """RFC-0025 §2: the full `list` + `sum`/`count` workflow lowers to
@@ -197,11 +209,78 @@ class TestStaticRejections(unittest.TestCase):
             "    set report.linkCount to count widget\n",
             "widget", "not a declared entity")
 
-    def test_summing_a_non_integer_field_is_refused(self):
+    def test_summing_a_field_that_is_neither_integer_nor_money_is_refused(self):
+        """RFC-0045 §2 widened `sum`'s legal types from Integer-only to
+        Integer-or-Money — Decimal (still no evaluator) replaces Money as the
+        rejected control here; Money's own legality is
+        `test_summing_a_money_field_is_now_legal` below."""
         self.compile_fails(
             "    list link\n    set report.totalClicks to sum link.clicks\n",
-            "not Integer", "Money",
-            field="clicks Money")
+            "neither Integer nor Money", "Decimal",
+            field="clicks Decimal")
+
+    def test_summing_a_datetime_field_is_still_refused(self):
+        """RFC-0045 §2: `sum`(DateTime) stays rejected — a sum of instants is
+        still meaningless, unchanged from RFC-0025."""
+        self.compile_fails(
+            "    list link\n    set report.totalClicks to sum link.clicks\n",
+            "neither Integer nor Money",
+            field="clicks DateTime")
+
+    def test_summing_a_money_field_is_now_legal(self):
+        """RFC-0045 §2: `sum` now accepts Money — the currency-mismatch rule
+        is a runtime concern (RFC-0044 §5), not a compile-time one."""
+        doc = compile_doc(clicks_source(
+            "    list link\n"
+            "    set report.totalClicks to sum link.clicks\n"
+            "    update report\n", field="clicks Money")).to_document()
+        self.assertEqual(len(nodes_of(doc, "Assignment")), 1)
+
+    def test_averaging_a_datetime_field_is_refused(self):
+        """RFC-0045 §Alternatives 2: `avg`(DateTime) is explicitly left
+        closed this RFC — no measured need for "average instant"."""
+        self.compile_fails(
+            "    list link\n    set report.totalClicks to avg link.clicks\n",
+            "neither Integer nor Money",
+            field="clicks DateTime")
+
+    def test_avg_without_a_field_is_refused(self):
+        self.compile_fails(
+            "    list link\n    set report.totalClicks to avg link\n",
+            "`avg` needs a field")
+
+    def test_min_max_without_a_field_is_refused(self):
+        for func in ("min", "max"):
+            with self.subTest(func=func):
+                self.compile_fails(
+                    "    list link\n    set report.totalClicks to %s link\n"
+                    % func,
+                    "`%s` needs a field" % func)
+
+    def test_min_of_a_text_field_is_refused(self):
+        """RFC-0045 §2: `min`/`max` accept Integer/DateTime/Money only — no
+        order-comparison evaluator exists for Text."""
+        self.compile_fails(
+            "    list link\n    set report.totalClicks to min link.clicks\n",
+            "none of Integer, DateTime, or Money",
+            field="clicks Text")
+
+    def test_max_of_a_decimal_field_is_refused(self):
+        self.compile_fails(
+            "    list link\n    set report.totalClicks to max link.clicks\n",
+            "none of Integer, DateTime, or Money",
+            field="clicks Decimal")
+
+    def test_min_max_of_datetime_and_money_fields_are_now_legal(self):
+        """RFC-0045 §2: `min`/`max`(DateTime) and `min`/`max`(Money) are new
+        — RFC-0025 only ever opened Integer."""
+        for field in ("clicks DateTime", "clicks Money"):
+            with self.subTest(field=field):
+                doc = compile_doc(clicks_source(
+                    "    list link\n"
+                    "    set report.totalClicks to min link.clicks\n"
+                    "    update report\n", field=field)).to_document()
+                self.assertEqual(len(nodes_of(doc, "Assignment")), 1)
 
     def test_summing_a_field_the_entity_does_not_declare_is_refused(self):
         self.compile_fails(

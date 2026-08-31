@@ -1228,6 +1228,12 @@ def lower(decls, module_name):
                 raise LowerError(
                     "line %d: unknown field modifier %r — `derived` is the "
                     "only one (issue #95)" % (line.lineno, line.tokens[2]))
+            if not WORD_RE.match(line.tokens[0]):
+                raise LowerError(
+                    "line %d: field name %r must be a lowercase word — "
+                    "`<name> <Type>` where <name> starts with a lowercase "
+                    "letter followed by letters or digits only (%s)"
+                    % (line.lineno, line.tokens[0], WORD_RE.pattern))
             field = {"name": line.tokens[0],
                     "type": _resolve_type(line.tokens[1], refined_names,
                                           used_presets, line.lineno)}
@@ -2322,9 +2328,17 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         # references like any other, so the same judgements
                         # apply — including "is it an Integer".
                         text = "set %s to %s" % (child["target"], child["expression"])
-                        scope.check_reference(child["target"], text,
-                                              ASSIGN_SUBJECT, is_target=True)
                         if isinstance(rhs, Aggregate):
+                            # RFC-0045 §3/§5: `sum`/`avg`/`min`/`max` can now
+                            # produce a Money result (`_check_aggregate` below
+                            # is the authority on which source field types
+                            # each func accepts) — the target-dimension check
+                            # widens to admit Money only on this branch, not
+                            # for a plain arithmetic `Value` target, which
+                            # still has no Money evaluator.
+                            scope.check_reference(child["target"], text,
+                                                  ASSIGN_SUBJECT, is_target=True,
+                                                  allow_money=True)
                             entity_id = _check_aggregate(rhs, by_binding, base_of or {},
                                                          workflow_name, text)
                             if entity_id not in listed and diagnostics is not None:
@@ -2340,6 +2354,8 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                             % text,
                                     line=line)
                         else:
+                            scope.check_reference(child["target"], text,
+                                                  ASSIGN_SUBJECT, is_target=True)
                             for name in references(rhs):
                                 scope.check_reference(name, text, ASSIGN_SUBJECT)
                             # The expression is a `Value` like any other, so
@@ -2405,7 +2421,12 @@ def _check_list_predicate(node, registry, scope, workflow_name):
 
 
 def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
-    """RFC-0025 §3: static rejections for one `Aggregate` operand.
+    """RFC-0025 §3 / RFC-0045 §2: static rejections for one `Aggregate`
+    operand. `count` takes an entity; `sum`/`avg`/`min`/`max` take a field.
+    RFC-0045 widens the field-type table per function: `sum`/`avg` accept
+    Integer or Money (`sum`(DateTime) stays refused — RFC-0025's original
+    reason, a sum of instants is meaningless, is unchanged); `min`/`max`
+    accept Integer, DateTime, or Money.
 
     Judged here rather than in `condition.py` because it needs the document —
     which entities are declared, which fields they have, which type each is —
@@ -2428,12 +2449,12 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
                 "field (write `count %s`, not `count %s`)"
                 % (workflow_name, text, binding, agg.ref.name))
         return entity["id"]
-    # agg.func == "sum"
+    # agg.func in ("sum", "avg", "min", "max") — all four need a field.
     if agg.ref.namespace is None:
         raise LowerError(
-            "workflow %s: aggregate %r — `sum` needs a field "
-            "(`sum <entity>.<field>`), not a bare entity"
-            % (workflow_name, text))
+            "workflow %s: aggregate %r — `%s` needs a field "
+            "(`%s <entity>.<field>`), not a bare entity"
+            % (workflow_name, text, agg.func, agg.func))
     field = agg.ref.field
     fields = {f["name"]: f for f in entity["fields"]}
     if field not in fields:
@@ -2442,12 +2463,21 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
             "not declare" % (workflow_name, text, field, entity["name"]))
     declared = fields[field].get("type")
     base = base_of.get(declared, declared)
-    if base != "Integer":
-        raise LowerError(
-            "workflow %s: aggregate %r sums %s.%s, whose declared type %s is "
-            "not Integer — RFC-0025 sums whole numbers only (no evaluator for "
-            "Money, Decimal, or the other composite types)"
-            % (workflow_name, text, binding, field, declared))
+    if agg.func in ("sum", "avg"):
+        if base not in ("Integer", "Money"):
+            raise LowerError(
+                "workflow %s: aggregate %r — `%s` reads %s.%s, whose "
+                "declared type %s is neither Integer nor Money — RFC-0045 "
+                "accepts Integer or Money for `sum`/`avg` only (no evaluator "
+                "for Decimal, DateTime, or the other composite types)"
+                % (workflow_name, text, agg.func, binding, field, declared))
+    else:  # "min" / "max"
+        if base not in ("Integer", "DateTime", "Money"):
+            raise LowerError(
+                "workflow %s: aggregate %r — `%s` reads %s.%s, whose "
+                "declared type %s is none of Integer, DateTime, or Money — "
+                "RFC-0045 has no order comparison for the other types"
+                % (workflow_name, text, agg.func, binding, field, declared))
     return entity["id"]
 
 
@@ -2717,18 +2747,25 @@ class _Scope:
         self.base_of = base_of
 
     def check_reference(self, name, text, subject=GUARD_SUBJECT,
-                        is_target=False):
+                        is_target=False, allow_money=False):
         """One `Reference`, judged against the document.
 
-        Returns the operand's DIMENSION (`"instant"` or `"scalar"`), or None
-        when the document does not declare a type for it — a bare reference
-        names a payload field the document never describes, so its dimension is
-        decided at runtime, exactly as its value is.
+        Returns the operand's DIMENSION (`"instant"`, `"scalar"`, or —
+        `allow_money` only — `"money"`), or None when the document does not
+        declare a type for it — a bare reference names a payload field the
+        document never describes, so its dimension is decided at runtime,
+        exactly as its value is.
+
+        `allow_money` (RFC-0045 §3/§5): an `Aggregate` assignment target may
+        be Money-declared, since `sum`/`avg`/`min`/`max` now have a real
+        evaluator for it (`impl/lnpl/money.py`) — every other caller (guard
+        conditions, `Value` assignment targets/operands) leaves it False, so
+        their Money refusal (t2 F-4) is unchanged.
         """
         field_node = self.resolve_field(name, text, subject, is_target)
         if field_node is None:
             return None
-        return self._dimension_of(field_node, name, text)
+        return self._dimension_of(field_node, name, text, allow_money=allow_money)
 
     def resolve_field(self, name, text, subject=GUARD_SUBJECT,
                       is_target=False):
@@ -2843,7 +2880,7 @@ class _Scope:
                 % (self.workflow_name, subject, text, entity["id"], field))
         return fields[field]
 
-    def _dimension_of(self, field_node, name, text):
+    def _dimension_of(self, field_node, name, text, allow_money=False):
         """The operand's dimension, or a refusal (RFC-0015 §D6, RFC-0016).
 
         t2 F-4 is the reason this is a compile error and not a runtime one: a
@@ -2855,6 +2892,11 @@ class _Scope:
         instead: it has an evaluator now (UTC epoch-milliseconds), so what it
         cannot do is be compared to a plain number, which is a different
         judgement made by `_check_dimensions`.
+
+        RFC-0045 §3/§5 similarly opens `Money`, but ONLY when the caller
+        passes `allow_money=True` (an `Aggregate` assignment target) — a
+        `Value` target/operand still has no Money evaluator, so t2 F-4's
+        refusal stands there unchanged.
         """
         declared = field_node.get("type")
         base = self.base_of.get(declared, declared)
@@ -2862,6 +2904,13 @@ class _Scope:
             return "scalar"
         if base == "DateTime":
             return "instant"
+        if allow_money and base == "Money":
+            return "money"
+        if allow_money:
+            raise LowerError(
+                "workflow %s: %r uses %s, whose declared type %s is none of "
+                "Integer, DateTime, or Money — RFC-0045 has no evaluator for "
+                "the other types" % (self.workflow_name, text, name, declared))
         raise LowerError(
             "workflow %s: %r uses %s, whose declared type %s is neither "
             "Integer nor DateTime — RFC-0016 computes over whole numbers and "

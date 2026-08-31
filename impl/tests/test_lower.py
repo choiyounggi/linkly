@@ -4,7 +4,7 @@ import json
 import os
 import unittest
 
-from lnpl.lower import LowerError, derive_id, lower, split_pascal
+from lnpl.lower import LowerError, WORD_RE, derive_id, lower, split_pascal
 from lnpl.parser import parse
 from lnpl.refinements import PRESETS
 from lnpl.types import SEMANTIC_TYPES
@@ -272,6 +272,43 @@ workflow W
         with self.assertRaises(LowerError) as ctx:
             ir(src)
         self.assertIn("derive the same id", str(ctx.exception))
+
+
+class TestEntityFieldNames(unittest.TestCase):
+    """Issue #149 — a field name must be a `WORD_RE` identifier.
+
+    `_entity_for_target` (openapi.py) resolves a `Validation` target by
+    stripping exactly one trailing segment; a dotted field name defeats that
+    and the generated OpenAPI silently drops `requestBody`. Rejecting the
+    name at declaration closes the door for good.
+    """
+
+    def test_a_dotted_field_name_is_rejected(self):
+        # The issue #149 repro, verbatim.
+        with self.assertRaises(LowerError) as ctx:
+            ir("entity Order\n    field\n        id UUID\n        foo.bar Integer\n")
+        msg = str(ctx.exception)
+        self.assertIn("foo.bar", msg)
+        self.assertIn(WORD_RE.pattern, msg)
+
+    def test_a_field_name_starting_with_an_uppercase_letter_is_rejected(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir("entity Order\n    field\n        id UUID\n        Total Integer\n")
+        msg = str(ctx.exception)
+        self.assertIn("Total", msg)
+        self.assertIn(WORD_RE.pattern, msg)
+
+    def test_a_field_name_with_digits_and_internal_capitals_is_accepted(self):
+        doc = ir("entity Order\n    field\n        line1Total Integer\n")
+        self.assertEqual(by_id(doc)["entity.order"]["fields"],
+                         [{"name": "line1Total", "type": "Integer"}])
+
+    def test_the_derived_modifier_still_lowers_with_a_valid_name(self):
+        doc = ir("entity Order\n    field\n        id UUID\n"
+                 "        total Integer derived\n")
+        self.assertEqual(by_id(doc)["entity.order"]["fields"],
+                         [{"name": "id", "type": "UUID"},
+                          {"name": "total", "type": "Integer", "derived": True}])
 
 
 class TestCapabilityAttribution(unittest.TestCase):

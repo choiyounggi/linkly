@@ -889,7 +889,7 @@ def eval_value(value, condition, payload, bindings, caller=None):
 
 
 def eval_aggregate(agg, expression, rowsets):
-    """A parsed `Aggregate` -> int, always (RFC-0025 §5).
+    """A parsed `Aggregate` -> int/str/dict (RFC-0025 §5, RFC-0045 §3-§5).
 
     An absent or empty RowSet binding sums/counts to 0 — not None, not a
     fault. That covers two cases identically: this workflow never `list`ed
@@ -897,35 +897,200 @@ def eval_aggregate(agg, expression, rowsets):
     RFC-0025 §4), and it did, but the store had no rows for it. Both are
     "nothing to aggregate," and RFC-0025's own decision is that neither is an
     error — a report with no links is a normal state, not an exception.
+    `avg`/`min`/`max` have no such identity element (RFC-0045 §3/§4): an
+    empty RowSet fails with `avg-of-empty-rowset` / `min-max-of-empty-rowset`.
 
-    A row that IS present but cannot supply the summed field is different: the
-    field's declared type is checked at compile time (RFC-0025 §3), but a
-    driver can still hand back a row that was never written with it (a plain
-    `create` writes only `id` — `interp.FakeRepository.execute`). That is the
-    same fault an unresolved `Value` reference already is in an assignment
-    (`eval_value` returning None -> `RunError`), so it raises here too rather
-    than silently treating one row as 0 and the rest as data.
+    A row that IS present but cannot supply the aggregated field is different:
+    the field's declared type is checked at compile time (RFC-0025 §3,
+    RFC-0045 §2), but a driver can still hand back a row that was never
+    written with it (a plain `create` writes only `id` —
+    `interp.FakeRepository.execute`). That is the same fault an unresolved
+    `Value` reference already is in an assignment (`eval_value` returning
+    None -> `RunError`), so it raises here too rather than silently treating
+    one row as 0 and the rest as data.
+
+    This function's signature is unchanged from RFC-0025 — it still receives
+    no document/type information, so it dispatches on each row value's own
+    Python shape: `dict` -> Money (RFC-0044 §1's `{"amount", "currency"}`),
+    `str` -> DateTime (RFC-0016 §2's stored instant text), plain `int`/`bool`
+    -> Integer. `lower.py`'s static rejection (RFC-0045 §2) already limits
+    which shape a legal program's rows can carry, so this is safe for any
+    non-empty RowSet. It is NOT enough to recover a Money field's declared
+    type from an EMPTY RowSet, since there are no rows to inspect — so an
+    empty `sum` is plain integer `0` even when the target field is Money,
+    rather than RFC-0045 §5's `{"amount": "0", "currency": null}` (recorded
+    on the blackboard as a load-bearing decision).
     """
     binding = agg.ref.namespace or agg.ref.name
     rows = rowsets.get(binding) or []
     if agg.func == "count":
         return len(rows)
+
     field = agg.ref.field
-    total = 0
+    values = []
     for row in rows:
         if not isinstance(row, dict) or field not in row:
             raise RunError(
                 "aggregate %r: a row in the %r RowSet has no %r field"
                 % (expression, binding, field))
-        value = row[field]
+        values.append(row[field])
+
+    if agg.func in ("sum", "avg"):
+        return _eval_sum_avg(agg.func, values, field, expression)
+    return _eval_minmax(agg.func, values, field, expression)
+
+
+def _money_run_error(expression, err):
+    return RunError("aggregate %r: %s — %s" % (expression, err.code, err.message))
+
+
+def _decode_money(minor, currency):
+    """The inverse of `money.encode_money` — a minor-unit int + currency back
+    to the `{"amount", "currency"}` wire shape (RFC-0044 §1)."""
+    from . import money
+    exp = money.exponent(currency)
+    sign = "-" if minor < 0 else ""
+    digits = str(abs(minor))
+    if exp:
+        digits = digits.rjust(exp + 1, "0")
+        amount = digits[:-exp] + "." + digits[-exp:]
+    else:
+        amount = digits
+    return {"amount": sign + amount, "currency": currency}
+
+
+def _eval_sum_avg(func, values, field, expression):
+    """RFC-0045 §3/§5: `sum`/`avg` over Integer or Money row values."""
+    from . import money
+
+    if func == "avg" and not values:
+        raise RunError(
+            "aggregate %r: avg-of-empty-rowset — averaging %r needs at "
+            "least one row" % (expression, field))
+    if not values:
+        return 0
+
+    if isinstance(values[0], dict):
+        pairs = []
+        for value in values:
+            if not isinstance(value, dict) or "amount" not in value \
+                    or "currency" not in value:
+                raise RunError(
+                    "aggregate %r: cannot %s non-Money %s=%r"
+                    % (expression, func, field, value))
+            try:
+                pairs.append(money.encode_money(value["amount"], value["currency"]))
+            except money.MoneyError as e:
+                raise _money_run_error(expression, e)
+        total_pair = pairs[0]
+        for pair in pairs[1:]:
+            try:
+                total_pair = money.add(total_pair, pair)
+            except money.MoneyError as e:
+                raise _money_run_error(expression, e)
+        minor, currency = total_pair
+        minor = _checked(minor, field, expression)
+        if func == "avg":
+            minor = money.avg_round(minor, len(values))
+        return _decode_money(minor, currency)
+
+    total = 0
+    for value in values:
         if isinstance(value, bool):
             value = 1 if value else 0
         elif not isinstance(value, int):
             raise RunError(
-                "aggregate %r: cannot sum non-numeric %s=%r"
-                % (expression, field, value))
+                "aggregate %r: cannot %s non-numeric %s=%r"
+                % (expression, func, field, value))
         total = _checked(total + value, field, expression)
-    return total
+    if func == "sum":
+        return total
+    return money.avg_round(total, len(values))
+
+
+def _eval_minmax(func, values, field, expression):
+    """RFC-0045 §4: `min`/`max` over Integer, DateTime, or Money row values.
+    Comparison uses each type's encoded ordering key; the returned value is
+    always the untouched row value that won (D10 — a DateTime `min` must not
+    surface an epoch-ms integer, breaking the field's wire shape)."""
+    if not values:
+        raise RunError(
+            "aggregate %r: min-max-of-empty-rowset — `%s %s` needs at "
+            "least one row" % (expression, func, field))
+    first = values[0]
+    if isinstance(first, dict):
+        return _minmax_money(func, values, field, expression)
+    if isinstance(first, str):
+        return _minmax_datetime(func, values, field, expression)
+    return _minmax_integer(func, values, field, expression)
+
+
+def _minmax_integer(func, values, field, expression):
+    def key_of(value):
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, int):
+            return value
+        raise RunError(
+            "aggregate %r: cannot compare non-numeric %s=%r"
+            % (expression, field, value))
+
+    best = values[0]
+    best_key = key_of(best)
+    for value in values[1:]:
+        key = key_of(value)
+        if (key < best_key) if func == "min" else (key > best_key):
+            best, best_key = value, key
+    return best
+
+
+def _minmax_datetime(func, values, field, expression):
+    from .condition import ConditionError, encode_instant
+
+    def key_of(value):
+        if not isinstance(value, str):
+            raise RunError(
+                "aggregate %r: cannot compare non-DateTime %s=%r"
+                % (expression, field, value))
+        try:
+            return encode_instant(value, field)
+        except ConditionError as e:
+            raise RunError("%s (in aggregate %r)" % (e, expression))
+
+    best = values[0]
+    best_key = key_of(best)
+    for value in values[1:]:
+        key = key_of(value)
+        if (key < best_key) if func == "min" else (key > best_key):
+            best, best_key = value, key
+    return best
+
+
+def _minmax_money(func, values, field, expression):
+    from . import money
+
+    def encode(value):
+        if not isinstance(value, dict) or "amount" not in value \
+                or "currency" not in value:
+            raise RunError(
+                "aggregate %r: cannot compare non-Money %s=%r"
+                % (expression, field, value))
+        try:
+            return money.encode_money(value["amount"], value["currency"])
+        except money.MoneyError as e:
+            raise _money_run_error(expression, e)
+
+    best = values[0]
+    best_pair = encode(best)
+    for value in values[1:]:
+        pair = encode(value)
+        try:
+            cmp = money.compare(pair, best_pair)
+        except money.MoneyError as e:
+            raise _money_run_error(expression, e)
+        if (cmp < 0) if func == "min" else (cmp > 0):
+            best, best_pair = value, pair
+    return best
 
 
 def eval_format(fmt, payload, bindings, caller=None):

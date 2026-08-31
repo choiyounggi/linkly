@@ -1110,14 +1110,37 @@ class LnplWsgiApp:
                 self._inflight_cv.wait(remaining)
         return True
 
-    def _reject_if_shutting_down(self, start_response):
+    def _admit(self):
+        """issue #150: the shutdown-gate check and the `_inflight` increment
+        happen inside one `_inflight_cv` hold, so a request that gets past
+        this gate is already counted before `wait_for_drain` can observe
+        `_inflight == 0`. The old code read `shutting_down` unlocked and
+        incremented separately -- a SIGTERM landing in that gap let a
+        request slip past the drain's zero-check entirely (issue #150's
+        interleaving)."""
+        with self._inflight_cv:
+            if self.shutting_down:
+                return False
+            self._inflight += 1
+            return True
+
+    def begin_shutdown(self):
+        """Sets `shutting_down` under the same `_inflight_cv` `_admit()`
+        checks it under (issue #150) -- a setter outside that lock would
+        let a request still pass `_admit()`'s check after this returns,
+        which is exactly the race this pairing closes."""
+        with self._inflight_cv:
+            self.shutting_down = True
+
+    def _shutting_down_response(self, start_response):
         """issue #148, D2b: a NEW non-ops request made after SIGTERM is
         rejected outright -- `503` + `Retry-After`, the k8s apiserver
         shutdown-send-retry-after pattern, matching the existing
         `event-retry-later` 503 precedent's fixed 1-second value (issue
-        #118). Never dispatched to routing/auth/the workflow itself."""
-        if not self.shutting_down:
-            return None
+        #118). Never dispatched to routing/auth/the workflow itself.
+        issue #150: the flag check now lives in `_admit()` (under
+        `_inflight_cv`); this builds the response unconditionally once the
+        gate has already said no, so no flag read happens outside that lock."""
         return _json_response(start_response, 503,
                               problem(503, "shutting-down",
                                      "the server is shutting down; retry "
@@ -1164,14 +1187,33 @@ class LnplWsgiApp:
         # exempt from BOTH gates -- a k8s probe getting 429 is worse than
         # the probe that exemption exists to serve reliably, and readyz is
         # exactly how a probe is meant to observe the drain (D11, unchanged).
-        if not path_info.startswith("/-/"):
-            rejected = self._reject_if_shutting_down(start_response)
-            if rejected is not None:
-                return rejected
-            limited = self._check_rate_limit(start_response)
+        if path_info.startswith("/-/"):
+            self._inflight_incr()
+        else:
+            # issue #150: the gate check and the increment are one atomic
+            # `_admit()` call -- a separate unlocked flag-read followed by
+            # `_inflight_incr()` let a SIGTERM's `begin_shutdown()` land
+            # between them and get missed by the drain's zero-check.
+            if not self._admit():
+                return self._shutting_down_response(start_response)
+            # Once `_admit()` returns True, every path out MUST decrement:
+            # `_check_rate_limit` calls `start_response` (a WSGI server
+            # callback outside our control) on the 429 path, so an
+            # exception there needs the same guaranteed decrement the
+            # dispatch `try` below already gives the main body -- without
+            # this, a raise here leaks the count forever and `wait_for_drain`
+            # can never observe zero again (issue #150 review r1, F1).
+            try:
+                limited = self._check_rate_limit(start_response)
+            except BaseException:
+                self._inflight_decr()
+                raise
             if limited is not None:
+                # Admitted then rate-limited: back out the count. The brief
+                # in-flight blip is harmless -- `_inflight_decr()` notifies
+                # the drain condition immediately.
+                self._inflight_decr()
                 return limited
-        self._inflight_incr()
         try:
             if self.log_format == "json":
                 body = self._call_with_json_log(environ, start_response, method,
@@ -1611,6 +1653,9 @@ class LnplWsgiApp:
         unlike 401/403 this is operator-facing, not attacker-facing, so
         D5 does not withhold the specifics the way M3a/M3b do.
         """
+        # issue #150: read outside `_inflight_cv` is fine here -- readiness
+        # is advisory, so observing the flag one polling cycle late doesn't
+        # break the contract (unlike the request-path gate `_admit()` fixes).
         if self.shutting_down:
             return _json_response(start_response, 503,
                                   problem(503, "not-ready",
