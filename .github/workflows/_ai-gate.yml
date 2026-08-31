@@ -92,11 +92,20 @@ jobs:
             echo "SKIPPED: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is configured"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            # 값은 절대 찍지 않는다. 길이와 "공백/줄바꿈이 섞였는지"만 찍는다 —
+            # 붙여넣기 사고(잘림, 개행 혼입)는 존재 확인을 통과하지만 인증에서
+            # 거부되고, 액션이 진짜 오류를 가리므로 그 둘을 구별할 방법이 달리
+            # 없다. 길이 하나로는 토큰을 복원할 수 없다.
             if [ -n "$ANTHROPIC_API_KEY" ]; then
-              echo "auth: anthropic_api_key"
+              CRED="$ANTHROPIC_API_KEY"; echo "auth: anthropic_api_key"
             else
-              echo "auth: claude_code_oauth_token"
+              CRED="$CLAUDE_CODE_OAUTH_TOKEN"; echo "auth: claude_code_oauth_token"
             fi
+            printf 'credential length: %s\n' "${#CRED}"
+            case "$CRED" in
+              *[[:space:]]*) echo "::warning::자격증명에 공백 또는 줄바꿈이 섞여 있다 — 붙여넣기 사고일 가능성이 높다" ;;
+              *) echo "credential shape: no embedded whitespace" ;;
+            esac
           fi
 
       # 시크릿이 없으면 아래 스텝이 전부 건너뛰어지는데, 그것만으로는 잡이
