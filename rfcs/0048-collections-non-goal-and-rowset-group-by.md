@@ -192,6 +192,7 @@ RFC-0038 §Reference-level Specification/2(술어 IR의 `predicate.field`
 설계 예시이며, §Reference-level Specification/2(g)가 명시하듯 v1 구현 전이므로
 컴파일 검증 대상이 아니다.
 
+<!-- lnpl-check: skip — grouped-list는 이 RFC가 설계만 확정한 미구현 문법(§Reference-level Specification/2(g): 구현은 후속 이슈)이므로 현행 컴파일러에서 컴파일될 수 없다; 구현이 랜딩되어 이 블록이 컴파일되기 시작하면 이 마커가 위반으로 뒤집혀 제거를 강제한다 -->
 ```lnpl
 workflow SummarizeSignupDomains
     list domainCounts from user where createdAt > input.since group by email aggregate count
