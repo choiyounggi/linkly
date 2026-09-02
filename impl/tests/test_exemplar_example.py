@@ -5,8 +5,9 @@ hand-copied assertion of what it should say:
 
   1. `lnpl compile --strict=warning` exits 0 with zero diagnostics of any
      grade — the file's whole point is that everything in it executes.
-  2. `lnpl spec --run`'s three cases (normal / error / boundary, RFC/spec.md
-     "정상/에러/경계") all pass.
+  2. `lnpl spec --run`'s four cases (normal / error / boundary ×2 — the
+     RowSet-aggregate workflow's empty-repository case is a second boundary,
+     RFC/spec.md "정상/에러/경계") all pass.
   3. The regression guard can actually go red: a variant with the `pipeline`
      block removed fails the normal case's `rows`/`cache written`
      expectations. This is a coordinator-approved reading of the acceptance
@@ -86,15 +87,15 @@ class TestLinkhubStrictGateIsClean(unittest.TestCase):
 
 
 class TestLinkhubSpecAllCasesPass(unittest.TestCase):
-    """DoD 2: three spec blocks (normal/error/boundary), every case PASS."""
+    """DoD 2: four spec blocks (normal/error/boundary×2), every case PASS."""
 
-    def test_the_manifest_declares_exactly_three_cases(self):
+    def test_the_manifest_declares_exactly_four_cases(self):
         decls = parse(_source())
         manifest = extract(decls, "linkhub")
-        self.assertEqual(len(manifest["cases"]), 3)
+        self.assertEqual(len(manifest["cases"]), 4)
         self.assertEqual([c["name"] for c in manifest["cases"]],
                          ["SaveBookmark spec 1", "SaveBookmark spec 2",
-                          "GetBookmark spec"])
+                          "GetBookmark spec", "CountPopularBookmarks spec"])
 
     def test_every_case_passes(self):
         decls = parse(_source())

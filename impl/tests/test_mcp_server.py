@@ -347,7 +347,7 @@ class SpecToolTest(unittest.TestCase):
         body = payload_of(call("lnpl_spec", {"path": path}))
         self.assertTrue(body["spec_present"])
         self.assertEqual([c["status"] for c in body["cases"]],
-                         ["pass", "pass", "pass"])
+                         ["pass", "pass", "pass", "pass"])
         self.assertEqual(body["summary"]["failed"], 0)
         self.assertGreater(body["summary"]["passed"], 0)
 

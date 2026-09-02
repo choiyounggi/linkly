@@ -668,6 +668,10 @@ RFC_ROUTES = {
              "agg_field_type`이 왜 필요한지, 그 필드가 왜 필수가 아니라 "
              "선택인지, 옛 컴파일러가 낸 IR 문서가 재컴파일 전까지 왜 여전히 "
              "정수 `0`을 내는지", ()),
+    "0048": ("필드에 List/Map 같은 컬렉션 타입을 쓰고 싶다 — 왜 안 되고 "
+             "대신 무엇을 쓰는지, RowSet `group by`가 (key, value) 파생 "
+             "RowSet으로 어떻게 설계됐는지, 그룹당 집계가 기존 5종을 어떻게 "
+             "재사용하는지, 그룹별 원본 행 목록은 왜 아직 없는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")
@@ -736,6 +740,29 @@ def render_rfcs():
                 canon="rfcs/와 이 스크립트의 RFC_ROUTES")
 
 
+def render_patterns():
+    lines = ["`.lnpl`을 쓰다가 \"여기 목록/맵이 필요하겠다\"는 느낌이 들 때 "
+             "멈추는 표다 — 그 느낌을 따라가면 파서가 받아주지 않거나("
+             "컬렉션 필드는 문법에 없다), 파서가 받아준다 해도 의미가 없는 "
+             "문장을 쓰게 된다. linkly는 닫힌 어휘라 그럴듯한 낱말이 "
+             "조용히 아무 일도 하지 않는 쪽이 실패 모드다(RFC-0048).\n",
+             "| 시도하기 쉬운 것 (틀림) | 대신 쓸 것 (맞음) | 근거 |",
+             "|---|---|---|",
+             "| `tags List<Text>` (field 절 안) | 별도 엔티티 + "
+             "`list tag where owner == this.id` | RFC-0048 — 컬렉션 필드 "
+             "영구 비목표 |",
+             "| `items Map<Text, Integer>` (field 절 안) | 별도 엔티티 + "
+             "RowSet 집계 (`sum`/`count`/`avg`/`min`/`max`) | RFC-0048 — "
+             "컬렉션 필드 영구 비목표 |",
+             "| 각 그룹의 항목 목록을 그대로 반환 | `group by ... aggregate`는 "
+             "(key, 집계값) 파생 RowSet까지만 낸다 — 그룹별 원본 행 목록이 "
+             "필요하면 그룹마다 별개의 `list ... where` 질의를 쓴다 | "
+             "RFC-0048 §Open Questions |",
+             ""]
+    return _doc("컬렉션이 필요해 보일 때 — 안티패턴과 권장패턴", "\n".join(lines),
+                canon="rfcs/0048-collections-non-goal-and-rowset-group-by.md")
+
+
 RENDERERS = {
     "rfcs.md": render_rfcs,
     "grammar.md": render_grammar,
@@ -744,6 +771,7 @@ RENDERERS = {
     "declarations.md": render_declarations,
     "types.md": render_types,
     "spec.md": render_spec,
+    "patterns.md": render_patterns,
 }
 
 
