@@ -35,6 +35,7 @@ ERRORS = {
     "idempotency_in_flight": (-32010, True),
     "idempotency_mismatch": (-32011, False),
     "overloaded": (-32012, True),
+    "ambiguous_step": (-32013, False),
     "internal": (-32603, False),
 }
 

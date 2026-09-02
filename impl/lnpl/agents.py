@@ -162,10 +162,38 @@ class Coder(_AgentBase):
                            "meta": self._meta("kb:%s@%s" % (doc["id"], doc["version"]))}]}
 
     def _step_node_for(self, step):
-        for node in self.server.doc["nodes"]:
-            if node["kind"] == "WorkflowStep" and node.get("name") == step:
-                return node
-        return None
+        candidates = [node for node in self.server.doc["nodes"]
+                     if node["kind"] == "WorkflowStep" and node.get("name") == step]
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        names = sorted({wf for c in candidates
+                        for wf in self._workflow_names_containing(c["id"])})
+        raise RpcError(
+            "ambiguous_step",
+            "step %r is ambiguous across workflows (%s) — qualify it"
+            % (step, ", ".join(names)))
+
+    def _workflow_names_containing(self, node_id):
+        """Names of every Workflow whose descendant tree — recursing through
+        containers like Pipeline/Concurrency — reaches `node_id`."""
+        nodes = {n["id"]: n for n in self.server.doc["nodes"]}
+        found = []
+        for node in nodes.values():
+            if node["kind"] != "Workflow":
+                continue
+            stack, seen = list(node.get("children", [])), set()
+            while stack:
+                child_id = stack.pop()
+                if child_id in seen:
+                    continue
+                seen.add(child_id)
+                if child_id == node_id:
+                    found.append(node["name"])
+                    break
+                stack.extend(nodes.get(child_id, {}).get("children", []))
+        return found
 
 
 class Reviewer(_AgentBase):
