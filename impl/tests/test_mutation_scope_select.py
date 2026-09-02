@@ -55,5 +55,27 @@ class MainEmptyArgvTest(unittest.TestCase):
         self.assertNotIn("tests.mutation_check", sys.modules)
 
 
+class MainEmptySelectionTest(unittest.TestCase):
+    """경계 케이스: 변경 파일은 있으나 교차 앵커가 0건이면 하네스의 main()을
+    호출하지 않고 rc=0으로 스킵한다 — 판정 대상이 없는데 baseline(전체
+    스위트)을 돌리는 것은 낭비이고, 러너 환경의 무관한 red를 PR에 뒤집어
+    씌운다(PR #167 실측)."""
+
+    def test_main_zero_intersection_skips_the_harness(self):
+        import tests.mutation_check as mc
+        original_main = mc.main
+
+        def _must_not_run():
+            raise AssertionError("harness main() must not run on empty selection")
+
+        mc.main = _must_not_run
+        try:
+            rc = mutation_scope_select.main(
+                ["rfcs/0001-semantic-ir.md"])  # 어떤 뮤테이션 앵커와도 교차하지 않는 실존 파일
+            self.assertEqual(rc, 0)
+        finally:
+            mc.main = original_main
+
+
 if __name__ == "__main__":
     unittest.main()
