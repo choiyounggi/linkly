@@ -56,3 +56,4 @@
 | `retry-on-non-idempotent` | **warning** |
 | `note-cap-exceeded` | **warning** |
 | `event-consume-cycle` | **warning** |
+| `predicate-not-pushed-down` | **info** |

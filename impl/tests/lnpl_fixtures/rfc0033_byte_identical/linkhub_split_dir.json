@@ -24,7 +24,8 @@
     {
       "children": [
         "wf.save.bookmark",
-        "wf.get.bookmark"
+        "wf.get.bookmark",
+        "wf.count.popular.bookmarks"
       ],
       "constraints": [
         "policy.link.hub",
@@ -208,6 +209,90 @@
       "operation": "read"
     },
     {
+      "children": [
+        "wf.count.popular.bookmarks.step.1",
+        "wf.count.popular.bookmarks.step.2",
+        "wf.count.popular.bookmarks.step.3",
+        "wf.count.popular.bookmarks.step.4"
+      ],
+      "id": "wf.count.popular.bookmarks",
+      "kind": "Workflow",
+      "line": 43,
+      "name": "CountPopularBookmarks"
+    },
+    {
+      "children": [
+        "wf.count.popular.bookmarks.step.1.repo"
+      ],
+      "id": "wf.count.popular.bookmarks.step.1",
+      "kind": "WorkflowStep",
+      "line": 44,
+      "name": "find bookmark"
+    },
+    {
+      "entity": "entity.bookmark",
+      "id": "wf.count.popular.bookmarks.step.1.repo",
+      "kind": "RepositoryCall",
+      "line": 44,
+      "operation": "read"
+    },
+    {
+      "children": [
+        "wf.count.popular.bookmarks.step.2.repo"
+      ],
+      "id": "wf.count.popular.bookmarks.step.2",
+      "kind": "WorkflowStep",
+      "line": 45,
+      "name": "list bookmark where visits > 0"
+    },
+    {
+      "entity": "entity.bookmark",
+      "id": "wf.count.popular.bookmarks.step.2.repo",
+      "kind": "RepositoryCall",
+      "line": 45,
+      "operation": "query",
+      "predicate": [
+        {
+          "field": "visits",
+          "op": ">",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "children": [
+        "wf.count.popular.bookmarks.step.3.assign"
+      ],
+      "id": "wf.count.popular.bookmarks.step.3",
+      "kind": "WorkflowStep",
+      "line": 46,
+      "name": "set bookmark.visits to count bookmark"
+    },
+    {
+      "entity": "entity.bookmark",
+      "expression": "count bookmark",
+      "id": "wf.count.popular.bookmarks.step.3.assign",
+      "kind": "Assignment",
+      "line": 46,
+      "target": "bookmark.visits"
+    },
+    {
+      "children": [
+        "wf.count.popular.bookmarks.step.4.repo"
+      ],
+      "id": "wf.count.popular.bookmarks.step.4",
+      "kind": "WorkflowStep",
+      "line": 47,
+      "name": "update bookmark"
+    },
+    {
+      "entity": "entity.bookmark",
+      "id": "wf.count.popular.bookmarks.step.4.repo",
+      "kind": "RepositoryCall",
+      "line": 47,
+      "operation": "update"
+    },
+    {
       "id": "policy.link.hub",
       "kind": "Policy",
       "rules": [
@@ -241,7 +326,7 @@
     }
   ],
   "provenance": {
-    "compiler": "0.6.0",
+    "compiler": "0.8.0",
     "enforcement_digest": "sha256:0db802fe5c93b4e02cbf90ba173045b76c3e037110167a6f24cf549f1219aa63",
     "extensions": {
       "cache": [],
@@ -253,6 +338,6 @@
       "repository": [],
       "token": []
     },
-    "vocabulary_digest": "sha256:341f65bb3720d4458c738260f4010e9e2b868caae7baecbc40be6097835ce0e6"
+    "vocabulary_digest": "sha256:7faeabf5cdef8d2986f7fbc3f10f7b724e829cae6a423ad269bf10a78b596442"
   }
 }

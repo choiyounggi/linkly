@@ -138,6 +138,8 @@ AggFunc      ::= 'sum' | 'count'
 
 ### 2. 정적 거부 — RFC-0025 §3 갱신 (치환 후 최종 텍스트)
 
+> 갱신됨: RFC-0048
+
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0025 §Reference-level Specification/3의
 **치환 후 최종 텍스트**다. `lower`에서 판정한다는 원칙(RFC-0025 §3 원문)은
 불변이다.
@@ -341,6 +343,8 @@ workflow BadSummary
 | 5 | **`min`/`max`가 Money를 받되 통화 불일치를 컴파일 타임에 거부** | RFC-0044 §Reference-level Specification/5·§Alternatives 5가 이미 기각한 것과 같다 — 통화는 행 데이터이므로 정적으로 알 수 없다 |
 
 ## Open Questions
+
+> 갱신됨: RFC-0048
 
 1. **`group by`.** §Alternatives 1이 이월한 것 그대로 — RFC-0038 §Open
    Questions 1의 나머지 절반이다. 다중 그룹의 RowSet 표현(그룹 경계를 어느

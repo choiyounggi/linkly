@@ -33,6 +33,8 @@ from .backend import (BackendError, build as build_native, condition_field_names
                       ran_step_indices, restore_skips, run_binary,
                       validation_effect_steps)
 from .capabilities import capabilities_document
+from .cost_model import cost_model_document
+from .grammar import grammar_json_document, render_gbnf
 from .vocab import vocabulary_document
 from .agents import run_cycle
 from .config import load_config
@@ -217,10 +219,11 @@ def _cmd_compile_json(args):
     """`compile --json`: one combined IR+diagnostics document on stdout (#133).
 
     Diagnostics are re-keyed to exactly the six RFC-0021 (5 keys) + RFC-0024
-    (`line`) fields — never `to_records`'s `suggestion` (RFC-0026), which is
-    not yet part of the frozen contract docs/compatibility.md §1 declares.
-    Extension diagnostics (RFC-0042, issue #138) are already exactly that
-    six-key shape and ride in the same array, `<prefix>/<code>` normalized.
+    (`line`) fields, plus `hint` (issue #165) — never `to_records`'s
+    `suggestion` (RFC-0026), which is not yet part of the frozen contract
+    docs/compatibility.md §1 declares. Extension diagnostics (RFC-0042,
+    issue #138) are already exactly that seven-key shape and ride in the
+    same array, `<prefix>/<code>` normalized.
 
     A hard failure (`_compile` cannot produce a document at all, or an
     extension's `lnpl.diagnostics` registration is invalid) keeps today's
@@ -249,7 +252,8 @@ def _cmd_compile_json(args):
     combined = dict(doc)
     combined["diagnostics"] = [
         {"code": d.code, "severity": d.severity, "where": d.where,
-         "subject": d.subject, "message": d.message, "line": d.line}
+         "subject": d.subject, "message": d.message, "line": d.line,
+         "hint": d.hint}
         for d in diagnostics
     ] + ext_records
     sys.stdout.write(_dump(combined))
@@ -304,6 +308,88 @@ def _select_schedule_event(requested, source, events):
     return requested
 
 
+def _dry_run_plan(doc, workflow_id):
+    """`lnpl run --dry-run` (issue #165): a static preview of `workflow_id`'s
+    execution plan (step order, guard evaluation points, declared policy
+    application points), derived only from the already-compiled IR — no
+    `Interpreter`, no backend/network/cache/clock. Node kinds/fields are the
+    closed set `lower.py`'s `_step`/`_block`/`_guard` emit.
+    """
+    by_id = {n["id"]: n for n in doc["nodes"]}
+    wf = by_id[workflow_id]
+
+    def _walk(node_id):
+        node = by_id[node_id]
+        kind = node["kind"]
+        if kind == "WorkflowStep":
+            return {"kind": "step", "name": node["name"], "line": node.get("line")}
+        if kind == "Guard":
+            return {"kind": "guard", "mode": node["mode"],
+                    "condition": node.get("condition"), "count": node.get("count"),
+                    "line": node.get("line"),
+                    "children": [_walk(node["children"][0])]}
+        if kind == "Concurrency":
+            return {"kind": "parallel",
+                    "children": [_walk(c) for c in node["children"]]}
+        if kind == "Pipeline":
+            return {"kind": "pipeline", "name": node["name"],
+                    "children": [_walk(c) for c in node["children"]]}
+        raise AssertionError("unexpected dry-run node kind: %r" % kind)
+
+    plan = [_walk(cid) for cid in (wf.get("children") or [])]
+
+    service = next((n for n in doc["nodes"] if n["kind"] == "Service"
+                    and workflow_id in (n.get("children") or [])), None)
+    declared_policies = []
+    if service:
+        for cid in service.get("constraints", []):
+            cnode = by_id[cid]
+            if cnode["kind"] == "Policy":
+                declared_policies.append(
+                    {"kind": "policy", "rules": cnode.get("rules", [])})
+            elif cnode["kind"] == "Security":
+                declared_policies.append(
+                    {"kind": "security", "mechanisms": cnode.get("mechanisms", [])})
+            elif cnode["kind"] == "Performance":
+                declared_policies.append(
+                    {"kind": "performance", "budgets": cnode.get("budgets", [])})
+
+    return {"workflow": workflow_id, "plan": plan,
+            "declared_policies": declared_policies}
+
+
+def _print_dry_run_plan_node(node, indent):
+    prefix = "  " * indent
+    if node["kind"] == "step":
+        print("%sstep %s" % (prefix, node["name"]))
+    elif node["kind"] == "guard":
+        if node["mode"] == "repeat":
+            print("%sguard repeat %s" % (prefix, node["count"]))
+        else:
+            print("%sguard %s %s" % (prefix, node["mode"], node["condition"] or ""))
+        for child in node["children"]:
+            _print_dry_run_plan_node(child, indent + 1)
+    elif node["kind"] == "parallel":
+        print("%sparallel" % prefix)
+        for child in node["children"]:
+            _print_dry_run_plan_node(child, indent + 1)
+    elif node["kind"] == "pipeline":
+        print("%spipeline %s" % (prefix, node["name"]))
+        for child in node["children"]:
+            _print_dry_run_plan_node(child, indent + 1)
+
+
+def _print_dry_run_human(plan_doc):
+    """`lnpl run --dry-run`'s human-readable summary — step order, guard
+    evaluation points, and declared policy application points, no effect."""
+    print("workflow %s -> dry run (no effect executed)" % plan_doc["workflow"])
+    for node in plan_doc["plan"]:
+        _print_dry_run_plan_node(node, 1)
+    for p in plan_doc["declared_policies"]:
+        print("  declared %s: %s" % (p["kind"],
+              p.get("rules") or p.get("mechanisms") or p.get("budgets")))
+
+
 def cmd_run(args):
     doc, _, _, diagnostics = _compile(args.source)
     if args.payload:
@@ -320,6 +406,15 @@ def cmd_run(args):
         _emit_diagnostics(diagnostics)
         return 1
     target = _select_workflow(args.workflow, _source_display(args.source), workflows)
+
+    if getattr(args, "dry_run", False):
+        plan_doc = _dry_run_plan(doc, target)
+        if args.json:
+            sys.stdout.write(_dump(plan_doc))
+        else:
+            _print_dry_run_human(plan_doc)
+        _emit_diagnostics(diagnostics)
+        return 0
 
     rows = _repo_rows(doc, payload, target, empty=args.no_row)
     repository = _open_backend(getattr(args, "backend", "fake"))
@@ -355,7 +450,7 @@ def cmd_run(args):
                                     "trace": interp.trace.to_dict(),
                                     "diagnostics": to_records(diagnostics)}))
         else:
-            _print_human(result, interp)
+            _print_human(result, interp, log_level=getattr(args, "log_level", "warn"))
         _emit_diagnostics(diagnostics)
         return _strict_rc(args, 0 if result["status"] == "completed" else 1,
                           diagnostics)
@@ -371,7 +466,14 @@ def cmd_run(args):
             cache.close()
 
 
-def _print_human(result, interp):
+# issue #165: rank order for `--log-level`, weakest first — mirrors
+# diagnostics.SEVERITIES' "the tuple order is the ranking" contract. `warn`
+# is the default so a bare `lnpl run` stays byte-identical to before this
+# flag existed.
+_LEVEL_RANK = {"info": 0, "warn": 1, "error": 2}
+
+
+def _print_human(result, interp, log_level="warn"):
     root = interp.trace.root
     # Issue #44: the count rides on the FIRST line, because that is the only
     # line a caller skimming output is guaranteed to read — and without it a
@@ -411,7 +513,7 @@ def _print_human(result, interp):
                 print("    %s %s %s (measured=%s)"
                       % (e["ref"], e["op"], e["expected"], e["value"]))
     for entry in interp.trace.logs:
-        if entry["level"] in ("WARN", "ERROR"):
+        if _LEVEL_RANK[entry["level"].lower()] >= _LEVEL_RANK[log_level]:
             print("  %-5s %s" % (entry["level"], entry["message"]))
 
 
@@ -468,7 +570,7 @@ def cmd_trigger(args):
                              network=network, clock=clock, cache=cache)
         result = interp.run_workflow(target, payload)
         diagnostics.extend(interp.diagnostics)
-        _print_human(result, interp)
+        _print_human(result, interp, log_level=getattr(args, "log_level", "warn"))
         _emit_diagnostics(diagnostics)
         return _strict_rc(args, 0 if result["status"] == "completed" else 1,
                           diagnostics)
@@ -1480,6 +1582,25 @@ def cmd_capabilities(args):
     return 0
 
 
+def cmd_grammar(args):
+    # Mirrors `cmd_vocab`/`cmd_capabilities`: machine-only output, no separate
+    # human view. Generation cannot fail once the tables are well-formed —
+    # `test_grammar_artifacts.py` guards that — so this always returns 0.
+    if args.format == "gbnf":
+        sys.stdout.write(render_gbnf())
+    else:
+        sys.stdout.write(_dump(grammar_json_document()))
+    return 0
+
+
+def cmd_cost(args):
+    # Mirrors `cmd_vocab`/`cmd_capabilities`: single JSON document, no
+    # separate human view (the human view is docs/cost-model.md) — no
+    # --format flag since there is only one output shape (#164).
+    sys.stdout.write(_dump(cost_model_document()))
+    return 0
+
+
 def cmd_kb(args):
     packs = resolve_pack_roots(flag_packs=args.kb_pack,
                                env_value=os.environ.get("LNPL_KB_PACKS"))
@@ -1577,6 +1698,15 @@ def main(argv=None):
     r.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
     r.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
+    r.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="print the execution plan (step order, guard evaluation "
+                        "points, declared policy application points) without "
+                        "running any effect — no backend/network/cache/clock is "
+                        "opened; batch one-shot preview, not interactive")
+    r.add_argument("--log-level", choices=("info", "warn", "error"), default="warn",
+                   dest="log_level",
+                   help="human-output trace verbosity (default: warn — unchanged "
+                        "from prior behaviour)")
     r.set_defaults(func=cmd_run)
 
     tg = sub.add_parser("trigger",
@@ -1601,6 +1731,10 @@ def main(argv=None):
     tg.add_argument("--clock", default="virtual", help="time binding: `virtual` (default, deterministic, process-local) or `real` (monotonic wall clock — binds CacheAccess TTL to actual elapsed time)")
     tg.add_argument("--strict", nargs="?", const="info", default=None,
                      type=_strict_level, metavar="LEVEL", help=STRICT_HELP)
+    tg.add_argument("--log-level", choices=("info", "warn", "error"), default="warn",
+                    dest="log_level",
+                    help="human-output trace verbosity (default: warn — unchanged "
+                         "from prior behaviour)")
     tg.set_defaults(func=cmd_trigger)
 
     sc = sub.add_parser("schedules",
@@ -1923,6 +2057,17 @@ def main(argv=None):
     vc.add_argument("--json", action="store_true",
                     help="explicit stable form (default: same document)")
     vc.set_defaults(func=cmd_vocab)
+
+    gc = sub.add_parser("grammar",
+                        help="print the closed-vocabulary grammar artifact "
+                             "for constrained decoding (#162)")
+    gc.add_argument("--format", choices=("gbnf", "json"), default="json",
+                    help="output format (default: json)")
+    gc.set_defaults(func=cmd_grammar)
+
+    cst = sub.add_parser("cost",
+                         help="print the operation cost-model contract (#164)")
+    cst.set_defaults(func=cmd_cost)
 
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "

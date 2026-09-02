@@ -1,0 +1,766 @@
+{
+  "_generated": {
+    "by": "scripts/gen_plugin_references.py",
+    "hand_edit": false,
+    "source": "impl/lnpl/grammar.py:grammar_json_document()"
+  },
+  "vocabulary": {
+    "clauses": {
+      "performance": [
+        "response",
+        "cache",
+        "parallel",
+        "prefetch",
+        "batch"
+      ],
+      "performance_valueless": [
+        "parallel",
+        "prefetch",
+        "batch"
+      ],
+      "policy": [
+        "retry",
+        "rollback",
+        "timeout",
+        "parallel"
+      ],
+      "security": [
+        "jwt",
+        "role"
+      ],
+      "security_argument_mechanisms": [
+        "role"
+      ]
+    },
+    "diagnostics": [
+      {
+        "code": "unknown-verb",
+        "severity": "warning"
+      },
+      {
+        "code": "unknown-entity",
+        "severity": "warning"
+      },
+      {
+        "code": "declared-not-enforced",
+        "severity": "info"
+      },
+      {
+        "code": "declared-measured-only",
+        "severity": "info"
+      },
+      {
+        "code": "authorization-not-verified",
+        "severity": "warning"
+      },
+      {
+        "code": "guard-skipped-steps",
+        "severity": "warning"
+      },
+      {
+        "code": "guard-orphaned-steps",
+        "severity": "warning"
+      },
+      {
+        "code": "validation-sample-derived",
+        "severity": "info"
+      },
+      {
+        "code": "aggregation-orphaned-list",
+        "severity": "warning"
+      },
+      {
+        "code": "event-source-mismatch",
+        "severity": "warning"
+      },
+      {
+        "code": "event-source-orphaned",
+        "severity": "info"
+      },
+      {
+        "code": "derived-never-assigned",
+        "severity": "warning"
+      },
+      {
+        "code": "declared-not-bound",
+        "severity": "info"
+      },
+      {
+        "code": "stored-row-shape-mismatch",
+        "severity": "warning"
+      },
+      {
+        "code": "rollback-escapes-network",
+        "severity": "warning"
+      },
+      {
+        "code": "retry-on-non-idempotent",
+        "severity": "warning"
+      },
+      {
+        "code": "note-cap-exceeded",
+        "severity": "warning"
+      },
+      {
+        "code": "event-consume-cycle",
+        "severity": "warning"
+      },
+      {
+        "code": "predicate-not-pushed-down",
+        "severity": "info"
+      }
+    ],
+    "enforcement": [
+      {
+        "clause": "policy",
+        "name": "retry",
+        "status": "enforced",
+        "why": "run_workflow re-runs a failed step while its effects are idempotent"
+      },
+      {
+        "clause": "policy",
+        "name": "timeout",
+        "status": "enforced",
+        "why": "a workflow deadline is computed, and exceeding it fails the run"
+      },
+      {
+        "clause": "policy",
+        "name": "rollback",
+        "status": "enforced",
+        "why": "run_workflow opens a transaction before its first step and rolls it back on any failure, discarding every write (and outbox registration) that run made"
+      },
+      {
+        "clause": "policy",
+        "name": "parallel",
+        "status": "enforced",
+        "why": "run_workflow executes a `parallel` block's steps concurrently, cancels the rest on the first failure, and caps concurrency at the declared value"
+      },
+      {
+        "clause": "security",
+        "name": "jwt",
+        "status": "unenforced",
+        "why": "the default path issues and verifies nothing; `lnpl serve --jwt-secret-env NAME` verifies the bearer token per request (docs/serving.md M3a, docs/backends.md)"
+      },
+      {
+        "clause": "security",
+        "name": "role",
+        "status": "enforced",
+        "why": "every route the declaring service owns requires the verified token's role to exactly match `<r>`; mismatch or absence is 403 `forbidden` (docs/serving.md M3b)"
+      },
+      {
+        "clause": "performance",
+        "name": "response",
+        "status": "measured",
+        "why": "measured and reported per run, but an over-budget run is not blocked"
+      },
+      {
+        "clause": "performance",
+        "name": "cache",
+        "status": "enforced",
+        "why": "owns the TTL budget every CacheAccess set is written with"
+      },
+      {
+        "clause": "performance",
+        "name": "parallel",
+        "status": "unenforced",
+        "why": "parsed, but the execution plan never reads it"
+      },
+      {
+        "clause": "performance",
+        "name": "prefetch",
+        "status": "unenforced",
+        "why": "parsed, but the execution plan never reads it"
+      },
+      {
+        "clause": "performance",
+        "name": "batch",
+        "status": "unenforced",
+        "why": "parsed, but the execution plan never reads it"
+      },
+      {
+        "clause": "event",
+        "name": "schedule",
+        "status": "unenforced",
+        "why": "by default nothing calls it; `lnpl trigger --schedule NAME` and `POST /-/schedules/<slug>` (`lnpl serve`) run the linked workflow on demand, but only when an external scheduler (cron/systemd — see `lnpl schedules`) is configured to call one of them (issue #81)"
+      }
+    ],
+    "keywords": {
+      "arithmetic_operators": [
+        "+",
+        "-",
+        "*",
+        "/"
+      ],
+      "assign_keywords": [
+        "set",
+        "to"
+      ],
+      "clause": [
+        "field",
+        "goal",
+        "policy",
+        "security",
+        "performance",
+        "database",
+        "expose",
+        "spec",
+        "given",
+        "when",
+        "expect"
+      ],
+      "comparators": [
+        "<=",
+        ">=",
+        "==",
+        "!=",
+        "<",
+        ">"
+      ],
+      "control": [
+        "when",
+        "repeat",
+        "parallel",
+        "until",
+        "pipeline",
+        "merge"
+      ],
+      "duration_units": [
+        "ms",
+        "s",
+        "m",
+        "h",
+        "d"
+      ],
+      "guard_alt_keyword": "or",
+      "logical_operators": [
+        "and"
+      ],
+      "payload_namespace": "input",
+      "read_verbs": [
+        "authenticate",
+        "load",
+        "find",
+        "read"
+      ],
+      "schedule_at": "at",
+      "schedule_keyword": "schedule",
+      "schedule_recurrences": [
+        "daily"
+      ],
+      "schedule_zones": [
+        "UTC"
+      ],
+      "top": [
+        "entity",
+        "service",
+        "workflow",
+        "event",
+        "capability",
+        "refine"
+      ]
+    },
+    "lnpl_version": "0.8.0",
+    "reserved": [
+      "if",
+      "for",
+      "while",
+      "switch"
+    ],
+    "spec_expectations": {
+      "expects": [
+        "attempts",
+        "cache",
+        "completed",
+        "duration",
+        "effects",
+        "emitted",
+        "error",
+        "failed",
+        "result",
+        "rows",
+        "slo",
+        "steps"
+      ],
+      "given_forms": [
+        {
+          "doc": "서사용 표지 — 필드에 영향 없음",
+          "id": "valid",
+          "pattern": "valid <아무 명사>"
+        },
+        {
+          "doc": "빈 저장소로 실행 — `stored`와 함께 쓸 수 없다",
+          "id": "empty-repository",
+          "pattern": "empty repository"
+        },
+        {
+          "doc": "입력 payload 필드를 설정. 이름은 선언된 전 엔티티 필드의 합집합에서 찾는다 (RFC-0015 §G15.2). Integer 계열은 int로 코어션된다",
+          "id": "input-field",
+          "pattern": "input.<field> <value>"
+        },
+        {
+          "doc": "입력 payload에서 그 필드를 뺀다",
+          "id": "no-input-field",
+          "pattern": "no input.<field>"
+        },
+        {
+          "doc": "`input.<field> <value>`와 같다 — 맨이름도 입력 payload를 가리킨다",
+          "id": "field",
+          "pattern": "<field> <value>"
+        },
+        {
+          "doc": "`no input.<field>`와 같다",
+          "id": "no-field",
+          "pattern": "no <field>"
+        },
+        {
+          "doc": "사전 저장소 상태 (issue #39). 엔티티는 선언명(`Product`)과 바인딩명(`product`) 둘 다 받는다",
+          "id": "stored",
+          "pattern": "stored <entity> <field> <value>"
+        },
+        {
+          "doc": "인덱스 다중 행 시드(RFC-0025 §8) — row_key=str(i). 같은 i에 여러 줄을 반복해 한 행에 필드를 더한다. 엔티티는 `stored`와 같이 선언명·바인딩명 둘 다 받는다. `list <entity>`가 읽는 RowSet을 이렇게 채운다",
+          "id": "stored-indexed",
+          "pattern": "stored <entity>[<i>] <field> <value>"
+        },
+        {
+          "doc": "네트워크 응답 스텁(RFC-0027 §7, issue #76). status는 정수. 스텁 없는 target은 fake 드라이버 기본값(200/빈 바디)을 결정적으로 받는다",
+          "id": "network-stub",
+          "pattern": "call <target> returns <status>"
+        },
+        {
+          "doc": "네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 행 필드를 쌓는 것과 같은 자리",
+          "id": "network-stub-body",
+          "pattern": "call <target> returns <status> body.<key> <value>"
+        }
+      ]
+    },
+    "types": {
+      "base_category": {
+        "Address": "composite",
+        "Boolean": "boolean",
+        "Currency": "text",
+        "DateTime": "text",
+        "Decimal": "numeric",
+        "Email": "text",
+        "File": "composite",
+        "GeoLocation": "composite",
+        "Html": "text",
+        "Image": "composite",
+        "Integer": "numeric",
+        "Json": "composite",
+        "Markdown": "text",
+        "Money": "composite",
+        "Password": "text",
+        "Phone": "text",
+        "Text": "text",
+        "UUID": "text"
+      },
+      "category_facets": {
+        "boolean": [],
+        "composite": [],
+        "numeric": [
+          "enum",
+          "max",
+          "min"
+        ],
+        "text": [
+          "enum",
+          "maxLength",
+          "minLength",
+          "pattern"
+        ]
+      },
+      "presets": {
+        "PositiveInteger": {
+          "base": "Integer",
+          "facets": {
+            "min": 1
+          }
+        },
+        "Slug": {
+          "base": "Text",
+          "facets": {
+            "maxLength": 64,
+            "pattern": "^[a-z0-9-]{1,64}$"
+          }
+        },
+        "URL": {
+          "base": "Text",
+          "facets": {
+            "maxLength": 2048,
+            "pattern": "^https?://[^\\s]+$"
+          }
+        }
+      },
+      "semantic": {
+        "Address": {
+          "check": [],
+          "openapi": {
+            "properties": {
+              "city": {
+                "type": "string"
+              },
+              "country": {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              "line1": {
+                "type": "string"
+              },
+              "line2": {
+                "type": "string"
+              },
+              "postalCode": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "line1",
+              "city",
+              "country"
+            ],
+            "type": "object"
+          },
+          "sample": {
+            "city": "Springfield",
+            "country": "US",
+            "line1": "1 Main St"
+          }
+        },
+        "Boolean": {
+          "check": [
+            "py",
+            "bool"
+          ],
+          "openapi": {
+            "type": "boolean"
+          },
+          "sample": true
+        },
+        "Currency": {
+          "check": [],
+          "openapi": {
+            "maxLength": 3,
+            "minLength": 3,
+            "type": "string"
+          },
+          "sample": "USD"
+        },
+        "DateTime": {
+          "check": [
+            "pattern",
+            "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}",
+            false
+          ],
+          "openapi": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "sample": "2026-07-31T09:00:00Z"
+        },
+        "Decimal": {
+          "check": [],
+          "openapi": {
+            "format": "decimal",
+            "type": "string"
+          },
+          "sample": "0"
+        },
+        "Email": {
+          "check": [
+            "pattern",
+            "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+            false
+          ],
+          "openapi": {
+            "format": "email",
+            "type": "string"
+          },
+          "sample": "user@example.com"
+        },
+        "File": {
+          "check": [],
+          "openapi": {
+            "properties": {
+              "mediaType": {
+                "type": "string"
+              },
+              "sizeBytes": {
+                "type": "integer"
+              },
+              "uri": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": [
+              "uri"
+            ],
+            "type": "object"
+          },
+          "sample": {
+            "mediaType": "application/pdf",
+            "uri": "https://example.com/f.pdf"
+          }
+        },
+        "GeoLocation": {
+          "check": [],
+          "openapi": {
+            "properties": {
+              "lat": {
+                "maximum": 90,
+                "minimum": -90,
+                "type": "number"
+              },
+              "lng": {
+                "maximum": 180,
+                "minimum": -180,
+                "type": "number"
+              }
+            },
+            "required": [
+              "lat",
+              "lng"
+            ],
+            "type": "object"
+          },
+          "sample": {
+            "lat": 0,
+            "lng": 0
+          }
+        },
+        "Html": {
+          "check": [],
+          "openapi": {
+            "type": "string"
+          },
+          "sample": "<p>x</p>"
+        },
+        "Image": {
+          "check": [],
+          "openapi": {
+            "properties": {
+              "mediaType": {
+                "type": "string"
+              },
+              "uri": {
+                "format": "uri",
+                "type": "string"
+              }
+            },
+            "required": [
+              "uri",
+              "mediaType"
+            ],
+            "type": "object"
+          },
+          "sample": {
+            "mediaType": "image/png",
+            "uri": "https://example.com/i.png"
+          }
+        },
+        "Integer": {
+          "check": [
+            "py",
+            "int"
+          ],
+          "openapi": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sample": 1
+        },
+        "Json": {
+          "check": [],
+          "openapi": {},
+          "sample": {}
+        },
+        "Markdown": {
+          "check": [],
+          "openapi": {
+            "type": "string"
+          },
+          "sample": "# x"
+        },
+        "Money": {
+          "check": [],
+          "openapi": {
+            "properties": {
+              "amount": {
+                "format": "decimal",
+                "type": "string"
+              },
+              "currency": {
+                "maxLength": 3,
+                "minLength": 3,
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "type": "object"
+          },
+          "sample": {
+            "amount": "0",
+            "currency": "USD"
+          }
+        },
+        "Password": {
+          "check": [
+            "nonempty"
+          ],
+          "openapi": {
+            "format": "password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "sample": "s3cret-value"
+        },
+        "Phone": {
+          "check": [],
+          "openapi": {
+            "pattern": "^\\+[1-9]\\d{1,14}$",
+            "type": "string"
+          },
+          "sample": "+14155550100"
+        },
+        "Text": {
+          "check": [
+            "py",
+            "str"
+          ],
+          "openapi": {
+            "type": "string"
+          },
+          "sample": "text"
+        },
+        "UUID": {
+          "check": [
+            "pattern",
+            "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            true
+          ],
+          "openapi": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sample": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        }
+      }
+    },
+    "verbs": {
+      "authenticate": {
+        "attrs": {
+          "operation": "read"
+        },
+        "effect": "RepositoryCall"
+      },
+      "authorize": {
+        "attrs": {},
+        "effect": "Authorization"
+      },
+      "cache": {
+        "attrs": {
+          "operation": "set"
+        },
+        "effect": "CacheAccess"
+      },
+      "call": {
+        "attrs": {},
+        "effect": "NetworkCall"
+      },
+      "create": {
+        "attrs": {
+          "operation": "create"
+        },
+        "effect": "RepositoryCall"
+      },
+      "delete": {
+        "attrs": {
+          "operation": "delete"
+        },
+        "effect": "RepositoryCall"
+      },
+      "emit": {
+        "attrs": {},
+        "effect": "EventEmit"
+      },
+      "find": {
+        "attrs": {
+          "operation": "read"
+        },
+        "effect": "RepositoryCall"
+      },
+      "format": {
+        "attrs": {},
+        "effect": "Assignment"
+      },
+      "insert": {
+        "attrs": {
+          "operation": "create"
+        },
+        "effect": "RepositoryCall"
+      },
+      "invalidate": {
+        "attrs": {
+          "operation": "invalidate"
+        },
+        "effect": "CacheAccess"
+      },
+      "list": {
+        "attrs": {
+          "operation": "query"
+        },
+        "effect": "RepositoryCall"
+      },
+      "load": {
+        "attrs": {
+          "operation": "read"
+        },
+        "effect": "RepositoryCall"
+      },
+      "note": {
+        "attrs": {},
+        "effect": "Annotation"
+      },
+      "publish": {
+        "attrs": {},
+        "effect": "EventEmit"
+      },
+      "read": {
+        "attrs": {
+          "operation": "read"
+        },
+        "effect": "RepositoryCall"
+      },
+      "request": {
+        "attrs": {},
+        "effect": "NetworkCall"
+      },
+      "respond": {
+        "attrs": {},
+        "effect": "Response"
+      },
+      "set": {
+        "attrs": {},
+        "effect": "Assignment"
+      },
+      "update": {
+        "attrs": {
+          "operation": "update"
+        },
+        "effect": "RepositoryCall"
+      },
+      "validate": {
+        "attrs": {},
+        "effect": "Validation"
+      }
+    }
+  }
+}

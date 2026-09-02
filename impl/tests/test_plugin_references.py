@@ -19,7 +19,9 @@ CLAUDE_TMP = os.path.join(REPO, ".claude", "tmp")
 GEN = os.path.join(REPO, "scripts", "gen_plugin_references.py")
 REFS = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-authoring", "references")
 EXPECTED = ("grammar.md", "verbs.md", "declarations.md", "types.md", "spec.md",
-            "naming.md", "rfcs.md")
+            "naming.md", "rfcs.md", "patterns.md")
+SCHEMAS = os.path.join(REPO, "schemas")
+EXPECTED_SCHEMAS = ("lnpl-grammar.gbnf", "lnpl-grammar.json", "cost-model.json")
 
 
 def run_gen(*args):
@@ -112,6 +114,11 @@ class GeneratorTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(REFS, name)),
                             "%s가 없다 — 생성기를 돌려라" % name)
 
+    def test_all_schema_files_present(self):
+        for name in EXPECTED_SCHEMAS:
+            self.assertTrue(os.path.isfile(os.path.join(SCHEMAS, name)),
+                            "%s가 없다 — 생성기를 돌려라" % name)
+
     def test_no_drift_between_source_and_committed_files(self):
         proc = run_gen("--check")
         self.assertEqual(proc.returncode, 0,
@@ -129,6 +136,51 @@ class GeneratorTest(unittest.TestCase):
             proc = run_gen("--check")
             self.assertEqual(proc.returncode, 1)
             self.assertIn("verbs.md", proc.stderr)
+        finally:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original)
+
+    def test_check_mode_detects_a_hand_edit_to_patterns(self):
+        # 게이트가 안티패턴 표(patterns.md)의 손편집도 잡는지 증명한다.
+        target = os.path.join(REFS, "patterns.md")
+        with open(target, encoding="utf-8") as fh:
+            original = fh.read()
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original + "\n손으로 덧붙인 줄\n")
+            proc = run_gen("--check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("patterns.md", proc.stderr)
+        finally:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original)
+
+    def test_check_mode_detects_a_hand_edit_to_a_schema_artifact(self):
+        # 게이트가 markdown뿐 아니라 schemas/ 산출물의 손편집도 잡는지 증명한다.
+        target = os.path.join(SCHEMAS, "lnpl-grammar.gbnf")
+        with open(target, encoding="utf-8") as fh:
+            original = fh.read()
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original + "\n손으로 덧붙인 줄\n")
+            proc = run_gen("--check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("lnpl-grammar.gbnf", proc.stderr)
+        finally:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original)
+
+    def test_check_mode_detects_a_hand_edit_to_the_cost_model_schema(self):
+        # cost-model.json도 손편집 감지 대상인지 증명한다(issue #164).
+        target = os.path.join(SCHEMAS, "cost-model.json")
+        with open(target, encoding="utf-8") as fh:
+            original = fh.read()
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original + "\n손으로 덧붙인 줄\n")
+            proc = run_gen("--check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("cost-model.json", proc.stderr)
         finally:
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(original)
@@ -296,6 +348,64 @@ def read_frontmatter(path):
             key, _, value = line.partition(":")
             out[key.strip()] = value.strip()
     return out
+
+
+class PatternsAntiPatternTest(unittest.TestCase):
+    """patterns.md의 안티패턴 표(RFC-0048, issue #163)를 render_patterns()의
+    자기 출력이 아니라 컴파일러/디스크의 독립적인 사실과 대조한다 — issue #50과
+    같은 이유: `--check`는 생성기의 현재 출력을 커밋본과만 비교하므로, 렌더러가
+    틀린 안티패턴 표를 내고 그대로 재생성되면 `--check`는 계속 초록이다."""
+
+    def _patterns_text(self):
+        with open(os.path.join(REFS, "patterns.md"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_documented_collection_antipatterns_actually_fail_to_compile(self):
+        # 정상 케이스: patterns.md 자체에서 "틀림" 칸의 코드 조각을 뽑아내
+        # 최소 엔티티에 끼워 넣고 실제로 lower()가 거부하는지 확인한다 —
+        # render_patterns()의 산문을 믿지 않고 문서가 적은 그 코드를 그대로
+        # 실행한다(RFC-0048 §Reference-level Specification/1). 이 테스트가
+        # patterns.md를 읽지 않으면 문서 내용이 바뀌어도 못 잡는다는 것이
+        # 앞선 리뷰가 지적한 결함이었다.
+        from lnpl.lower import LowerError, lower
+        from lnpl.parser import parse
+        rows = table_rows(self._patterns_text(), "시도하기 쉬운 것 (틀림)")
+        self.assertTrue(rows, "안티패턴 표를 찾지 못했다")
+        field_lines = [next(iter(backticked(r[0]))) for r in rows if backticked(r[0])]
+        self.assertGreaterEqual(len(field_lines), 2,
+                                "field 절 예시가 있는 안티패턴 행이 2개 미만이다")
+        for field_line in field_lines:
+            with self.subTest(field_line=field_line):
+                src = ("entity M\n    field\n        id UUID\n        %s\n"
+                      % field_line)
+                with self.assertRaises(LowerError):
+                    lower(parse(src), "m").to_document()
+
+    def test_the_recommended_aggregate_functions_match_the_lexicon_exactly(self):
+        # 경계 케이스: 표의 "권장" 칸이 언급하는 집계 함수 집합이
+        # `lnpl.lexer.AGG_FUNCS`(RFC-0025/0045의 정본)와 정확히 같은 집합인지 —
+        # 존재하지 않는 함수를 끼워 넣어도, 실제 함수를 하나 빠뜨려도 잡힌다.
+        # (앞선 버전은 실제 함수의 존재만 봐서 가짜 함수가 섞여도 통과했다.)
+        from lnpl.lexer import AGG_FUNCS
+        rows = table_rows(self._patterns_text(), "시도하기 쉬운 것 (틀림)")
+        self.assertTrue(rows, "안티패턴 표를 찾지 못했다")
+        map_row = next((r for r in rows if "Map" in r[0]), None)
+        self.assertIsNotNone(map_row, "Map 안티패턴 행이 없다")
+        self.assertEqual(backticked(map_row[1]), set(AGG_FUNCS),
+                         "권장 칸이 백틱으로 언급하는 함수 집합이 AGG_FUNCS와 다르다")
+
+    def test_the_cited_rfc_still_exists_on_disk(self):
+        # 에러 케이스: 표의 모든 행이 근거로 RFC-0048을 인용한다 — 그 RFC가
+        # 실제로 rfcs/에 존재하지 않으면(번호 변경·삭제) 포인터가 허공을
+        # 가리킨다. RfcPointerTest와 같은 "닿지 않는 포인터" 원칙.
+        text = self._patterns_text()
+        rows = table_rows(text, "시도하기 쉬운 것 (틀림)")
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("RFC-0048", row[2], "근거 칸이 RFC-0048을 인용하지 않는다: %r" % row)
+        matches = glob.glob(os.path.join(REPO, "rfcs", "0048-*.md"))
+        self.assertEqual(len(matches), 1,
+                         "patterns.md가 인용하는 RFC-0048이 rfcs/에 없다(또는 중복)")
 
 
 class ComparatorCanonTest(unittest.TestCase):

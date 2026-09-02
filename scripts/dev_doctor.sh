@@ -84,36 +84,61 @@ fi
 # 굽는다. 이 머신의 SDK가 다르면(또는 없으면) S7이 조용히 죽는다. backend.py의
 # S7은 이제 이 계산을 직접 하고(-isysroot) 실패를 BackendError로 번역하지만,
 # 여기서도 같은 계산을 미리 해서 "모드 B 대량 실패"를 코드 회귀로 오독하기
-# 전에 원인을 보여준다.
-if command -v xcrun >/dev/null 2>&1; then
-  SDK_PATH="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
-  if [ -n "$SDK_PATH" ] && [ -d "$SDK_PATH" ]; then
-    echo "sysroot 정합: $SDK_PATH"
+# 전에 원인을 보여준다. Linux에는 이 sysroot 문제 자체가 없다(#161) — apt.llvm.org
+# 툴체인은 시스템 sysroot를 그대로 쓴다.
+if [ "$(uname)" = "Darwin" ]; then
+  if command -v xcrun >/dev/null 2>&1; then
+    SDK_PATH="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)"
+    if [ -n "$SDK_PATH" ] && [ -d "$SDK_PATH" ]; then
+      echo "sysroot 정합: $SDK_PATH"
+    else
+      echo "sysroot 정합: xcrun이 SDK를 못 찾음 (반환값: '${SDK_PATH:-없음}')"
+      note "xcode-select --install (Command Line Tools 재설치)"
+      note "xcrun --sdk macosx --show-sdk-path 를 직접 실행해 원인을 확인하라"
+      note "LNPL_LLVM_BIN으로 sysroot를 스스로 해석하는 LLVM 설치를 가리킬 수도 있다"
+      PROBLEMS=1
+    fi
   else
-    echo "sysroot 정합: xcrun이 SDK를 못 찾음 (반환값: '${SDK_PATH:-없음}')"
-    note "xcode-select --install (Command Line Tools 재설치)"
-    note "xcrun --sdk macosx --show-sdk-path 를 직접 실행해 원인을 확인하라"
-    note "LNPL_LLVM_BIN으로 sysroot를 스스로 해석하는 LLVM 설치를 가리킬 수도 있다"
+    echo "sysroot 정합: xcrun 없음"
+    note "xcode-select --install (Command Line Tools 설치)"
     PROBLEMS=1
   fi
 else
-  echo "sysroot 정합: xcrun 없음"
-  note "xcode-select --install (Command Line Tools 설치)"
-  PROBLEMS=1
+  # $MISSING_TOOLS는 step 4에서 mlir-opt/mlir-translate/clang을 개별로 확인해
+  # 이미 계산해 두었다 — `command -v a b c`는 하나만 찾아도 성공하는 OR라서
+  # 여기서 다시 그 형태로 재확인하면 부분 설치를 통째로 놓친다.
+  if [ -z "$MISSING_TOOLS" ] || [ -n "${LNPL_LLVM_BIN:-}" ]; then
+    echo "sysroot 정합: n/a (Linux)"
+  else
+    echo "sysroot 정합: 툴체인을 못 찾음 —$MISSING_TOOLS"
+    note "LNPL_LLVM_BIN=/usr/lib/llvm-<N>/bin 으로 설치한 LLVM을 가리켜라"
+    PROBLEMS=1
+  fi
 fi
 
 # 6. SDK 헤더 경로 -----------------------------------------------------------
 # homebrew clang은 SDKROOT를 무시한다. CommandLineTools의 SDK는 비어 있을 수
-# 있어 CPATH/LIBRARY_PATH로 직접 가리켜야 한다.
-if [ -n "${CPATH:-}" ] && [ -n "${LIBRARY_PATH:-}" ]; then
-  echo "SDK 경로    : CPATH/LIBRARY_PATH 설정됨"
+# 있어 CPATH/LIBRARY_PATH로 직접 가리켜야 한다. Linux apt.llvm.org 패키지는
+# 헤더/라이브러리를 표준 시스템 경로에 설치하므로 이 문제도 없다(#161).
+if [ "$(uname)" = "Darwin" ]; then
+  if [ -n "${CPATH:-}" ] && [ -n "${LIBRARY_PATH:-}" ]; then
+    echo "SDK 경로    : CPATH/LIBRARY_PATH 설정됨"
+  else
+    echo "SDK 경로    : CPATH/LIBRARY_PATH 미설정"
+    note "이 세션에서 export 하라 (homebrew clang은 SDKROOT를 무시한다):"
+    note '  SDK="$(xcrun --show-sdk-path)"'
+    note '  export CPATH="$SDK/usr/include"'
+    note '  export LIBRARY_PATH="$SDK/usr/lib"'
+    PROBLEMS=1
+  fi
 else
-  echo "SDK 경로    : CPATH/LIBRARY_PATH 미설정"
-  note "이 세션에서 export 하라 (homebrew clang은 SDKROOT를 무시한다):"
-  note '  SDK="$(xcrun --show-sdk-path)"'
-  note '  export CPATH="$SDK/usr/include"'
-  note '  export LIBRARY_PATH="$SDK/usr/lib"'
-  PROBLEMS=1
+  if [ -z "$MISSING_TOOLS" ] || [ -n "${LNPL_LLVM_BIN:-}" ]; then
+    echo "SDK 경로    : n/a (Linux)"
+  else
+    echo "SDK 경로    : 툴체인을 못 찾음 —$MISSING_TOOLS"
+    note "LNPL_LLVM_BIN=/usr/lib/llvm-<N>/bin 으로 설치한 LLVM을 가리켜라"
+    PROBLEMS=1
+  fi
 fi
 
 echo

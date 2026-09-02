@@ -47,6 +47,20 @@
         "effects complete",
         "rows Bookmark 0"
       ]
+    },
+    {
+      "name": "CountPopularBookmarks spec",
+      "workflow": "wf.count.popular.bookmarks",
+      "given": [
+        "empty repository"
+      ],
+      "when": [
+        "countPopularBookmarks"
+      ],
+      "expect": [
+        "failed",
+        "effects complete"
+      ]
     }
   ]
 }

@@ -9,6 +9,7 @@
 """
 import glob
 import inspect
+import json
 import os
 import re
 import sys
@@ -17,6 +18,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "impl"))
 
 from lnpl import __version__                                    # noqa: E402
+from lnpl.cost_model import cost_model_document                  # noqa: E402
+from lnpl.grammar import grammar_json_document, render_gbnf      # noqa: E402
 from lnpl.lower import KIND_PREFIX, KIND_WORD, derive_id, split_pascal  # noqa: E402
 from lnpl.spec import EXPECTATIONS, GIVEN_FORMS                  # noqa: E402
 from lnpl.vocab import vocabulary_document                       # noqa: E402
@@ -31,6 +34,18 @@ VOCAB = vocabulary_document()
 
 OUT_DIR = os.path.join(REPO, "plugins", "lnpl", "skills",
                        "lnpl-authoring", "references")
+
+SCHEMA_OUT_DIR = os.path.join(REPO, "schemas")
+
+SCHEMA_RENDERERS = {
+    "lnpl-grammar.gbnf": render_gbnf,
+    "lnpl-grammar.json": lambda: json.dumps(grammar_json_document(), indent=2,
+                                            ensure_ascii=False,
+                                            sort_keys=True) + "\n",
+    "cost-model.json": lambda: json.dumps(cost_model_document(), indent=2,
+                                          ensure_ascii=False,
+                                          sort_keys=True) + "\n",
+}
 
 SOURCE_CANON = "impl/lnpl/의 모듈 상수"
 
@@ -657,6 +672,10 @@ RFC_ROUTES = {
              "agg_field_type`이 왜 필요한지, 그 필드가 왜 필수가 아니라 "
              "선택인지, 옛 컴파일러가 낸 IR 문서가 재컴파일 전까지 왜 여전히 "
              "정수 `0`을 내는지", ()),
+    "0048": ("필드에 List/Map 같은 컬렉션 타입을 쓰고 싶다 — 왜 안 되고 "
+             "대신 무엇을 쓰는지, RowSet `group by`가 (key, value) 파생 "
+             "RowSet으로 어떻게 설계됐는지, 그룹당 집계가 기존 5종을 어떻게 "
+             "재사용하는지, 그룹별 원본 행 목록은 왜 아직 없는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")
@@ -725,6 +744,29 @@ def render_rfcs():
                 canon="rfcs/와 이 스크립트의 RFC_ROUTES")
 
 
+def render_patterns():
+    lines = ["`.lnpl`을 쓰다가 \"여기 목록/맵이 필요하겠다\"는 느낌이 들 때 "
+             "멈추는 표다 — 그 느낌을 따라가면 파서가 받아주지 않거나("
+             "컬렉션 필드는 문법에 없다), 파서가 받아준다 해도 의미가 없는 "
+             "문장을 쓰게 된다. linkly는 닫힌 어휘라 그럴듯한 낱말이 "
+             "조용히 아무 일도 하지 않는 쪽이 실패 모드다(RFC-0048).\n",
+             "| 시도하기 쉬운 것 (틀림) | 대신 쓸 것 (맞음) | 근거 |",
+             "|---|---|---|",
+             "| `tags List<Text>` (field 절 안) | 별도 엔티티 + "
+             "`list tag where owner == this.id` | RFC-0048 — 컬렉션 필드 "
+             "영구 비목표 |",
+             "| `items Map<Text, Integer>` (field 절 안) | 별도 엔티티 + "
+             "RowSet 집계 (`sum`/`count`/`avg`/`min`/`max`) | RFC-0048 — "
+             "컬렉션 필드 영구 비목표 |",
+             "| 각 그룹의 항목 목록을 그대로 반환 | `group by ... aggregate`는 "
+             "(key, 집계값) 파생 RowSet까지만 낸다 — 그룹별 원본 행 목록이 "
+             "필요하면 그룹마다 별개의 `list ... where` 질의를 쓴다 | "
+             "RFC-0048 §Open Questions |",
+             ""]
+    return _doc("컬렉션이 필요해 보일 때 — 안티패턴과 권장패턴", "\n".join(lines),
+                canon="rfcs/0048-collections-non-goal-and-rowset-group-by.md")
+
+
 RENDERERS = {
     "rfcs.md": render_rfcs,
     "grammar.md": render_grammar,
@@ -733,6 +775,7 @@ RENDERERS = {
     "declarations.md": render_declarations,
     "types.md": render_types,
     "spec.md": render_spec,
+    "patterns.md": render_patterns,
 }
 
 
@@ -740,15 +783,17 @@ def render_all():
     return {name: fn() for name, fn in RENDERERS.items()}
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    check = "--check" in argv
-    rendered = render_all()
+def _sync(renderers, out_dir, check):
+    """Write or check one `{name: renderer}` registry against `out_dir`.
+
+    Returns the list of stale-file messages (empty when in sync).
+    """
+    rendered = {name: fn() for name, fn in renderers.items()}
     if not check:
-        os.makedirs(OUT_DIR, exist_ok=True)
+        os.makedirs(out_dir, exist_ok=True)
     stale = []
     for name, text in rendered.items():
-        path = os.path.join(OUT_DIR, name)
+        path = os.path.join(out_dir, name)
         if check:
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -761,6 +806,14 @@ def main(argv=None):
         else:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
+    return stale
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    check = "--check" in argv
+    stale = _sync(RENDERERS, OUT_DIR, check)
+    stale += _sync(SCHEMA_RENDERERS, SCHEMA_OUT_DIR, check)
     if check:
         if stale:
             for line in stale:
@@ -769,7 +822,8 @@ def main(argv=None):
                   file=sys.stderr)
             return 1
         return 0
-    print("wrote %d files to %s" % (len(rendered), OUT_DIR))
+    print("wrote %d files to %s" % (len(RENDERERS), OUT_DIR))
+    print("wrote %d files to %s" % (len(SCHEMA_RENDERERS), SCHEMA_OUT_DIR))
     return 0
 
 

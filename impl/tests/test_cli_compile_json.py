@@ -20,7 +20,7 @@ from lnpl import cli
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOGIN = os.path.join(REPO, "examples", "login.lnpl")
-DIAG_KEYS = {"code", "severity", "where", "subject", "message", "line"}
+DIAG_KEYS = {"code", "severity", "where", "subject", "message", "line", "hint"}
 
 # Verified by hand against a real `lnpl compile` run before writing any
 # assertion here (dev-loop wiki: platforms/processes/parsing-cli-structured-
@@ -96,7 +96,7 @@ class TestCliCompileJson(unittest.TestCase):
 
     # ---- error (diagnostics) -------------------------------------------
 
-    def test_real_example_reports_all_six_keys_with_mixed_severity(self):
+    def test_real_example_reports_all_seven_keys_with_mixed_severity(self):
         rc, out, err = _main(["compile", LOGIN, "--json"])
         self.assertEqual(rc, 0)
         doc = json.loads(out)

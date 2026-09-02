@@ -35,8 +35,9 @@ breaking change의 고지 방식은 전부 동일하다: 릴리스 태그의
 **기계 채널 — `lnpl compile --json` (issue #133)**: `--json`은 사람용
 `format_lines` 출력 대신 stdout에 결합 JSON 문서 하나만 낸다 —
 `{"lir_version", "module", "nodes", "diagnostics"}`. `diagnostics`의 각
-레코드는 `code` / `severity` / `where` / `subject` / `message` / `line`
-여섯 키로 고정된다(위 다섯 키 + RFC-0024 `line`) — 키 생략은 없다.
+레코드는 `code` / `severity` / `where` / `subject` / `message` / `line` /
+`hint` 일곱 키로 고정된다(위 다섯 키 + RFC-0024 `line` + 이슈 #165 `hint`)
+— 키 생략은 없다.
 
 - 진단이 0건이면 `"diagnostics": []`(`null` 금지). 컴파일이 문서를 만들지
   못하는 실패(파스/lower 에러)에서는 `lir_version` / `module` / `nodes`가
@@ -44,8 +45,17 @@ breaking change의 고지 방식은 전부 동일하다: 릴리스 태그의
   내는 `"nodes": []`와는 구별된다. 하드 에러 메시지는 stderr로만 간다.
 - `--json` 유무는 채널만 바꾼다: exit code 의미는 동일하고, `--strict`와도
   직교한다(`--json --strict`의 rc는 `--strict`만 준 경우와 같다).
-- 이 6키·null 규칙은 계약이다 — 키 추가는 breaking이 아니지만 키 삭제나
+- 이 7키·null 규칙은 계약이다 — 키 추가는 breaking이 아니지만 키 삭제나
   `null` 규칙 변경은 breaking이다.
+
+`hint`(이슈 #165)는 `code`에 대한 구체적인 수리 지침이다 — 코드에 지침이
+있으면 `str`, 없으면 `null`이며, 다른 선택 키(`line`)와 같은 생략-금지
+규칙을 따라 모든 레코드에 항상 존재한다. 19개 코어 `CODES` 전수가 지침을
+갖고, `lnpl.diagnostics` 확장(RFC-0042)도 자신의 코드 등록 메타에 선택적
+`"hint"`를 실어 같은 메커니즘을 쓸 수 있다(선언하지 않으면 `null`). RFC-0043
+드라이버-enforcement 브리지(`capabilities.enforcement_diagnostic_records()`)
+의 출력은 이 대상이 아니다 — 그 브리지는 이미 코어와 다른 형태(6키, `suggestion`
+없음)를 내는 기존 비대칭이며, 이 이슈가 그것까지 맞추지는 않는다.
 
 ### 2. Semantic IR 스키마 (`schemas/lir.schema.json`)
 

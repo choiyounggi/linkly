@@ -38,6 +38,8 @@ lnpl --version
 | `--endpoint` | `NAME=URL` (반복 가능). `--network http`에서 `call`/`request`의 논리명을 실제 URL로 매핑한다. `LNPL_ENDPOINT_<NAME>` 환경변수로도 줄 수 있고, `--endpoint`가 이긴다. 매핑 안 된 논리명이 있으면 기동이 rc 2로 실패한다(요청 중 실패보다 기동 실패). 이슈 #101 |
 | `--clock` | 시간 바인딩. `virtual`(기본, 결정적, 프로세스 로컬) 또는 `real`(단조 벽시계 — `CacheAccess` TTL을 실제 경과 시간에 묶는다). `spec`/`diff`에는 없다. RFC-0029, 이슈 #100 |
 | `--strict` | 위와 같다 |
+| `--dry-run` | effect를 하나도 실행하지 않고 실행 계획(스텝 순서·가드 평가 지점·정책 적용 지점)만 낸다 — backend/network/cache/clock을 열지 않는다. `--json`이면 `{"workflow", "plan", "declared_policies"}`(기존 `run --json`의 `{"result","trace","diagnostics"}`와는 다른 모양 — 실행되지 않은 것을 실행된 것처럼 보이게 하지 않는다). 배치, 일회성 미리보기 — 대화형 디버거가 아니다. 이슈 #165 |
+| `--log-level` | 사람용 트레이스 출력의 최소 등급. `info`\|`warn`(기본, 이전 동작과 바이트 동일)\|`error`. 이슈 #165 |
 
 `--workflow`는 선언명이 아니라 노드 id를 받는다(`GetReport`가 아니라
 `wf.get.report`). 도출 규칙은 [references/naming.md](references/naming.md)에 있고,
@@ -63,6 +65,7 @@ lnpl trigger <src>.lnpl --schedule event.daily.rollup
 | `--endpoint` | `run`과 같다 |
 | `--clock` | `run`과 같다 |
 | `--strict` | `run`과 같다 |
+| `--log-level` | `run`과 같다. `--dry-run`은 없다 — 이슈 #165가 이름 붙인 미리보기 용례가 `trigger`에는 없다 |
 
 **연결 규칙.** 스케줄 이벤트는 IR에서 어떤 워크플로에도 속하지 않는다 —
 워크플로가 이미 쓰는 "가장 가까이 앞선 `service` 선언" 규칙(RFC-0002 A.2 R2)을
@@ -362,6 +365,18 @@ status completed
 `scripts/gen_plugin_references.py`(이 references/의 grammar·verbs·
 declarations·types 넷을 생성한다)가 같은 함수를 공유한다.
 
+### `grammar` — 닫힌 어휘를 GBNF/JSON 문법 아티팩트로 (issue #162)
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--format` | `gbnf` \| `json` (기본값 `json`) |
+
+`schemas/lnpl-grammar.gbnf`/`schemas/lnpl-grammar.json`과 바이트 동일한 내용을
+라이브로 낸다 — constrained decoding 파이프라인이 재생성 없이 그대로 받아
+쓴다. 정본 함수는 `impl/lnpl/grammar.py`의 `render_gbnf()`/
+`grammar_json_document()`이고, `scripts/gen_plugin_references.py`의
+`SCHEMA_RENDERERS`(`schemas/lnpl-grammar.gbnf`/`.json`)가 같은 함수를 공유한다.
+
 ### `capabilities` — 설치 확장 카탈로그 (issue #134)
 
 | 플래그 | 뜻 |
@@ -382,6 +397,15 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 이고, `lnpl_capabilities` MCP 툴이 같은 함수를 공유한다. `lnpl-doctor` 스킬
 과는 별개다 — doctor는 CLI 설치·버전 같은 로컬 환경 건강을 보고, `capabilities`
 는 설치된 확장이 무엇인지에 대한 CLI 계약이다(이슈 #134 열린 질문).
+
+### `cost` — 연산별 실행 비용 계약 (issue #164)
+
+플래그 없음. `list where`(pushdown 유/무)·`order by`·`limit`·집계 5종·
+cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다 — 형식은
+하나뿐이라 `--format`이 없다(사람용 뷰는 [docs/cost-model.md](../../../../docs/cost-model.md)
+가 따로 맡는다). 정본 함수는 `impl/lnpl/cost_model.py`의
+`cost_model_document()`이고, `scripts/gen_plugin_references.py`의
+`SCHEMA_RENDERERS`(`schemas/cost-model.json`)가 같은 함수를 공유한다.
 
 ### `kb` — 지식 베이스 조회 (RFC-0005)
 
@@ -425,7 +449,8 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
-`declared-not-bound`).
+`declared-not-bound`, `predicate-not-pushed-down`(`list where`/`order by`/`limit`이
+`supports_predicate`를 선언하지 않은 드라이버로 실행됐을 때 — 이슈 #164)).
 등급별 표는
 `references/declarations.md`에 생성되어 있다 — 등급을 정하는 것은 그 표가 아니라
 `diagnostics.SEVERITY_OF`이고, 문서는 그것의 사본이다. CI에서 의도한 선언을
