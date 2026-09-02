@@ -1,5 +1,6 @@
 """Money 평가 채널 — minor-unit 코덱, ISO 4217 exponent, half-to-even 나눗셈,
-같은-통화 순서·덧셈. RFC-0044 §Reference-level Specification 1·2·4·5 SSOT.
+같은-통화 순서·덧셈, spec `given`/`expect`의 MoneyLiteral 파서. RFC-0044
+§Reference-level Specification 1·2·3·4·5 SSOT.
 
 RFC-0016 §2가 DateTime에 세운 패턴을 그대로 따른다: 선언·저장·와이어 표면
 (`{"amount": <decimal-string>, "currency": <alpha-3>}`, `types.py`)은 이 모듈이
@@ -7,9 +8,12 @@ RFC-0016 §2가 DateTime에 세운 패턴을 그대로 따른다: 선언·저장
 minor-unit 부호 있는 64비트 정수 하나로 인코딩해야만 순서 비교·덧셈·평균이
 계산 가능해진다.
 
-이 모듈은 어떤 것도 부르지 않고, 어떤 것에서도 불리지 않는다(배선 없음) —
-`lower.py`/`interp.py`/`condition.py`/`spec.py`를 import하지 않으며, 그것들도
-아직 이 모듈을 import하지 않는다. RFC-0045(avg/min/max)가 유일한 예정 소비자다.
+이 모듈은 다른 lnpl 모듈을 import하지 않는다(배선 없음, `lower.py`도 여전히
+이 모듈을 import하지 않는다) — 하지만 issue #160(RFC-0044 §3)부터
+`spec.py`(given/expect의 `<value>` 해석)와 `interp.py`(`_condition_holds`의
+`expect result` 비교)가 `parse_money_literal`을 부른다: 두 호출부 모두 이
+모듈 안으로 들어오는 방향의 의존성만 추가할 뿐, 이 모듈이 그것들을 다시
+불러들이지는 않는다. RFC-0045(avg/min/max)가 §1/§4/§5의 예정 소비자다.
 """
 
 import re
@@ -19,6 +23,11 @@ INT64_MIN = -(2 ** 63)
 INT64_MAX = 2 ** 63 - 1
 
 _ALPHA3_RE = re.compile(r"^[A-Z]{3}$")
+
+# RFC-0044 §3 — `MoneyLiteral ::= Integer ('.' Digit+)? CurrencyCode`. No
+# sign (RFC-0015 §1 "리터럴은 부호가 없다"); `CurrencyCode` is checked for
+# alpha-3 *shape* here, active-code membership is `exponent()`'s job.
+_MONEY_LITERAL_RE = re.compile(r"^(\d+)(?:\.(\d+))?([A-Z]{3})$")
 
 
 class MoneyError(Exception):
@@ -45,6 +54,16 @@ class MoneyCurrencyMismatchError(MoneyError):
     """RFC-0044 §5 `money-currency-mismatch` — 이미 인코딩된 두 Money 값을
     순서 비교하거나 더하려 했는데 통화 코드가 다르다."""
     code = "money-currency-mismatch"
+
+
+class MoneyLiteralScaleError(MoneyError):
+    """RFC-0044 §3 `money-literal-scale` — spec `given`/`expect`의
+    MoneyLiteral 토큰 소수 자릿수가 통화의 exponent와 정확히 같지 않다
+    (부족·과다, 또는 exponent 0 통화에 소수점). `encode_money`의
+    `money-encode-precision`과 코드를 분리한다 — 이 쪽은 저작 시점의
+    리터럴 문법 위반(컴파일 거부)이고, 그쪽은 이미 저장된 값의 인코딩
+    실패라 실패 지점이 다르다."""
+    code = "money-literal-scale"
 
 
 # RFC-0044 §2 — 닫힌 두 예외 버킷. 그 밖의 활성 코드는 전부 exponent 2(기본).
@@ -147,6 +166,36 @@ def encode_money(amount, currency):
         raise MoneyEncodePrecisionError(
             "%s %s is outside the 64-bit minor-unit domain" % (amount, currency))
     return minor, currency
+
+
+def parse_money_literal(token):
+    """RFC-0044 §Reference-level Specification/3 SSOT — spec `given`/`expect`
+    단일 토큰(RFC-0020의 `<value>`)을 MoneyLiteral 생산 규칙으로 해석한다.
+
+    생산 규칙(`^\\d+(\\.\\d+)?[A-Z]{3}$`, 부호 없음)에 맞지 않는 토큰은
+    `None` — 호출자가 기존 raw-문자열 경로로 폴백할 수 있게, 예외를 던지지
+    않는다. 형태는 맞되 소수 자릿수가 통화의 `exponent()`와 정확히 같지
+    않으면 `MoneyLiteralScaleError`(반올림하지 않고 거부). 통화 코드가
+    alpha-3 형태이되 활성 ISO 4217 코드가 아니면 `exponent()`가 이미 여는
+    `MoneyEncodePrecisionError`를 그대로 물려받는다.
+
+    성공하면 RFC-0001 기존 Money 와이어 shape 그대로:
+    `{"amount": "<정수부>[.<소수부>]", "currency": "<코드>"}`.
+    """
+    m = _MONEY_LITERAL_RE.match(token)
+    if not m:
+        return None
+
+    int_part, frac_part, currency = m.groups()
+    exp = exponent(currency)
+    places = len(frac_part) if frac_part is not None else 0
+    if places != exp:
+        raise MoneyLiteralScaleError(
+            "%s has %d decimal place(s), currency %s requires exactly %d"
+            % (token, places, currency, exp))
+
+    amount = int_part if frac_part is None else "%s.%s" % (int_part, frac_part)
+    return {"amount": amount, "currency": currency}
 
 
 def avg_round(total, count):
