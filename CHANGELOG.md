@@ -9,6 +9,40 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-02
+"The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
+now reach the last two places they had not: `spec` blocks can seed and
+assert Money values, and an empty RowSet's Money `sum` finally returns the
+shape RFC-0045 §5 always specified.
+
+### Added
+- `MoneyLiteral` in `spec` `given`/`expect` (RFC-0044 §3, issue #160):
+  a single token like `100.50USD` seeds a Money field's wire dict from
+  `stored`/`stored-indexed`/input-field lines and asserts one via
+  `expect result <ref> == <literal>` (`==`/`!=` only — Money order stays
+  aggregation-only). Decimal places must equal the currency's ISO 4217
+  exponent exactly; a mismatch is a manifest-stage compile reject, never a
+  rounding. Guard grammar is untouched: `MoneyLiteral` appears in no
+  `Operand` position.
+- RFC-0047 (Updates: RFC-0045): `nodeAssignment` gains the optional
+  `agg_field_type` key (`Integer`/`DateTime`/`Money`) so the aggregated
+  field's statically-known base type reaches the interpreter (issue #158).
+  The IR-schema self-test gains a matching enum negative.
+
+### Fixed
+- An empty RowSet's Money `sum` returned plain integer `0` instead of
+  RFC-0045 §5's `{"amount": "0", "currency": null}` — with zero rows the
+  interpreter had no shape to dispatch on. `lower.py` now carries the
+  field's declared base type on the `Assignment` node; IR compiled before
+  RFC-0047 keeps the old result until recompiled, a deliberate
+  backward-compatibility floor (issue #158).
+- `agents.py`'s `_step_node_for` returned the first `WorkflowStep` whose
+  text matched, silently confusing two workflows that share a step's
+  wording. It now collects every candidate and refuses an ambiguous match
+  with `RpcError("ambiguous_step")` naming the owning workflows —
+  resolve.py's "does not guess, refuses" rule applied to the one consumer
+  issue #151 could not cover (issue #159).
+
 ## [0.7.0] — 2026-08-31
 "The production-readiness release." The 0.6.0 extensibility work is now
 backed by a release pipeline, measured token claims, and a serving surface
@@ -260,7 +294,8 @@ when its condition became true (fixed in #5, after this tag). RFC-0008 G8's
 condition-field plumbing was only correct for exactly two condition fields
 (fixed in #4, after this tag).
 
-[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.8.0
 [0.7.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.7.0
 [0.6.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.6.0
 [0.5.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.5.0
