@@ -1,0 +1,121 @@
+name: Mutation testing
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly, Monday 06:00 UTC
+
+jobs:
+  mutation-pr:
+    name: mutation-pr (diff-scoped, advisory)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Derive pinned LLVM major version
+        run: |
+          LLVM_MAJOR="$(awk '{print $2}' mlir/llvm.pin | cut -d. -f1)"
+          [ -n "$LLVM_MAJOR" ] || { echo "could not parse mlir/llvm.pin" >&2; exit 1; }
+          echo "LLVM_MAJOR=$LLVM_MAJOR" >> "$GITHUB_ENV"
+
+      - name: Install pinned LLVM/MLIR toolchain (apt.llvm.org)
+        run: |
+          wget -qO "$RUNNER_TEMP/llvm.gpg.key" https://apt.llvm.org/llvm-snapshot.gpg.key
+          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg < "$RUNNER_TEMP/llvm.gpg.key"
+          CODENAME="$(lsb_release -cs)"
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/$CODENAME/ llvm-toolchain-$CODENAME-$LLVM_MAJOR main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "clang-$LLVM_MAJOR" "mlir-$LLVM_MAJOR-tools" "libmlir-$LLVM_MAJOR-dev"
+
+      - name: Export LNPL_LLVM_BIN
+        run: echo "LNPL_LLVM_BIN=/usr/lib/llvm-$LLVM_MAJOR/bin" >> "$GITHUB_ENV"
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install .
+
+      - name: Select diff-scoped mutations and run
+        run: |
+          mapfile -t CHANGED < <(git diff --name-only --diff-filter=d \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.sha }}")
+          if [ "${#CHANGED[@]}" -eq 0 ]; then
+            echo "no changed files (or diff produced only deletions) — mutation scope is empty, skipping"
+            exit 0
+          fi
+          echo "changed files: ${CHANGED[*]}"
+          PYTHONPATH=impl python3 scripts/mutation_scope_select.py "${CHANGED[@]}"
+
+  mutation-weekly:
+    name: mutation-weekly (full matrix + no-op control)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Derive pinned LLVM major version
+        run: |
+          LLVM_MAJOR="$(awk '{print $2}' mlir/llvm.pin | cut -d. -f1)"
+          [ -n "$LLVM_MAJOR" ] || { echo "could not parse mlir/llvm.pin" >&2; exit 1; }
+          echo "LLVM_MAJOR=$LLVM_MAJOR" >> "$GITHUB_ENV"
+
+      - name: Install pinned LLVM/MLIR toolchain (apt.llvm.org)
+        run: |
+          wget -qO "$RUNNER_TEMP/llvm.gpg.key" https://apt.llvm.org/llvm-snapshot.gpg.key
+          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg < "$RUNNER_TEMP/llvm.gpg.key"
+          CODENAME="$(lsb_release -cs)"
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/$CODENAME/ llvm-toolchain-$CODENAME-$LLVM_MAJOR main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "clang-$LLVM_MAJOR" "mlir-$LLVM_MAJOR-tools" "libmlir-$LLVM_MAJOR-dev"
+
+      - name: Export LNPL_LLVM_BIN
+        run: echo "LNPL_LLVM_BIN=/usr/lib/llvm-$LLVM_MAJOR/bin" >> "$GITHUB_ENV"
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install .
+
+      # No error-tolerant step attribute here: the run step captures the
+      # harness rc itself and always exits 0; the final step below is the
+      # real, fail-closed verdict (D12/D14).
+      - name: Run full mutation matrix (rc captured, never fails this step)
+        run: |
+          set +e
+          PYTHONPATH=impl python3 impl/tests/mutation_check.py > mutation_full_output.txt 2>&1
+          echo $? > mutation_rc.txt
+          set -e
+          echo "harness rc: $(cat mutation_rc.txt)"
+          tail -40 mutation_full_output.txt
+
+      - name: Parse + report (issue update only on a healthy run)
+        run: |
+          if python3 scripts/mutation_report.py --rc "$(cat mutation_rc.txt)" < mutation_full_output.txt > report_body.md; then
+            cat report_body.md
+            NUM="$(gh issue list --search "in:title \"Weekly mutation report\"" --state open --json number --jq '.[0].number' || true)"
+            if [ -n "$NUM" ]; then
+              gh issue edit "$NUM" --body-file report_body.md
+            else
+              gh issue create --title "Weekly mutation report" --body-file report_body.md
+            fi
+          else
+            cat report_body.md
+            echo "harness-integrity fault - skipping issue update; final step fails the job"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Fail on harness-integrity fault (fail closed - D14)
+        run: python3 scripts/mutation_report.py --rc "$(cat mutation_rc.txt)" < mutation_full_output.txt > /dev/null
