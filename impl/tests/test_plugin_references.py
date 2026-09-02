@@ -21,7 +21,7 @@ REFS = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-authoring", "refere
 EXPECTED = ("grammar.md", "verbs.md", "declarations.md", "types.md", "spec.md",
             "naming.md", "rfcs.md", "patterns.md")
 SCHEMAS = os.path.join(REPO, "schemas")
-EXPECTED_SCHEMAS = ("lnpl-grammar.gbnf", "lnpl-grammar.json")
+EXPECTED_SCHEMAS = ("lnpl-grammar.gbnf", "lnpl-grammar.json", "cost-model.json")
 
 
 def run_gen(*args):
@@ -166,6 +166,21 @@ class GeneratorTest(unittest.TestCase):
             proc = run_gen("--check")
             self.assertEqual(proc.returncode, 1)
             self.assertIn("lnpl-grammar.gbnf", proc.stderr)
+        finally:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original)
+
+    def test_check_mode_detects_a_hand_edit_to_the_cost_model_schema(self):
+        # cost-model.json도 손편집 감지 대상인지 증명한다(issue #164).
+        target = os.path.join(SCHEMAS, "cost-model.json")
+        with open(target, encoding="utf-8") as fh:
+            original = fh.read()
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original + "\n손으로 덧붙인 줄\n")
+            proc = run_gen("--check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("cost-model.json", proc.stderr)
         finally:
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(original)

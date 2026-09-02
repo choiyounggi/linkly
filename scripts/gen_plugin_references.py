@@ -18,6 +18,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "impl"))
 
 from lnpl import __version__                                    # noqa: E402
+from lnpl.cost_model import cost_model_document                  # noqa: E402
 from lnpl.grammar import grammar_json_document, render_gbnf      # noqa: E402
 from lnpl.lower import KIND_PREFIX, KIND_WORD, derive_id, split_pascal  # noqa: E402
 from lnpl.spec import EXPECTATIONS, GIVEN_FORMS                  # noqa: E402
@@ -41,6 +42,9 @@ SCHEMA_RENDERERS = {
     "lnpl-grammar.json": lambda: json.dumps(grammar_json_document(), indent=2,
                                             ensure_ascii=False,
                                             sort_keys=True) + "\n",
+    "cost-model.json": lambda: json.dumps(cost_model_document(), indent=2,
+                                          ensure_ascii=False,
+                                          sort_keys=True) + "\n",
 }
 
 SOURCE_CANON = "impl/lnpl/의 모듈 상수"

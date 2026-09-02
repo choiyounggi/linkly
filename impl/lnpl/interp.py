@@ -1837,6 +1837,14 @@ class Interpreter:
                     rows = apply_predicate(rows, predicate, order, limit)
                     self.trace.log("INFO", "predicate-not-pushed-down",
                                    entity=effect["entity"])
+                    self.diagnostics.add(
+                        code="predicate-not-pushed-down",
+                        where=effect["id"], subject=effect["entity"],
+                        message="this list where executed against a driver "
+                                "that does not declare supports_predicate — "
+                                "the core fetched every row then filtered "
+                                "locally",
+                        line=self.nodes[effect["id"]].get("line"))
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             # issue #147 D3: never expose the storage-layer stamp through a

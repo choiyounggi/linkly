@@ -33,6 +33,7 @@ from .backend import (BackendError, build as build_native, condition_field_names
                       ran_step_indices, restore_skips, run_binary,
                       validation_effect_steps)
 from .capabilities import capabilities_document
+from .cost_model import cost_model_document
 from .grammar import grammar_json_document, render_gbnf
 from .vocab import vocabulary_document
 from .agents import run_cycle
@@ -1592,6 +1593,14 @@ def cmd_grammar(args):
     return 0
 
 
+def cmd_cost(args):
+    # Mirrors `cmd_vocab`/`cmd_capabilities`: single JSON document, no
+    # separate human view (the human view is docs/cost-model.md) — no
+    # --format flag since there is only one output shape (#164).
+    sys.stdout.write(_dump(cost_model_document()))
+    return 0
+
+
 def cmd_kb(args):
     packs = resolve_pack_roots(flag_packs=args.kb_pack,
                                env_value=os.environ.get("LNPL_KB_PACKS"))
@@ -2055,6 +2064,10 @@ def main(argv=None):
     gc.add_argument("--format", choices=("gbnf", "json"), default="json",
                     help="output format (default: json)")
     gc.set_defaults(func=cmd_grammar)
+
+    cst = sub.add_parser("cost",
+                         help="print the operation cost-model contract (#164)")
+    cst.set_defaults(func=cmd_cost)
 
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "

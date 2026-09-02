@@ -69,7 +69,7 @@ class TestCliVocab(unittest.TestCase):
         self.assertEqual(rc, 0)
         doc = json.loads(out)
         self.assertEqual(len(doc["diagnostics"]), len(CODES))
-        self.assertEqual(len(CODES), 18)
+        self.assertEqual(len(CODES), 19)
         for record in doc["diagnostics"]:
             self.assertEqual(set(record.keys()), {"code", "severity"})
 

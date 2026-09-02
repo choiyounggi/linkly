@@ -261,6 +261,25 @@ class TestNonPushdownDriverFallback(unittest.TestCase):
         self.assertEqual(info_logs[0]["level"], "INFO")
         self.assertEqual(info_logs[0]["entity"], "entity.order")
 
+    def test_logs_the_predicate_not_pushed_down_diagnostic(self):
+        repo = _NoPushdownRepository()
+        _, interp = run_with_orders({"0": {"id": "0", "amount": 20}}, repository=repo)
+        records = [d for d in interp.diagnostics.all()
+                  if d.code == "predicate-not-pushed-down"]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].severity, "info")
+
+    def test_a_bare_list_never_emits_the_diagnostic(self):
+        """No predicate/order/limit clause -> no diagnostic either, same
+        condition as the existing trace-line test above."""
+        doc = ORDERS_SOURCE.replace("list order where amount > 10", "list order")
+        repo = _NoPushdownRepository()
+        _, interp = run_with_orders({"0": {"id": "0", "amount": 5}},
+                                    source=doc, repository=repo)
+        self.assertEqual(
+            [d for d in interp.diagnostics.all()
+            if d.code == "predicate-not-pushed-down"], [])
+
     def test_a_bare_list_never_logs_the_fallback_line(self):
         """No predicate/order/limit clause -> the unchanged single-argument
         `query(entity_id)` call, regardless of `supports_predicate` — the

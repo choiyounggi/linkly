@@ -386,6 +386,15 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 과는 별개다 — doctor는 CLI 설치·버전 같은 로컬 환경 건강을 보고, `capabilities`
 는 설치된 확장이 무엇인지에 대한 CLI 계약이다(이슈 #134 열린 질문).
 
+### `cost` — 연산별 실행 비용 계약 (issue #164)
+
+플래그 없음. `list where`(pushdown 유/무)·`order by`·`limit`·집계 5종·
+cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다 — 형식은
+하나뿐이라 `--format`이 없다(사람용 뷰는 [docs/cost-model.md](../../../../docs/cost-model.md)
+가 따로 맡는다). 정본 함수는 `impl/lnpl/cost_model.py`의
+`cost_model_document()`이고, `scripts/gen_plugin_references.py`의
+`SCHEMA_RENDERERS`(`schemas/cost-model.json`)가 같은 함수를 공유한다.
+
 ### `kb` — 지식 베이스 조회 (RFC-0005)
 
 | 플래그 | 뜻 |
@@ -428,7 +437,8 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
-`declared-not-bound`).
+`declared-not-bound`, `predicate-not-pushed-down`(`list where`/`order by`/`limit`이
+`supports_predicate`를 선언하지 않은 드라이버로 실행됐을 때 — 이슈 #164)).
 등급별 표는
 `references/declarations.md`에 생성되어 있다 — 등급을 정하는 것은 그 표가 아니라
 `diagnostics.SEVERITY_OF`이고, 문서는 그것의 사본이다. CI에서 의도한 선언을

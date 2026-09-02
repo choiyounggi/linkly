@@ -1,0 +1,85 @@
+{
+  "_generated": {
+    "by": "benchmarks/runtime/run.py",
+    "hand_edit": false,
+    "source": "benchmarks/runtime/run.py:run_all()"
+  },
+  "measured_at": "manual re-run — see git log",
+  "results": [
+    {
+      "n": 100,
+      "operation": "list_where_no_pushdown",
+      "seconds": 7.5409188866615295e-06
+    },
+    {
+      "n": 100,
+      "operation": "list_where_pushdown",
+      "seconds": 5.099968984723091e-05
+    },
+    {
+      "n": 100,
+      "operation": "aggregate",
+      "seconds": 3.262516111135483e-05
+    },
+    {
+      "n": 100,
+      "operation": "cache_set",
+      "seconds": 1.3708602637052536e-05
+    },
+    {
+      "n": 100,
+      "operation": "cache_get",
+      "seconds": 1.2250151485204697e-05
+    },
+    {
+      "n": 1000,
+      "operation": "list_where_no_pushdown",
+      "seconds": 7.679220288991928e-05
+    },
+    {
+      "n": 1000,
+      "operation": "list_where_pushdown",
+      "seconds": 0.000539666973054409
+    },
+    {
+      "n": 1000,
+      "operation": "aggregate",
+      "seconds": 0.0002960418350994587
+    },
+    {
+      "n": 1000,
+      "operation": "cache_set",
+      "seconds": 0.00010762503370642662
+    },
+    {
+      "n": 1000,
+      "operation": "cache_get",
+      "seconds": 0.00011258292943239212
+    },
+    {
+      "n": 10000,
+      "operation": "list_where_no_pushdown",
+      "seconds": 0.0007785423658788204
+    },
+    {
+      "n": 10000,
+      "operation": "list_where_pushdown",
+      "seconds": 0.005102167371660471
+    },
+    {
+      "n": 10000,
+      "operation": "aggregate",
+      "seconds": 0.0029219589196145535
+    },
+    {
+      "n": 10000,
+      "operation": "cache_set",
+      "seconds": 0.0012713749893009663
+    },
+    {
+      "n": 10000,
+      "operation": "cache_get",
+      "seconds": 0.0012617092579603195
+    }
+  ]
+}
