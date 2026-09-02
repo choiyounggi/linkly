@@ -33,6 +33,7 @@ from .backend import (BackendError, build as build_native, condition_field_names
                       ran_step_indices, restore_skips, run_binary,
                       validation_effect_steps)
 from .capabilities import capabilities_document
+from .grammar import grammar_json_document, render_gbnf
 from .vocab import vocabulary_document
 from .agents import run_cycle
 from .config import load_config
@@ -1480,6 +1481,17 @@ def cmd_capabilities(args):
     return 0
 
 
+def cmd_grammar(args):
+    # Mirrors `cmd_vocab`/`cmd_capabilities`: machine-only output, no separate
+    # human view. Generation cannot fail once the tables are well-formed —
+    # `test_grammar_artifacts.py` guards that — so this always returns 0.
+    if args.format == "gbnf":
+        sys.stdout.write(render_gbnf())
+    else:
+        sys.stdout.write(_dump(grammar_json_document()))
+    return 0
+
+
 def cmd_kb(args):
     packs = resolve_pack_roots(flag_packs=args.kb_pack,
                                env_value=os.environ.get("LNPL_KB_PACKS"))
@@ -1923,6 +1935,13 @@ def main(argv=None):
     vc.add_argument("--json", action="store_true",
                     help="explicit stable form (default: same document)")
     vc.set_defaults(func=cmd_vocab)
+
+    gc = sub.add_parser("grammar",
+                        help="print the closed-vocabulary grammar artifact "
+                             "for constrained decoding (#162)")
+    gc.add_argument("--format", choices=("gbnf", "json"), default="json",
+                    help="output format (default: json)")
+    gc.set_defaults(func=cmd_grammar)
 
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "

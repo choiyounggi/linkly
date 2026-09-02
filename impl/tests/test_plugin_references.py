@@ -20,6 +20,8 @@ GEN = os.path.join(REPO, "scripts", "gen_plugin_references.py")
 REFS = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-authoring", "references")
 EXPECTED = ("grammar.md", "verbs.md", "declarations.md", "types.md", "spec.md",
             "naming.md", "rfcs.md")
+SCHEMAS = os.path.join(REPO, "schemas")
+EXPECTED_SCHEMAS = ("lnpl-grammar.gbnf", "lnpl-grammar.json")
 
 
 def run_gen(*args):
@@ -112,6 +114,11 @@ class GeneratorTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(REFS, name)),
                             "%s가 없다 — 생성기를 돌려라" % name)
 
+    def test_all_schema_files_present(self):
+        for name in EXPECTED_SCHEMAS:
+            self.assertTrue(os.path.isfile(os.path.join(SCHEMAS, name)),
+                            "%s가 없다 — 생성기를 돌려라" % name)
+
     def test_no_drift_between_source_and_committed_files(self):
         proc = run_gen("--check")
         self.assertEqual(proc.returncode, 0,
@@ -129,6 +136,21 @@ class GeneratorTest(unittest.TestCase):
             proc = run_gen("--check")
             self.assertEqual(proc.returncode, 1)
             self.assertIn("verbs.md", proc.stderr)
+        finally:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original)
+
+    def test_check_mode_detects_a_hand_edit_to_a_schema_artifact(self):
+        # 게이트가 markdown뿐 아니라 schemas/ 산출물의 손편집도 잡는지 증명한다.
+        target = os.path.join(SCHEMAS, "lnpl-grammar.gbnf")
+        with open(target, encoding="utf-8") as fh:
+            original = fh.read()
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original + "\n손으로 덧붙인 줄\n")
+            proc = run_gen("--check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("lnpl-grammar.gbnf", proc.stderr)
         finally:
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(original)
