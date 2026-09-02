@@ -148,12 +148,18 @@ def assignment_negatives():
     n5 = copy.deepcopy(ASSIGNMENT_FIXTURE)
     n5["nodes"][3]["entity"] = "Entity.Product"         # nodeId 형식 위반(교차참조)
 
+    # RFC-0047 D3: `nodeAssignment.agg_field_type`(선택 필드, RFC-0047 §1)이
+    # 더한 enum 밖 값 하나 — 스키마가 실제로 이 새 키를 아는지 증명한다.
+    n6 = copy.deepcopy(ASSIGNMENT_FIXTURE)
+    n6["nodes"][3]["agg_field_type"] = "Decimal"        # enum(agg_field_type) 밖
+
     return [
         ("required field removed: Assignment.target", n1),
         ("expression is not a string: 3", n2),
         ("kind outside the catalogue: 'Assign'", n3),
         ("undeclared property on Assignment: operation", n4),
         ("entity is not a node id: 'Entity.Product'", n5),
+        ("agg_field_type outside the enum: 'Decimal'", n6),
     ]
 
 

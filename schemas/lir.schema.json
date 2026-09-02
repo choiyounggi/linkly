@@ -785,6 +785,13 @@
         },
         "entity": {
           "$ref": "#/$defs/nodeId"
+        },
+        "agg_field_type": {
+          "enum": [
+            "Integer",
+            "DateTime",
+            "Money"
+          ]
         }
       },
       "required": [

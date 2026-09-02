@@ -177,6 +177,50 @@ class TestAggregateLowering(unittest.TestCase):
         self.assertEqual(assigns["report.totalClicks"]["entity"], "entity.report")
         self.assertEqual(assigns["report.linkCount"]["expression"], "count link")
 
+    def test_sum_carries_its_field_s_declared_base_type(self):
+        """RFC-0047 §1/§2: `sum`'s `Assignment` node carries `agg_field_type`
+        — the field's declared base type, computed by `_check_aggregate` —
+        so `interp.py` can tell a Money `sum` from an Integer one even when
+        the RowSet it reads at run time is empty."""
+        doc = compile_doc(clicks_source(
+            "    list link\n"
+            "    set report.totalClicks to sum link.clicks\n"
+            "    update report\n")).to_document()
+        assigns = {n["target"]: n for n in nodes_of(doc, "Assignment")}
+        self.assertEqual(assigns["report.totalClicks"]["agg_field_type"],
+                         "Integer")
+
+    def test_count_carries_no_field_type(self):
+        """RFC-0047 §2: `count` has no field, hence no base type — its
+        `Assignment` node must not carry `agg_field_type` at all (the schema
+        key is optional exactly so `count` — and any non-aggregate
+        `Assignment` — can omit it)."""
+        doc = compile_doc(clicks_source(
+            "    list link\n"
+            "    set report.linkCount to count link\n"
+            "    update report\n")).to_document()
+        assigns = {n["target"]: n for n in nodes_of(doc, "Assignment")}
+        self.assertNotIn("agg_field_type", assigns["report.linkCount"])
+
+    def test_a_plain_arithmetic_assignment_carries_no_field_type(self):
+        """RFC-0047 §2: a non-aggregate `Assignment` (`set x to y op z`) never
+        goes through `_check_aggregate` at all, so `agg_field_type` is absent
+        — this is the ordinary `set` path RFC-0047 leaves untouched."""
+        src = """capability postgres
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+workflow AdjustStock
+    read product
+    set product.stock to product.stock - 1
+"""
+        doc = compile_doc(src).to_document()
+        assigns = {n["target"]: n for n in nodes_of(doc, "Assignment")}
+        self.assertNotIn("agg_field_type", assigns["product.stock"])
+
 
 class TestStaticRejections(unittest.TestCase):
     """RFC-0025 §3 — one case per rejection row, plus a Money control."""
@@ -234,7 +278,12 @@ class TestStaticRejections(unittest.TestCase):
             "    list link\n"
             "    set report.totalClicks to sum link.clicks\n"
             "    update report\n", field="clicks Money")).to_document()
-        self.assertEqual(len(nodes_of(doc, "Assignment")), 1)
+        assigns = nodes_of(doc, "Assignment")
+        self.assertEqual(len(assigns), 1)
+        self.assertEqual(assigns[0]["agg_field_type"], "Money",
+                         "RFC-0047 §2: the Money base type must reach the "
+                         "IR so an empty-RowSet `sum` can produce RFC-0045 "
+                         "§5's Money-shaped zero, not a plain integer")
 
     def test_averaging_a_datetime_field_is_refused(self):
         """RFC-0045 §Alternatives 2: `avg`(DateTime) is explicitly left
@@ -274,13 +323,16 @@ class TestStaticRejections(unittest.TestCase):
     def test_min_max_of_datetime_and_money_fields_are_now_legal(self):
         """RFC-0045 §2: `min`/`max`(DateTime) and `min`/`max`(Money) are new
         — RFC-0025 only ever opened Integer."""
-        for field in ("clicks DateTime", "clicks Money"):
+        for field, base in (("clicks DateTime", "DateTime"),
+                             ("clicks Money", "Money")):
             with self.subTest(field=field):
                 doc = compile_doc(clicks_source(
                     "    list link\n"
                     "    set report.totalClicks to min link.clicks\n"
                     "    update report\n", field=field)).to_document()
-                self.assertEqual(len(nodes_of(doc, "Assignment")), 1)
+                assigns = nodes_of(doc, "Assignment")
+                self.assertEqual(len(assigns), 1)
+                self.assertEqual(assigns[0]["agg_field_type"], base)
 
     def test_summing_a_field_the_entity_does_not_declare_is_refused(self):
         self.compile_fails(
@@ -432,6 +484,20 @@ class TestIrSchemaGate(unittest.TestCase):
             "    update report\n")).to_document()
         jsonschema.validate(doc, schema)
 
+    def test_a_lowered_money_sum_document_validates(self):
+        """RFC-0047 §1/§2: `agg_field_type: "Money"` on the `Assignment`
+        node must itself be schema-legal, not just present."""
+        import json
+        import jsonschema
+        with open(os.path.join(REPO_ROOT, "schemas", "lir.schema.json"),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        doc = compile_doc(clicks_source(
+            "    list link\n"
+            "    set report.totalClicks to sum link.clicks\n"
+            "    update report\n", field="clicks Money")).to_document()
+        jsonschema.validate(doc, schema)
+
     def test_the_schema_self_test_passes_including_the_new_fixture_and_negatives(self):
         proc = subprocess.run(
             [sys.executable, os.path.join(REPO_ROOT, "scripts", "validate_ir.py"),
@@ -445,6 +511,16 @@ class TestIrSchemaGate(unittest.TestCase):
                       "entity is not a node id: 'Entity.Link'"):
             self.assertIn(label, proc.stdout,
                           "the gate no longer runs the %r negative" % label)
+        # RFC-0047 D3: this negative must be caught by the `enum` keyword
+        # specifically — before the schema knew `agg_field_type`, the same
+        # mutation was already rejected by `additionalProperties`, which
+        # would make the gate green without ever exercising the new enum.
+        self.assertIn(
+            "agg_field_type outside the enum: 'Decimal'  [caught by: enum]",
+            proc.stdout,
+            "the gate is rejecting the mutation for the wrong reason — "
+            "`additionalProperties` would also catch an unknown key, so "
+            "this must specifically be the `enum` keyword")
 
 
 if __name__ == "__main__":

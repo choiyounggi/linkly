@@ -888,8 +888,9 @@ def eval_value(value, condition, payload, bindings, caller=None):
     raise RunError(f"Unknown value type: {type(value)}")
 
 
-def eval_aggregate(agg, expression, rowsets):
-    """A parsed `Aggregate` -> int/str/dict (RFC-0025 §5, RFC-0045 §3-§5).
+def eval_aggregate(agg, expression, rowsets, agg_field_type=None):
+    """A parsed `Aggregate` -> int/str/dict (RFC-0025 §5, RFC-0045 §3-§5,
+    RFC-0047 §Reference-level Specification/3).
 
     An absent or empty RowSet binding sums/counts to 0 — not None, not a
     fault. That covers two cases identically: this workflow never `list`ed
@@ -909,17 +910,28 @@ def eval_aggregate(agg, expression, rowsets):
     None -> `RunError`), so it raises here too rather than silently treating
     one row as 0 and the rest as data.
 
-    This function's signature is unchanged from RFC-0025 — it still receives
-    no document/type information, so it dispatches on each row value's own
+    For any NON-EMPTY RowSet this still dispatches on each row value's own
     Python shape: `dict` -> Money (RFC-0044 §1's `{"amount", "currency"}`),
     `str` -> DateTime (RFC-0016 §2's stored instant text), plain `int`/`bool`
     -> Integer. `lower.py`'s static rejection (RFC-0045 §2) already limits
-    which shape a legal program's rows can carry, so this is safe for any
-    non-empty RowSet. It is NOT enough to recover a Money field's declared
-    type from an EMPTY RowSet, since there are no rows to inspect — so an
-    empty `sum` is plain integer `0` even when the target field is Money,
-    rather than RFC-0045 §5's `{"amount": "0", "currency": null}` (recorded
-    on the blackboard as a load-bearing decision).
+    which shape a legal program's rows can carry, so this is safe whenever
+    there is at least one row to inspect — `agg_field_type` is not consulted
+    there.
+
+    Load-bearing decision (RFC-0047, previously recorded on the blackboard as
+    open): a Money field's declared type CANNOT be recovered from an EMPTY
+    RowSet's rows, since there are none to inspect. `agg_field_type` is
+    `lower.py`'s `_check_aggregate`-computed base type, carried on the
+    `Assignment` IR node (RFC-0047 §1/§2) and forwarded here by `_run_effect`
+    as an optional keyword — the signature is unchanged for every existing
+    positional caller. When the RowSet is empty, `func == "sum"`, and
+    `agg_field_type == "Money"`, the result is RFC-0045 §5's
+    `{"amount": "0", "currency": null}` instead of plain integer `0`. An IR
+    document compiled before RFC-0047 (no `agg_field_type` key, so this
+    parameter stays `None`) keeps the old plain-`0` result — a deliberate
+    backward-compatibility floor, not a bug: language semantics are fixed by
+    RFC-0047, but an already-compiled artifact only observes them after
+    recompilation.
     """
     binding = agg.ref.namespace or agg.ref.name
     rows = rowsets.get(binding) or []
@@ -936,7 +948,8 @@ def eval_aggregate(agg, expression, rowsets):
         values.append(row[field])
 
     if agg.func in ("sum", "avg"):
-        return _eval_sum_avg(agg.func, values, field, expression)
+        return _eval_sum_avg(agg.func, values, field, expression,
+                             agg_field_type=agg_field_type)
     return _eval_minmax(agg.func, values, field, expression)
 
 
@@ -959,8 +972,12 @@ def _decode_money(minor, currency):
     return {"amount": sign + amount, "currency": currency}
 
 
-def _eval_sum_avg(func, values, field, expression):
-    """RFC-0045 §3/§5: `sum`/`avg` over Integer or Money row values."""
+def _eval_sum_avg(func, values, field, expression, agg_field_type=None):
+    """RFC-0045 §3/§5: `sum`/`avg` over Integer or Money row values.
+
+    RFC-0047 §3: an empty `sum` over a Money field returns the Money-shaped
+    zero (`agg_field_type` is the only place this parameter is consulted —
+    every other branch below is byte-for-byte RFC-0045's original rule)."""
     from . import money
 
     if func == "avg" and not values:
@@ -968,6 +985,8 @@ def _eval_sum_avg(func, values, field, expression):
             "aggregate %r: avg-of-empty-rowset — averaging %r needs at "
             "least one row" % (expression, field))
     if not values:
+        if func == "sum" and agg_field_type == "Money":
+            return {"amount": "0", "currency": None}
         return 0
 
     if isinstance(values[0], dict):
@@ -1674,7 +1693,13 @@ class Interpreter:
             if isinstance(rhs, Aggregate):
                 # RFC-0025 §5: sums/counts the RowSet, never a "resolves to
                 # nothing" — an absent or empty RowSet is 0, not a fault.
-                value = eval_aggregate(rhs, effect["expression"], rowsets)
+                # RFC-0047 §3: `agg_field_type` is absent on a non-aggregate
+                # or `count` Assignment, and on any Assignment compiled
+                # before RFC-0047 — `.get()` yields `None` in all three
+                # cases, which `eval_aggregate` treats as "no Money-zero
+                # special case, fall back to the RFC-0045 behavior."
+                value = eval_aggregate(rhs, effect["expression"], rowsets,
+                                       agg_field_type=effect.get("agg_field_type"))
             elif isinstance(rhs, FormatCall):
                 value = eval_format(rhs, payload, bindings, self.caller)
             else:

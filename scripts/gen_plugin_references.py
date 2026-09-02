@@ -652,6 +652,11 @@ RFC_ROUTES = {
              "텍스트가 어디 있는지, `pipeline` 블록이 왜 필요한지, "
              "`examples/guarded.lnpl`과 왜 동기화됐는지, `until` 0라운드가 "
              "왜 아무 표지도 안 남기던 문제였는지", ()),
+    "0047": ("빈 RowSet의 Money `sum`이 왜 정수 `0`이 아니라 `{\"amount\": "
+             "\"0\", \"currency\": null}`이어야 하는지, `nodeAssignment."
+             "agg_field_type`이 왜 필요한지, 그 필드가 왜 필수가 아니라 "
+             "선택인지, 옛 컴파일러가 낸 IR 문서가 재컴파일 전까지 왜 여전히 "
+             "정수 `0`을 내는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

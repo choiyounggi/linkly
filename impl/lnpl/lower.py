@@ -2339,8 +2339,13 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                             scope.check_reference(child["target"], text,
                                                   ASSIGN_SUBJECT, is_target=True,
                                                   allow_money=True)
-                            entity_id = _check_aggregate(rhs, by_binding, base_of or {},
-                                                         workflow_name, text)
+                            entity_id, agg_base = _check_aggregate(
+                                rhs, by_binding, base_of or {}, workflow_name, text)
+                            if agg_base is not None:
+                                # RFC-0047 §1/§2: only sum/avg/min/max carry a
+                                # base type — `count` (agg_base is None) has
+                                # no field, so no `agg_field_type` to record.
+                                child["agg_field_type"] = agg_base
                             if entity_id not in listed and diagnostics is not None:
                                 line = child.get("line")
                                 diagnostics.add(
@@ -2433,8 +2438,15 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
     the same split RFC-0015's Integer-only check already draws (that module's
     own docstring: "this module never sees the document").
 
-    Returns the entity id the aggregate reads, so the caller can also judge
-    RFC-0025 §4 (was it `list`ed first) without re-resolving the binding.
+    Returns `(entity_id, base_or_None)` (RFC-0047 §Reference-level
+    Specification/2): `entity_id` is the entity the aggregate reads, so the
+    caller can also judge RFC-0025 §4 (was it `list`ed first) without
+    re-resolving the binding; `base_or_None` is the aggregated field's
+    declared base type (`Integer`/`DateTime`/`Money`) for `sum`/`avg`/`min`/
+    `max`, or `None` for `count` (which has no field, hence no base type) —
+    the caller writes it onto the `Assignment` node as `agg_field_type` so
+    `interp.py` can tell a Money `sum` from an Integer one even when the
+    RowSet it reads is empty.
     """
     binding = agg.ref.namespace or agg.ref.name
     entity = by_binding.get(binding)
@@ -2448,7 +2460,7 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
                 "workflow %s: aggregate %r — `count` takes an entity, not a "
                 "field (write `count %s`, not `count %s`)"
                 % (workflow_name, text, binding, agg.ref.name))
-        return entity["id"]
+        return entity["id"], None
     # agg.func in ("sum", "avg", "min", "max") — all four need a field.
     if agg.ref.namespace is None:
         raise LowerError(
@@ -2478,7 +2490,7 @@ def _check_aggregate(agg, by_binding, base_of, workflow_name, text):
                 "declared type %s is none of Integer, DateTime, or Money — "
                 "RFC-0045 has no order comparison for the other types"
                 % (workflow_name, text, agg.func, binding, field, declared))
-    return entity["id"]
+    return entity["id"], base
 
 
 def _check_format(target, rhs, scope, text, base_of):

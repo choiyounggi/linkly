@@ -378,18 +378,65 @@ class TestEmptyRowSetBoundary(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("min-max-of-empty-rowset", result["failure_reason"])
 
-    def test_an_empty_money_rowsets_sum_is_plain_integer_zero(self):
-        """Load-bearing decision (documented on the blackboard): `sum` over
-        an empty RowSet cannot recover the target field's Money-ness from
-        zero rows without a signature change the brief forbids, so it
-        returns plain `0`, not RFC-0045 §5's `{"amount": "0", "currency":
-        null}`."""
+    def test_an_empty_money_rowsets_sum_has_the_money_shaped_zero(self):
+        """RFC-0047 (Updates: RFC-0045 §5) — this replaces the prior pinned
+        test `test_an_empty_money_rowsets_sum_is_plain_integer_zero`, which
+        fixed the OLD contract (plain integer `0`) as a documented gap: mode
+        A could not recover an empty RowSet's target field's Money-ness from
+        zero rows. RFC-0047 closes that gap by having `lower.py` carry the
+        field's declared base type onto the `Assignment` node
+        (`agg_field_type`) so `interp.py` no longer needs to guess from row
+        shape. This is not a weakened test — it is the corrected contract
+        RFC-0045 §5 always specified (`{"amount": "0", "currency": null}`),
+        now actually reachable."""
         source = MONEY_SOURCE.replace(
             "    set report.avgAmount to avg payment.amount\n"
             "    set report.minAmount to min payment.amount\n"
             "    set report.maxAmount to max payment.amount\n", "")
         result, interp = run_doc(source, "wf.summarize.payments", {},
                                  "entity.payment")
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(report_row(interp)["totalAmount"],
+                         {"amount": "0", "currency": None})
+
+    def test_an_empty_integer_rowsets_sum_is_still_plain_integer_zero(self):
+        """D7 boundary: RFC-0047 only special-cases `agg_field_type ==
+        "Money"` — an empty Integer `sum` must keep returning plain `0`, not
+        a Money-shaped dict."""
+        source = MONEY_SOURCE.replace(
+            "    set report.avgAmount to avg payment.amount\n"
+            "    set report.minAmount to min payment.amount\n"
+            "    set report.maxAmount to max payment.amount\n", "")
+        doc = compile_doc(source)
+        for node in doc["nodes"]:
+            if node.get("kind") == "Assignment" and node["target"] == "report.totalAmount":
+                node["agg_field_type"] = "Integer"
+        rows = {"entity.report": {row_key("entity.report", {"id": REPORT_ID}):
+                                  {"id": REPORT_ID}},
+               "entity.payment": {}}
+        interp = Interpreter(doc, repo_rows=rows)
+        result = interp.run_workflow("wf.summarize.payments", {"id": REPORT_ID})
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(report_row(interp)["totalAmount"], 0)
+
+    def test_an_empty_money_sum_without_agg_field_type_keeps_the_old_zero(self):
+        """D7 backward compatibility: an IR document compiled before
+        RFC-0047 (no `agg_field_type` key at all — `effect.get(...)` returns
+        `None`) must keep running exactly as it did before this RFC, so an
+        existing compiled artifact is never broken by a runtime upgrade."""
+        source = MONEY_SOURCE.replace(
+            "    set report.avgAmount to avg payment.amount\n"
+            "    set report.minAmount to min payment.amount\n"
+            "    set report.maxAmount to max payment.amount\n", "")
+        doc = compile_doc(source)
+        for node in doc["nodes"]:
+            if node.get("kind") == "Assignment" and node["target"] == "report.totalAmount":
+                del node["agg_field_type"]
+        rows = {"entity.report": {row_key("entity.report", {"id": REPORT_ID}):
+                                  {"id": REPORT_ID}},
+               "entity.payment": {}}
+        interp = Interpreter(doc, repo_rows=rows)
+        result = interp.run_workflow("wf.summarize.payments", {"id": REPORT_ID})
         self.assertEqual(result["status"], "completed")
         self.assertEqual(report_row(interp)["totalAmount"], 0)
 
@@ -465,6 +512,18 @@ class TestMoneyAggregateEvaluation(unittest.TestCase):
         result, _ = self._run({})
         self.assertEqual(result["status"], "failed")
         self.assertIn("avg-of-empty-rowset", result["failure_reason"])
+
+    def test_min_max_of_an_empty_money_rowset_fails(self):
+        """D7 boundary, adjacent to RFC-0047's `sum` fix: `agg_field_type`
+        only changes `sum`'s empty-RowSet result — `min`/`max` over an empty
+        Money RowSet must keep failing exactly as RFC-0045 §4 defined."""
+        source = MONEY_SOURCE.replace(
+            "    set report.totalAmount to sum payment.amount\n"
+            "    set report.avgAmount to avg payment.amount\n", "")
+        result, _ = run_doc(source, "wf.summarize.payments", {},
+                            "entity.payment")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("min-max-of-empty-rowset", result["failure_reason"])
 
 
 class TestDateTimeMinMaxEvaluation(unittest.TestCase):
