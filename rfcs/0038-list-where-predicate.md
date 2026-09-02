@@ -126,6 +126,8 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0025 §Reference-level Specific
 
 ### 2. 술어 IR — 구조화 노드 (D4)
 
+> 갱신됨: RFC-0048
+
 `where`가 있을 때만 `RepositoryCall` 노드(`operation: "query"`)에 세 필드가
 더 실린다. 없을 때는 RFC-0025가 내던 4키 노드(`kind`/`id`/`entity`/`operation`)
 그대로다 — 이 RFC의 제약("predicate=None 경로 바이트 동일")이 요구하는 바로
@@ -354,6 +356,8 @@ workflow BadOrder
 | 5 | **`list where`의 술어를 mode B가 정적으로 판정하려 시도한다** | RFC-0025 §Alternatives 대안 6과 같은 이유로 불필요 — RowSet 값은 애초에 mode B의 비교 대상이 아니다(§Reference-level Specification/6). 판정할 게 없는 것을 판정하려는 것은 세우지도 않은 요구를 충족시키는 일이다 |
 
 ## Open Questions
+
+> 갱신됨: RFC-0048
 
 1. **avg/min/max/group by.** 이슈 #116 §4가 명시적으로 범위 밖에 둔다 — 집계
    함수를 `sum`/`count`(RFC-0025) 이상으로 넓히는 것과 `group by`는 별개

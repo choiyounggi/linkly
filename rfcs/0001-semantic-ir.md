@@ -413,6 +413,8 @@ IR은 의도만 보존한다. `event.user.created`는 User *생성* 시 발행�
 
 ## Open Questions
 
+> 갱신됨: RFC-0048
+
 1. **제네릭/컬렉션 타입** — List·Map·Optional을 Semantic Type 시스템에 어떻게
    넣을 것인가(타입 파라미터 허용 범위, 중첩 컬렉션의 validation rule 합성).
 2. **바이너리 직렬화 포맷** — D4가 미결로 남긴 항목. JSON 대비 어느 규모부터

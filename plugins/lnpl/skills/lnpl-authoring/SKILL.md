@@ -19,6 +19,7 @@ LNPL은 **의도(what)를 선언**하는 언어다. 구현(how)은 컴파일러�
 | 워크플로 스텝을 쓴다 (`validate input`, `cache user` …) | [references/verbs.md](references/verbs.md) |
 | `policy` / `security` / `performance`를 선언한다 | [references/declarations.md](references/declarations.md) |
 | 필드 타입이나 `refine`을 정한다 | [references/types.md](references/types.md) |
+| 필드에 목록/맵(List/Map) 같은 컬렉션이 필요해 보인다 | [references/patterns.md](references/patterns.md) |
 | 블록 구조·제어 흐름·가드 스코프가 헷갈린다 | [references/grammar.md](references/grammar.md) |
 | 선언 이름이 어떤 노드 id가 되는지, 스텝이 엔티티를 어떻게 가리키는지 | [references/naming.md](references/naming.md) |
 | `spec` 블록으로 검증을 붙인다 | [references/spec.md](references/spec.md) |

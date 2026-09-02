@@ -16,6 +16,7 @@
 #      초록으로 넘긴다(issue #39).
 #   4. 저장소를 바꾸는 SaveBookmark의 정상 케이스는 `rows Bookmark 1`을 건다 —
 #      "완료했다"와 "실제로 썼다"는 다른 주장이다.
+#   5. RowSet 집계(`list where` + `count`)를 실사용한다 — issue #163, RFC-0048.
 #
 # 기계(mechanism)인 선언과 서술(documentation)인 선언을 구분한다:
 #   기계 — Bookmark.id(행 키), Bookmark.url(refinement 프리셋 URL이 validate
@@ -94,3 +95,17 @@ workflow GetBookmark
             failed
             effects complete
             rows Bookmark 0
+
+workflow CountPopularBookmarks
+    find bookmark
+    list bookmark where visits > 0
+    set bookmark.visits to count bookmark
+    update bookmark
+    spec
+        given
+            empty repository
+        when
+            countPopularBookmarks
+        expect
+            failed
+            effects complete

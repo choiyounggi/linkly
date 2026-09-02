@@ -39,3 +39,17 @@ workflow GetBookmark
             failed
             effects complete
             rows Bookmark 0
+
+workflow CountPopularBookmarks
+    find bookmark
+    list bookmark where visits > 0
+    set bookmark.visits to count bookmark
+    update bookmark
+    spec
+        given
+            empty repository
+        when
+            countPopularBookmarks
+        expect
+            failed
+            effects complete
