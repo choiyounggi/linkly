@@ -99,7 +99,7 @@ class ExtensionDiagnosticAppearsInCompileTest(unittest.TestCase):
         self.assertIn("info: kafka/at-least-once", err)
         self.assertIn("1 info, 0 warning(s), 0 error(s)", err)
 
-    def test_appears_in_json_diagnostics_array_with_all_six_keys(self):
+    def test_appears_in_json_diagnostics_array_with_all_seven_keys(self):
         src = self._write("clean2.lnpl", CLEAN_SRC)
         with registered(KAFKA_EP):
             rc, out, err = _main(["compile", src, "--json"])
@@ -110,8 +110,13 @@ class ExtensionDiagnosticAppearsInCompileTest(unittest.TestCase):
         record = doc["diagnostics"][0]
         self.assertEqual(record["code"], "kafka/at-least-once")
         self.assertEqual(record["severity"], "info")
+        # issue #165: "hint" is present (None here — the kafka fixture
+        # registers no per-code hint) rather than omitted, same
+        # non-omission rule as the other optional keys.
+        self.assertIsNone(record["hint"])
         self.assertEqual(set(record.keys()),
-                         {"code", "severity", "where", "subject", "message", "line"})
+                         {"code", "severity", "where", "subject", "message",
+                          "line", "hint"})
 
     def test_check_receives_only_the_compiled_document_and_empty_config(self):
         src = self._write("clean3.lnpl", CLEAN_SRC)

@@ -38,6 +38,8 @@ lnpl --version
 | `--endpoint` | `NAME=URL` (반복 가능). `--network http`에서 `call`/`request`의 논리명을 실제 URL로 매핑한다. `LNPL_ENDPOINT_<NAME>` 환경변수로도 줄 수 있고, `--endpoint`가 이긴다. 매핑 안 된 논리명이 있으면 기동이 rc 2로 실패한다(요청 중 실패보다 기동 실패). 이슈 #101 |
 | `--clock` | 시간 바인딩. `virtual`(기본, 결정적, 프로세스 로컬) 또는 `real`(단조 벽시계 — `CacheAccess` TTL을 실제 경과 시간에 묶는다). `spec`/`diff`에는 없다. RFC-0029, 이슈 #100 |
 | `--strict` | 위와 같다 |
+| `--dry-run` | effect를 하나도 실행하지 않고 실행 계획(스텝 순서·가드 평가 지점·정책 적용 지점)만 낸다 — backend/network/cache/clock을 열지 않는다. `--json`이면 `{"workflow", "plan", "declared_policies"}`(기존 `run --json`의 `{"result","trace","diagnostics"}`와는 다른 모양 — 실행되지 않은 것을 실행된 것처럼 보이게 하지 않는다). 배치, 일회성 미리보기 — 대화형 디버거가 아니다. 이슈 #165 |
+| `--log-level` | 사람용 트레이스 출력의 최소 등급. `info`\|`warn`(기본, 이전 동작과 바이트 동일)\|`error`. 이슈 #165 |
 
 `--workflow`는 선언명이 아니라 노드 id를 받는다(`GetReport`가 아니라
 `wf.get.report`). 도출 규칙은 [references/naming.md](references/naming.md)에 있고,
@@ -63,6 +65,7 @@ lnpl trigger <src>.lnpl --schedule event.daily.rollup
 | `--endpoint` | `run`과 같다 |
 | `--clock` | `run`과 같다 |
 | `--strict` | `run`과 같다 |
+| `--log-level` | `run`과 같다. `--dry-run`은 없다 — 이슈 #165가 이름 붙인 미리보기 용례가 `trigger`에는 없다 |
 
 **연결 규칙.** 스케줄 이벤트는 IR에서 어떤 워크플로에도 속하지 않는다 —
 워크플로가 이미 쓰는 "가장 가까이 앞선 `service` 선언" 규칙(RFC-0002 A.2 R2)을

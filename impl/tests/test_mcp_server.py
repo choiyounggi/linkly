@@ -240,7 +240,8 @@ class CompileToolTest(unittest.TestCase):
         self.assertEqual(record["code"], "kafka/at-least-once")
         self.assertEqual(record["severity"], "info")
         self.assertEqual(set(record.keys()),
-                         {"code", "severity", "where", "subject", "message", "line"})
+                         {"code", "severity", "where", "subject", "message",
+                          "line", "hint"})
 
     def test_an_rfc_0043_enforcement_diagnostic_rides_the_same_shared_pass(self):
         # RFC-0043 (issue #138/#140 follow-up, t-wire's shared layer): the

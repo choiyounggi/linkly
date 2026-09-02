@@ -144,6 +144,32 @@ SEVERITY_OF = {
 }
 
 
+# code -> one concrete repair instruction (issue #165). Every code in
+# CODES MUST have an entry (test_diag_hint.py asserts set(HINTS) ==
+# set(CODES)) — an LLM self-repair loop reads this field directly, so a
+# missing entry is a silent gap in the channel, not a cosmetic omission.
+HINTS = {
+    "unknown-verb": "Replace the verb with one from VERB_LEXICON — use this record's own `suggestion` field if present, or run `lnpl vocab` to list valid verbs.",
+    "unknown-entity": "Declare the entity this step names, or fix the step's object name to match an entity already declared in this module.",
+    "declared-not-enforced": "No program edit removes this — it is informational, stating the declaration is not currently enforced; see docs/ENFORCEMENT-MATRIX.md for its enforcement status and any path that does enforce it.",
+    "declared-measured-only": "No program edit removes this — the declaration is measured and reported but never blocks; see docs/ENFORCEMENT-MATRIX.md.",
+    "authorization-not-verified": "Add `security role <r>` to the service instead of relying on `authorize` alone — `security role` is the enforced check path (RFC-0021 D10).",
+    "guard-skipped-steps": "Informational unless the skip was unintended — this run still reports `completed`; if steps should have run, check why the guard's condition evaluated false.",
+    "guard-orphaned-steps": "Repeat the guard line before this step, or wrap both in a `parallel` block.",
+    "validation-sample-derived": "No program edit removes this — mode B derives the Validation outcome from a build-time sample payload, not the actual runtime input; a statement about the channel, not the program.",
+    "aggregation-orphaned-list": "Add a `list <entity> where ...` step before this aggregate so it reads a RowSet the workflow itself filled.",
+    "event-source-mismatch": "Move the `emit` under the same guard scope as the `<op> <entity>` step its declared source names.",
+    "event-source-orphaned": "No program edit removes this — the declared `on <Entity> <op>` source never runs in this workflow, so the source declaration is descriptive only; add the missing step, or drop the source if that is intentional.",
+    "derived-never-assigned": "Add a `set`/`format` step in the workflow that assigns this `derived` field — right now nothing ever fills it after `create`.",
+    "declared-not-bound": "Add a `capability http` declaration naming this call's target — an undeclared target still runs, but with no method/auth you opted into.",
+    "stored-row-shape-mismatch": "Backfill the stored row (add the missing field, or fix its type) so it matches the entity's declared shape — `lnpl migrate` can backfill a missing field across existing rows.",
+    "rollback-escapes-network": "Move the NetworkCall inside the workflow that declares `policy rollback`, or drop the policy if this call is meant to survive a rollback.",
+    "retry-on-non-idempotent": "Drop `retry`, switch to an idempotent method, or pair it with an idempotency key so a retried call cannot duplicate its effect.",
+    "note-cap-exceeded": "Trim this workflow's `note` annotations below NOTE_CAP.",
+    "event-consume-cycle": "Break the cycle — drop the `consume by`, or the `emit` that re-triggers it — unless a guard inside the consuming workflow is known to stop it at runtime.",
+}
+
+
 # RFC-0042 (issue #138): extensions register diagnostics under `<prefix>/<code>`,
 # a namespace disjoint from `CODES` above — bare codes stay core-only forever,
 # and `<prefix>/<code>` never enters `CODES`/`SEVERITY_OF` (the extension's own
@@ -302,6 +328,7 @@ def extension_diagnostic_records(document):
                 "subject": raw["subject"],
                 "message": raw["message"],
                 "line": raw.get("line"),
+                "hint": codes[bare].get("hint"),
             })
     from lnpl import capabilities as _capabilities
     records.extend(_capabilities.enforcement_diagnostic_records(document))
@@ -451,6 +478,12 @@ class Diagnostic:
         """One of SEVERITIES, decided by the code alone (#52)."""
         return SEVERITY_OF[self.code]
 
+    @property
+    def hint(self):
+        """A concrete repair instruction for `code` (issue #165), or `None`
+        if `code` has none — derived, not stored, same reasoning as `severity`."""
+        return HINTS.get(self.code)
+
 
 class Diagnostics:
     """An ordered accumulator of `Diagnostic`s — the channel every producer writes to.
@@ -528,7 +561,7 @@ def to_records(diagnostics):
     """
     return [{"code": d.code, "severity": d.severity, "where": d.where,
              "subject": d.subject, "message": d.message, "line": d.line,
-             "suggestion": d.suggestion}
+             "suggestion": d.suggestion, "hint": d.hint}
             for d in _records(diagnostics)]
 
 
