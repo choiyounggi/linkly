@@ -1,0 +1,15 @@
+# generated — do not hand-edit. source: impl/lnpl/grammar.py:render_gbnf(). regenerate: python scripts/gen_plugin_references.py
+verb ::= "authenticate" | "authorize" | "cache" | "call" | "create" | "delete" | "emit" | "find" | "format" | "insert" | "invalidate" | "list" | "load" | "note" | "publish" | "read" | "request" | "respond" | "set" | "update" | "validate"
+top_keyword ::= "entity" | "service" | "workflow" | "event" | "capability" | "refine"
+clause_keyword ::= "field" | "goal" | "policy" | "security" | "performance" | "database" | "expose" | "spec" | "given" | "when" | "expect"
+control_keyword ::= "when" | "repeat" | "parallel" | "until" | "pipeline" | "merge"
+semantic_type ::= "Address" | "Boolean" | "Currency" | "DateTime" | "Decimal" | "Email" | "File" | "GeoLocation" | "Html" | "Image" | "Integer" | "Json" | "Markdown" | "Money" | "Password" | "Phone" | "Text" | "UUID"
+comparator ::= "<=" | ">=" | "==" | "!=" | "<" | ">"
+arithmetic_op ::= "+" | "-" | "*" | "/"
+logical_op ::= "and"
+policy_clause ::= "retry" | "rollback" | "timeout" | "parallel"
+security_clause ::= "jwt" | "role"
+performance_clause ::= "response" | "cache" | "parallel" | "prefetch" | "batch"
+spec_expect ::= "attempts" | "cache" | "completed" | "duration" | "effects" | "emitted" | "error" | "failed" | "result" | "rows" | "slo" | "steps"
+# spec_given_form enumerates the closed set of given-form TEMPLATES (patterns contain <field>-style placeholders), documenting which forms exist — it is not a decoding constraint for concrete given-clauses.
+spec_given_form ::= "valid <아무 명사>" | "empty repository" | "input.<field> <value>" | "no input.<field>" | "<field> <value>" | "no <field>" | "stored <entity> <field> <value>" | "stored <entity>[<i>] <field> <value>" | "call <target> returns <status>" | "call <target> returns <status> body.<key> <value>"

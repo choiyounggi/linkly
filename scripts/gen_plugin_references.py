@@ -9,6 +9,7 @@
 """
 import glob
 import inspect
+import json
 import os
 import re
 import sys
@@ -17,6 +18,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "impl"))
 
 from lnpl import __version__                                    # noqa: E402
+from lnpl.grammar import grammar_json_document, render_gbnf      # noqa: E402
 from lnpl.lower import KIND_PREFIX, KIND_WORD, derive_id, split_pascal  # noqa: E402
 from lnpl.spec import EXPECTATIONS, GIVEN_FORMS                  # noqa: E402
 from lnpl.vocab import vocabulary_document                       # noqa: E402
@@ -31,6 +33,15 @@ VOCAB = vocabulary_document()
 
 OUT_DIR = os.path.join(REPO, "plugins", "lnpl", "skills",
                        "lnpl-authoring", "references")
+
+SCHEMA_OUT_DIR = os.path.join(REPO, "schemas")
+
+SCHEMA_RENDERERS = {
+    "lnpl-grammar.gbnf": render_gbnf,
+    "lnpl-grammar.json": lambda: json.dumps(grammar_json_document(), indent=2,
+                                            ensure_ascii=False,
+                                            sort_keys=True) + "\n",
+}
 
 SOURCE_CANON = "impl/lnpl/의 모듈 상수"
 
@@ -740,15 +751,17 @@ def render_all():
     return {name: fn() for name, fn in RENDERERS.items()}
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    check = "--check" in argv
-    rendered = render_all()
+def _sync(renderers, out_dir, check):
+    """Write or check one `{name: renderer}` registry against `out_dir`.
+
+    Returns the list of stale-file messages (empty when in sync).
+    """
+    rendered = {name: fn() for name, fn in renderers.items()}
     if not check:
-        os.makedirs(OUT_DIR, exist_ok=True)
+        os.makedirs(out_dir, exist_ok=True)
     stale = []
     for name, text in rendered.items():
-        path = os.path.join(OUT_DIR, name)
+        path = os.path.join(out_dir, name)
         if check:
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -761,6 +774,14 @@ def main(argv=None):
         else:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
+    return stale
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    check = "--check" in argv
+    stale = _sync(RENDERERS, OUT_DIR, check)
+    stale += _sync(SCHEMA_RENDERERS, SCHEMA_OUT_DIR, check)
     if check:
         if stale:
             for line in stale:
@@ -769,7 +790,8 @@ def main(argv=None):
                   file=sys.stderr)
             return 1
         return 0
-    print("wrote %d files to %s" % (len(rendered), OUT_DIR))
+    print("wrote %d files to %s" % (len(RENDERERS), OUT_DIR))
+    print("wrote %d files to %s" % (len(SCHEMA_RENDERERS), SCHEMA_OUT_DIR))
     return 0
 
 

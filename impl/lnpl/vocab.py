@@ -22,6 +22,7 @@ from lnpl.lower import (ARGUMENT_MECHANISMS, PERF_METRICS, POLICY_NAMES,
                         READ_VERBS, SECURITY_MECHANISMS, VALUELESS_PERF,
                         VERB_LEXICON)
 from lnpl.refinements import BASE_CATEGORY, CATEGORY_FACETS, PRESETS
+from lnpl.spec import EXPECTATIONS, GIVEN_FORMS
 from lnpl.types import SEMANTIC_TYPES
 
 
@@ -99,4 +100,11 @@ def vocabulary_document():
             {"code": code, "severity": SEVERITY_OF[code]} for code in CODES
         ],
         "reserved": list(RESERVED),
+        "spec_expectations": {
+            "expects": sorted(EXPECTATIONS),
+            "given_forms": [
+                {"id": key, "pattern": form, "doc": doc}
+                for key, form, doc in GIVEN_FORMS
+            ],
+        },
     }

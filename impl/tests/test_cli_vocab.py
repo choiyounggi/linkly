@@ -20,7 +20,8 @@ from lnpl.diagnostics import CODES
 from lnpl.vocab import vocabulary_document
 
 TOP_LEVEL_KEYS = {"lnpl_version", "verbs", "keywords", "types", "clauses",
-                  "enforcement", "diagnostics", "reserved"}
+                  "enforcement", "diagnostics", "reserved",
+                  "spec_expectations"}
 
 
 def _main(argv):
@@ -108,6 +109,17 @@ class TestCliVocab(unittest.TestCase):
         doc = json.loads(out)
         self.assertIsInstance(doc["reserved"], list)
         self.assertGreater(len(doc["reserved"]), 0)
+
+    def test_spec_expectations_carries_expects_and_given_forms(self):
+        rc, out, _err = _main(["vocab", "--json"])
+        self.assertEqual(rc, 0)
+        doc = json.loads(out)
+        spec_expectations = doc["spec_expectations"]
+        self.assertIn("completed", spec_expectations["expects"])
+        self.assertIn("steps", spec_expectations["expects"])
+        self.assertTrue(
+            any(form["id"] == "stored"
+                for form in spec_expectations["given_forms"]))
 
 
 if __name__ == "__main__":
