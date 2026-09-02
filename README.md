@@ -255,7 +255,12 @@ through the `lnpl.drivers` entry-points group and selected with
 package is [lnpl-postgres](https://github.com/choiyounggi/lnpl-postgres) — a
 PostgreSQL `RepositoryDriver` (psycopg 3) that runs this repo's TCK against a real
 postgres server in its own Testcontainers CI, per the "no binding without integration
-tests" rule ([issue #121](https://github.com/choiyounggi/linkly/issues/121)).
+tests" rule ([issue #121](https://github.com/choiyounggi/linkly/issues/121)). The
+cache-side counterpart is [lnpl-redis](https://github.com/choiyounggi/lnpl-redis) — a
+Redis `CacheDriver` (redis-py) registered under `lnpl.caches` and selected with
+`--cache redis:<url>`, running this repo's `CacheDriverTCK` against a real redis
+server in its own Testcontainers CI ([issue #143](https://github.com/choiyounggi/linkly/issues/143))
+— the first real user of RFC-0043's `cache_scope` self-report (`"shared"`).
 
 **48 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
