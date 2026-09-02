@@ -155,6 +155,7 @@ capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
 | retry-on-non-idempotent | warning | `capability http`가 `method post`/`patch`와 `retry`를 함께 선언했을 때 — 비멱등 메서드에 재시도를 걸면 효과가 중복될 수 있다 (issue #109) | 컴파일 타임 — lowering |
 | note-cap-exceeded | warning | 워크플로 하나에 `note`가 16개를 초과할 때 — "필요한 로그만"을 어휘 차원에서 지킨다 (issue #111) | 컴파일 타임 — lowering |
 | event-consume-cycle | warning | `event <E> consume by <W>`가 선언돼 있고, `W`(그 자식 워크플로 포함)가 결국 `E`를 다시 `emit`/`publish`할 때 — 런타임 무한 재디스패치의 정적 신호. 가드가 실제로는 그 경로를 막을 수 있어 에러가 아니라 경고다 (issue #118) | 컴파일 타임 — lowering, 모든 워크플로를 다 내린 뒤 |
+| predicate-not-pushed-down | info | `list where`/`order by`/`limit`이 있는 `list <Entity>`가 `supports_predicate`를 선언하지 않은 드라이버로 실행돼, 코어가 전체 행을 fetch한 뒤 로컬에서 필터/정렬/자르기를 했을 때 (issue #164) | 런타임 — 인터프리터 |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,

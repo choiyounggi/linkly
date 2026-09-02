@@ -436,7 +436,7 @@ TREE_CONTENTS = ("impl", "examples", "qa", "schemas", "scripts", "kb", "rfcs", "
                  "plans", "mlir", "CHARTER.md", ".venv",
                  "plugins", ".claude-plugin", "AGENTS.md", "CLAUDE.md",
                  "pyproject.toml", "README.md", "README.ko.md",
-                 "CHANGELOG.md", ".github")
+                 "CHANGELOG.md", ".github", "benchmarks")
 
 
 def make_tree(dest):

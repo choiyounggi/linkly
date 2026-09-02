@@ -104,6 +104,10 @@
       {
         "code": "event-consume-cycle",
         "severity": "warning"
+      },
+      {
+        "code": "predicate-not-pushed-down",
+        "severity": "info"
       }
     ],
     "enforcement": [

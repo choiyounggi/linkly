@@ -59,6 +59,7 @@ CODES = (
     "retry-on-non-idempotent",      # #109 `capability http` declares `method post`/`patch` together with `retry`
     "note-cap-exceeded",            # #111 a workflow has more than NOTE_CAP `note` annotations
     "event-consume-cycle",          # #118 `consume by` + that workflow's own `emit` reaches the event again
+    "predicate-not-pushed-down",    # issue #164  list where ran against a driver that does not declare supports_predicate
 )
 
 # code -> grade (#52). One question decides every row:
@@ -141,6 +142,10 @@ SEVERITY_OF = {
     # `warning`, not `info`: breaking the cycle (drop the `consume by`, or the
     # `emit`) is an edit the author can make, same test as `unknown-verb`.
     "event-consume-cycle":      "warning",
+    # issue #164: a driver deployment characteristic, not a program bug — no
+    # program edit removes this, only configuring a driver with
+    # `supports_predicate = True` does. Same test as `declared-not-enforced`.
+    "predicate-not-pushed-down": "info",
 }
 
 
@@ -167,6 +172,7 @@ HINTS = {
     "retry-on-non-idempotent": "Drop `retry`, switch to an idempotent method, or pair it with an idempotency key so a retried call cannot duplicate its effect.",
     "note-cap-exceeded": "Trim this workflow's `note` annotations below NOTE_CAP.",
     "event-consume-cycle": "Break the cycle — drop the `consume by`, or the `emit` that re-triggers it — unless a guard inside the consuming workflow is known to stop it at runtime.",
+    "predicate-not-pushed-down": "No program edit removes this — the deployed repository driver does not declare supports_predicate; the core over-fetches then filters locally. See docs/cost-model.md's list_where_no_pushdown row for the resulting complexity, or configure a driver with supports_predicate = True if lower transfer volume matters.",
 }
 
 

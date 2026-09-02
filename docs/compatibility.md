@@ -50,7 +50,7 @@ breaking change의 고지 방식은 전부 동일하다: 릴리스 태그의
 
 `hint`(이슈 #165)는 `code`에 대한 구체적인 수리 지침이다 — 코드에 지침이
 있으면 `str`, 없으면 `null`이며, 다른 선택 키(`line`)와 같은 생략-금지
-규칙을 따라 모든 레코드에 항상 존재한다. 18개 코어 `CODES` 전수가 지침을
+규칙을 따라 모든 레코드에 항상 존재한다. 19개 코어 `CODES` 전수가 지침을
 갖고, `lnpl.diagnostics` 확장(RFC-0042)도 자신의 코드 등록 메타에 선택적
 `"hint"`를 실어 같은 메커니즘을 쓸 수 있다(선언하지 않으면 `null`). RFC-0043
 드라이버-enforcement 브리지(`capabilities.enforcement_diagnostic_records()`)
