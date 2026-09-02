@@ -35,10 +35,11 @@ jobs:
           # exercises its mode-B half, so it must NOT gain a skipUnless guard —
           # that would let the coverage evaporate silently on any machine
           # without the toolchain (see AGENTS.md's note on mode B failures).
-          # This runner does not install that toolchain in phase 1 of issue
-          # #141, so the module is excluded here instead — loudly, by name.
-          # Remove this exclusion once a mode-B toolchain CI job exists.
-          echo "excluded from CI discovery (mode B toolchain unavailable, issue #141 phase 1): tests.test_repo_state"
+          # This job's legs have no mode-B toolchain either, so test_repo_state
+          # stays excluded here — but it is no longer uncovered: ci.yml's
+          # modeb-linux job installs the pinned LLVM/MLIR toolchain and runs it
+          # directly (issue #161).
+          echo "excluded from CI discovery (no mode-B toolchain on this job's legs — covered by ci.yml's modeb-linux job instead, issue #161): tests.test_repo_state"
           PYTHONPATH=impl python3 <<'PY'
           import os
           import sys

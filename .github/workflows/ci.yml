@@ -37,10 +37,11 @@ jobs:
           # exercises its mode-B half, so it must NOT gain a skipUnless guard —
           # that would let the coverage evaporate silently on any machine
           # without the toolchain (see AGENTS.md's note on mode B failures).
-          # This runner does not install that toolchain in phase 1 of issue
-          # #141, so the module is excluded here instead — loudly, by name.
-          # Remove this exclusion once a mode-B toolchain CI job exists.
-          echo "excluded from CI discovery (mode B toolchain unavailable, issue #141 phase 1): tests.test_repo_state"
+          # This job's legs (py3.11/3.12/3.13) have no mode-B toolchain on any
+          # of them, so test_repo_state stays excluded here — but it is no
+          # longer uncovered: the modeb-linux job below installs the pinned
+          # LLVM/MLIR toolchain and runs it directly (issue #161).
+          echo "excluded from CI discovery (no mode-B toolchain on this job's legs — covered by the modeb-linux job instead, issue #161): tests.test_repo_state"
           PYTHONPATH=impl python3 <<'PY'
           import os
           import sys
@@ -73,6 +74,42 @@ jobs:
 
       - name: Doc snippet compile gate
         run: python scripts/check_doc_snippets.py
+
+  modeb-linux:
+    name: modeb-linux (test_repo_state under real mode B)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Derive pinned LLVM major version
+        run: |
+          LLVM_MAJOR="$(awk '{print $2}' mlir/llvm.pin | cut -d. -f1)"
+          [ -n "$LLVM_MAJOR" ] || { echo "could not parse mlir/llvm.pin" >&2; exit 1; }
+          echo "LLVM_MAJOR=$LLVM_MAJOR" >> "$GITHUB_ENV"
+
+      # No actions/cache step here on purpose: issue #161 measured the
+      # apt.llvm.org install path as faster without caching than with it.
+      - name: Install pinned LLVM/MLIR toolchain (apt.llvm.org)
+        run: |
+          wget -qO "$RUNNER_TEMP/llvm.gpg.key" https://apt.llvm.org/llvm-snapshot.gpg.key
+          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg < "$RUNNER_TEMP/llvm.gpg.key"
+          CODENAME="$(lsb_release -cs)"
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/$CODENAME/ llvm-toolchain-$CODENAME-$LLVM_MAJOR main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "clang-$LLVM_MAJOR" "mlir-$LLVM_MAJOR-tools" "libmlir-$LLVM_MAJOR-dev"
+
+      - name: Export LNPL_LLVM_BIN
+        run: echo "LNPL_LLVM_BIN=/usr/lib/llvm-$LLVM_MAJOR/bin" >> "$GITHUB_ENV"
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install .
+
+      - name: Test suite (mode B, test_repo_state only — issue #161)
+        run: PYTHONPATH=impl python3 -m unittest tests.test_repo_state -v
 
   lint:
     name: lint (ruff)

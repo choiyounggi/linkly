@@ -59,9 +59,10 @@ CHANGELOG, 릴리스 노트 본문)와, 자동화가 실패했을 때의 로컬 
 - 과거 5개 릴리스(v0.1.0–v0.5.0)의 소급 CHANGELOG 작성 근거는
   `gh release view <tag>`이며, [CHANGELOG.md](../CHANGELOG.md) 상단에
   같은 원칙이 적혀 있다.
-- `ci.yml`·`release.yml`은 `impl/tests/test_repo_state.py`를 discovery에서
-  모듈명으로 명시 제외한다 — 그 파일은 issue #35의 최외곽 회귀라 mode B
-  MLIR/LLVM 툴체인 없이는 무의미하고, 자기 docstring에 "never skips, on
-  purpose"라고 적혀 있어 skipUnless 가드를 달지 않는다(issue #141 1단계에는
-  이 CI가 그 툴체인을 설치하지 않는다). 후속 mode-B 툴체인 CI 잡이 생기면
-  이 제외를 제거한다.
+- `ci.yml`의 `gate`·`release.yml`의 `gates`는 `impl/tests/test_repo_state.py`를
+  discovery에서 모듈명으로 명시 제외한다 — 그 파일은 issue #35의 최외곽
+  회귀라 mode B MLIR/LLVM 툴체인 없이는 무의미하고, 자기 docstring에 "never
+  skips, on purpose"라고 적혀 있어 skipUnless 가드를 달지 않는다. 이 두 잡의
+  러너에는 여전히 그 툴체인이 없어 제외가 남아 있지만, 더는 커버리지가
+  비어 있지 않다: `ci.yml`의 `modeb-linux` 잡이 핀 버전 LLVM/MLIR 툴체인을
+  설치하고 `test_repo_state`를 직접 돌린다(issue #161).
