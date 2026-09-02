@@ -15,6 +15,7 @@ the source is the truth, so a flag added and never documented fails here.
 
 import ast
 import os
+import re
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -61,6 +62,17 @@ def read_doc():
         return fh.read()
 
 
+def heading_lines(text):
+    """Only the `#`-prefixed lines — a name in body prose does not count.
+
+    Without this, a subcommand mentioned in passing inside an unrelated
+    section's paragraph (e.g. "이 references/의 grammar·verbs·... 넷을
+    생성한다") satisfies a plain substring check by coincidence, with no
+    dedicated section actually documenting it (t162 r1 F1)."""
+    return "\n".join(line for line in text.split("\n")
+                     if line.lstrip().startswith("#"))
+
+
 class ExtractorTest(unittest.TestCase):
     """The negative controls: an extractor that finds nothing must not pass."""
 
@@ -103,15 +115,38 @@ class ExtractorTest(unittest.TestCase):
                 fh.read()
 
 
+class HeadingScopeTest(unittest.TestCase):
+    """반증 컨트롤: 부분 문자열 우연 통과가 실제로 막히는지 증명한다.
+
+    t162 r1 F1 — `grammar`는 자기 절이 없이도 `vocab` 절 본문의 무관한
+    문장("이 references/의 grammar·verbs·... 넷을 생성한다") 속 부분 문자열
+    우연으로 `test_every_subcommand_is_documented`를 통과하고 있었다."""
+
+    def test_a_name_mentioned_only_in_body_prose_is_not_a_match(self):
+        prose_only = ("### `vocab` — 벤더 중립 어휘 매니페스트\n\n"
+                      "이 references/의 grammar·verbs 넷을 생성한다.\n")
+        headings = heading_lines(prose_only)
+        self.assertIsNone(re.search(r"\bgrammar\b", headings))
+
+    def test_a_name_with_its_own_heading_is_a_match(self):
+        with_heading = "### `grammar` — 닫힌 어휘를 GBNF/JSON으로\n\n본문.\n"
+        headings = heading_lines(with_heading)
+        self.assertIsNotNone(re.search(r"\bgrammar\b", headings))
+
+
 class DocumentCoverageTest(unittest.TestCase):
     def test_the_document_exists(self):
         self.assertTrue(os.path.isfile(DOC), "cli-surface.md가 없다")
 
     def test_every_subcommand_is_documented(self):
+        # Scoped to heading lines only (not "anywhere in the file") — a name
+        # that only coincides with unrelated body prose must not pass.
         subcommands, _ = parse_cli_surface()
-        text = read_doc()
-        missing = sorted(name for name in subcommands if name not in text)
-        self.assertEqual(missing, [], "문서에 없는 서브커맨드: %s" % missing)
+        headings = heading_lines(read_doc())
+        missing = sorted(name for name in subcommands
+                         if not re.search(r"\b%s\b" % re.escape(name), headings))
+        self.assertEqual(missing, [],
+                         "문서에 헤딩(### ...)으로 없는 서브커맨드: %s" % missing)
 
     def test_every_long_option_is_documented(self):
         _, options = parse_cli_surface()

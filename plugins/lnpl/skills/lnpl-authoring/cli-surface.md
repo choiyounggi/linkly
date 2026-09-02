@@ -365,6 +365,18 @@ status completed
 `scripts/gen_plugin_references.py`(이 references/의 grammar·verbs·
 declarations·types 넷을 생성한다)가 같은 함수를 공유한다.
 
+### `grammar` — 닫힌 어휘를 GBNF/JSON 문법 아티팩트로 (issue #162)
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--format` | `gbnf` \| `json` (기본값 `json`) |
+
+`schemas/lnpl-grammar.gbnf`/`schemas/lnpl-grammar.json`과 바이트 동일한 내용을
+라이브로 낸다 — constrained decoding 파이프라인이 재생성 없이 그대로 받아
+쓴다. 정본 함수는 `impl/lnpl/grammar.py`의 `render_gbnf()`/
+`grammar_json_document()`이고, `scripts/gen_plugin_references.py`의
+`SCHEMA_RENDERERS`(`schemas/lnpl-grammar.gbnf`/`.json`)가 같은 함수를 공유한다.
+
 ### `capabilities` — 설치 확장 카탈로그 (issue #134)
 
 | 플래그 | 뜻 |
