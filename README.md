@@ -260,7 +260,12 @@ cache-side counterpart is [lnpl-redis](https://github.com/choiyounggi/lnpl-redis
 Redis `CacheDriver` (redis-py) registered under `lnpl.caches` and selected with
 `--cache redis:<url>`, running this repo's `CacheDriverTCK` against a real redis
 server in its own Testcontainers CI ([issue #143](https://github.com/choiyounggi/linkly/issues/143))
-— the first real user of RFC-0043's `cache_scope` self-report (`"shared"`).
+— the first real user of RFC-0043's `cache_scope` self-report (`"shared"`). The
+trace-side counterpart is [lnpl-otel](https://github.com/choiyounggi/lnpl-otel) — a
+`TraceExporter` shipping completed workflow traces over OTLP, registered under
+`lnpl.exporters` and selected with `--trace-exporter otlp`, verified against a real
+otel-collector in its own Testcontainers CI
+([issue #144](https://github.com/choiyounggi/linkly/issues/144)).
 
 **48 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on

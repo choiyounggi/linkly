@@ -586,14 +586,21 @@ built-in 밖의 이름은 `lnpl.exporters` entry-points 그룹에서 찾는다 �
 `lnpl.drivers`(이슈 #75, `docs/backends.md` §8)와 같은 모양:
 
 ```toml
-# 외부 패키지 자신의 pyproject.toml
+# lnpl-otel 자신의 pyproject.toml
 [project.entry-points."lnpl.exporters"]
-otlp = "my_otlp_exporter:OtlpExporter"
+otlp = "lnpl_otel:make_exporter"
 ```
 
-`OtlpExporter`는 인자 없이 호출되는 팩토리(클래스면 생성자가 인자를 받지
+`make_exporter`는 인자 없이 호출되는 팩토리(클래스면 생성자가 인자를 받지
 않는다)여야 하고, 반환값은 `TraceExporter`를 상속해 `export(trace_dict)`를
 구현해야 한다.
+
+이 모양의 실사례가 [`lnpl-otel`](https://github.com/choiyounggi/lnpl-otel)이다
+(이슈 #144) — `otlp = "lnpl_otel:make_exporter"`로 등록하는 `TraceExporter`이고,
+`OTEL_SERVICE_NAME`이 없으면 `ExporterError`로 기동을 거부하며 OTLP로 완료된
+워크플로 trace를 전송하고, 자기 Testcontainers CI가 실 otel-collector로
+grpc·http 수신을 각각 검증한다(span↔OTel semconv 매핑 정본은 그 레포
+`docs/semconv-mapping.md`).
 
 #### 내장 스킴은 절대 가려지지 않는다
 
@@ -603,7 +610,7 @@ otlp = "my_otlp_exporter:OtlpExporter"
 
 #### 미등록 이름의 진단
 
-`--trace-exporter otlp`인데 아무 패키지도 그 이름을 등록하지 않았으면
+`--trace-exporter jaeger`인데 아무 패키지도 그 이름을 등록하지 않았으면
 `ValueError`가 받은 값과 내장/등록된 이름 전체를 담아 나가고, CLI 경로는
 이를 rc 2로 번역한다(`cli._open_trace_exporter`).
 
