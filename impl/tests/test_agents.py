@@ -112,6 +112,50 @@ class TestCoderRestraint(unittest.TestCase):
                          [t["task"]["task_id"] for t in second])
 
 
+# Two workflows share a step's text ("load order"). Beta reaches its copy
+# through a Pipeline container, so this also exercises the recursive
+# containment walk (issue #159 D3) rather than only direct children.
+AMBIGUOUS_STEP_DOC = {
+    "lir_version": "0.1", "module": "orders",
+    "nodes": [
+        {"kind": "Workflow", "id": "wf.alpha", "name": "Alpha",
+         "children": ["wf.alpha.step.1"]},
+        {"kind": "WorkflowStep", "id": "wf.alpha.step.1", "name": "load order"},
+        {"kind": "Workflow", "id": "wf.beta", "name": "Beta",
+         "children": ["wf.beta.pipeline.1"]},
+        {"kind": "Pipeline", "id": "wf.beta.pipeline.1", "name": "persist",
+         "children": ["wf.beta.step.1", "wf.beta.step.2"]},
+        {"kind": "WorkflowStep", "id": "wf.beta.step.1", "name": "load order"},
+        {"kind": "WorkflowStep", "id": "wf.beta.step.2", "name": "notify user"},
+    ],
+}
+
+
+class TestStepNodeAmbiguity(unittest.TestCase):
+    """`_step_node_for` must not silently pick a workflow when the step text
+    it is asked for is shared — issue #159, resolve.py's "does not guess,
+    refuses" rule."""
+
+    def setUp(self):
+        self.server = Server(json.loads(json.dumps(AMBIGUOUS_STEP_DOC)),
+                             KnowledgeBase())
+        self.coder = Coder(self.server)
+
+    def test_a_step_unique_to_one_workflow_still_resolves(self):
+        node = self.coder._step_node_for("notify user")
+        self.assertEqual(node["id"], "wf.beta.step.2")
+
+    def test_a_step_shared_by_two_workflows_is_refused_not_guessed(self):
+        with self.assertRaises(RpcError) as ctx:
+            self.coder._step_node_for("load order")
+        self.assertEqual(ctx.exception.type, "ambiguous_step")
+        self.assertIn("Alpha", str(ctx.exception))
+        self.assertIn("Beta", str(ctx.exception))
+
+    def test_a_step_present_nowhere_returns_none(self):
+        self.assertIsNone(self.coder._step_node_for("no such step"))
+
+
 class TestReviewerJudgment(unittest.TestCase):
     """The Reviewer decides for itself. A reviewer that only echoes its caller
     turns the two-stage approval `ir.propose` buys into a rubber stamp."""
