@@ -12,11 +12,13 @@ from lnpl.money import (
     CURRENCY_EXPONENT,
     MoneyCurrencyMismatchError,
     MoneyEncodePrecisionError,
+    MoneyLiteralScaleError,
     add,
     avg_round,
     compare,
     encode_money,
     exponent,
+    parse_money_literal,
 )
 
 
@@ -197,6 +199,73 @@ class SameCurrencyCompareAndAddTest(unittest.TestCase):
             add((100, "USD"), (100, "EUR"))
 
         self.assertEqual("money-currency-mismatch", ctx.exception.code)
+
+
+class ParseMoneyLiteralTest(unittest.TestCase):
+    """RFC-0044 §Reference-level Specification/3 — `parse_money_literal(token)`.
+    생산 규칙 불일치는 None, 자릿수 위반은 MoneyLiteralScaleError, 성공은
+    와이어 dict `{"amount": ..., "currency": ...}`."""
+
+    # (정상) exponent 2 통화의 소수 두 자리.
+    def test_parses_normal_two_decimal_literal(self):
+        self.assertEqual(
+            {"amount": "100.50", "currency": "USD"},
+            parse_money_literal("100.50USD"))
+
+    # (경계) exponent 0 통화는 정수만, 소수점 없이.
+    def test_parses_exponent_zero_integer_literal(self):
+        self.assertEqual(
+            {"amount": "100", "currency": "JPY"},
+            parse_money_literal("100JPY"))
+
+    # (경계) exponent 3 통화는 소수 세 자리.
+    def test_parses_exponent_three_literal(self):
+        self.assertEqual(
+            {"amount": "1.500", "currency": "BHD"},
+            parse_money_literal("1.500BHD"))
+
+    # (경계) 생산 규칙과 아예 형태가 다른 토큰은 None — 호출부가 raw 문자열로
+    # 폴백할 수 있게(하위호환), 예외를 던지지 않는다.
+    def test_non_matching_token_shape_returns_none(self):
+        self.assertIsNone(parse_money_literal("hello"))
+        self.assertIsNone(parse_money_literal("USD100"))
+        self.assertIsNone(parse_money_literal("100.5.6USD"))
+        self.assertIsNone(parse_money_literal(""))
+        self.assertIsNone(parse_money_literal("100US"))
+        self.assertIsNone(parse_money_literal("100usd"))
+
+    # (경계) RFC-0015 §1 "리터럴은 부호가 없다" — 부호 있는 토큰은 생산
+    # 규칙 불일치로 None(부호 없는 리터럴만 유효한 MoneyLiteral).
+    def test_signed_token_returns_none(self):
+        self.assertIsNone(parse_money_literal("-100USD"))
+        self.assertIsNone(parse_money_literal("+100USD"))
+
+    # (에러) 소수 자릿수가 exponent보다 적다 — 반올림하지 않고 거부.
+    def test_scale_violation_too_few_places_raises(self):
+        with self.assertRaises(MoneyLiteralScaleError) as ctx:
+            parse_money_literal("100.5USD")
+
+        self.assertEqual("money-literal-scale", ctx.exception.code)
+
+    # (에러) 소수 자릿수가 exponent보다 많다 — 반올림하지 않고 거부.
+    def test_scale_violation_too_many_places_raises(self):
+        with self.assertRaises(MoneyLiteralScaleError) as ctx:
+            parse_money_literal("100.500USD")
+
+        self.assertEqual("money-literal-scale", ctx.exception.code)
+
+    # (에러) exponent 0 통화에 소수점 자체가 있으면 거부.
+    def test_exponent_zero_with_decimal_point_raises(self):
+        with self.assertRaises(MoneyLiteralScaleError) as ctx:
+            parse_money_literal("100.00JPY")
+
+        self.assertEqual("money-literal-scale", ctx.exception.code)
+
+    # (에러) 형태는 alpha-3이지만 활성 ISO 4217 코드가 아닌 통화 — 기존
+    # exponent()의 검증을 그대로 물려받는다.
+    def test_inactive_currency_code_raises(self):
+        with self.assertRaises(MoneyEncodePrecisionError):
+            parse_money_literal("100XYZ")
 
 
 if __name__ == "__main__":

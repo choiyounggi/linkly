@@ -19,6 +19,7 @@ Manifest shape:
 
 import re
 
+from . import money
 from .drivers import FakeNetworkDriver
 from .interp import Interpreter, RunError, refinement_index, sample_payload
 from .lexer import COMPARATORS
@@ -73,6 +74,8 @@ def extract(decls, module_name):
             # stage that reads one (r1 F-8 — `lnpl spec` without `--run` wrote a
             # manifest of unrunnable cases and said nothing).
             _validate_given(given, decls, "workflow %s: %s: " % (d.name, label))
+            _validate_expect_money(
+                expect, decls, "workflow %s: %s: " % (d.name, label))
             name = ("%s spec" % d.name if len(blocks) == 1
                     else "%s spec %d" % (d.name, i))
             cases.append({"name": name,
@@ -166,10 +169,49 @@ def _expect_result(phrase, result, _interp):
         raise SpecError("`result` needs a reference and a check: %r" % phrase)
     try:
         ok = _condition_holds(text, result.get("payload", {}),
-                              result.get("bindings", {}))
+                              result.get("bindings", {}),
+                              money_fields=_money_field_predicate(_interp.doc))
     except (ConditionError, RunError) as exc:
         raise SpecError("unsupported result expectation %r: %s" % (phrase, exc))
     return ok, "%s -> %s" % (text, ok)
+
+
+def _money_field_predicate(document):
+    """`ref spelling -> bool` for `_condition_holds`'s `money_fields` param
+    (RFC-0044 §3's `expect result` gate). A qualified ref (`product.price`)
+    resolves against that entity's own field; a bare ref (`price`) resolves
+    against the input-namespace union (RFC-0015 §G15.2 — the same scope
+    `_typed_value`'s caller builds `field_types` from): a name two entities
+    declare takes the LAST declaration's type. One-level refinement
+    resolution via `interp.refinement_index`, matching `_typed_value`'s own
+    `base == "Money"` pattern (D3(1)).
+    """
+    entities = [n for n in document.get("nodes", []) if n["kind"] == "Entity"]
+    refinements = refinement_index(document)
+
+    def base_of(type_name):
+        entry = refinements.get(type_name)
+        return entry["base"] if entry else type_name
+
+    by_name = {e.get("name"): e for e in entities}
+    by_binding = {binding_name(e): e for e in entities}
+    union_type = {}
+    for e in entities:
+        for f in e.get("fields", []):
+            union_type[f["name"]] = base_of(f["type"])
+
+    def predicate(ref):
+        head, sep, tail = ref.partition(".")
+        if not sep:
+            return union_type.get(ref) == "Money"
+        entity = by_name.get(head) or by_binding.get(head)
+        if entity is None:
+            return union_type.get(tail) == "Money"
+        field = next((f for f in entity.get("fields", []) if f["name"] == tail),
+                     None)
+        return field is not None and base_of(field["type"]) == "Money"
+
+    return predicate
 
 
 def _entity_id_for(interp, name):
@@ -486,16 +528,147 @@ def _validate_given(given, decls, where):
     The runner used to be the first stage that looked at a `given` at all, so
     `lnpl spec source.lnpl` wrote a manifest full of cases that could never run
     and said nothing. Everything checkable without the IR is checked here.
+
+    RFC-0044 §3: a `given`/`stored` line targeting a Money field is also
+    checked here for the MoneyLiteral production rule and exact-scale rule
+    (D5's manifest-stage compile reject) — `_check_given_money_literal`.
     """
     schema = _schema_from_decls(decls)
+    per_entity, union_type = _money_field_base_map(decls)
     for phrase in given:
-        _check_given(phrase, schema, where)
+        form, parts = _check_given(phrase, schema, where)
+        _check_given_money_literal(form, parts, per_entity, union_type, where)
     if (any(_check_given(p, schema, where)[0] in ("stored", "stored-indexed")
            for p in given)
             and any(p == "empty repository" for p in given)):
         raise SpecError(
             where + "`empty repository` and `stored ...` contradict each other: "
             "there is no row to store into an empty store. Drop one.")
+
+
+def _validate_expect_money(expect, decls, where):
+    """RFC-0044 §3/D5: `expect result <ref> <op> <value>` lines whose `ref`
+    statically resolves (via `decls` alone — `extract` never has a document)
+    to a declared Money field get their `<value>` token checked against the
+    MoneyLiteral production/scale rule at manifest time, same as `given`.
+
+    Only a token that itself looks like an attempted MoneyLiteral (matches
+    money.py's production rule) but fails the scale rule raises — a
+    non-matching shape is not flagged here, because `<value>` in `expect
+    result` can also be a `Ref` (comparing two Money fields), which RFC-0044
+    §3 leaves untouched (`Value`'s `Ref`/`Arith` alternatives are unaffected).
+    Whether the comparator itself is legal for Money (`==`/`!=` only) is
+    `interp._condition_holds`'s job at run time (D4) — this checks value
+    shape/scale only.
+    """
+    per_entity, union_type = _money_field_base_map(decls)
+    for phrase in expect:
+        tokens = phrase.split()
+        if len(tokens) != 4 or tokens[0] != "result" or tokens[2] not in COMPARATORS:
+            continue
+        ref, value = tokens[1], tokens[3]
+        if _is_money_ref(ref, per_entity, union_type):
+            _check_money_literal_if_shaped(value, where)
+
+
+def _money_field_base_map(decls):
+    """Two decls-only views of "which declared field is Money" — `extract`
+    never has an IR document (`_check_given`'s own note: "types don't reach
+    the manifest stage"), so this resolves types straight from parsed decls.
+    One-level refinement resolution (a `refine` decl's own `of <Base>`), the
+    same shape `interp.refinement_index` produces from the lowered IR;
+    `refinements.PRESETS` has no Money-based preset today, so this fully
+    replicates what lowering would resolve a field's base to.
+
+    Returns `(per_entity, union_type)`:
+    - `per_entity`: `{entity decl name or binding name: frozenset(money field
+      names)}`, for an entity-scoped ref (`stored <Entity> <field> ...`,
+      `product.price`).
+    - `union_type`: `{field name: resolved base type}`, input-namespace scope
+      (RFC-0015 §G15.2) — a name two entities declare takes the LAST
+      declaration's type, matching `_payload_from_given`'s own `field_types`
+      construction. Used for a bare `given`/`expect` ref.
+    """
+    bases = {d.name: d.extra.get("base") for d in decls if d.kind == "refine"}
+    per_entity = {}
+    union_type = {}
+    for d in decls:
+        if d.kind != "entity":
+            continue
+        money_fields = set()
+        for line in d.clauses.get("field", []):
+            if len(line.tokens) < 2:
+                continue
+            field_name, type_name = line.tokens[0], line.tokens[1]
+            base = bases.get(type_name, type_name)
+            union_type[field_name] = base
+            if base == "Money":
+                money_fields.add(field_name)
+        per_entity[d.name] = frozenset(money_fields)
+        per_entity[binding_name({"name": d.name})] = frozenset(money_fields)
+    return per_entity, union_type
+
+
+def _is_money_ref(ref, per_entity, union_type):
+    """Whether `ref` (bare `price` or qualified `product.price`) names a
+    Money field, per `_money_field_base_map`'s two views."""
+    head, sep, tail = ref.partition(".")
+    if not sep:
+        return union_type.get(ref) == "Money"
+    if head in per_entity:
+        return tail in per_entity[head]
+    return union_type.get(tail) == "Money"
+
+
+def _check_given_money_literal(form, parts, per_entity, union_type, where):
+    """RFC-0044 §3's compile-reject for a `given`/`stored` line's `<value>`
+    token, when the target field's declared type base is Money (D5). A
+    `given`/`stored` `<value>` is always a literal (never a `Ref`), so an
+    unrecognized shape is itself the error here — unlike the `expect result`
+    check (`_validate_expect_money`), which must tolerate a `Ref` RHS.
+    """
+    if form == "stored":
+        ent_name, field, value = parts
+        if field in per_entity.get(ent_name, frozenset()):
+            _money_literal_or_raise(value, where)
+    elif form == "stored-indexed":
+        ent_name, _index, field, value = parts
+        if field in per_entity.get(ent_name, frozenset()):
+            _money_literal_or_raise(value, where)
+    elif form in ("input-field", "field"):
+        name, value = parts
+        if union_type.get(name) == "Money":
+            _money_literal_or_raise(value, where)
+
+
+def _money_literal_or_raise(text, where=""):
+    """Parse a MoneyLiteral token or raise `SpecError` — RFC-0044 §3's
+    compile reject, shared by every `given`/`stored` site and the runtime
+    seeding sites (`_typed_value`, the `stored`/`stored-indexed` transforms)
+    that target a Money field. Used where `<value>` is always a literal.
+    """
+    try:
+        parsed = money.parse_money_literal(text)
+    except money.MoneyError as exc:
+        raise SpecError(where + str(exc))
+    if parsed is None:
+        raise SpecError(
+            where + "%r is not a valid Money literal — expected "
+            "<integer>[.<digits>]<currency>, e.g. 100.50USD" % (text,))
+    return parsed
+
+
+def _check_money_literal_if_shaped(text, where=""):
+    """Same MoneyLiteral validation as `_money_literal_or_raise`, for an
+    `expect result` RHS slot that can also legally be a `Ref`. A shape that
+    does not match the production rule at all is not an error here (it may
+    be a `Ref`, e.g. comparing two Money fields) — only a token that DOES
+    look like an attempted MoneyLiteral but fails the scale rule raises.
+    """
+    try:
+        money.parse_money_literal(text)
+    except money.MoneyError as exc:
+        raise SpecError(where + str(exc))
 
 
 def _payload_from_given(given, entity_node, refinements=None, document=None):
@@ -562,7 +735,10 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
         elif form == "stored":
             ent_name, field, value = parts
             target = by_name.get(ent_name) or by_binding[ent_name]
-            stored.setdefault(target["id"], {})[field] = _coerce(value)
+            base = _entity_field_base(target, field, refinements)
+            stored.setdefault(target["id"], {})[field] = (
+                _money_literal_or_raise(value) if base == "Money"
+                else _coerce(value))
         elif form in ("input-field", "field"):
             # Integer-shaped fields coerce; everything else keeps the raw
             # string so `name 42` stays a valid Text (the pre-#39 contract).
@@ -598,6 +774,7 @@ def _indexed_seeds_from_given(given, document):
     schema = _schema_from_nodes(entities)
     by_name = {e.get("name"): e for e in entities}
     by_binding = {binding_name(e): e for e in entities}
+    refinements = refinement_index(document) if document else {}
     seeds = {}
     for phrase in given:
         form, parts = _check_given(phrase, schema)
@@ -605,8 +782,9 @@ def _indexed_seeds_from_given(given, document):
             continue
         ent_name, index, field, value = parts
         target = by_name.get(ent_name) or by_binding[ent_name]
-        seeds.setdefault(target["id"], {}).setdefault(index, {})[field] = \
-            _coerce(value)
+        base = _entity_field_base(target, field, refinements)
+        seeds.setdefault(target["id"], {}).setdefault(index, {})[field] = (
+            _money_literal_or_raise(value) if base == "Money" else _coerce(value))
     return seeds
 
 
@@ -652,12 +830,33 @@ def _typed_value(text, type_name, refinements):
     type whose check is an isinstance, so it is the one a raw string can never
     satisfy. A non-numeric string is left raw and fails validation loudly
     rather than being reinterpreted.
+
+    Money-shaped fields (RFC-0044 §3, D3(1)) parse the token as a
+    MoneyLiteral into the wire dict instead — `_validate_given` already
+    rejects a malformed one at manifest time in the normal `extract` ->
+    `run_manifest` pipeline; this also raises directly (`_money_literal_or_raise`)
+    for the direct-call paths that skip that gate (several test call sites
+    build a payload from `_payload_from_given` without going through
+    `extract` first).
     """
     refinement = None if refinements is None else refinements.get(type_name)
     base = refinement["base"] if refinement else type_name
     if base == "Integer" and text.lstrip("-").isdigit():
         return int(text)
+    if base == "Money":
+        return _money_literal_or_raise(text)
     return text
+
+
+def _entity_field_base(entity, field, refinements):
+    """`field`'s resolved base type on `entity` (an IR Entity node) — one
+    refinement lookup, the same pattern `_typed_value` already applies to its
+    own `type_name`. Used by the `stored`/`stored-indexed` transforms, which
+    are entity-scoped (unlike `_typed_value`'s input-namespace union)."""
+    type_name = next((f["type"] for f in entity.get("fields", [])
+                      if f["name"] == field), None)
+    entry = refinements.get(type_name) if refinements else None
+    return entry["base"] if entry else type_name
 
 
 def _coerce(text):

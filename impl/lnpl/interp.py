@@ -726,7 +726,8 @@ def _resolve_predicate_value(value, payload, bindings, caller=None):
     raise RunError("unknown predicate value type: %r" % (value,))
 
 
-def _condition_holds(condition, payload, bindings, collector=None, caller=None):
+def _condition_holds(condition, payload, bindings, collector=None, caller=None,
+                      money_fields=None):
     """Mode A condition evaluation: Presence + Comparison.
 
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
@@ -743,9 +744,45 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None):
     `{"ref", "value", "op", "expected", "holds"}` entry to it — the trace guard
     skips carry as `evaluations`. `None` collects nothing, so every existing
     call site (`differential.py`, `spec.py`, the tests) is unaffected.
+
+    `money_fields` (RFC-0044 §3, optional, default `None`): a predicate
+    `ref -> bool` — only `spec._expect_result` passes one, so guard evaluation
+    (`when`/`until`) never does and RFC-0044 §3's "MoneyLiteral never appears
+    in an Operand position" stays true for guards. When given, and `condition`
+    is exactly `<ref> <op> <value>` with `<value>` MoneyLiteral-shaped
+    (`money.parse_money_literal`) and `money_fields(ref)` true, this evaluates
+    the comparison directly — `==`/`!=` as structural wire-dict equality
+    (RFC-0044 §3's exact-scale rule makes the two sides' normal form agree);
+    any other comparator raises `RunError`, since RFC-0044 §5's order
+    evaluator's only caller is RFC-0045's sum/avg/min/max, not `expect
+    result`. `MoneyLiteral` is not in `condition.py`'s `Value` grammar at all
+    (RFC-0044 §3), so this must run BEFORE `parse_condition` below, which
+    would otherwise raise `ConditionError` on the literal token. Every other
+    shape (a non-money ref, a non-money-literal-shaped value, no `money_fields`
+    at all) falls through unchanged to the existing path.
     """
     if condition is None:
         return True
+
+    if money_fields is not None:
+        from . import money
+        from .lexer import COMPARATORS
+
+        tokens = condition.split()
+        if len(tokens) == 3 and tokens[1] in COMPARATORS and money_fields(tokens[0]):
+            ref, op, value_token = tokens
+            try:
+                parsed = money.parse_money_literal(value_token)
+            except money.MoneyError as exc:
+                raise RunError(str(exc))
+            if parsed is not None:
+                if op not in ("==", "!="):
+                    raise RunError(
+                        "Money order comparisons (%s) are not supported in "
+                        "`expect result` — only sum/avg/min/max evaluate "
+                        "Money order (RFC-0044 §5); use == or != instead." % op)
+                actual = resolve_reference(ref, payload, bindings, caller)
+                return (actual == parsed) if op == "==" else (actual != parsed)
 
     # Import here to avoid circular dependency
     from .condition import (And, Comparison, ConditionError, Presence,
