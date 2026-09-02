@@ -40,6 +40,15 @@ def main(argv):
     selected = select(changed_files, mc.MUTATIONS)
     print("mutation_scope_select: %d/%d mutation(s) selected for %d changed "
           "file(s)" % (len(selected), len(mc.MUTATIONS), len(changed_files)))
+    if not selected:
+        # 교차 앵커가 0건이면 판정할 대상 자체가 없다 — 여기서 하네스의
+        # baseline(전체 스위트 + no-op 컨트롤)까지 돌리는 것은 순수 낭비이고,
+        # 러너 환경에서 baseline이 붉으면 "이 PR과 무관한 red"라는 노이즈만
+        # 만든다(2026-09-03 PR #167에서 실측). 빈 CHANGED 목록의 명시적 스킵과
+        # 같은 원칙(wiki changed-files-only-gates)을 빈 SELECTION에도 적용한다.
+        print("mutation_scope_select: no anchor intersects the changed files "
+              "— nothing to judge, skipping the harness entirely")
+        return 0
     mc.MUTATIONS = selected
     return mc.main()
 
