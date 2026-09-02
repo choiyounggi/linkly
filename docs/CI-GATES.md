@@ -146,19 +146,66 @@ required status check에 등록한 뒤 시크릿이 만료·회전·개명되면
 `main`에는 지금 브랜치 보호가 걸려 있지 않다 — 즉 **어떤 게이트도 지금은
 머지를 막지 못한다.** 결정론 게이트가 실패해도, AI 게이트가 blocker를 내도
 PR은 머지될 수 있다. 브랜치 보호를 켜는 일 자체는 레포 소유자의 몫(범위
-밖)이지만, 켤 때 required status check로 등록할 후보는 다음과 같다:
+밖)이지만, 켤 때 required status check로 등록할 후보는 다음과 같다 —
+GitHub이 실제로 만들어내는 체크런 이름 그대로다(`ci.yml`의 잡 `name:` 필드에서
+직접 확인, 추측 아님):
 
 - `gate (py3.11)` / `gate (py3.12)` / `gate (py3.13)` — 테스트 매트릭스(`ci.yml`)
-- `RFC lint`
-- `Plugin reference drift check`
-- `Version sync check (issue #141)`
-- ruff 잡(t1이 `ci.yml`에 추가)
-- 산문 스니펫 잡(t2가 추가)
+- `lint (ruff)` — ruff 게이트(`ci.yml`)
+
+RFC lint, Plugin reference drift check, Version sync check, Doc snippet
+compile gate는 별도 체크런이 **아니다** — 전부 위 `gate` 잡 하나의 스텝으로
+실행되므로 GitHub은 이들을 독립적으로 주소 지정 가능한 체크런으로 노출하지
+않는다. 이전 버전의 이 목록은 이 스텝 이름들을 체크런 이름으로 착각해
+기재했었다 — 이 표는 그 정정판이다.
+
+`modeb-linux (test_repo_state under real mode B)`는 issue #161로 `ci.yml`에
+추가됐지만 의도적으로 이 후보 목록에서 제외한다 — GitHub 호스팅 러너에서
+실제로 green 실행을 관측하기 전까지는 required로 걸지 않는다
+(`scripts/setup_branch_protection.sh --include-modeb`로 나중에 추가할 수 있다).
+
+`scripts/setup_branch_protection.sh`가 위 페이로드를 적용하는 스크립트로
+존재한다(멱등, `--check`는 읽기 전용). 하지만 이 스크립트는 CI나 어떤
+오케스트레이션 태스크로도 자동 실행되지 않는다 — 적용은 항상 사람/코디네이터의
+명시적 결정을 거친 수동 단계다.
 
 AI 게이트 4종은 advisory인 동안은 required로 등록하지 않는다 — required
 status check는 정의상 실패 시 머지를 막으므로, 오탐률이 검증되지 않은 채로
 걸면 advisory 단계의 목적(수용률을 재는 동안 머지를 막지 않는 것)이 무너진다.
 위 승격 절차를 거쳐 `blocking: true`로 뒤집힌 게이트만 이 목록에 추가한다.
+
+뮤테이션 테스팅(issue #166)도 같은 이유로 이 목록에 없다 — PR용
+`mutation-pr` 잡은 advisory(비-required, `continue-on-error` 없이 진짜
+red/green)이고, 주간 `mutation-weekly` 잡은 SURVIVED 뮤테이션을 이슈로
+리포트할 뿐 PR을 막지 않는다. 자세한 내용은 아래 "뮤테이션 테스팅 2단계"
+절을 참고.
+
+## 뮤테이션 테스팅 2단계
+
+`impl/tests/mutation_check.py`(77개 뮤테이션 + no-op 컨트롤, 전체 실행
+25분+)는 그대로 두고(의미론 변경 없음, issue #166 범위 밖), `.github/workflows/mutation.yml`이
+이를 두 갈래로 감싼다:
+
+- **`mutation-pr`**(PR 트리거, advisory, 비-required): `scripts/mutation_scope_select.py`가
+  `mutation_check.MUTATIONS`를 PR의 변경 파일과 앵커 파일이 교차하는 항목만
+  남기도록 필터링한 뒤 하네스의 원본 `main()`을 그대로 호출한다.
+  `mutation_check.py` 자체는 한 줄도 고치지 않는다. 이 잡은 `continue-on-error`를
+  쓰지 않는다 — 실패하면 진짜 red로 보이지만, required 목록에 없으므로 PR
+  머지를 막지는 않는다(위 절 참고).
+- **`mutation-weekly`**(주간 cron, 전체 77종 + no-op 컨트롤): 하네스의 rc를
+  캡처한 뒤 `scripts/mutation_report.py`로 stdout을 파싱한다. SURVIVED
+  뮤테이션(테스트가 없는 규칙)만 GitHub 이슈로 리포트한다 — 이건 실패가
+  아니라 "미검증 규칙" 알림이다. 반대로 STALE(앵커 문자열이 소스와 어긋남),
+  HANG(타임아웃), 또는 no-op 컨트롤이 걸려서 생기는 설명되지 않은 nonzero rc는
+  하네스 자체가 판정 불능이라는 뜻이므로 **fail closed**로 잡을 실패시키고
+  이슈 업데이트를 건너뛴다.
+
+두 잡 모두 issue #161의 `modeb-linux` 잡이 쓰는 apt.llvm.org 고정 LLVM/MLIR
+툴체인 설치 시퀀스를 그대로 재사용한다(`mlir/llvm.pin`에서 버전 파생,
+`LNPL_LLVM_BIN` export). `ci.yml`은 수정하지 않는다 — 별도 워크플로 파일이다.
+
+뮤테이션 스코어 임계치 게이트(예: "80% 이상 캐치해야 통과")는 이 issue의
+명시적 비목표다 — SURVIVED는 항상 리포트일 뿐 실패 조건이 아니다.
 
 ## `skip-ai-gate` 라벨
 
