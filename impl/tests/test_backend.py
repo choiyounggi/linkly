@@ -576,6 +576,10 @@ class TestLlvmBinOverride(unittest.TestCase):
         self.override_dir = tempfile.mkdtemp(prefix="lnpl-llvmbin-", dir=tmp_root)
         self.brew_dir = tempfile.mkdtemp(prefix="lnpl-brewbin-", dir=tmp_root)
         self._original_brew_bin = backend.BREW_LLVM_BIN
+        # 호출자의 값을 저장해 tearDown이 복원한다 — pop으로 지우기만 하면
+        # LNPL_LLVM_BIN으로만 툴체인이 해석되는 환경(GitHub 러너)에서 이후의
+        # 모든 mode-B 테스트가 toolchain unavailable로 죽는다 (issue #169).
+        self._original_llvm_bin = os.environ.get("LNPL_LLVM_BIN")
         backend.BREW_LLVM_BIN = self.brew_dir
         self._write_executable(self.override_dir, "toolx")
         self._write_executable(self.brew_dir, "toolx")
@@ -584,7 +588,10 @@ class TestLlvmBinOverride(unittest.TestCase):
         backend.BREW_LLVM_BIN = self._original_brew_bin
         shutil.rmtree(self.override_dir, ignore_errors=True)
         shutil.rmtree(self.brew_dir, ignore_errors=True)
-        os.environ.pop("LNPL_LLVM_BIN", None)
+        if self._original_llvm_bin is None:
+            os.environ.pop("LNPL_LLVM_BIN", None)
+        else:
+            os.environ["LNPL_LLVM_BIN"] = self._original_llvm_bin
 
     def _write_executable(self, dirpath, name):
         path = os.path.join(dirpath, name)
@@ -608,6 +615,45 @@ class TestLlvmBinOverride(unittest.TestCase):
         with self.assertRaises(backend.BackendError) as ctx:
             backend.tool("no-such-tool-xyz")
         self.assertIn("LNPL_LLVM_BIN", str(ctx.exception))
+
+
+class TestLlvmBinOverrideRestoresCallerEnv(unittest.TestCase):
+    """issue #169: 위 클래스가 호출자의 `LNPL_LLVM_BIN`을 파괴하면 안 된다.
+
+    GitHub 러너에서는 툴체인이 오직 이 변수로만 해석된다(브루 폴백 경로 없음,
+    PATH에 mlir-opt 없음). tearDown이 원래 값을 복원하지 않고 pop만 하면,
+    test_backend 이후에 도는 모든 mode-B 테스트가 "toolchain unavailable"로
+    죽는다 — mutation baseline RED(failures=26/errors=96, run 33701577052)의
+    실측 원인. macOS에서는 브루 폴백이 가려서 보이지 않는다.
+    """
+
+    def _run_override_suite(self):
+        import io
+        suite = unittest.TestLoader().loadTestsFromTestCase(TestLlvmBinOverride)
+        return unittest.TextTestRunner(stream=io.StringIO()).run(suite)
+
+    def test_a_set_value_survives_the_override_suite(self):
+        original = os.environ.get("LNPL_LLVM_BIN")
+        if original is None:
+            self.addCleanup(os.environ.pop, "LNPL_LLVM_BIN", None)
+        else:
+            self.addCleanup(os.environ.__setitem__, "LNPL_LLVM_BIN", original)
+        os.environ["LNPL_LLVM_BIN"] = "SENTINEL-DIR"
+        result = self._run_override_suite()
+        self.assertTrue(result.wasSuccessful())
+        self.assertEqual(os.environ.get("LNPL_LLVM_BIN"), "SENTINEL-DIR",
+                         "TestLlvmBinOverride가 호출자의 LNPL_LLVM_BIN을 "
+                         "복원하지 않았다 — 러너에서 이후의 모든 mode-B "
+                         "테스트가 toolchain unavailable로 죽는 오염이다.")
+
+    def test_an_unset_variable_stays_unset(self):
+        original = os.environ.pop("LNPL_LLVM_BIN", None)
+        if original is not None:
+            self.addCleanup(os.environ.__setitem__, "LNPL_LLVM_BIN", original)
+        result = self._run_override_suite()
+        self.assertTrue(result.wasSuccessful())
+        self.assertIsNone(os.environ.get("LNPL_LLVM_BIN"),
+                          "미설정이던 변수가 실행 후 생겨났다")
 
 
 class TestIsysrootFlags(unittest.TestCase):

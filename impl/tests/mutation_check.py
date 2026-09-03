@@ -74,24 +74,31 @@ MUTATIONS = [
     # RFC-0012 / issue #37. The guard must read the row a completed read bound,
     # not the input payload. Reverting the qualified branch to a payload lookup
     # restores exactly the defect the issue reports, so the suite must kill it.
+    # issue #169 재고정: caller/input 네임스페이스 분기(RFC-0015 G15.2, issue
+    # #119)가 partition과 일반 조회 사이에 들어와, 앵커를 함수 꼬리의 일반
+    # bindings 조회 블록으로 옮겼다. interp.py에는 `row = bindings.get(binding)`
+    # 이 두 곳(674·1723행) 있지만 1723행은 들여쓰기가 깊어 이 4줄 블록의
+    # 첫-매치는 resolve_reference 쪽에만 붙는다.
     ("Guard: resolve a qualified reference against the payload instead of the bound row",
      "lnpl/interp.py",
-     '    binding, _, field = name.partition(".")\n'
      '    row = bindings.get(binding)\n'
      '    if not isinstance(row, dict):\n'
      '        return None\n'
      '    return row.get(field)',
-     '    binding, _, field = name.partition(".")\n'
      '    _unused = bindings.get(binding)\n'
      '    return payload.get(field)'),
     # RFC-0012: guards and `spec … expect` must share ONE scope. Cutting the
     # bindings out of the expectation path forks it into two, which is the
     # failure this task exists to prevent — so a test must notice.
+    # issue #169 재고정: money_fields 키워드 인자가 추가된 현재 시그니처로.
     ("spec: evaluate `result` against an empty scope instead of the run's bindings",
      "lnpl/spec.py",
      '        ok = _condition_holds(text, result.get("payload", {}),\n'
-     '                              result.get("bindings", {}))',
-     '        ok = _condition_holds(text, result.get("payload", {}), {})'),
+     '                              result.get("bindings", {}),\n'
+     '                              money_fields=_money_field_predicate(_interp.doc))',
+     '        ok = _condition_holds(text, result.get("payload", {}),\n'
+     '                              {},\n'
+     '                              money_fields=_money_field_predicate(_interp.doc))'),
     ("Guard: run `repeat` once instead of `count` times",
      "lnpl/interp.py",
      'for _ in range(int(node["count"])):',
@@ -139,10 +146,14 @@ MUTATIONS = [
      "lnpl/differential.py",
      "    if not backend.toolchain_available():\n        raise DifferentialError(",
      "    if False:\n        raise DifferentialError("),
+    # issue #169 재고정: refined-$ref 분기가 앞에 붙으며 `if`가 `elif`가 됐다.
+    # 변이는 미매핑 타입에 빈 스키마를 그대로 방출한다 — 라벨 그대로의 실패.
     ("OpenAPI: emit an empty schema for an unmapped semantic type",
      "lnpl/openapi.py",
-     '        if tname not in TYPE_SCHEMA:\n            raise OpenApiError(',
-     '        if False:\n            raise OpenApiError('),
+     '        elif tname not in TYPE_SCHEMA:\n            raise OpenApiError(',
+     '        elif tname not in TYPE_SCHEMA:\n'
+     '            props[field["name"]] = {}\n'
+     '        elif False:\n            raise OpenApiError('),
     ("KB: let route() read document bodies (breaks the routing tier)",
      "lnpl/kb.py",
      'haystack = _tokens(meta["triggers"] + " " + doc_id.replace("-", " "))',
@@ -179,10 +190,13 @@ MUTATIONS = [
      "lnpl/lower.py",
      '        for n, line in enumerate(d.clauses.get("goal", []), start=1):',
      '        for n, line in enumerate([], start=1):'),
+    # issue #169 재고정: 단일-엔티티 반환이 _check_internal_visibility 경유로
+    # 바뀌었다. 4칸 들여쓰기 블록은 외곽 판정 지점(3450행)에만 매치된다
+    # (3434행의 진단 분기는 8칸 들여쓰기).
     ("lowering: pick an entity instead of reporting ambiguity",
      "lnpl/lower.py",
-     "    if len(registry) == 1:\n        return next(iter(registry.values()))",
-     "    if len(registry) >= 1:\n        return next(iter(registry.values()))"),
+     "    if len(registry) == 1:\n        return _check_internal_visibility(",
+     "    if len(registry) >= 1:\n        return _check_internal_visibility("),
     ("EventEmit: emit without a unique id (breaks consumer dedupe)",
      "lnpl/interp.py",
      '"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1)',
@@ -462,7 +476,13 @@ def make_tree(dest):
 
 
 def run_suite(tree_root, timeout=300):
-    """Run the suite inside a mutant tree root. Returns 'GREEN' | 'RED' | 'HANG'."""
+    """Run the suite inside a mutant tree root.
+
+    Returns ('GREEN' | 'RED' | 'HANG', <combined stdout+stderr>). The output
+    travels with the verdict so a non-green baseline / no-op control can print
+    its evidence instead of a bare verdict (issue #169 — on a hosted runner the
+    bare "RED" was the entire diagnostic).
+    """
     impl = os.path.join(tree_root, "impl")
     env = dict(os.environ, PYTHONPATH=impl)
     try:
@@ -471,9 +491,33 @@ def run_suite(tree_root, timeout=300):
              "-s", os.path.join(impl, "tests"), "-t", impl],
             capture_output=True, text=True, timeout=timeout, env=env,
             cwd=tree_root)
-    except subprocess.TimeoutExpired:
-        return "HANG"
-    return "GREEN" if proc.returncode == 0 else "RED"
+    except subprocess.TimeoutExpired as exc:
+        partial = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        partial += (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+        return "HANG", partial
+    return ("GREEN" if proc.returncode == 0 else "RED",
+            (proc.stdout or "") + (proc.stderr or ""))
+
+
+def failure_summary(output, tail_lines=80):
+    """Bounded evidence for a non-green suite run: every FAIL:/ERROR: line,
+    then the last `tail_lines` lines (where unittest prints its verdict).
+
+    Bounded on purpose — an unbounded dump would drown the CI log the same way
+    the old zero-line diagnostic starved it. Never returns the empty string:
+    "(no output captured)" keeps "no summary printed" distinguishable from
+    "summary printed nothing".
+    """
+    if not output.strip():
+        return "(no output captured)"
+    lines = output.splitlines()
+    fail_lines = [ln for ln in lines if ln.startswith(("FAIL: ", "ERROR: "))]
+    parts = []
+    if fail_lines:
+        parts.extend(fail_lines)
+        parts.append("---- suite output tail ----")
+    parts.extend(lines[-tail_lines:])
+    return "\n".join(parts)
 
 
 def _scratch():
@@ -489,7 +533,7 @@ def _scratch():
 
 
 def apply_and_run(label, relpath, original, mutated):
-    """Returns (verdict, note). verdict is GREEN|RED|HANG|STALE."""
+    """Returns (verdict, note, suite_output). verdict is GREEN|RED|HANG|STALE."""
     with tempfile.TemporaryDirectory(dir=_scratch()) as tmp:
         root = os.path.join(tmp, "repo")
         make_tree(root)
@@ -497,10 +541,11 @@ def apply_and_run(label, relpath, original, mutated):
         with open(target, encoding="utf-8") as fh:
             text = fh.read()
         if original not in text:
-            return "STALE", "anchor not found"
+            return "STALE", "anchor not found", ""
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(text.replace(original, mutated, 1))
-        return run_suite(root), ""
+        verdict, output = run_suite(root)
+        return verdict, "", output
 
 
 def main():
@@ -508,27 +553,29 @@ def main():
     with tempfile.TemporaryDirectory(dir=_scratch()) as tmp:
         baseline_root = os.path.join(tmp, "repo")
         make_tree(baseline_root)
-        baseline = run_suite(baseline_root)
+        baseline, baseline_output = run_suite(baseline_root)
     if baseline != "GREEN":
         print("baseline (unmutated copy) is not green (%s) — the harness cannot "
               "distinguish a caught mutation from a broken tree. Fix that first."
               % baseline)
+        print(failure_summary(baseline_output))
         return 1
     print("baseline (unmutated copy): GREEN")
 
     label, relpath, original, mutated = NOOP_CONTROL
-    verdict, note = apply_and_run(label, relpath, original, mutated)
+    verdict, note, control_output = apply_and_run(label, relpath, original, mutated)
     print("  %-8s %-58s %s" % ("SURVIVED" if verdict == "GREEN" else "CAUGHT",
                                label, verdict + (" — " + note if note else "")))
     if verdict != "GREEN":
         print("\nMUTATION CHECK: FAIL — the no-op control did not survive. The "
               "harness is reporting RED for something other than the mutation, so "
               "every other result below would be meaningless. Nothing else was run.")
+        print(failure_summary(control_output))
         return 1
 
     failures = []
     for label, relpath, original, mutated in MUTATIONS:
-        verdict, note = apply_and_run(label, relpath, original, mutated)
+        verdict, note, _output = apply_and_run(label, relpath, original, mutated)
         caught = verdict in ("RED", "HANG")
         print("  %-8s %-58s %s" % ("CAUGHT" if caught else "SURVIVED", label,
                                    verdict + (" — " + note if note else "")))

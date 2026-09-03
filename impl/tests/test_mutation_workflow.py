@@ -109,6 +109,68 @@ class FailClosedWiringTest(unittest.TestCase):
         self.assertEqual(count, 2)
 
 
+class DispatchTriggerTest(unittest.TestCase):
+    """issue #169: full-matrix 잡의 수동 트리거 배선.
+
+    수용 기준의 "hosted 러너에서 full-matrix 1회 green 관측"은 스케줄(월요일
+    06:00 UTC)을 기다리지 않고 재현할 수 있어야 한다 — workflow_dispatch가
+    mutation-weekly 잡을 깨우되, diff 전제(base.sha)가 있는 mutation-pr 잡은
+    절대 깨우지 않는다.
+    """
+
+    def _job_block(self, text, job_key, next_job_key=None):
+        start = text.index(job_key)
+        end = text.index(next_job_key, start) if next_job_key else len(text)
+        return text[start:end]
+
+    def _if_line(self, block):
+        return next(ln for ln in block.splitlines() if ln.strip().startswith("if:"))
+
+    def test_workflow_dispatch_trigger_present(self):
+        self.assertIn("workflow_dispatch:", _read(MUTATION_YML_PATH))
+
+    def test_weekly_job_wakes_on_dispatch_and_schedule(self):
+        text = _read(MUTATION_YML_PATH)
+        if_line = self._if_line(self._job_block(text, "mutation-weekly:"))
+        self.assertIn("schedule", if_line)
+        self.assertIn("workflow_dispatch", if_line)
+
+    def test_pr_job_does_not_wake_on_dispatch(self):
+        # 경계값/회귀: dispatch 이벤트에는 pull_request.base.sha가 없다 —
+        # mutation-pr 잡이 깨어나면 diff 산출 자체가 깨진다.
+        text = _read(MUTATION_YML_PATH)
+        if_line = self._if_line(
+            self._job_block(text, "mutation-pr:", "mutation-weekly:"))
+        self.assertIn("pull_request", if_line)
+        self.assertNotIn("workflow_dispatch", if_line)
+
+
+class WeeklyTimeoutBudgetTest(unittest.TestCase):
+    """issue #169: full matrix의 시간 예산.
+
+    러너 실측(run 33702421111): 뮤테이션당 트리 복사 + 스위트 ~85-90초 × 77
+    ≈ 110분 — 45분 예산으로는 baseline이 green이어도 잡이 타임아웃으로
+    취소된다(실측 43분 실행 후 취소). 180분 = 실측 1.5x 마진.
+    """
+
+    def _job_block(self, text, job_key, next_job_key=None):
+        start = text.index(job_key)
+        end = text.index(next_job_key, start) if next_job_key else len(text)
+        return text[start:end]
+
+    def test_weekly_budget_fits_the_measured_matrix(self):
+        block = self._job_block(_read(MUTATION_YML_PATH), "mutation-weekly:")
+        self.assertIn("timeout-minutes: 180", block)
+
+    def test_pr_budget_is_unchanged(self):
+        # 경계값/회귀: diff-scoped 잡은 소수 뮤테이션만 돌므로 20분 유지 —
+        # weekly 예산 상향이 PR 잡으로 번지면 고장난 PR 잡이 20분 대신
+        # 3시간을 붙들게 된다.
+        block = self._job_block(_read(MUTATION_YML_PATH), "mutation-pr:",
+                                "mutation-weekly:")
+        self.assertIn("timeout-minutes: 20", block)
+
+
 class EmptyChangedBranchTest(unittest.TestCase):
     """경계값 케이스(D9): 빈 변경 파일 분기가 선별기 호출보다 먼저 나온다."""
 
