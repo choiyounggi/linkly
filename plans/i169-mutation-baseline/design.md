@@ -22,6 +22,11 @@
 |---|----------|--------|------------|----------------------|-------------|
 | D10 | weekly 잡 시간 예산 | mutation-weekly의 timeout-minutes를 45→180으로 상향 (실측: 뮤테이션당 트리복사+스위트 ~85-90초 × 77 ≈ 110분 + baseline·컨트롤·셋업, 1.5x 마진). mutation-pr(diff-scoped, 20분)은 불변 | wiki/infrastructure/ci-cd/pipeline-structure.md | 매트릭스 샤딩/테스트 선별 — 하네스 구조 변경으로 범위 초과, 주간 1회 잡에 110분은 수용 가능한 비용 | test_mutation_workflow에 weekly 블록 timeout-minutes: 180 소스 텍스트 단정; 최종은 재-dispatch green (R3) |
 
+## Repair round 3 (full-matrix 완주 실측 기반 — 2026-09-03)
+| # | Decision | Choice | Wiki basis | Rejected alternative | Testability |
+|---|----------|--------|------------|----------------------|-------------|
+| D11 | stale anchor 4건 재고정 | run 33705681024 실측: 73/77 caught, 4건 [stale anchor] — 로컬 대조로 main 코드 드리프트임을 확인(러너 특이 아님). MUTATIONS의 4개 튜플을 현재 코드의 리터럴 텍스트로 재고정하되 각 뮤테이션의 의미(테스트하는 규칙)는 보존; 재고정 후 4건 각각을 apply_and_run 직접 실행으로 caught(RED) 검증 | wiki/testing/quality/harness-reverse-controls.md | 4건을 MUTATIONS에서 삭제 — 그 규칙들의 뮤테이션 커버리지가 사라짐, fail-closed가 잡은 진짜 드리프트를 지우는 것 | 로컬 apply_and_run 4건 RED + 최종 dispatch full-matrix green (R3) |
+
 ## Review
 VERDICT: PASS
 FINDINGS:
