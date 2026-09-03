@@ -37,6 +37,12 @@
 - 재-dispatch baseline 간접 판정: GREEN — RED baseline은 직전 런에서 81초 만에 rc=1로 종료했는데(00:56:49→00:58:10), 이번 하네스 스텝은 43분간 실행됨 = baseline·no-op 게이트를 통과해 full matrix에 진입한 유일한 경로. 직접 출력은 타임아웃 취소로 유실(출력이 파일로 리다이렉트되고 tail 스텝이 건너뜀) — 직접 관측은 다음 런에서.
 - **새 결함 (repair round 2 대상)**: full matrix는 러너에서 77뮤테이션 × (트리 복사 + 스위트 ~78s) ≈ 110분 규모 — timeout-minutes: 45로는 구조적으로 불가능. 주간 잡은 baseline RED를 고쳐도 타임아웃으로 실패했을 것.
 
+## 최종 dispatch (Task 06 이후, run 33715452170) — 수용 기준 충족
+- https://github.com/choiyounggi/linkly/actions/runs/33715452170 — conclusion: **success** (~2시간 4분, 180분 예산 내)
+- harness rc: 0 — rc 0은 "baseline (unmutated copy): GREEN" 인쇄 + no-op 컨트롤 생존 + 전 뮤테이션 caught를 모두 통과한 유일한 경로 (tail-40 창에는 말미만 보이며 말미 실측: "MUTATION CHECK: PASS — no-op control survived, and all 77 mutations caught by a failing test")
+- mutation_report.py healthy 경로 진입: "No mutations survived this week's full run" — 주간 리포트 이슈 갱신 정상 동작
+- issue #169 수용 기준: (1) hosted 러너 baseline green ✓ (2) full-matrix 잡 1회 green 관측 ✓
+
 ## 결론
 수정 대상은 CI 배선이 아니라 **테스트의 env 복원 결함**. repair 라운드 결정: D9 (design.md 개정), Task 04.
 잔여 리스크: 오염 제거 후 mode-B 무리가 러너에서 "처음으로 실제 실행"되므로 추가 실패가 드러날 수 있음 — 재-dispatch로 판정 (bounded, D6).
