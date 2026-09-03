@@ -25,5 +25,6 @@ size: small
 | 01-surface-baseline-diagnostics | — | parallel-ok (02와 파일 비중첩) |
 | 02-workflow-dispatch-trigger | — | parallel-ok (01과 파일 비중첩) |
 | 03-runner-evidence-run | 01, 02 | — |
+| 04-restore-env-in-tests | 03 | — |
 
-Task 03이 실패 집합을 확정하면, 수정 태스크(04+)는 wiki-plan Phase B/C repair 라운드에서 그 증거로 결정한다 (D4/D6 — 방치가 아니라 설계된 2단계).
+Task 03이 실패 집합을 확정하면, 수정 태스크(04+)는 wiki-plan Phase B/C repair 라운드에서 그 증거로 결정한다 (D4/D6 — 방치가 아니라 설계된 2단계). Repair round 1 (2026-09-03): 원인 = TestLlvmBinOverride의 LNPL_LLVM_BIN 미복원 → D9, Task 04.

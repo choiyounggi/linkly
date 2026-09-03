@@ -12,6 +12,11 @@
 | D7 | 이 PR 자체의 mutation-pr 잡 | 변경 파일(mutation_check.py·mutation.yml·테스트)은 앵커 파일이 아니므로 zero-anchor 스킵(#168) 경로 — 의도된 동작으로 수용 | wiki/infrastructure/ci-cd/changed-files-only-gates.md | 이 PR에서 mutation-pr로 baseline 검증 시도 — 스킵되므로 불가능, dispatch가 유일 경로 | scripts/mutation_scope_select.py 수동 실행 → "no anchor intersects" (Constraints에 실측 기록) |
 | D8 | 진단 출력의 위치 | 하네스 stdout에 직접 인쇄 (mutation_report.py 파서 통과 확인 필수 — rc=1 baseline 경로는 이미 harness-integrity fault로 처리되므로 추가 줄은 verdict 파싱에 영향 없음을 T1에서 테스트로 고정) | wiki/testing/quality/harness-reverse-controls.md | 별도 로그 파일로 빼기 — CI 로그에서 한 번에 안 보임, 아티팩트 업로드 단계 추가 필요 | tests.test_mutation_report 기존 + T1 신규 테스트 rc=0 (R4) |
 
+## Repair round 1 (Task 03 증거 기반 — D6의 계획된 재진입, 2026-09-03)
+| # | Decision | Choice | Wiki basis | Rejected alternative | Testability |
+|---|----------|--------|------------|----------------------|-------------|
+| D9 | baseline RED 원인 수정 | TestLlvmBinOverride(impl/tests/test_backend.py)가 setUp에서 LNPL_LLVM_BIN 원래 값을 저장하고 tearDown에서 조건부 복원하도록 수정 (pop 무조건 삭제 → 저장·복원). 같은 오염 패턴(os.environ 직접 변이 후 미복원)을 impl/tests 전체에서 스윕해 동일 수리 | wiki/testing/data/test-data-and-isolation.md | CI에서 mode-B 무리를 격리 실행(모듈별 프로세스 분리) — 오염을 고치지 않고 우회하는 것, 로컬 전체 스위트에도 같은 잠복 결함이 남음 | 신규 회귀 테스트: 센티널 LNPL_LLVM_BIN 설정 → TestLlvmBinOverride 프로그램 실행 → env가 센티널로 복원됨 단정; 최종 판정은 재-dispatch full-matrix (R3) |
+
 ## Review
 VERDICT: PASS
 FINDINGS:
