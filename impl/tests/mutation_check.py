@@ -462,7 +462,13 @@ def make_tree(dest):
 
 
 def run_suite(tree_root, timeout=300):
-    """Run the suite inside a mutant tree root. Returns 'GREEN' | 'RED' | 'HANG'."""
+    """Run the suite inside a mutant tree root.
+
+    Returns ('GREEN' | 'RED' | 'HANG', <combined stdout+stderr>). The output
+    travels with the verdict so a non-green baseline / no-op control can print
+    its evidence instead of a bare verdict (issue #169 — on a hosted runner the
+    bare "RED" was the entire diagnostic).
+    """
     impl = os.path.join(tree_root, "impl")
     env = dict(os.environ, PYTHONPATH=impl)
     try:
@@ -471,9 +477,33 @@ def run_suite(tree_root, timeout=300):
              "-s", os.path.join(impl, "tests"), "-t", impl],
             capture_output=True, text=True, timeout=timeout, env=env,
             cwd=tree_root)
-    except subprocess.TimeoutExpired:
-        return "HANG"
-    return "GREEN" if proc.returncode == 0 else "RED"
+    except subprocess.TimeoutExpired as exc:
+        partial = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        partial += (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+        return "HANG", partial
+    return ("GREEN" if proc.returncode == 0 else "RED",
+            (proc.stdout or "") + (proc.stderr or ""))
+
+
+def failure_summary(output, tail_lines=80):
+    """Bounded evidence for a non-green suite run: every FAIL:/ERROR: line,
+    then the last `tail_lines` lines (where unittest prints its verdict).
+
+    Bounded on purpose — an unbounded dump would drown the CI log the same way
+    the old zero-line diagnostic starved it. Never returns the empty string:
+    "(no output captured)" keeps "no summary printed" distinguishable from
+    "summary printed nothing".
+    """
+    if not output.strip():
+        return "(no output captured)"
+    lines = output.splitlines()
+    fail_lines = [ln for ln in lines if ln.startswith(("FAIL: ", "ERROR: "))]
+    parts = []
+    if fail_lines:
+        parts.extend(fail_lines)
+        parts.append("---- suite output tail ----")
+    parts.extend(lines[-tail_lines:])
+    return "\n".join(parts)
 
 
 def _scratch():
@@ -489,7 +519,7 @@ def _scratch():
 
 
 def apply_and_run(label, relpath, original, mutated):
-    """Returns (verdict, note). verdict is GREEN|RED|HANG|STALE."""
+    """Returns (verdict, note, suite_output). verdict is GREEN|RED|HANG|STALE."""
     with tempfile.TemporaryDirectory(dir=_scratch()) as tmp:
         root = os.path.join(tmp, "repo")
         make_tree(root)
@@ -497,10 +527,11 @@ def apply_and_run(label, relpath, original, mutated):
         with open(target, encoding="utf-8") as fh:
             text = fh.read()
         if original not in text:
-            return "STALE", "anchor not found"
+            return "STALE", "anchor not found", ""
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(text.replace(original, mutated, 1))
-        return run_suite(root), ""
+        verdict, output = run_suite(root)
+        return verdict, "", output
 
 
 def main():
@@ -508,27 +539,29 @@ def main():
     with tempfile.TemporaryDirectory(dir=_scratch()) as tmp:
         baseline_root = os.path.join(tmp, "repo")
         make_tree(baseline_root)
-        baseline = run_suite(baseline_root)
+        baseline, baseline_output = run_suite(baseline_root)
     if baseline != "GREEN":
         print("baseline (unmutated copy) is not green (%s) — the harness cannot "
               "distinguish a caught mutation from a broken tree. Fix that first."
               % baseline)
+        print(failure_summary(baseline_output))
         return 1
     print("baseline (unmutated copy): GREEN")
 
     label, relpath, original, mutated = NOOP_CONTROL
-    verdict, note = apply_and_run(label, relpath, original, mutated)
+    verdict, note, control_output = apply_and_run(label, relpath, original, mutated)
     print("  %-8s %-58s %s" % ("SURVIVED" if verdict == "GREEN" else "CAUGHT",
                                label, verdict + (" — " + note if note else "")))
     if verdict != "GREEN":
         print("\nMUTATION CHECK: FAIL — the no-op control did not survive. The "
               "harness is reporting RED for something other than the mutation, so "
               "every other result below would be meaningless. Nothing else was run.")
+        print(failure_summary(control_output))
         return 1
 
     failures = []
     for label, relpath, original, mutated in MUTATIONS:
-        verdict, note = apply_and_run(label, relpath, original, mutated)
+        verdict, note, _output = apply_and_run(label, relpath, original, mutated)
         caught = verdict in ("RED", "HANG")
         print("  %-8s %-58s %s" % ("CAUGHT" if caught else "SURVIVED", label,
                                    verdict + (" — " + note if note else "")))

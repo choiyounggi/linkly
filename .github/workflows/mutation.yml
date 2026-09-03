@@ -4,6 +4,7 @@ on:
   pull_request:
   schedule:
     - cron: "0 6 * * 1"  # weekly, Monday 06:00 UTC
+  workflow_dispatch:  # issue #169: on-demand full-matrix run (same job as schedule)
 
 jobs:
   mutation-pr:
@@ -55,7 +56,7 @@ jobs:
 
   mutation-weekly:
     name: mutation-weekly (full matrix + no-op control)
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

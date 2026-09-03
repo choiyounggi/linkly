@@ -109,6 +109,42 @@ class FailClosedWiringTest(unittest.TestCase):
         self.assertEqual(count, 2)
 
 
+class DispatchTriggerTest(unittest.TestCase):
+    """issue #169: full-matrix 잡의 수동 트리거 배선.
+
+    수용 기준의 "hosted 러너에서 full-matrix 1회 green 관측"은 스케줄(월요일
+    06:00 UTC)을 기다리지 않고 재현할 수 있어야 한다 — workflow_dispatch가
+    mutation-weekly 잡을 깨우되, diff 전제(base.sha)가 있는 mutation-pr 잡은
+    절대 깨우지 않는다.
+    """
+
+    def _job_block(self, text, job_key, next_job_key=None):
+        start = text.index(job_key)
+        end = text.index(next_job_key, start) if next_job_key else len(text)
+        return text[start:end]
+
+    def _if_line(self, block):
+        return next(ln for ln in block.splitlines() if ln.strip().startswith("if:"))
+
+    def test_workflow_dispatch_trigger_present(self):
+        self.assertIn("workflow_dispatch:", _read(MUTATION_YML_PATH))
+
+    def test_weekly_job_wakes_on_dispatch_and_schedule(self):
+        text = _read(MUTATION_YML_PATH)
+        if_line = self._if_line(self._job_block(text, "mutation-weekly:"))
+        self.assertIn("schedule", if_line)
+        self.assertIn("workflow_dispatch", if_line)
+
+    def test_pr_job_does_not_wake_on_dispatch(self):
+        # 경계값/회귀: dispatch 이벤트에는 pull_request.base.sha가 없다 —
+        # mutation-pr 잡이 깨어나면 diff 산출 자체가 깨진다.
+        text = _read(MUTATION_YML_PATH)
+        if_line = self._if_line(
+            self._job_block(text, "mutation-pr:", "mutation-weekly:"))
+        self.assertIn("pull_request", if_line)
+        self.assertNotIn("workflow_dispatch", if_line)
+
+
 class EmptyChangedBranchTest(unittest.TestCase):
     """경계값 케이스(D9): 빈 변경 파일 분기가 선별기 호출보다 먼저 나온다."""
 
