@@ -145,6 +145,32 @@ class DispatchTriggerTest(unittest.TestCase):
         self.assertNotIn("workflow_dispatch", if_line)
 
 
+class WeeklyTimeoutBudgetTest(unittest.TestCase):
+    """issue #169: full matrix의 시간 예산.
+
+    러너 실측(run 33702421111): 뮤테이션당 트리 복사 + 스위트 ~85-90초 × 77
+    ≈ 110분 — 45분 예산으로는 baseline이 green이어도 잡이 타임아웃으로
+    취소된다(실측 43분 실행 후 취소). 180분 = 실측 1.5x 마진.
+    """
+
+    def _job_block(self, text, job_key, next_job_key=None):
+        start = text.index(job_key)
+        end = text.index(next_job_key, start) if next_job_key else len(text)
+        return text[start:end]
+
+    def test_weekly_budget_fits_the_measured_matrix(self):
+        block = self._job_block(_read(MUTATION_YML_PATH), "mutation-weekly:")
+        self.assertIn("timeout-minutes: 180", block)
+
+    def test_pr_budget_is_unchanged(self):
+        # 경계값/회귀: diff-scoped 잡은 소수 뮤테이션만 돌므로 20분 유지 —
+        # weekly 예산 상향이 PR 잡으로 번지면 고장난 PR 잡이 20분 대신
+        # 3시간을 붙들게 된다.
+        block = self._job_block(_read(MUTATION_YML_PATH), "mutation-pr:",
+                                "mutation-weekly:")
+        self.assertIn("timeout-minutes: 20", block)
+
+
 class EmptyChangedBranchTest(unittest.TestCase):
     """경계값 케이스(D9): 빈 변경 파일 분기가 선별기 호출보다 먼저 나온다."""
 

@@ -58,7 +58,10 @@ jobs:
     name: mutation-weekly (full matrix + no-op control)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 실측(issue #169, run 33702421111): 뮤테이션당 트리 복사 + 전체 스위트
+    # ~85-90초 × 77 ≈ 110분 — 45분 예산은 baseline이 green이어도 잡을
+    # 타임아웃으로 자른다(43분 실행 후 취소 실측). 180 = 실측 1.5x 마진.
+    timeout-minutes: 180
     permissions:
       issues: write
     steps:

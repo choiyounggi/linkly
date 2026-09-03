@@ -32,8 +32,10 @@
 | test_wsgi.py:119-127 | 키 집합 저장·복원 | 정상 |
 | test_kb_packs.py:413-416 · test_ops_surface.py:168-169 · test_wsgi.py:158·225 | addCleanup pop-only — 단 대상이 테스트 전용 픽스처 이름(LNPL_KB_PACK_FIXTURE_*, LNPL_TEST_*)으로 러너/사용자/스위트 내 다른 소비자가 설정·판독하지 않음 | 제외 (오염 벡터 아님, 근거 명시) |
 
-## 재-dispatch 결과
-(Task 04 push 후 추기)
+## 재-dispatch 결과 (Task 04 이후, run 33702421111)
+- https://github.com/choiyounggi/linkly/actions/runs/33702421111 — conclusion: cancelled (잡 timeout-minutes: 45, 01:08:12→01:53:31)
+- 재-dispatch baseline 간접 판정: GREEN — RED baseline은 직전 런에서 81초 만에 rc=1로 종료했는데(00:56:49→00:58:10), 이번 하네스 스텝은 43분간 실행됨 = baseline·no-op 게이트를 통과해 full matrix에 진입한 유일한 경로. 직접 출력은 타임아웃 취소로 유실(출력이 파일로 리다이렉트되고 tail 스텝이 건너뜀) — 직접 관측은 다음 런에서.
+- **새 결함 (repair round 2 대상)**: full matrix는 러너에서 77뮤테이션 × (트리 복사 + 스위트 ~78s) ≈ 110분 규모 — timeout-minutes: 45로는 구조적으로 불가능. 주간 잡은 baseline RED를 고쳐도 타임아웃으로 실패했을 것.
 
 ## 결론
 수정 대상은 CI 배선이 아니라 **테스트의 env 복원 결함**. repair 라운드 결정: D9 (design.md 개정), Task 04.

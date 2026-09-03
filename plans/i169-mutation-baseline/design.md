@@ -17,6 +17,11 @@
 |---|----------|--------|------------|----------------------|-------------|
 | D9 | baseline RED 원인 수정 | TestLlvmBinOverride(impl/tests/test_backend.py)가 setUp에서 LNPL_LLVM_BIN 원래 값을 저장하고 tearDown에서 조건부 복원하도록 수정 (pop 무조건 삭제 → 저장·복원). 같은 오염 패턴(os.environ 직접 변이 후 미복원)을 impl/tests 전체에서 스윕해 동일 수리 | wiki/testing/data/test-data-and-isolation.md | CI에서 mode-B 무리를 격리 실행(모듈별 프로세스 분리) — 오염을 고치지 않고 우회하는 것, 로컬 전체 스위트에도 같은 잠복 결함이 남음 | 신규 회귀 테스트: 센티널 LNPL_LLVM_BIN 설정 → TestLlvmBinOverride 프로그램 실행 → env가 센티널로 복원됨 단정; 최종 판정은 재-dispatch full-matrix (R3) |
 
+## Repair round 2 (재-dispatch 실측 기반 — 2026-09-03)
+| # | Decision | Choice | Wiki basis | Rejected alternative | Testability |
+|---|----------|--------|------------|----------------------|-------------|
+| D10 | weekly 잡 시간 예산 | mutation-weekly의 timeout-minutes를 45→180으로 상향 (실측: 뮤테이션당 트리복사+스위트 ~85-90초 × 77 ≈ 110분 + baseline·컨트롤·셋업, 1.5x 마진). mutation-pr(diff-scoped, 20분)은 불변 | wiki/infrastructure/ci-cd/pipeline-structure.md | 매트릭스 샤딩/테스트 선별 — 하네스 구조 변경으로 범위 초과, 주간 1회 잡에 110분은 수용 가능한 비용 | test_mutation_workflow에 weekly 블록 timeout-minutes: 180 소스 텍스트 단정; 최종은 재-dispatch green (R3) |
+
 ## Review
 VERDICT: PASS
 FINDINGS:
