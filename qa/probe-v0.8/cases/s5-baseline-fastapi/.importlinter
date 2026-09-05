@@ -1,0 +1,13 @@
+[importlinter]
+root_package = orderhub
+
+[importlinter:contract:1]
+name = orders.inventory is internal to the orders team
+type = forbidden
+source_modules =
+    orderhub.catalog
+    orderhub.payments
+    orderhub.app
+forbidden_modules =
+    orderhub.orders.inventory
+allow_indirect_imports = True
