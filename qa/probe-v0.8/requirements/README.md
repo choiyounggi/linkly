@@ -19,6 +19,7 @@ v0.8.0에서 새로 열린 표면(RowSet group by·Money·NetworkDriver 실패 �
 
 워커는 **외부 엔터프라이즈 개발자**를 흉내낸다. 허용되는 지식원:
 
+- `AGENTS.md`·`CLAUDE.md`(레포 루트 — 모든 세션에 자동 로드되는 스킬 라우팅 표; 외부 개발자도 첫 화면으로 보는 문서)
 - `plugins/lnpl/skills/**` (lnpl-authoring · lnpl-kb · lnpl-spec · lnpl-verify · lnpl-doctor)
   와 그 `references/`
 - `docs/**`, `README.md`, `examples/**`, `rfcs/**`(공개 명세이므로 허용)
