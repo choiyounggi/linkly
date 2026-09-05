@@ -1,0 +1,5 @@
+.venv-s5/
+__pycache__/
+*.db
+.pytest_cache/
+.import_linter_cache/
