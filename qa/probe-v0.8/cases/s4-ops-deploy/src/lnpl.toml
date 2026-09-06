@@ -1,0 +1,20 @@
+# lnpl.toml for s4-ops-deploy — R5 (docs/serving.md "설정 파일" 이슈 #114)
+#
+# 주의(F-항목, evidence/03-profiles.md): --cache/--rate-limit/--grace-period/
+# --metrics/--host/--port/--jwt-issuer/--token-provider/--trust-incoming-trace는
+# `lnpl serve --help`가 lnpl.toml 폴백을 문서화하지 않은 플래그다(--backend/
+# --log-format/--trace-exporter/[*.secrets].jwt/--endpoint만 폴백 있음). 그래서
+# 이 파일만으로는 dev/prod를 완전히 스위치할 수 없고, 캐시·경화 옵션은 두 프로파일
+# 모두에서 CLI로 별도 지정해야 한다(아래 기동 명령 참고).
+
+[default]
+backend = "fake"
+log_format = "text"
+
+[default.secrets]
+jwt = "LNPL_JWT_SECRET"
+
+[prod]
+backend = "postgres:postgresql://s4user:s4pw@localhost:15432/s4db"
+log_format = "json"
+trace_exporter = "otlp"
