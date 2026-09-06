@@ -1,0 +1,4 @@
+notifier authoring rounds (folded into evidence/01-authoring.md round 11-13):
+round 11: enum needs_manual rejected — "not a valid enum value (a Word or a Number)" -> renamed needsManual (camelCase, no underscore)
+round 12: `set n.orderId to input.id` rejected with the SAME "declared type Text is neither Integer nor DateTime" message as arithmetic — confirms `set` cannot target ANY non-Integer/DateTime field even for a plain reference copy (not only when arithmetic is involved, correcting the round-5/7 hypothesis)
+round 13: `format n.orderId from "{}" with input.id` — compiles clean, rc=0
