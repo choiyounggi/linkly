@@ -1,0 +1,5 @@
+# Placed as payments/violation.lnpl inside a scratch copy of src/ (.claude/tmp/r1-probe-tree/)
+# to test whether `orders/internal/stock.lnpl`'s `entity Stock` is visible from the
+# `payments` namespace. It must not be — R1 requires this rejected at compile time.
+workflow PeekStock
+    find stock

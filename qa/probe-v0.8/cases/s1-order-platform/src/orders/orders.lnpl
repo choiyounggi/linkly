@@ -1,0 +1,180 @@
+entity Customer
+    field
+        id UUID
+        tier Integer
+        email Email
+
+workflow SeedCustomer
+    create customer
+
+entity Order
+    field
+        id UUID
+        customer UUID
+        status Integer derived
+        customerTier Integer derived
+        stockOnHand Integer derived
+        subtotalCents Integer derived
+        discountCents Integer derived
+        taxCents Integer derived
+        totalCents Integer derived
+
+entity OrderLine
+    field
+        id UUID
+        order UUID
+        product UUID
+        qty Integer
+        giftWrap Integer
+        unitPriceCents Integer derived
+        lineTotalCents Integer derived
+        giftWrapRejected Integer derived
+
+entity StockReservation
+    field
+        id UUID
+        product UUID
+        order UUID
+        qty Integer
+
+service OrdersService
+    policy
+        rollback
+
+workflow CreateOrder
+    validate order
+    list customer where id == input.customer
+    list catalogproduct where id == input.product
+    list stock where id == input.product and onHand >= input.qty
+    create order as newOrder
+    set newOrder.status to 0
+    set newOrder.customerTier to max customer.tier
+    set newOrder.stockOnHand to max stock.onHand
+    create orderline as line
+    set line.unitPriceCents to max product.priceCents
+    set line.lineTotalCents to line.unitPriceCents * line.qty
+    when input.giftWrap == 1
+    pipeline giftWrapCheck
+        list catalogproduct where id == input.product and kind == 0
+        set line.giftWrapRejected to max product.priceCents
+        set line.lineTotalCents to line.lineTotalCents + 200
+    pipeline reserve
+        create stockreservation as reservation
+    set newOrder.subtotalCents to line.lineTotalCents
+    set newOrder.discountCents to newOrder.subtotalCents * 10
+    set newOrder.discountCents to newOrder.discountCents / 100
+    set newOrder.discountCents to newOrder.discountCents * newOrder.customerTier
+    set newOrder.taxCents to newOrder.subtotalCents - newOrder.discountCents
+    set newOrder.taxCents to newOrder.taxCents * 8
+    set newOrder.taxCents to newOrder.taxCents / 100
+    set newOrder.totalCents to newOrder.subtotalCents - newOrder.discountCents
+    set newOrder.totalCents to newOrder.totalCents + newOrder.taxCents
+    respond newOrder.id newOrder.status newOrder.subtotalCents newOrder.discountCents newOrder.taxCents newOrder.totalCents
+    spec
+        given
+            stored Customer[0] id 44444444-4444-4444-4444-444444444444
+            stored Customer[0] tier 0
+            stored Product[0] id 11111111-1111-1111-1111-111111111111
+            stored Product[0] priceCents 1999
+            stored Product[0] kind 0
+            stored Stock[0] id 11111111-1111-1111-1111-111111111111
+            stored Stock[0] onHand 5
+            input.customer 44444444-4444-4444-4444-444444444444
+            input.product 11111111-1111-1111-1111-111111111111
+            input.qty 2
+            input.giftWrap 0
+        when
+            createOrder
+        expect
+            completed
+            effects complete
+            rows Order 1
+            rows OrderLine 1
+            result newOrder.subtotalCents == 3998
+            result newOrder.discountCents == 0
+    spec
+        given
+            stored Customer[0] id 55555555-5555-5555-5555-555555555555
+            stored Customer[0] tier 1
+            stored Product[0] id 11111111-1111-1111-1111-111111111111
+            stored Product[0] priceCents 1999
+            stored Product[0] kind 0
+            stored Stock[0] id 11111111-1111-1111-1111-111111111111
+            stored Stock[0] onHand 5
+            input.customer 55555555-5555-5555-5555-555555555555
+            input.product 11111111-1111-1111-1111-111111111111
+            input.qty 3
+            input.giftWrap 0
+        when
+            createOrder
+        expect
+            completed
+            effects complete
+            result newOrder.subtotalCents == 5997
+            result newOrder.discountCents == 599
+            result newOrder.totalCents == 5829
+    spec
+        given
+            stored Customer[0] id 44444444-4444-4444-4444-444444444444
+            stored Customer[0] tier 0
+            stored Product[0] id 33333333-3333-3333-3333-333333333333
+            stored Product[0] priceCents 500
+            stored Product[0] kind 0
+            stored Stock[0] id 33333333-3333-3333-3333-333333333333
+            stored Stock[0] onHand 0
+            input.customer 44444444-4444-4444-4444-444444444444
+            input.product 33333333-3333-3333-3333-333333333333
+            input.qty 1
+            input.giftWrap 0
+        when
+            createOrder
+        expect
+            failed
+            rows Order 0
+
+workflow ShipOrder
+    find order
+    when order.status == 1
+    set order.status to 2
+    respond order.id order.status
+
+workflow CancelOrder
+    find order
+    list paymentspayment where orderRef == input.id and status == 1
+    when order.status == 0
+    or order.status == 1
+    pipeline voidAny
+        create paymentsrefund as newRefund
+        set newRefund.amountCents to sum payment.amountCents
+        set newRefund.cumulativeCents to newRefund.amountCents
+        set newRefund.capChecked to newRefund.amountCents
+        set order.status to 4
+        respond order.id order.status newRefund.amountCents
+    spec
+        given
+            stored Order id 88888888-8888-8888-8888-888888888888
+            stored Order status 1
+            stored Payment[0] id 88888888-8888-8888-8888-888888888888
+            stored Payment[0] orderRef 88888888-8888-8888-8888-888888888888
+            stored Payment[0] status 1
+            stored Payment[0] amountCents 1078
+            input.id 88888888-8888-8888-8888-888888888888
+        when
+            cancelOrder
+        expect
+            completed
+            effects complete
+            rows Refund 1
+            result order.status == 4
+            result newRefund.amountCents == 1078
+    spec
+        given
+            stored Order id 99999999-8888-8888-8888-888888888888
+            stored Order status 2
+            input.id 99999999-8888-8888-8888-888888888888
+        when
+            cancelOrder
+        expect
+            completed
+            rows Refund 0
+            result order.status == 2
