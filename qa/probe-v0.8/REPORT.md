@@ -65,7 +65,7 @@ C), 이는 lnpl의 선언적 워크플로 구조(요구사항이 `when`/`set`/`r
 24, 비율 1.75)·소스 대비 읽은 문서량(~2,655줄 대 ~252줄, 비율 ~10.5)·출력
 토큰(722,792 대 234,410, 비율 3.08) 모두에서 더 많이
 든다(report-appendix/metrics-comparison.md Table A). friction-matrix 축
-집계로 보면 `doc`(문서·예제 오류/누락) 축이 12건으로 전체 47건 중 가장 큰
+집계로 보면 `doc`(문서·예제 오류/누락) 축이 12건으로 전체 49건 중 가장 큰
 단일 축이고, 그중 9건이 minor(우회는 가능하나 문서만 봐서는 못
 씀)다(report-appendix/friction-matrix.md §2). `llm` 축 3건(s1 F-15 pipeline
 암묵 종결, s3 F-4 판정 어휘 갭, s5 F-5 자체검수 한계)과 `diag` 축 1건(s2
@@ -90,7 +90,7 @@ FINDINGS.md F-10) — spec 자체의 신뢰성이 false green과 false red 양�
 R10=부분, s3 R10=부분, s5 R9=충족(26노드/83assert)로 갈려 s2/s3에서는 spec
 표현력 자체가 요구를 다 못 담는다(report-appendix/coverage-matrix.md §1). impl
 열람으로 근인이 실측 확정된 F-항목은 4건(s1 F-3·F-12·F-13, s3 F-6)뿐이라,
-이번 라운드 결함 대부분(43/47)은 블랙박스 실행 증거만으로 확정된 것이며
+이번 라운드 결함 대부분(45/49)은 블랙박스 실행 증거만으로 확정된 것이며
 상품성 QA는 "증상은 재현 가능하나 근인은 대개 미확인"인 상태다(s1
 FINDINGS.md F-3/F-12/F-13; s3 FINDINGS.md F-6).
 
@@ -98,7 +98,7 @@ FINDINGS.md F-3/F-12/F-13; s3 FINDINGS.md F-6).
 
 | 도메인 | 판정 | 근거 | known-issue 조건(번호) |
 |---|---|---|---|
-| s1 다중팀 CRUD·결제 | **Block** | (s1 FINDINGS.md 케이스 판정 — driver F-12, 보조 사유 F-6) | Block 반전 조건 (1) F-12/F-13 수리, (2) F-3 수리로 R2 원자성 복구, (3) 그 뒤 소유자 별도 수용 대상: F-1, F-4, F-11, F-8(코드는 있으나 F-번호 결측 — §7), F-14 |
+| s1 다중팀 CRUD·결제 | **Block** | (s1 FINDINGS.md 케이스 판정 — driver F-12, 보조 사유 F-6) | Block 반전 조건 (1) F-12/F-13 수리, (2) F-3 수리로 R2 원자성 복구, (3) 그 뒤 소유자 별도 수용 대상: F-1, F-4, F-11, F-8, F-14 |
 | s2 외부 연동·이벤트 | **Block** | (s2 FINDINGS.md 케이스 판정 — F-4/F-5/F-6 우회 불가 확정, F-1/F-2도 blocker 유지) | 수용 가능한 known-issue 없음 — F-4(재시도 무발동)·F-5(응답 검증 시 크래시)·F-6(emit 페이로드 매핑 불가) 셋 다 "아무도 수용 못 하는" 성격 |
 | s3 배치·집계 | **Block** | (s3 FINDINGS.md 케이스 판정 — driver F-8, F-6/F-7도 동일 사유로 지지) | Block 반전 조건 (1) F-6/F-7/F-8 수리, (2) Money 파생 계산은 Python 파이프라인 유지로 합의(설계 선택, 수용 가능), (2b) glue.py 실행 전 raw 구간 비열람 운영 규율, (3) 재실행 로직 "conflict→replace" 표준화, (4) R8(리포트 API)은 F-5 구조적 한계까지 겹쳐 별도 설계 필요 |
 | s4 운영 배포 | **Ship-with-known-issues** | (s4 FINDINGS.md 케이스 판정) | (1) postgres 지속 고부하(≥100rps·≥40s) 비운영 또는 `--rate-limit` 보수적 설정(F-6, blocker), (2) 캐시 hit-rate 검증 불가 인지(F-2, major), (3) gunicorn 선택 시 경화 옵션 절반 상실 인지(F-5, major) |
@@ -114,7 +114,7 @@ FINDINGS.md F-3/F-12/F-13; s3 FINDINGS.md F-6).
 | 도메인 | 1차 판정 | 3차 판정 | 이번(4차) 판정 | 근거 F/evidence |
 |---|---|---|---|---|
 | 요청-응답 CRUD·값 규칙(s1 R2–R4) | 조건부 가능(qa/REPORT.md L184) | Ship-with-known-issues(r1 "프로덕션 사용 가능(상태 전이 자동화 제외)", qa/rerun/REPORT.md §1) | **Ship-with-known-issues**(부분 셀 3건, 불가 0건 — D6 유도 규칙) | s1 R2/R3/R4 coverage cells(report-appendix/coverage-matrix.md); F-6(R2 지지 — §7에 심각도 표기 불일치 기록), F-5(R3, 수용 불필요), F-4(R4) |
-| 결제·민감정보(s1 R5–R7) | 불가(qa/REPORT.md L186) | Ship-with-known-issues(r2 "사용 가능(조건부)" 조건 2건, qa/rerun/REPORT.md §1) | **Ship-with-known-issues**(부분 셀 3건, 불가 0건 — D6 유도 규칙) | s1 R5/R6/R7 coverage cells; F-11·F-14(R7) — R5/R6이 인용하는 F-8/F-9는 s1 FINDINGS.md에 해당 헤딩이 없어 §7에 결측으로 기록, 여기서는 재인용하지 않음 |
+| 결제·민감정보(s1 R5–R7) | 불가(qa/REPORT.md L186) | Ship-with-known-issues(r2 "사용 가능(조건부)" 조건 2건, qa/rerun/REPORT.md §1) | **Ship-with-known-issues**(부분 셀 3건, 불가 0건 — D6 유도 규칙) | s1 R5/R6/R7 coverage cells; F-8(R5, PAN 서버 미추출)·F-9(R6, 실패주입 이음매 미구성)·F-11·F-14(R7) — 통합 리뷰 I2로 F-8/F-9 헤딩이 신설돼 이제 정상 인용 가능 |
 | 가드+spec 검증(s1 R9 + s2 R10 + s3 R10) | 불가(C7 가드 조건 표현력 한계, blocker, 3/4 관측 — qa/REPORT.md L143) | Ship-with-known-issues(r4 "판정 반전 — spec 원형 3시나리오 PASS", qa/rerun/REPORT.md §1) | **Ship-with-known-issues**(s1 R9 충족, s2 R10 부분, s3 R10 부분 — 불가 0건, D6 유도 규칙) | s1 R9(9블록/33단언 그린), s2 R10(부분 — 대리신호), s3 R10(부분 — 스케일·spec delete 버그 F-10) |
 | 시간창 정책 | 불가(qa/REPORT.md L188) | Ship-with-known-issues(r2 F-5 해소, qa/rerun/REPORT.md §1) | (미재측정 — 3차 유지) Ship-with-known-issues | (s-none: 이번 라운드에 시간창 정책을 다루는 케이스가 없음) — §1 종합 판정에 미포함, qa/rerun/REPORT.md §1 판정을 그대로 이월 |
 | 배치·집계(s3) | 불가(qa/REPORT.md L187) | Block 유지("배치·집계 워크로드는 여전히 사용 불가 — 단 blocker 2건이 각각 절반 열렸다", qa/rerun/REPORT.md §1) | **Block**(driver 교체: F-1/F-2(3차)→F-6/F-7/F-8(4차)) | s3 FINDINGS.md 케이스 판정 — 단, 집계 연산 자체(sum/count/avg/list where/schedule/멱등재실행)는 10k/50가맹점 전량 0불일치로 증명돼 3차 대비 개선(R1/R2/R5/R6/R7, evidence/08-rerun-oracle.md) |
@@ -153,6 +153,7 @@ docs/ROADMAP.md`의 실제 실행 결과를 인용한다.
 | M9 | s4 F-5(major) | `build_app()`의 env-var 표면이 `serve` CLI보다 좁음(gunicorn 경로에서 rate-limit/metrics/cache/jwt-issuer 미지원) | `build_app()` env-var 표면을 `serve`와 동등 확장 또는 nginx 대체 설정 문서화 | s4 R4 경화 옵션이 gunicorn 경로에서도 완전 충족 | `ls rfcs \| grep -i gunicorn` → 0줄; `grep -n -i gunicorn docs/ROADMAP.md` → 0줄 | **P2** |
 | M10 | s5 F-5(major, 대조군) | 해당 없음 — 방법론 관찰(자체검수 vs 독립검수) | 플랫폼 변경 아님 — s1의 spec 블록이 구현 상수를 import 못 하게 강제하는 언어 차원 방어가 있는지는 향후 비교 과제 | 없음(교육적 데이터) | 해당 없음 | **P2** |
 | M11 | s1 F-18(major) | round 1 증거가 응답 JSON만으로 작성되고 sqlite 직접 조회(read-back)를 안 함 | 해당 없음 — 이 케이스 자신의 증거 절차 결함, 플랫폼 문제 아님(FINDINGS 자체 명시) | 없음(플랫폼 R에 영향 없음) | 해당 없음 | **P2** |
+| M12 | s1 F-8(major, 통합 리뷰 I2로 신설된 헤딩) | Text 필드에서 부분 문자열(substring/slice)을 뽑는 동사·연산이 어휘에 전혀 없음 | Text 필드에 `slice`/`mask`류 동사 추가 | s1 R5 완전 충족(서버가 원문을 실제로 받아 last4를 스스로 추출 가능) | `ls rfcs \| grep -i 'slice\|substring\|mask\|string'` → 0줄; `grep -n -i 'slice\|substring\|mask' docs/ROADMAP.md` → 0줄 | **P2** |
 
 ## §6 이슈 후보 표
 
@@ -183,6 +184,7 @@ enhancement, production-readiness, tech-debt, question}에서만 선택).
 | M9 | `build_app()` env-var 표면을 `serve`와 동등화 | s4 F-5 | enhancement, production-readiness |
 | M10 | (교육적 관찰, 액션 없음) spec의 구현-상수 자기참조 방지 가능성 비교 과제 | s5 F-5 | question |
 | M11 | (이 케이스 자신의 절차 개선, 플랫폼 아님) 모든 create/update 주장은 read-back으로 맺기 | s1 F-18 | question |
+| M12 | Text 필드용 `slice`/`mask` 동사 추가 | s1 F-8 | enhancement |
 
 ## §7 이번 측정의 한계
 
@@ -235,13 +237,15 @@ report-appendix/token-usage.md, qa/rerun/report-appendix/friction-matrix.md
 
 **케이스 기록 정정 필요** (cases/**는 수정하지 않았다 — 아래는 기록용):
 
-1. `qa/probe-v0.8/cases/s1-order-platform/FINDINGS.md:27` — R5 커버리지 셀이
-   `F-8`을 인용하나 이 파일에 `### F-8` 헤딩이 없다(같은 파일 line 164에서도
-   재인용). PAN 미추출 friction 자체는 실재하나(R5 서술과 정합), 라운드
-   재구성 중 번호가 빠진 것으로 보인다.
-2. `qa/probe-v0.8/cases/s1-order-platform/FINDINGS.md:28` — R6 커버리지 셀이
-   `F-9`를 인용하나 이 파일에 `### F-9` 헤딩이 없다(같은 행에 인용된 `F-18`은
-   실재).
+1. **[해소됨 — 통합 리뷰 I2 대응]** `qa/probe-v0.8/cases/s1-order-platform/FINDINGS.md:27` —
+   R5 커버리지 셀이 인용하는 `F-8`은 t6 round 1 작성 시점엔 헤딩이 없었으나,
+   통합 단계에서 `### F-8`(카드 원문 PAN 서버 미추출, major/expr)이 실제로
+   추가돼 지금은 실재한다. friction-matrix.md §1에 행을 추가하고 §2/§5/§6에
+   반영했다(§5 M12).
+2. **[해소됨 — 통합 리뷰 I2 대응]** `qa/probe-v0.8/cases/s1-order-platform/FINDINGS.md:28` —
+   R6 커버리지 셀이 인용하는 `F-9`도 마찬가지로 `### F-9`(R6 원자성 실패 주입을
+   이 정확한 이음매에서 별도 구성 못 함, minor/축 해당없음)가 통합 단계에서
+   추가돼 지금은 실재한다. friction-matrix.md §1·§2에 반영했다.
 3. `qa/probe-v0.8/cases/s1-order-platform/FINDINGS.md:51` — F-6의 심각도가
    `blocker 후보`로, FINDINGS-SCHEMA §1의 3종(blocker/major/minor) 밖의
    비표준 표기다. friction-matrix.md는 blocker로 집계하고 주1로 남겼다.
@@ -261,6 +265,25 @@ report-appendix/token-usage.md, qa/rerun/report-appendix/friction-matrix.md
    요구사항 커버리지 표는 R1~R10 전건에 8충족·2부분(합계 10)을 기록한다(r1
    N2 대응). report-appendix/coverage-matrix.md §2는 FINDINGS.md 원문(8/2/0/0)을
    따랐다 — METRICS.md 쪽이 정정 대상이다.
+8. **[해소됨 — 통합 리뷰 I4 대응, t5]** `qa/probe-v0.8/cases/s5-baseline-fastapi/evidence/03-pytest.md`가
+   t6 round 1 시점엔 "20 passed, 7 skipped"로 끝나는데 FINDINGS/METRICS/이
+   REPORT는 "26 passed, 4 skipped"를 인용해 판정을 뒷받침할 실행 출력이
+   없었다. t5가 2026-09-06T14:03:49Z에 재실행해 동일 명령·환경으로 "26
+   passed, 4 skipped, 2 warnings, rc=0"을 "Final run" 절로 append했다(기존
+   스냅숏은 test-quality-auditor 수정 이전 것으로 라벨링, 삭제하지 않음) —
+   §2(5)·metrics-comparison.md가 인용하는 26/4/83 숫자는 이제 evidence로
+   뒷받침된다.
+9. **[통합 리뷰 I6, 경미]** `qa/probe-v0.8/cases/s2-integration-events/`의 브리프
+   DoD가 `evidence/09-purity.md`를 언급하나 그런 파일은 없다 — purity 관련
+   실체(impl/ 열람 0회, 스텁/프로세스 kill 확인)는 이 케이스 FINDINGS.md 환경
+   헤더와 `evidence/00-env.md`·`03-run.md`·`06-serve.md`에 이미 들어 있다.
+   경로 이름만의 불일치이며 s2 판정·이 REPORT의 어떤 인용에도 영향 없다.
+10. **[통합 리뷰 I6, 경미]** `qa/probe-v0.8/cases/s4-ops-deploy/evidence/backups/s4db_backup.dump`는
+    11,771바이트의 PostgreSQL 커스텀 포맷 바이너리 덤프다(`file` 확인) — R9
+    무중단 마이그레이션 판정의 근거 자체는 evidence/07-migration.md의 행수·값
+    대조 텍스트에 있으므로 판정에 영향은 없지만, 이 바이너리 파일 자체는
+    사람이 diff나 grep으로 직접 재현·리뷰할 수 없다는 점을 리뷰어 참고용으로
+    남긴다.
 
 **인용 무결성 검사 결과** (D7):
 
@@ -269,7 +292,7 @@ $ sh .claude/tmp/t6-integrity-check.sh
 == F-number tokens (sN F-k proximity) ==
 == evidence/ paths (sN evidence/... proximity) ==
 == friction-matrix row count vs source F-heading count ==
-source=47 matrix_rows=47
+source=49 matrix_rows=49
 done
 ```
 
@@ -277,7 +300,8 @@ done
 REPORT.md·report-appendix/*.md에서 `sN F-k` 및 `sN evidence/...` 근접 토큰을
 전부 뽑아 해당 케이스 `cases/sN.../FINDINGS.md`에 `### F-k` 헤딩이, 또는
 `cases/sN.../evidence/...`에 파일이 실재하는지 확인하고, friction-matrix.md의
-행 수가 다섯 FINDINGS.md의 `### F-` 전건 수(47)와 같은지 확인한다. 결과:
-**0 missing**, 47=47(모두 REPORT.md·report-appendix/**에 한정된 검사이며,
-cases/** 자체의 결측 2건(F-8/F-9 dangling)은 위 "케이스 기록 정정 필요"에
-별도 기록했고 본 REPORT/부록에는 재인용하지 않았다).
+행 수가 다섯 FINDINGS.md의 `### F-` 전건 수(49, 통합 리뷰 I5 대응으로 s1
+F-8/F-9 추가 후 47→49)와 같은지 확인한다(2026-09-06 재실행). 결과:
+**0 missing**, 49=49(모두 REPORT.md·report-appendix/**에 한정된 검사이며,
+s1 F-8/F-9의 옛 결측은 통합 단계에서 해소됐다 — 위 "케이스 기록 정정 필요"
+1–2번 항목에 해소 사실을 별도 기록했다).
