@@ -9,8 +9,8 @@
 | 첫 컴파일 성공까지 라운드 | 2 | evidence/01 round 1→2 (필드명 camelCase 수정) |
 | 첫 spec 전건 통과까지 라운드 | 2 | evidence/04-spec.md — round 1(bare `stored` 실패) → round 2(`stored Entity[0]` 인덱스 폼으로 즉시 통과, F-17) |
 | spec 시나리오 수 / 단언 수 | 9 / 33 | evidence/04-spec.md — A1/A2/A3(CreateOrder×3) + A6/A7(CancelOrder×2) + A4/A5(Pay×2) + A8×2(Refund, within-cap/exceeds-cap) = A1–A8 전건, `spec: 33 passed, 0 failed` |
-| 요구사항 충족 / 부분 / 불가 / 우회 (개수) | 충족 2 / 부분 8 / 불가 0 | FINDINGS.md 커버리지 표 집계(R1,R10=충족; R2–R9=부분 — R9는 round 2에서 spec 작성 성공, R8은 blocker 명시로 부분 유지) |
-| 결함 탐지: spec이 잡은 것 / 사람이 실행 출력을 보고 잡은 것 / 못 잡고 지나간 것 | 1(D3 자체 검증) / 18(F-1~F-18, 전부 실행 출력 직접 관찰로 발견) / 알 수 없음 | F-18은 플랫폼 결함이 아니라 이 케이스 자신의 증거 절차 결함(round 1의 read-back 누락)이지만, 여전히 "사람이 실행 출력을 보고 잡은 것" 열에 속한다 — round 1의 응답-JSON-만 확인 관행 자체가 read-back으로 잡힌 결함이기 때문. spec이 실제로 초록/빨강을 가른 것은 D3 자기증명 1건뿐(reviewer F1이 지적한 "spec이 잡은 결함 0"은 이제 최소 1로 해소) |
+| 요구사항 충족 / 부분 / 불가 / 우회 (개수) | 충족 3 / 부분 6 / 불가 1 (부분 6건 중 우회로 절반 충족: F-1·F-3·F-5·F-8) | FINDINGS.md 커버리지 표 집계(R1,R9,R10=충족; R2–R7=부분; R8=불가 — round 3에서 판정이 Block으로 바뀌며 R8도 "부분"에서 "불가"로 정정됐다) |
+| 결함 탐지: spec이 잡은 것 / 사람이 실행 출력을 보고 잡은 것 / 못 잡고 지나간 것 | 1(D3 자체 검증) / 16(실제 `### F-` 헤딩 개수 — F-1,3,4,5,6,8,9,10,11,12,13,14,15,16,17,18; F-2/F-7 번호는 결번) / 알 수 없음 | `grep -c '^### F-' FINDINGS.md` → 16. F-18은 플랫폼 결함이 아니라 이 케이스 자신의 증거 절차 결함(round 1의 read-back 누락)이지만, 여전히 "사람이 실행 출력을 보고 잡은 것" 열에 속한다 — round 1의 응답-JSON-만 확인 관행 자체가 read-back으로 잡힌 결함이기 때문. spec이 실제로 초록/빨강을 가른 것은 D3 자기증명 1건뿐(reviewer F1이 지적한 "spec이 잡은 결함 0"은 이제 최소 1로 해소) |
 | 읽은 문서 (파일 목록과 대략 줄 수) | 17개 파일, ~2,655줄 | evidence/00 §Docs read, evidence/01 목록 — round 2에서 RFC-0038(370줄, 재확인)·RFC-0028(§1, F-5 근거) 추가 |
 | 변경 요청(R-change) 반영: 바뀐 줄 수 / 라운드 / 기존 spec 중 깨진 것 | 12줄 / 4라운드(1회 자체 버그) / spec 0건 깨짐(R10 당시 spec 자체가 없었음 — round 2에서 신설된 spec은 R10 이후 상태를 기준으로 작성돼 회귀 확인 대상이 아님, evidence/07 그대로) | evidence/07-change-request.md |
 | 벽시계 시간 (시작~FINDINGS 완성) | round 1: 16:22Z→17:26Z(64분); round 2: 2026-09-06T12:37:29Z(rework 지시)→12:58:28Z+ (~21분); round 3: 2026-09-06T13:01:57Z(rework 지시)→13:03:35Z+ (~2+분, t1-r2.md 회신 작성 시점 기준) | `date -u`, status/t1.json (t1-r1 N2, t1-r2 N1 회신) |
