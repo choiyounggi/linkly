@@ -339,6 +339,21 @@ class RepositoryDriverTCK:
         self.assertEqual(
             self.driver.execute("widget", "read", "w-v1")["n"], 1)
 
+    def test_two_consecutive_persists_on_one_read_row_both_succeed(self):
+        self.driver.seed({"widget": {"w-v2": {"id": "w-v2", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-v2")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        row["n"] = 1
+        self.driver.persist("widget", "w-v2", row)
+        row["n"] = 2
+        self.driver.persist("widget", "w-v2", row)
+
+        self.assertEqual(self.driver.execute("widget", "read", "w-v2")["n"], 2)
+
 
 class CacheDriverTCK:
     """Mix into a `unittest.TestCase` subclass, override `make_cache()` and

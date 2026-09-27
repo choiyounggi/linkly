@@ -10,12 +10,15 @@ Two rules fix that, and both live here so mode A (interp.py) and mode B
 other's answer — the arrangement `differential.py::_derive_skip_from_payload`
 already uses for the Presence-guard skip flag (issue #12).
 
-  SEED RULE — role-based. The default seed populates exactly the entities the
-  workflow READS (`read`/`query`). An entity it only creates starts empty, so the
-  create inserts instead of conflicting. Reachability is structural: a
-  RepositoryCall nested under a Guard counts, because a guard's truth depends on
-  the payload and mode B derives its outcome statically (RFC-0004 §Execution
-  modes, the four observables).
+  SEED RULE — role-based, and ORDER-AWARE within the role. The default seed
+  populates exactly the entities the workflow READS first (`read`; `query` is
+  narrowed out, see `seeded_entities`). An entity it only creates starts empty,
+  so the create inserts instead of conflicting — and so does an entity created
+  BEFORE its first read (issue #174): it is excluded even though a later call
+  reads it, because the create's own insert is what that later read then finds.
+  Reachability is structural: a RepositoryCall nested under a Guard counts,
+  because a guard's truth depends on the payload and mode B derives its outcome
+  statically (RFC-0004 §Execution modes, the four observables).
 
   KEY RULE — a row lives under "<entity_id>#<payload id or '-'>". The identity
   field is the key, never a hash of the whole payload: two legitimately identical
@@ -124,7 +127,17 @@ def event_emissions(document, workflow_id):
 
 
 def seeded_entities(document, workflow_id):
-    """The entity ids the default seed populates — those the workflow `read`s.
+    """The entity ids the default seed populates — those the workflow `read`s
+    BEFORE it creates them.
+
+    Order-aware (issue #174): an entity's FIRST `read` or `create` call, in
+    document order, decides its seed membership. First-`read` seeds (a later
+    `create` against it is then the reachable conflict `TestReadThenCreate`
+    pins); first-`create` does NOT seed, even when the same entity is read
+    later in the same workflow — seeding it would make that create collide
+    with a row the workflow itself was about to insert, and the create's own
+    insert is what the later read finds instead. `query` never counts as
+    either kind of first operation, so it neither seeds nor suppresses.
 
     `operation == "read"` only, not `READ_OPS` (`read`+`query`) — narrowed by
     RFC-0025 §5. The original reason `query` was ever in this set was to keep
@@ -135,7 +148,11 @@ def seeded_entities(document, workflow_id):
     wrong default: a single field-less row (a copy of the payload, missing
     whatever field an aggregate sums) where the correct default is nothing.
     """
-    return {entity_id for entity_id, operation in repository_calls(document, workflow_id)
+    first_op = {}
+    for entity_id, operation in repository_calls(document, workflow_id):
+        if operation in ("read", "create"):
+            first_op.setdefault(entity_id, operation)
+    return {entity_id for entity_id, operation in first_op.items()
             if operation == "read"}
 
 

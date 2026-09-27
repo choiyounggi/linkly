@@ -786,6 +786,13 @@ workflow Checkout
 SAME_ENTITY = READ_THEN_CREATE.replace("    create order\n",
                                        "    create product\n")
 
+# Mirror of READ_THEN_CREATE with the order reversed (issue #174): Order is
+# created before it is read, so the order-aware seed rule must exclude it.
+CREATE_THEN_FIND = READ_THEN_CREATE.replace(
+    "    find product\n    create order\n",
+    "    create order\n    find order\n").replace(
+    "entity Product\n    field\n        id UUID\n        stock Integer\n", "")
+
 # No RepositoryCall at all — the zero-call boundary.
 NO_REPO = """
 capability postgres
@@ -833,6 +840,21 @@ class TestModeBDerivesRepositoryOutcomes(unittest.TestCase):
         self.assertEqual(op_names(ops), ["find product", "create order"])
         self.assertNotIn("lnpl.terminal_status", attrs)
         self.assertEqual([len(op["effects"]) for op in ops], [1, 1])
+
+    def test_create_then_find_excludes_the_entity_from_the_default_seed(self):
+        """Scoped claim (issue #174): this proves only the shared-derivation
+        dimension — `backend._lnpl_ops` and `repo_policy.default_rows` both
+        read `seeded_entities()`, so excluding an entity from one excludes it
+        from the other by construction. It is not a full differential run
+        (see wiki/testing/quality/differential-run-agreement.md) — mode A's
+        own runtime behavior for the same create-before-read ordering is
+        separately pinned by
+        test_repo_policy.TestReadThenCreate.test_creating_an_entity_before_its_first_read_does_not_seed_it."""
+        d = checkout_doc(CREATE_THEN_FIND)
+        self.assertEqual(seeded_entities(d, "wf.checkout"), set())
+        attrs, ops = backend._lnpl_ops(d, "wf.checkout")
+        self.assertNotIn("lnpl.terminal_status", attrs)
+        self.assertEqual(op_names(ops), ["create order", "find order"])
 
     def test_an_unseeded_read_fails_and_truncates_at_that_step(self):
         attrs, ops = backend._lnpl_ops(checkout_doc(READ_THEN_CREATE),

@@ -35,6 +35,13 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   실패했다. 이제 그 경우를 행 자신의 `id`로 재조회해 복구하고, 그래도
   확인할 수 없는 행이나 후보가 있었는데 하나도 못 쓴 실행은 rc 2로
   시끄럽게 실패한다 (issue #179).
+- In-workflow write-state self-conflicts (issue #174): the default seed
+  rule now excludes an entity whose first repository operation is
+  `create` (previously seeded if it was ever read anywhere in the
+  workflow, even after being created first); `persist()` now advances the
+  bound row's optimistic-lock version after a successful write, so a
+  second `set` on the same binding in one run no longer raises a phantom
+  write conflict.
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
