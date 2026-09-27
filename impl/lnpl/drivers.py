@@ -535,8 +535,11 @@ class _VersionedRow(dict):
     that read. Equality, iteration, and `json.dumps` (via `_encode`) see only
     the dict's own items — `observed_version` is a plain instance attribute,
     invisible to every user-facing surface (payload, response, wire) and
-    read only by `persist()` to gate the write against a change since this
-    read landed (issue #92; no vocabulary added, nothing exposed).
+    read by `persist()` to gate the write against a change since this read
+    landed (issue #92; no vocabulary added, nothing exposed). `persist()`
+    also WRITES it, advancing it in place after a successful versioned
+    UPDATE so a second write through the same object is checked against the
+    version that write left behind rather than the now-stale read (#174).
     """
 
     def __init__(self, data, version):
@@ -865,6 +868,11 @@ class SqliteRepositoryDriver(RepositoryDriver):
                 raise DriverError(
                     "write conflict: row changed since read (%s %s)"
                     % (entity_id, key))
+            # Issue #174: the UPDATE above bumped `_version`, so the row this
+            # caller still holds is now one version behind the store. Advance
+            # it in place — a second `set` on the same binding within one run
+            # would otherwise fail the version check as a phantom conflict.
+            row.observed_version = version + 1
             self._end_write()
         except sqlite3.Error as exc:
             raise DriverError("cannot persist %s: %s" % (entity_id, exc)) from exc

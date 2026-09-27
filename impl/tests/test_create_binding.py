@@ -18,6 +18,7 @@ never needed (a network result is never `set`-able).
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,7 @@ from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import MASK, Interpreter
 from lnpl.lower import LowerError, VERB_LEXICON, lower
 from lnpl.parser import parse
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -43,6 +44,19 @@ def compile_doc(source, module="m"):
 
 def nodes_of(doc, kind):
     return [n for n in doc["nodes"] if n["kind"] == kind]
+
+
+def _tmp_store_dir(test):
+    """A per-test sqlite directory under `.claude/tmp`, removed on teardown.
+
+    `.claude/tmp`, never `/tmp`/`$TMPDIR`: repo policy, enforced for `mkdtemp`
+    by `test_tmp_hygiene.py`. Mirrors `test_repo_state.py`'s `_tmp_workdir`.
+    """
+    base = os.path.join(REPO_ROOT, ".claude", "tmp")
+    os.makedirs(base, exist_ok=True)
+    path = tempfile.mkdtemp(prefix="lnpl-t174-", dir=base)
+    test.addCleanup(shutil.rmtree, path, True)
+    return path
 
 
 def order_source(body, extra_fields=""):
@@ -246,6 +260,31 @@ class TestAssignmentAndScope(unittest.TestCase):
                                     row_key("entity.order", payload))
             self.assertEqual(reread["quantity"], 9)
             self.assertEqual(reread["total"], 12)
+
+    def test_two_consecutive_sets_on_one_found_row_both_persist_to_sqlite(self):
+        """Issue #174: `find` binds an existing row, and two `set`s on it in
+        one run must both land — the second must not see a phantom write
+        conflict from the first write's own version bump."""
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        doc = compile_doc(order_source(
+            "    find order\n    set order.quantity to 7\n"
+            "    set order.quantity to 9\n"
+        )).to_document()
+        payload = {"id": "o-1", "quantity": 3, "total": 12}
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        driver.seed(default_rows(doc, "wf.place", payload))
+
+        interp = Interpreter(doc, repo_rows={}, repository=driver)
+        result = interp.run_workflow("wf.place", payload)
+
+        self.assertEqual(result["status"], "completed")
+        reread = driver.execute("entity.order", "read",
+                                row_key("entity.order", payload))
+        self.assertEqual(reread["quantity"], 9)
+        # The seeded row starts at `_version` 0 (drivers.py's schema default)
+        # and each of the two successful persists bumps it by 1.
+        self.assertEqual(reread.observed_version, 2)
 
     def test_respond_can_reference_a_create_as_binding(self):
         doc = compile_doc(order_source(

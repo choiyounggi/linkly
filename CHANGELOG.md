@@ -9,6 +9,15 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Fixed
+- In-workflow write-state self-conflicts (issue #174): the default seed
+  rule now excludes an entity whose first repository operation is
+  `create` (previously seeded if it was ever read anywhere in the
+  workflow, even after being created first); `persist()` now advances the
+  bound row's optimistic-lock version after a successful write, so a
+  second `set` on the same binding in one run no longer raises a phantom
+  write conflict.
+
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
 now reach the last two places they had not: `spec` blocks can seed and

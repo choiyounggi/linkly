@@ -6,8 +6,12 @@ must start empty, or a read-then-create workflow can never succeed under any
 seed — the defect issue #35 reports.
 """
 
+import os
+import shutil
+import tempfile
 import unittest
 
+from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import FakeRepository, Interpreter, RunError, sample_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
@@ -52,12 +56,28 @@ workflow Checkout
 """
 
 
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 def doc(src, name="checkout"):
     return lower(parse(src), name).to_document()
 
 
 def payload_for(document):
     return sample_payload([n for n in document["nodes"] if n["kind"] == "Entity"])
+
+
+def _tmp_store_dir(test):
+    """A per-test sqlite directory under `.claude/tmp`, removed on teardown.
+
+    `.claude/tmp`, never `/tmp`/`$TMPDIR`: repo policy, enforced for `mkdtemp`
+    by `test_tmp_hygiene.py`. Mirrors `test_repo_state.py`'s `_tmp_workdir`.
+    """
+    base = os.path.join(REPO, ".claude", "tmp")
+    os.makedirs(base, exist_ok=True)
+    path = tempfile.mkdtemp(prefix="lnpl-t174-", dir=base)
+    test.addCleanup(shutil.rmtree, path, True)
+    return path
 
 
 class TestSeedRule(unittest.TestCase):
@@ -211,17 +231,38 @@ class TestReadThenCreate(unittest.TestCase):
                       for c in step.children if c.kind == "RepositoryCall"]
         self.assertEqual([c.attrs["found"] for c in repo_spans], [True, True])
 
-    def test_reading_an_entity_makes_it_seeded_even_when_it_is_also_created(self):
-        # The flip side of the case above, and the rule's boundary: `read order`
-        # puts Order in the read set, so the default seed populates it and the
-        # create that precedes the read conflicts. Role, not declaration order.
+    def test_creating_an_entity_before_its_first_read_does_not_seed_it(self):
+        # Order-aware (issue #174): `create order` runs before any `read
+        # order`, so Order's FIRST operation is `create` -- it is excluded
+        # from the default seed, and the create inserts instead of colliding
+        # with a seed that was never placed. Still decidable from the
+        # document alone: mode B (`backend.py`) and `differential.py`
+        # inherit this rule because both call `seeded_entities` directly,
+        # with no separate edit needed there. (Previously named
+        # test_reading_an_entity_makes_it_seeded_even_when_it_is_also_created
+        # and asserted the opposite, pre-#174 behavior -- "Role, not
+        # declaration order" -- which issue #174 reports as the defect.)
         src = CHECKOUT.replace("    find product\n    create order\n",
                                "    create order\n    read order\n")
         d = doc(src)
-        self.assertEqual(seeded_entities(d, "wf.checkout"), {"entity.order"})
+        self.assertEqual(seeded_entities(d, "wf.checkout"), set())
         _interp, result, _payload = self._run(src)
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["failed_step"], "create order")
+        self.assertEqual(result["status"], "completed")
+
+    def test_creating_an_entity_before_its_first_read_completes_on_a_real_sqlite_store(self):
+        # DoD item 1's SQLite half of the same create-before-read case the
+        # method above proves on the Fake repository.
+        src = CHECKOUT.replace("    find product\n    create order\n",
+                               "    create order\n    read order\n")
+        d = doc(src)
+        payload = payload_for(d)
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        driver.seed(default_rows(d, "wf.checkout", payload))
+        interp = Interpreter(d, repo_rows={}, repository=driver)
+        result = interp.run_workflow("wf.checkout", payload)
+        self.assertEqual(result["status"], "completed")
 
     def test_the_seed_dict_handed_to_the_interpreter_is_not_mutated(self):
         d = doc(CHECKOUT)
