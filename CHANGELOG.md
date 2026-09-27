@@ -9,6 +9,15 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Fixed
+- `lnpl migrate`가 다개체(multi-entity) 모듈에서 `create`가 쓴 행을 조용히
+  건너뛰고 rc 0으로 "완료"를 보고하던 문제를 고쳤다 — `id` 필드를 선언하지
+  않은 entity의 행은 `create`가 자기 자신의 저장 키를 `id` 값으로 쓰는데,
+  migrate가 그 값으로 저장 키를 다시 계산하면 이중으로 접두되어 재조회가
+  실패했다. 이제 그 경우를 행 자신의 `id`로 재조회해 복구하고, 그래도
+  확인할 수 없는 행이나 후보가 있었는데 하나도 못 쓴 실행은 rc 2로
+  시끄럽게 실패한다 (issue #179).
+
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
 now reach the last two places they had not: `spec` blocks can seed and

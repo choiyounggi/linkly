@@ -1067,9 +1067,13 @@ def cmd_migrate(args):
     `E` that lacks it (expand semantics — an existing value is never
     overwritten), re-stamping `_schema_gen`. Prints
     `{"scanned", "updated", "skipped"}` as JSON; `--dry-run` counts without
-    writing. `--backend` is required and `fake` is rejected — the same
-    shape `cmd_db_check` already established for an operation meaningless
-    without a real store.
+    writing. When `scanned == 0` an explicit note also goes to stderr.
+    Returns 2 (via the `except MigrateError` below) when the request is
+    refused before writing anything, when a candidate row cannot be
+    confirmed migrated under any key, or when candidates existed but nothing
+    was written (issue #179). `--backend` is required and `fake` is rejected
+    — the same shape `cmd_db_check` already established for an operation
+    meaningless without a real store.
     """
     field_name, sep, raw_value = args.set.partition("=")
     if not sep:
@@ -1095,6 +1099,11 @@ def cmd_migrate(args):
             return 2
     finally:
         repository.close()
+    if result["scanned"] == 0:
+        # issue #179 D5: "nothing to migrate" must be visible on its own
+        # channel, not inferred from a JSON field. stdout and rc unchanged.
+        print("migrate: 0 rows scanned for entity %r -- nothing to migrate"
+              % args.entity, file=sys.stderr)
     sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
     return 0
 
