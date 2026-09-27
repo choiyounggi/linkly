@@ -21,7 +21,7 @@ from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
                           format_lines_from_records, to_records)
 from .drivers import (DriverError, TokenError, audience_for_path, open_cache,
                       open_network, open_repository, open_token_provider,
-                      _is_url_literal)
+                      _http_capabilities, _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
 from .lexer import LexError
@@ -1197,14 +1197,6 @@ def _network_targets(doc):
     return seen
 
 
-def _http_capabilities(doc):
-    """name -> {"method", "auth"} for every declared `capability http` node
-    (issue #101) — `method` is present only on those, so it doubles as the
-    filter for "is this Capability node an http one"."""
-    return {n["name"]: {"method": n["method"], "auth": n.get("auth")}
-            for n in doc["nodes"] if n["kind"] == "Capability" and "method" in n}
-
-
 def _open_endpoints(doc, endpoint_args, network_spec):
     """`--endpoint`/`LNPL_ENDPOINT_*` + declared `capability http` auth ->
     (endpoints, capabilities) for `HttpNetworkDriver`, or `_REJECTED`.
@@ -1260,7 +1252,9 @@ def _open_endpoints(doc, endpoint_args, network_spec):
                 headers["Authorization"] = "Bearer %s" % value
             else:
                 headers[auth["header"]] = value
-        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers}
+        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers,
+                               "retry": cap.get("retry"), "breaker": cap.get("breaker"),
+                               "path": cap.get("path")}
     return endpoints, resolved_caps
 
 

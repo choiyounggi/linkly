@@ -1857,6 +1857,20 @@ def _registered_network_names():
     return sorted(ep.name for ep in _network_entry_points())
 
 
+def _http_capabilities(document):
+    """name -> {"method", "auth", "retry", "breaker", "path"} for every
+    declared `capability http` node (issue #101, widened issue #109,
+    wired through issue #176) — `method` is present only on those, so it
+    doubles as the filter for "is this Capability node an http one".
+    Shared by `cli.py` and `wsgi.py` (issue #176 D2) so a future field
+    addition needs one edit, not two synchronized ones."""
+    return {n["name"]: {"method": n["method"], "auth": n.get("auth"),
+                        "retry": n.get("retry"), "breaker": n.get("breaker"),
+                        "path": n.get("path")}
+            for n in document["nodes"]
+            if n["kind"] == "Capability" and "method" in n}
+
+
 def open_network(spec, endpoints=None, capabilities=None):
     """`--network`'s value -> a NetworkDriver, or None for the default
     (RFC-0027 §1, the `open_repository` selector mirrored).

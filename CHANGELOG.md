@@ -9,6 +9,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Fixed
+- `capability http`'s `retry`/`breaker`/`path` clauses were parsed and
+  compiled but silently dropped before reaching `HttpNetworkDriver` — both
+  `lnpl run`/`lnpl serve` (`cli.py:_open_endpoints`) and
+  `build_app()`/`make_wsgi_app` (`wsgi.py:_resolve_network`) projected a
+  declared capability down to `{"method", "auth"}` before handing it to
+  the driver. A declared `retry` never retried; a declared `path` made
+  any `call ... with <ref>` fail with `"has path arguments but no path
+  declared"` (issue #176).
+
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
 now reach the last two places they had not: `spec` blocks can seed and
