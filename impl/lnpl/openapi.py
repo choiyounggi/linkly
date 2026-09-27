@@ -469,10 +469,27 @@ def _response_schema(steps, nodes, entities, refined):
         return None
 
     by_binding = {binding_name(e): e for e in entities}
+    # issue #173 / RFC-0030 §2: a `create ... as <alias>` binding has no
+    # entry in `by_binding` (it knows only entities' own default binding
+    # names) -- mirror `lower.py:2262`'s `create_bindings` rule so a
+    # `respond` reference to the alias resolves the same way it does at
+    # lowering time, instead of a bare KeyError.
+    create_bindings = {}
+    for step in steps:
+        for child_id in step.get("children", []):
+            effect = nodes[child_id]
+            if (effect["kind"] == "RepositoryCall"
+                    and effect.get("operation") == "create"
+                    and effect.get("result")):
+                create_bindings[effect["result"]] = nodes[effect["entity"]]
     grouped, order = {}, []
     for ref in refs:
         binding, _, field_name = ref.partition(".")
-        entity = by_binding[binding]
+        entity = by_binding.get(binding) or create_bindings.get(binding)
+        if entity is None:
+            raise OpenApiError(
+                "respond references unknown binding %r (not a find/read "
+                "binding or a create-as result)" % binding)
         field = next(f for f in entity["fields"] if f["name"] == field_name)
         tname = field["type"]
         if tname in refined:

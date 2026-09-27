@@ -9,6 +9,18 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Fixed
+- OpenAPI generation crashed (`KeyError`) on any workflow using `create
+  <Entity> as <alias>` together with `respond <alias>...` —
+  `_response_schema`'s `by_binding` map only ever held entities' own
+  default binding names, never an `as`-declared alias, so the RFC-0030
+  golden example itself could not compile to an OpenAPI document, and
+  `lnpl serve` (which calls the same generator at startup) could not bind
+  either. `_response_schema` now also resolves a `respond` reference
+  against the workflow's own `create ... as` result bindings, and raises a
+  clear `OpenApiError` instead of a bare `KeyError` for any reference
+  resolving to neither (issue #173).
+
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
 now reach the last two places they had not: `spec` blocks can seed and

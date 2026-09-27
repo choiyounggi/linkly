@@ -8,8 +8,8 @@ import unittest
 from lnpl import refinements
 from lnpl.lower import LowerError, lower
 from lnpl.openapi import (DECIMAL_FACET_KEYWORD, FACET_KEYWORD, NARROWING,
-                          TYPE_SCHEMA, OpenApiError, _refinement_schema, _slug,
-                          generate)
+                          TYPE_SCHEMA, OpenApiError, _refinement_schema,
+                          _response_schema, _slug, generate)
 from lnpl.parser import parse
 from lnpl.types import SEMANTIC_TYPES
 
@@ -81,6 +81,27 @@ entity Link
 service ShortenService
 workflow Shorten
     validate input
+"""
+
+# issue #173 / RFC-0030 §2's golden example: `create ... as` + `respond` —
+# `by_binding` only ever knew entity default binding names, never a
+# create-as alias, so `generate()` raised `KeyError: 'newOrder'` on this
+# exact fixture before the fix.
+CREATE_AS_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Money
+        placedAt DateTime
+service Checkout
+    policy
+        timeout 5s
+workflow PlaceOrder
+    create order as newOrder
+    set newOrder.quantity to input.quantity
+    respond newOrder.id newOrder.quantity
 """
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -194,6 +215,40 @@ class TestRefusals(unittest.TestCase):
         with self.assertRaises(OpenApiError) as ctx:
             generate(doc)
         self.assertIn("dangling", str(ctx.exception))
+
+
+class TestCreateAsOpenApi(unittest.TestCase):
+    """issue #173: `create ... as` + `respond` must not crash `generate()`."""
+
+    def test_200_schema_is_derived_from_the_created_entity(self):
+        spec = spec_for(CREATE_AS_SRC)
+        schema = spec["paths"]["/checkout/place-order"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(["newOrder"], schema["required"])
+        new_order = schema["properties"]["newOrder"]
+        self.assertEqual({"id", "quantity"}, set(new_order["properties"]))
+        self.assertEqual({"type": "string", "format": "uuid"},
+                         new_order["properties"]["id"])
+        self.assertEqual({"type": "integer", "format": "int64"},
+                         new_order["properties"]["quantity"])
+
+    def test_create_as_with_no_respond_gets_no_200_content(self):
+        src = CREATE_AS_SRC.replace(
+            "    respond newOrder.id newOrder.quantity\n", "")
+        spec = spec_for(src)
+        op200 = spec["paths"]["/checkout/place-order"]["post"]["responses"]["200"]
+        self.assertNotIn("content", op200)
+
+    def test_respond_to_an_unresolvable_binding_raises_openapi_error_not_keyerror(self):
+        nodes = {
+            "wf.step.1": {"id": "wf.step.1", "kind": "WorkflowStep",
+                         "children": ["wf.step.1.resp"]},
+            "wf.step.1.resp": {"id": "wf.step.1.resp", "kind": "Response",
+                               "refs": ["ghost.id"]},
+        }
+        steps = [nodes["wf.step.1"]]
+        with self.assertRaises(OpenApiError) as ctx:
+            _response_schema(steps, nodes, entities=[], refined=set())
+        self.assertIn("ghost", str(ctx.exception))
 
 
 class TestRefinementSchemas(unittest.TestCase):
