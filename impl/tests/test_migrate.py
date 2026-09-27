@@ -14,9 +14,9 @@ import unittest
 
 from lnpl import cli
 from lnpl.drivers import SqliteRepositoryDriver
-from lnpl.interp import SCHEMA_GEN_KEY, schema_generation
+from lnpl.interp import Interpreter, SCHEMA_GEN_KEY, schema_generation
 from lnpl.migrate import MigrateError, run_migration
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 SOURCE = """capability postgres
 
@@ -35,6 +35,31 @@ service AccountService
 workflow Fetch
     read account
 """
+
+# issue #179: a two-entity module where `Payment` (the created entity)
+# declares NO settable `id` field — the exact shape that exposes the silent
+# no-op: `create` stores `id` = the row's own full storage key whenever no
+# declared `id` field overwrites it (drivers.py `_create` / interp.py's
+# create branch), and `migrate` then derives a doubly-prefixed key from
+# that value. `create payment` needs no nested assignment — issue #97's
+# payload seeding copies every same-named declared field (here `label`)
+# from the payload into the created row on its own.
+MULTI_ENTITY_SOURCE = """capability postgres
+
+entity Account
+    field
+        label Text
+
+entity Payment
+    field
+        label Text
+        currency Text
+
+workflow Create
+    read account
+    create payment
+"""
+
 
 ACCOUNT_1 = "11111111-1111-1111-1111-111111111111"
 ACCOUNT_2 = "22222222-2222-2222-2222-222222222222"
@@ -226,6 +251,16 @@ class EmptyTableTest(MigrateTestCase):
 
         self.assertEqual(0, rc, err)
         self.assertEqual({"scanned": 0, "updated": 0, "skipped": 0}, json.loads(out))
+
+    def test_zero_rows_prints_an_explicit_note_on_stderr(self):
+        """issue #179 D5: "nothing to migrate" must be visible, not inferred
+        from a JSON field — rc and stdout stay exactly as they were."""
+        rc, out, err = self.migrate("--set", "status=active")
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual({"scanned": 0, "updated": 0, "skipped": 0},
+                         json.loads(out))
+        self.assertIn("0 rows", err)
 
 
 class _InjectingRepository:
@@ -531,3 +566,183 @@ class NamespacedEntityResolutionTest(unittest.TestCase):
         self.assertNotEqual(0, rc)
         self.assertIn("entity.a.b.c", err)
         self.assertIn("entity.a.b..c", err)
+
+
+class MultiEntityCreateBackfillTest(unittest.TestCase):
+    """(정상, issue #179) 워크플로의 `create`가 직접 쓴 행은, 그 entity가
+    설정 가능한 `id` 필드를 선언하지 않았다는 이유로 migrate가 조용히
+    건너뛰어서는 안 된다 — 이 조합이 rc 0 / `updated: 0`의 침묵 no-op을
+    만들던 실제 재현 경로다."""
+
+    def setUp(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        self.dir = box.name
+        self.source = os.path.join(self.dir, "m.lnpl")
+        with open(self.source, "w", encoding="utf-8") as fh:
+            fh.write(MULTI_ENTITY_SOURCE)
+        self.db = os.path.join(self.dir, "store.db")
+        self.doc = cli.compile_source([self.source])
+        self.payment_id = next(
+            n["id"] for n in self.doc["nodes"]
+            if n["kind"] == "Entity" and n["name"] == "Payment")
+        self.workflow_id = next(
+            n["id"] for n in self.doc["nodes"] if n["kind"] == "Workflow")
+
+    def run_cli(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def payment_rows(self):
+        driver = SqliteRepositoryDriver(self.db)
+        try:
+            found = driver._conn.execute(
+                "SELECT payload FROM lnpl_rows WHERE entity_id = ?",
+                (self.payment_id,)).fetchall()
+        finally:
+            driver.close()
+        return [json.loads(row[0]) for row in found]
+
+    def create_a_payment_row(self):
+        """Write the row through `create`'s OWN code path — never
+        `MigrateTestCase.seed`, which would bypass the exact mechanism this
+        issue is about. The payload is an explicit dict, never
+        `sample_payload()`: that helper merges every declared field of every
+        entity into one flat dict, which is a different (and out-of-scope)
+        leak and would make this fixture undecidable evidence."""
+        repository = SqliteRepositoryDriver(self.db)
+        try:
+            payload = {"id": "acct-1", "label": "hello"}
+            rows = default_rows(self.doc, self.workflow_id, payload)
+            interp = Interpreter(self.doc, repo_rows=rows, repository=repository)
+            result = interp.run_workflow(self.workflow_id, payload)
+        finally:
+            repository.close()
+        self.assertEqual("completed", result["status"], result)
+
+    def test_a_row_written_by_create_is_backfilled_not_silently_skipped(self):
+        self.create_a_payment_row()
+        # The row `create` wrote stores its own full storage key as `id`,
+        # so the key migrate derives from it is doubly prefixed.
+        stored = self.payment_rows()
+        self.assertEqual(1, len(stored))
+        self.assertEqual(self.payment_id + "#acct-1", stored[0]["id"])
+        self.assertEqual(self.payment_id + "#" + self.payment_id + "#acct-1",
+                         row_key(self.payment_id, stored[0]))
+
+        rc, out, err = self.run_cli(
+            ["migrate", self.source, "--entity", "Payment",
+             "--set", "currency=USD", "--backend", "sqlite:" + self.db])
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual({"scanned": 1, "updated": 1, "skipped": 0},
+                         json.loads(out))
+        after = self.payment_rows()
+        self.assertEqual(1, len(after))
+        self.assertEqual("USD", after[0]["currency"])
+        self.assertEqual("hello", after[0]["label"])   # nothing else disturbed
+
+
+class UnresolvableRowTest(MigrateTestCase):
+    """(에러, issue #179 D2) 스캔 시점 키로도 그 행 자신의 `id` 값으로도
+    다시 찾을 수 없는 후보 행은 배치 전체를 시끄럽게 실패시킨다 — 무해한
+    `skipped` 통에 섞여 들어가지 않는다."""
+
+    def test_a_row_with_an_unresolvable_id_aborts_the_batch(self):
+        driver = SqliteRepositoryDriver(self.db)
+        try:
+            # Filed under ACCOUNT_1's real storage key, but its own stored
+            # "id" names a THIRD, nonexistent value — so neither
+            # row_key(entity_id, row) (which reads that lying "id") nor the
+            # row's "id" taken as a raw key resolves back to this row.
+            real_key = row_key(self.entity_id, {"id": ACCOUNT_1})
+            liar_row = {"id": "does-not-exist-anywhere", "label": "a"}
+            driver.seed({self.entity_id: {real_key: liar_row}})
+        finally:
+            driver.close()
+
+        rc, out, err = self.migrate("--set", "status=active")
+
+        self.assertEqual(2, rc)
+        self.assertEqual("", out)
+        self.assertIn("could not be confirmed migrated", err)
+        row = self.raw_row(ACCOUNT_1)
+        self.assertNotIn("status", row)
+        self.assertNotIn(SCHEMA_GEN_KEY, row)
+
+
+class _AllClaimedRepository:
+    """Wraps a real `SqliteRepositoryDriver`; every per-row `read` during
+    migrate's own re-read returns the row with `field_name` already present,
+    simulating EVERY candidate being claimed by a concurrent writer between
+    the scan and migrate's own re-read (issue #179 D3)."""
+
+    def __init__(self, inner, field_name, value):
+        self._inner = inner
+        self._field_name = field_name
+        self._value = value
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def execute(self, entity_id, operation, key):
+        result = self._inner.execute(entity_id, operation, key)
+        if operation == "read" and result is not None:
+            result = dict(result)
+            result[self._field_name] = self._value
+        return result
+
+
+class AllCandidatesClaimedConcurrentlyTest(MigrateTestCase):
+    """(에러/동시성, issue #179 D3) 후보를 하나 이상 스캔했는데 그중 한
+    행도 쓰지 못한 실행은 — 전부 남의 쓰기가 먼저 채간 합법적인 경우라도
+    — rc 0으로 성공을 보고하지 않는다."""
+
+    def test_every_candidate_claimed_concurrently_still_aborts(self):
+        self.seed({"id": ACCOUNT_1, "label": "a"}, {"id": ACCOUNT_2, "label": "b"})
+        inner = SqliteRepositoryDriver(self.db)
+        wrapped = _AllClaimedRepository(inner, "status", "claimed-elsewhere")
+
+        try:
+            with self.assertRaises(MigrateError) as ctx:
+                run_migration(self.doc, wrapped, "Account", "status", "active")
+        finally:
+            inner.close()
+
+        self.assertIn("zero effect", str(ctx.exception))
+        for account_id in (ACCOUNT_1, ACCOUNT_2):
+            row = self.raw_row(account_id)
+            self.assertNotIn("status", row)
+            self.assertNotIn(SCHEMA_GEN_KEY, row)
+
+
+class UnresolvableRowWithoutAnIdTest(MigrateTestCase):
+    """(경계, issue #179 D2) `id` 키 자체가 없는 후보 행도 무해한 skip이
+    아니다 — 그 행의 `id`가 `None`이라는 이유로 중단 판정을 놓치면, 같은
+    배치의 다른 행은 커밋되고 이 행은 `updated`에도 `skipped`에도 안 잡힌
+    채 rc 0으로 사라진다(scanned != updated + skipped)."""
+
+    def test_an_id_less_unresolvable_row_aborts_the_whole_batch(self):
+        driver = SqliteRepositoryDriver(self.db)
+        try:
+            # One ordinary candidate that WOULD migrate cleanly on its own,
+            # plus one filed under a key its own payload cannot reproduce
+            # and carrying no "id" at all.
+            driver.seed({self.entity_id: {
+                row_key(self.entity_id, {"id": ACCOUNT_1}):
+                    {"id": ACCOUNT_1, "label": "a"},
+                "%s#orphan" % self.entity_id: {"label": "b"},
+            }})
+        finally:
+            driver.close()
+
+        rc, out, err = self.migrate("--set", "status=active")
+
+        self.assertEqual(2, rc)
+        self.assertEqual("", out)
+        self.assertIn("could not be confirmed migrated", err)
+        # The whole batch rolled back -- the healthy row was not committed.
+        self.assertNotIn("status", self.raw_row(ACCOUNT_1))
+        self.assertNotIn(SCHEMA_GEN_KEY, self.raw_row(ACCOUNT_1))

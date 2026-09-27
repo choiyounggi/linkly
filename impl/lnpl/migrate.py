@@ -23,7 +23,11 @@ class MigrateError(Exception):
     entity, an undeclared or `derived` field, or a `--set` value that fails
     its field's declared type (RFC-0001) — this repo's "does not guess,
     refuses" rule (issue #147 D5). Also raised, after a `rollback()`, for a
-    `DriverError` the store itself reports mid-batch.
+    `DriverError` the store itself reports mid-batch, for a candidate row
+    that could not be confirmed migrated under any key `migrate` can derive,
+    or for a run that scanned candidate rows but wrote none of them (issue
+    #179 D2/D3) -- the batch is never left partially written in any of these
+    cases.
     """
 
 
@@ -106,7 +110,11 @@ def run_migration(doc, repository, entity_name, field_name, raw_value, dry_run=F
     (written, unless `dry_run`), `skipped` the ones that already had it
     (expand semantics: never overwritten) or that a concurrent writer
     claimed first. Every write in one transaction (issue #147 D4); a
-    `DriverError` mid-batch rolls the whole batch back.
+    `DriverError` mid-batch rolls the whole batch back. So does a candidate
+    row `migrate` cannot confirm migrated under any key it can derive, and
+    so does a run that scanned candidates but updated none of them (issue
+    #179 D2/D3) -- both raise `MigrateError` after `rollback()`, never
+    returning a dict that reports zero effect as success.
 
     Review r1 F1: the initial `query()` scan below is a snapshot, taken
     before any transaction opens — a live server (docs/migration.md's
@@ -152,14 +160,41 @@ def run_migration(doc, repository, entity_name, field_name, raw_value, dry_run=F
         return {"scanned": scanned, "updated": len(candidates), "skipped": skipped}
     repository.begin()
     updated = 0
+    unresolved = None
     try:
         for row in candidates:
             key = row_key(entity_id, row)
             current = repository.execute(entity_id, "read", key)
-            if current is None or field_name in current:
-                # Raced since the scan: deleted, or another writer already
-                # set this field first (expand semantics: still never
-                # overwritten).
+            if current is None:
+                # issue #179: a row `create` wrote for an entity that
+                # declares no settable `id` field stores its OWN full row
+                # key as the "id" value (`drivers.py`'s `_create` inserts
+                # `{"id": key}`, and `interp.py`'s create branch only
+                # overwrites that when a declared `id` field carries a
+                # payload value). `row_key()` above then prefixes that
+                # already-prefixed value a second time, so the re-read
+                # misses. Retry with the row's own "id" verbatim as the key.
+                row_id = row.get("id")
+                if isinstance(row_id, str) and row_id != key:
+                    alt = repository.execute(entity_id, "read", row_id)
+                    if alt is not None:
+                        key, current = row_id, alt
+            if current is None:
+                # Still unresolved: genuinely raced away, or filed under a
+                # key neither derivation reproduces. Never a benign skip --
+                # abort the whole batch loudly (issue #179 D2), the same
+                # "fail the whole batch loudly rather than losing data
+                # quietly" this docstring already commits to for the
+                # narrower re-read/persist race. The sentinel is a
+                # 1-tuple, never `row["id"]` itself: a row carrying no "id"
+                # at all yields `None`, and using that value as the flag
+                # would let this `break` commit the rows already written
+                # while this one vanished from both counters at rc 0.
+                unresolved = (row.get("id"),)
+                break
+            if field_name in current:
+                # Raced since the scan: another writer already set this
+                # field first (expand semantics: still never overwritten).
                 skipped += 1
                 continue
             current[field_name] = value
@@ -169,5 +204,21 @@ def run_migration(doc, repository, entity_name, field_name, raw_value, dry_run=F
     except DriverError as exc:
         repository.rollback()
         raise MigrateError(str(exc)) from exc
+    if unresolved is not None:
+        repository.rollback()
+        raise MigrateError(
+            "row %r of %r could not be confirmed migrated (no stored row "
+            "under its scanned key or its own id) -- aborting the batch; "
+            "rerun after investigating"
+            % (unresolved[0], entity_name))
+    if updated == 0:
+        # issue #179 D3: candidates existed but this run wrote none of them
+        # -- migrate cannot report success when it changed nothing it was
+        # supposed to change.
+        repository.rollback()
+        raise MigrateError(
+            "%r had %d candidate row(s) missing %r but the run updated none "
+            "of them -- refusing to report success with zero effect"
+            % (entity_name, len(candidates), field_name))
     repository.commit()
     return {"scanned": scanned, "updated": updated, "skipped": skipped}
