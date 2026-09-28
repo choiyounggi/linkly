@@ -172,8 +172,12 @@ def render_grammar():
                  "한 가드로 쓴다. 선언이 가드로 끝나도(감쌀 항목이 없어도) 에러다.\n")
     lines.append("가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — "
                  "존재 검사(`exists`/`missing`)도 숫자 형태 술어(%s)도 "
-                 "마찬가지다. `Text`·`Money` 필드에 가드를 걸면 lowering이 "
-                 "거부한다(RFC-0016).\n"
+                 "마찬가지다. `Text` 필드에 가드를 걸면 lowering이 "
+                 "거부한다(RFC-0016). `Money` 필드는 다른 Money 참조와의 "
+                 "비교와 `set`의 `+`/`-`/Integer `*`에만 쓸 수 있다"
+                 "(RFC-0051) — 숫자와 비교하거나, `exists`/`missing`·숫자 "
+                 "형태 술어를 걸거나, 나누면 거부다. 통화가 다르면 순서 "
+                 "비교와 덧셈·뺄셈이 `money-currency-mismatch`로 실패한다.\n"
                  % "/".join("`%s`" % k for k in kw["numeric_predicate_kinds"]))
     lines.append("숫자 형태 술어는 값이 숫자로 읽히는지를 **실패 없이** 묻는다 — "
                  "비수치 값의 비교는 `RunError`지만 `<ref> is-numeric`은 거짓일 "
@@ -692,6 +696,9 @@ RFC_ROUTES = {
              "보내고 싶다 — `is-numeric`/`is-not-numeric` 술어가 무엇을 "
              "숫자로 보는지, 왜 `exists`/`missing`과 달리 `and` 안에 쓸 수 "
              "있는지, 모드 B가 왜 그 워크플로를 거부하는지", ()),
+    "0051": ("Money 필드를 set·가드 산술에 쓰고 싶다 — 어떤 연산이 허용되고 "
+             "어떤 연산이 여전히 거부되는지, 통화가 다르면 무슨 일이 나는지, "
+             "모드 B가 왜 가드 비교를 거부하는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

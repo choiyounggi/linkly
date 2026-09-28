@@ -1,6 +1,7 @@
 """Money 평가 채널 — minor-unit 코덱, ISO 4217 exponent, half-to-even 나눗셈,
 같은-통화 순서·덧셈, spec `given`/`expect`의 MoneyLiteral 파서. RFC-0044
-§Reference-level Specification 1·2·3·4·5 SSOT.
+§Reference-level Specification 1·2·3·4·5 SSOT. 같은-통화 뺄셈과 Integer
+곱셈(`sub`/`mul_int`)은 RFC-0051.
 
 RFC-0016 §2가 DateTime에 세운 패턴을 그대로 따른다: 선언·저장·와이어 표면
 (`{"amount": <decimal-string>, "currency": <alpha-3>}`, `types.py`)은 이 모듈이
@@ -64,6 +65,13 @@ class MoneyLiteralScaleError(MoneyError):
     리터럴 문법 위반(컴파일 거부)이고, 그쪽은 이미 저장된 값의 인코딩
     실패라 실패 지점이 다르다."""
     code = "money-literal-scale"
+
+
+class MoneyRangeError(MoneyError):
+    """RFC-0051 `money-range` — 뺄셈이나 Integer 곱셈의 결과가 64비트
+    minor-unit 도메인을 벗어났다. 단일 값의 인코딩 실패인
+    `MoneyEncodePrecisionError`와 달리 이 쪽은 결합된 결과의 실패다."""
+    code = "money-range"
 
 
 # RFC-0044 §2 — 닫힌 두 예외 버킷. 그 밖의 활성 코드는 전부 exponent 2(기본).
@@ -243,3 +251,35 @@ def add(a, b):
             "cannot add %s and %s: different currencies"
             % (a_currency, b_currency))
     return a_minor + b_minor, a_currency
+
+
+def _in_domain(minor, currency):
+    if not (INT64_MIN <= minor <= INT64_MAX):
+        raise MoneyRangeError(
+            "value out of the 64-bit range: %d %s" % (minor, currency))
+    return minor, currency
+
+
+def sub(a, b):
+    """같은-통화 뺄셈. RFC-0051 (`add`의 통화 규칙, RFC-0044 §5를 따른다).
+
+    통화가 다르면 `MoneyCurrencyMismatchError`. `add`와 달리 자기 결과의
+    64비트 도메인을 직접 검사해 `MoneyRangeError`를 낸다.
+    """
+    a_minor, a_currency = a
+    b_minor, b_currency = b
+    if a_currency != b_currency:
+        raise MoneyCurrencyMismatchError(
+            "cannot subtract %s and %s: different currencies"
+            % (a_currency, b_currency))
+    return _in_domain(a_minor - b_minor, a_currency)
+
+
+def mul_int(a, n):
+    """Money × 평범한 정수 `n`. RFC-0051 — 피연산자 순서는 호출자가 정리한다.
+
+    `n`에는 통화가 없으므로 통화 검사는 없고, 곱의 64비트 도메인만 검사한다
+    (`MoneyRangeError`).
+    """
+    a_minor, a_currency = a
+    return _in_domain(a_minor * n, a_currency)

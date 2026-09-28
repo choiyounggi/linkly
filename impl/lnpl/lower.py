@@ -2345,10 +2345,8 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                             # RFC-0045 §3/§5: `sum`/`avg`/`min`/`max` can now
                             # produce a Money result (`_check_aggregate` below
                             # is the authority on which source field types
-                            # each func accepts) — the target-dimension check
-                            # widens to admit Money only on this branch, not
-                            # for a plain arithmetic `Value` target, which
-                            # still has no Money evaluator.
+                            # each func accepts); a Money target is a
+                            # dimension like any other since RFC-0051.
                             scope.check_reference(child["target"], text,
                                                   ASSIGN_SUBJECT, is_target=True,
                                                   allow_money=True)
@@ -2372,14 +2370,28 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                             % text,
                                     line=line)
                         else:
-                            scope.check_reference(child["target"], text,
-                                                  ASSIGN_SUBJECT, is_target=True)
+                            target_dim = scope.check_reference(
+                                child["target"], text, ASSIGN_SUBJECT,
+                                is_target=True)
                             for name in references(rhs):
                                 scope.check_reference(name, text, ASSIGN_SUBJECT)
                             # The expression is a `Value` like any other, so
                             # `instant + instant` is as meaningless here as in a
                             # guard.
-                            _value_dimension(rhs, scope, text, ASSIGN_SUBJECT)
+                            rhs_dim = _value_dimension(rhs, scope, text,
+                                                       ASSIGN_SUBJECT)
+                            # RFC-0051: the value must be the target's kind of
+                            # quantity — Money into an Integer field (or the
+                            # reverse) would otherwise pass here and fail at
+                            # run time.
+                            if (target_dim is not None and rhs_dim is not None
+                                    and target_dim != rhs_dim):
+                                raise LowerError(
+                                    "workflow %s: %r assigns %s (%s) to %s "
+                                    "(%s) — RFC-0051 requires the same "
+                                    "dimension on both sides"
+                                    % (workflow_name, text, _describe(rhs),
+                                       rhs_dim, child["target"], target_dim))
                     assigned.add(child["target"])
             else:
                 visit(node.get("children") or [], guarded=guarded)
@@ -2700,18 +2712,43 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
 
     _check_dimensions(cond, scope, text)
 
+    for pred in _numeric_predicates(cond):
+        if scope.check_reference(pred.field, text) == "money":
+            raise LowerError(
+                "workflow %s: guard condition %r applies is-numeric/"
+                "is-not-numeric to %r, whose declared type is Money — the "
+                "numeric-shape predicate does not apply to Money (RFC-0050, "
+                "RFC-0051 section Compatibility); compare it to another "
+                "Money reference instead"
+                % (workflow_name, text, pred.field))
+
+    for pres in _presences(cond):
+        if scope.check_reference(pres.field, text) == "money":
+            raise LowerError(
+                "workflow %s: guard condition %r checks %r for "
+                "existence, but its declared type is Money — Money has no "
+                "exists/missing check either (RFC-0051 section "
+                "Compatibility)"
+                % (workflow_name, text, pres.field))
+
 
 def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
-    """One `Value`'s dimension: `"instant"`, `"scalar"`, or None if undecidable.
+    """One `Value`'s dimension: `"instant"`, `"scalar"`, `"money"`, or None if
+    undecidable.
 
-    RFC-0016 §Reference-level Specification. Two dimensions, not three: a
-    Duration literal IS an i64 count of milliseconds, so it shares `scalar` with
-    Integer. Splitting it out would only add refusals (`stock <= 30d`) that this
-    issue does not ask for and that no program in the tree writes.
+    RFC-0016 §Reference-level Specification. A Duration literal IS an i64 count
+    of milliseconds, so it shares `scalar` with Integer rather than being a
+    dimension of its own. Splitting it out would only add refusals
+    (`stock <= 30d`) that this issue does not ask for and that no program in
+    the tree writes.
 
     None propagates: if either operand's type is not in the document, the whole
     value is undecidable and the comparison is left to the runtime, which is the
     behaviour bare references already had.
+
+    RFC-0051: Money ± Money stays Money, Money × scalar (either order — a
+    literal is a scalar) stays Money; Money × Money, any division touching
+    Money, and Money ± scalar/instant are refused.
     """
     from .condition import Arith, Lit, Ref
 
@@ -2724,6 +2761,27 @@ def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
         right = _value_dimension(value.right, scope, text, subject)
         if left is None or right is None:
             return None
+        if "money" in (left, right):
+            if left == "money" and right == "money":
+                if value.op in ("+", "-"):
+                    return "money"
+                raise LowerError(
+                    "workflow %s: %r %s two Money values, which RFC-0051 does "
+                    "not evaluate (%s %s %s)"
+                    % (scope.workflow_name, text,
+                       "multiplies" if value.op == "*" else "divides",
+                       _describe(value.left), value.op,
+                       _describe(value.right)))
+            other = right if left == "money" else left
+            if value.op == "*" and other == "scalar":
+                return "money"
+            raise LowerError(
+                "workflow %s: %r combines a Money value with a %s value via "
+                "%r, which RFC-0051 does not evaluate — Money supports +/-/"
+                "copy against Money, and * only against a plain Integer "
+                "(%s %s %s)"
+                % (scope.workflow_name, text, other, value.op,
+                   _describe(value.left), value.op, _describe(value.right)))
         if left == "instant" and right == "instant":
             if value.op == "-":
                 return "scalar"           # elapsed milliseconds
@@ -2771,13 +2829,15 @@ def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
         if left is None or right is None:
             continue                      # undecidable from the document alone
         if left != right:
+            extra = (". Money compares only to Money (RFC-0051)"
+                     if "money" in (left, right) else "")
             raise LowerError(
                 "workflow %s: %r compares %s (%s) with %s (%s) — RFC-0016 "
                 "compares like with like. An instant and a number are not the "
                 "same quantity; subtract two instants to get a duration, then "
-                "compare that to a duration such as `30d`"
+                "compare that to a duration such as `30d`%s"
                 % (scope.workflow_name, text, _describe(term.left), left,
-                   _describe(term.right), right))
+                   _describe(term.right), right, extra))
 
 
 def _comparisons(cond):
@@ -2792,6 +2852,25 @@ def _comparisons(cond):
     if isinstance(cond, And):
         return tuple(t for t in cond.terms if isinstance(t, Comparison))
     return ()
+
+
+def _numeric_predicates(cond):
+    """The NumericPredicate terms of a condition, whether or not it is an
+    `and` (RFC-0050/RFC-0051) — `_comparisons`'s filter for the other node
+    type."""
+    from .condition import And, NumericPredicate
+    if isinstance(cond, NumericPredicate):
+        return (cond,)
+    if isinstance(cond, And):
+        return tuple(t for t in cond.terms if isinstance(t, NumericPredicate))
+    return ()
+
+
+def _presences(cond):
+    """The Presence term of a condition — a Presence may not sit inside
+    `and` (RFC-0050), so it is either the whole condition or absent."""
+    from .condition import Presence
+    return (cond,) if isinstance(cond, Presence) else ()
 
 
 class _Scope:
@@ -2826,17 +2905,16 @@ class _Scope:
                         is_target=False, allow_money=False):
         """One `Reference`, judged against the document.
 
-        Returns the operand's DIMENSION (`"instant"`, `"scalar"`, or —
-        `allow_money` only — `"money"`), or None when the document does not
+        Returns the operand's DIMENSION (`"instant"`, `"scalar"`, or
+        `"money"` — RFC-0051), or None when the document does not
         declare a type for it — a bare reference names a payload field the
         document never describes, so its dimension is decided at runtime,
         exactly as its value is.
 
-        `allow_money` (RFC-0045 §3/§5): an `Aggregate` assignment target may
-        be Money-declared, since `sum`/`avg`/`min`/`max` now have a real
-        evaluator for it (`impl/lnpl/money.py`) — every other caller (guard
-        conditions, `Value` assignment targets/operands) leaves it False, so
-        their Money refusal (t2 F-4) is unchanged.
+        `allow_money` (RFC-0045 §3/§5): set by the `Aggregate` assignment
+        target only. Since RFC-0051 Money is a dimension for every caller;
+        the flag now only selects the RFC-0045 wording of the refusal the
+        remaining types get.
         """
         field_node = self.resolve_field(name, text, subject, is_target)
         if field_node is None:
@@ -2969,10 +3047,13 @@ class _Scope:
         cannot do is be compared to a plain number, which is a different
         judgement made by `_check_dimensions`.
 
-        RFC-0045 §3/§5 similarly opens `Money`, but ONLY when the caller
-        passes `allow_money=True` (an `Aggregate` assignment target) — a
-        `Value` target/operand still has no Money evaluator, so t2 F-4's
-        refusal stands there unchanged.
+        RFC-0051 does the same for `Money` in every caller: same-currency
+        Money arithmetic and comparison have an evaluator now (`money.py`), so
+        `"money"` is a dimension like the other two and what it cannot do —
+        meet a plain number or an instant — is `_value_dimension`'s and
+        `_check_dimensions`'s judgement. `allow_money` (RFC-0045 §3/§5, an
+        `Aggregate` target) now only picks which refusal the REMAINING types
+        get, not whether Money is admitted.
         """
         declared = field_node.get("type")
         base = self.base_of.get(declared, declared)
@@ -2980,7 +3061,7 @@ class _Scope:
             return "scalar"
         if base == "DateTime":
             return "instant"
-        if allow_money and base == "Money":
+        if base == "Money":
             return "money"
         if allow_money:
             raise LowerError(
@@ -2990,8 +3071,10 @@ class _Scope:
         raise LowerError(
             "workflow %s: %r uses %s, whose declared type %s is neither "
             "Integer nor DateTime — RFC-0016 computes over whole numbers and "
-            "instants only (Money and the composite types have no evaluator in "
-            "either mode)"
+            "instants only (RFC-0051 additionally admits same-currency Money "
+            "arithmetic and comparison; Decimal and the remaining composite "
+            "types still have no evaluator in either mode — RFC-0044 section "
+            "Open Questions 3)"
             % (self.workflow_name, text, name, declared))
 
 
