@@ -341,6 +341,53 @@ def create_negatives():
     ]
 
 
+
+LOOKUP_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "find_by_lookup",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.find.product",
+            "name": "FindProduct",
+            "children": ["wf.find.product.step.1"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.find.product.step.1",
+            "name": "find product by input.productId",
+            "children": ["wf.find.product.step.1.repo"],
+        },
+        {
+            "kind": "RepositoryCall",
+            "id": "wf.find.product.step.1.repo",
+            "entity": "entity.product",
+            "operation": "read",
+            "lookup": "input.productId",
+        },
+    ],
+}
+
+
+def lookup_negatives():
+    """issue #175 / RFC-0052 — `RepositoryCall.lookup`, a new optional string
+    field on the read/update/delete branches. Same shape `create_negatives`
+    pins for `RepositoryCall.result`: one negative for the field's own `type`,
+    plus one proving the pre-existing `required` check still applies once
+    `lookup` is present.
+    """
+    n1 = copy.deepcopy(LOOKUP_FIXTURE)
+    n1["nodes"][2]["lookup"] = 42                          # type 위반 — string이 아님
+
+    n2 = copy.deepcopy(LOOKUP_FIXTURE)
+    del n2["nodes"][2]["entity"]                          # required 누락 —
+                                                            # lookup이 있어도 여전히 걸린다
+
+    return [
+        ("lookup is not a string: RepositoryCall.lookup = 42", n1),
+        ("required field removed: RepositoryCall.entity (lookup field present)", n2),
+    ]
+
 CAPABILITY_HTTP_FIXTURE = {
     "lir_version": "0.1",
     "module": "capability_http",
@@ -778,6 +825,7 @@ def self_test():
         ("ALT_GUARD_FIXTURE (RFC-0028 Guard.alternatives)", ALT_GUARD_FIXTURE),
         ("RESPOND_FIXTURE (issue #96 Response.refs)", RESPOND_FIXTURE),
         ("CREATE_FIXTURE (issue #97 RepositoryCall.result)", CREATE_FIXTURE),
+        ("LOOKUP_FIXTURE (issue #175 RepositoryCall.lookup)", LOOKUP_FIXTURE),
         ("EXPOSE_FIXTURE (issue #99 Expose)", EXPOSE_FIXTURE),
         ("CAPABILITY_HTTP_FIXTURE (issue #101 Capability.method/auth)",
          CAPABILITY_HTTP_FIXTURE),
@@ -825,7 +873,7 @@ def self_test():
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
       + respond_negatives() + create_negatives() + expose_negatives() \
       + capability_http_negatives() + subscribe_negatives() \
-      + consume_negatives()
+      + consume_negatives() + lookup_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

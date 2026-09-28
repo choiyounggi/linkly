@@ -844,5 +844,62 @@ class TestRunResultAdditions(unittest.TestCase):
                       "spec can assert on it; got %r" % result["failure_reason"])
 
 
+
+LOOKUP_SOURCE = """capability postgres
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+service Shop
+    policy
+        retry 0
+
+workflow Restock
+    find product
+    %s product by input.id
+"""
+
+
+class TestLookupKeyInterimRefusal(unittest.TestCase):
+    """issue #175 Track A: a `by <ref>` node lowers, but until the runtime key
+    derivation lands (RFC-0052 §Runtime, t175b) running it must fail loudly —
+    never fall back to the payload-`id` key, which would silently address the
+    wrong row. The seeded row sits under exactly that fallback key, so a
+    silent fallback would complete; the test proves it does not."""
+
+    PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "stock": 4}
+
+    def _run(self, verb):
+        doc = lower(parse(LOOKUP_SOURCE % verb), "shop").to_document()
+        key = row_key("entity.product", self.PAYLOAD)
+        rows = {"entity.product": {key: dict(self.PAYLOAD)}}
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, key, interp.run_workflow("wf.restock", dict(self.PAYLOAD))
+
+    def test_each_by_verb_fails_with_a_named_error_instead_of_a_fallback(self):
+        for verb in ("find", "update", "delete"):
+            with self.subTest(verb=verb):
+                interp, key, result = self._run(verb)
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["failed_step"],
+                                 "%s product by input.id" % verb)
+                self.assertIn("`by input.id` lookup key has no runtime support",
+                              result["failure_reason"])
+                # The row under the fallback key was not touched.
+                self.assertEqual(
+                    interp.repo.execute("entity.product", "read", key)["stock"], 4)
+
+    def test_a_by_less_read_of_the_same_row_still_completes(self):
+        doc = lower(parse(LOOKUP_SOURCE.replace(
+            "    %s product by input.id\n", "")), "shop").to_document()
+        key = row_key("entity.product", self.PAYLOAD)
+        interp = Interpreter(doc, repo_rows={"entity.product": {
+            key: dict(self.PAYLOAD)}})
+        result = interp.run_workflow("wf.restock", dict(self.PAYLOAD))
+        self.assertEqual(result["status"], "completed")
+
+
 if __name__ == "__main__":
     unittest.main()

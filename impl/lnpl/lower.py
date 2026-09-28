@@ -173,6 +173,7 @@ GUARD_SUBJECT = "guard condition"
 ASSIGN_SUBJECT = "assignment"
 RESPOND_SUBJECT = "response"
 EMIT_SUBJECT = "emit"
+LOOKUP_SUBJECT = "lookup key"
 
 # The verbs that put a SINGLE-ROW binding in the execution scope, computed from
 # the same test the lowerer uses to build `read_entities`. A refusal that names
@@ -2305,6 +2306,9 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                     if child is None:
                         continue
                     if child["kind"] == "RepositoryCall":
+                        if child.get("lookup"):
+                            _check_lookup(child["lookup"], scope,
+                                          workflow_name, base_of or {})
                         if child.get("operation") == "query":
                             if not guarded:
                                 listed.add(child["entity"])
@@ -2592,6 +2596,41 @@ def _check_respond(refs, scope, text, base_of):
                 "chokepoint: a masked field's value must never leave "
                 "through an unmasked one)"
                 % (scope.workflow_name, ref, declared))
+
+
+def _check_lookup(lookup_ref, scope, workflow_name, base_of):
+    """issue #175 / RFC-0052 §Static checks: a `by <ref>` lookup key's rule.
+
+    A bare ref, `input.<field>`, `caller.*` and a network-result binding are
+    payload-derived or runtime-only values -- admitted (RFC-0027 §2). A
+    bound-entity field (`by_binding` or a `create ... as` alias) is refused
+    when it is `derived` or its base is Password. `resolve_field` itself
+    raises RFC-0012 §G12.5 c's "never reads it" refusal for an entity binding
+    this workflow reads nowhere; that gate is whole-workflow membership,
+    order-blind -- a ref admitted here but not yet bound when its step runs
+    fails at run time (RFC-0052 §Runtime), never here.
+    """
+    from .condition import PAYLOAD_NAMESPACE
+    text = "by %s" % lookup_ref
+    field = scope.resolve_field(lookup_ref, text, LOOKUP_SUBJECT)
+    binding = lookup_ref.partition(".")[0]
+    if ("." not in lookup_ref or field is None
+            or binding in (PAYLOAD_NAMESPACE, CALLER_NAMESPACE)):
+        return
+    if field.get("derived"):
+        raise LowerError(
+            "workflow %s: lookup key %r names field %r, which is `derived` "
+            "(server-computed, RFC-0030 §3) -- a row cannot be addressed by a "
+            "field whose value is not reliably present"
+            % (workflow_name, lookup_ref, field["name"]))
+    declared = field.get("type")
+    base = base_of.get(declared, declared)
+    if base == "Password":
+        raise LowerError(
+            "workflow %s: lookup key %r has declared type %s, whose base is "
+            "Password -- a stored key must not be built from a masked field "
+            "(issue #43's masking chokepoint, RFC-0052 §Static checks)"
+            % (workflow_name, lookup_ref, declared))
 
 
 def _check_emit_payload(payload_map, scope, workflow_name, base_of):
@@ -3084,11 +3123,11 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                    verb_sink=None, base_of=None, namespace=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
-    `rest` is the step line's tokens past the object (`tokens[2:]`) — every
-    verb but `NetworkCall` and `create`/`insert` ignores it; those read an
-    `as <name>` trailing clause there (RFC-0027 §2, extended to `create` by
-    issue #97 / RFC-0012 Updates — `update`/`delete` still ignore `rest`,
-    since they answer an affected-row count, not a row). `NetworkCall` also
+    `rest` is the step line's tokens past the object (`tokens[2:]`).
+    `NetworkCall` and `create`/`insert` read an `as <name>` trailing clause
+    there (RFC-0027 §2, extended to `create` by issue #97 / RFC-0012
+    Updates); the read family, `update` and `delete` accept only a
+    `by <ref>` lookup-key clause (issue #175, RFC-0052). `NetworkCall` also
     reads an optional leading `with <ref>...` clause there (issue #109, D6).
 
     `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
@@ -3172,6 +3211,18 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                 rest, lineno, ent, base_of or {})
             return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                         predicate=predicate, order=order, limit=limit, line=lineno)
+        if fixed["operation"] in ("read", "update", "delete") and rest:
+            # issue #175 / RFC-0052: `<verb> <Entity> by <ref>` addresses the
+            # row under the ref's value instead of the payload's `id`. Any
+            # other trailing word used to be dropped silently; it is refused.
+            from .condition import _is_reference_name
+            if len(rest) == 2 and rest[0] == "by" and _is_reference_name(rest[1]):
+                return _node(kind, eid, entity=ent["id"],
+                            operation=fixed["operation"], lookup=rest[1],
+                            line=lineno)
+            raise LowerError(
+                "line %d: `%s %s` accepts either no trailing words or "
+                "`by <ref>`, got %r" % (lineno, verb, obj, tuple(rest)))
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 

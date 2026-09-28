@@ -1992,6 +1992,15 @@ class Interpreter:
                 # `bindings` — last write wins, same rule, different scope.
                 rowsets[binding_name(entity_node)] = rows
         elif kind == "RepositoryCall":
+            if effect.get("lookup"):
+                # issue #175 Track A interim: never fall back to the payload
+                # `id` key, which would address the wrong row. t175b replaces
+                # this with the RFC-0052 §Runtime key derivation.
+                raise RunError(
+                    "repository %s: a `by %s` lookup key has no runtime "
+                    "support yet (RFC-0052 §Runtime lands in a follow-up "
+                    "task) — this workflow cannot run in mode A until then"
+                    % (effect["entity"], effect["lookup"]))
             # One of two places a driver fault is translated. A DriverError
             # becomes a RunError with its message and cause intact, so a real
             # backend's failure is an ordinary failed run — the same status and

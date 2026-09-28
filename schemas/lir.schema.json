@@ -985,6 +985,9 @@
         "result": {
           "type": "string"
         },
+        "lookup": {
+          "type": "string"
+        },
         "predicate": {
           "type": "array",
           "minItems": 1,
