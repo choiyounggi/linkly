@@ -10,15 +10,15 @@
 |------|-----------------|------|
 | `set` | `Assignment` | — |
 | `validate` | `Validation` | — |
-| `authenticate` | `RepositoryCall` | operation=read |
-| `load` | `RepositoryCall` | operation=read |
-| `find` | `RepositoryCall` | operation=read |
-| `read` | `RepositoryCall` | operation=read |
+| `authenticate` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
+| `load` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
+| `find` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
+| `read` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
 | `list` | `RepositoryCall` | operation=query |
 | `create` | `RepositoryCall` | operation=create |
 | `insert` | `RepositoryCall` | operation=create |
-| `update` | `RepositoryCall` | operation=update |
-| `delete` | `RepositoryCall` | operation=delete |
+| `update` | `RepositoryCall` | operation=update; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
+| `delete` | `RepositoryCall` | operation=delete; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
 | `cache` | `CacheAccess` | operation=set |
 | `invalidate` | `CacheAccess` | operation=invalidate |
 | `call` | `NetworkCall` | — |

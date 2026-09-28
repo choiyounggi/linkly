@@ -242,6 +242,9 @@ def render_verbs():
     for verb, meta in VOCAB["verbs"].items():
         attr = (", ".join("%s=%s" % (k, v) for k, v in meta["attrs"].items())
                 or "—")
+        if meta["attrs"].get("operation") in ("read", "update", "delete"):
+            # issue #175 / RFC-0052: the only trailing clause these verbs take.
+            attr += "; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052)"
         lines.append("| `%s` | `%s` | %s |" % (verb, meta["effect"], attr))
     lines.append("\n`return`, `log`, `send`, `notify`, `verify` 같은 낱말은 "
                  "이 표에 **없다**. 자연스러워 보여도 아무 효과가 없다.\n")
@@ -420,9 +423,14 @@ def render_spec():
     lines.append("\n읽기가 실패하는 에러 경로를 계약하고 싶으면 `empty repository`를 "
                  "쓴다 — 시드가 없으니 `find`/`load`가 행을 못 찾고 그 스텝이 "
                  "실패한다.\n")
-    lines.append("이 \"엔티티당 행 하나\" 불변식이 어디서 오는지는 "
+    lines.append("이 \"키당 행 하나\" 불변식이 어디서 오는지는 "
                  "`rfcs/0015-value-semantics.md` §Alternatives에 있다: 한 실행은 "
-                 "payload 하나를 가지므로 엔티티 E의 테이블에는 행이 최대 하나다.\n")
+                 "payload 하나를 가지므로, 조회 키 없이 읽고 쓰는 엔티티 E의 "
+                 "테이블에는 행이 최대 하나다. 예외는 `by <ref>`(RFC-0052)다 — "
+                 "`find`/`update`/`delete <엔티티> by <ref>`는 payload의 id 대신 그 "
+                 "참조의 값을 키로 쓰므로, 한 실행이 엔티티마다 다른 행을 지목할 수 "
+                 "있다. 첫 읽기가 `by input.<필드>`인 엔티티는 그 필드 값의 키 "
+                 "아래 시드된다.\n")
     return _doc("spec 블록", "\n".join(lines))
 
 
@@ -699,6 +707,9 @@ RFC_ROUTES = {
     "0051": ("Money 필드를 set·가드 산술에 쓰고 싶다 — 어떤 연산이 허용되고 "
              "어떤 연산이 여전히 거부되는지, 통화가 다르면 무슨 일이 나는지, "
              "모드 B가 왜 가드 비교를 거부하는지", ()),
+    "0052": ("find/update/delete가 payload의 id가 아닌 다른 키로 행을 지목하게 하고 "
+             "싶다(`by <ref>`) — 어떤 참조가 키가 될 수 있고, 값이 없으면 무슨 일이 "
+             "나며, create는 왜 여전히 as만 받고 모드 B는 왜 거부하는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

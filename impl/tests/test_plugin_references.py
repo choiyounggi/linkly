@@ -211,6 +211,21 @@ class GeneratorTest(unittest.TestCase):
         for verb in VERB_LEXICON:
             self.assertIn("`%s`" % verb, text)
 
+    def test_the_lookup_clause_rows_follow_the_lexicon_operation(self):
+        """issue #175 / RFC-0052: exactly the read/update/delete verbs carry
+        the optional `by <ref>` clause in their row; create/list do not."""
+        from lnpl.lower import VERB_LEXICON
+        with open(os.path.join(REFS, "verbs.md"), encoding="utf-8") as fh:
+            rows = {m.group(1): m.group(0) for m in
+                    re.finditer(r"^\| `(\w+)` \|.*$", fh.read(), re.M)}
+        lookup_verbs = {v for v, e in VERB_LEXICON.items()
+                        if e[1].get("operation") in ("read", "update", "delete")}
+        self.assertEqual(lookup_verbs, {"find", "read", "load", "authenticate",
+                                        "update", "delete"})
+        for verb, row in rows.items():
+            with self.subTest(verb=verb):
+                self.assertEqual("`by <ref>`" in row, verb in lookup_verbs, row)
+
     def test_every_enforcement_row_reaches_the_document(self):
         from lnpl.diagnostics import ENFORCEMENT
         with open(os.path.join(REFS, "declarations.md"), encoding="utf-8") as fh:

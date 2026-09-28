@@ -263,6 +263,127 @@ class TestEmitWithClause(unittest.TestCase):
         self.assertIn("derived", msg)
 
 
+LOOKUP_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        productId Text
+        total Integer derived
+        secret Password
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+service Orders
+    policy
+        retry 0
+
+workflow Checkout
+%s"""
+
+
+class TestLookupKeyStaticCheck(unittest.TestCase):
+    """issue #175 / RFC-0052 §Static checks: which refs a `by <ref>` lookup
+    key may name. The G12.5 ⓒ gate is whole-workflow membership (order-blind,
+    coordinator ruling r1): a binding used before its read compiles and fails
+    at run time instead."""
+
+    def _lookup_of(self, body, step_text):
+        doc = ir(LOOKUP_SRC % body)
+        steps = {n["name"]: n for n in doc["nodes"] if n["kind"] == "WorkflowStep"}
+        nodes = by_id(doc)
+        call = nodes[steps[step_text]["children"][0]]
+        self.assertEqual(call["kind"], "RepositoryCall")
+        return call.get("lookup")
+
+    def test_a_binding_the_workflow_never_reads_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir(LOOKUP_SRC % "    find product by order.productId\n")
+        msg = str(ctx.exception)
+        self.assertIn("never reads it", msg)
+        self.assertIn("lookup key", msg)
+
+    def test_a_binding_read_later_in_the_workflow_is_admitted(self):
+        """Order-blind positive control: `find order` comes AFTER the
+        reference and the check still admits it (whole-workflow membership)."""
+        body = ("    find product by order.productId\n"
+                "    find order\n")
+        self.assertEqual(self._lookup_of(body, "find product by order.productId"),
+                         "order.productId")
+
+    def test_a_self_reference_is_admitted(self):
+        """`find order by order.productId` makes `order` a read entity by
+        itself, so the static gate is satisfied. At run time it is only
+        useful when an earlier step of the same run already bound `order`;
+        otherwise the ref resolves to nothing and the step fails with a named
+        RunError (RFC-0052 §Runtime, t175b) — never here."""
+        body = "    find order by order.productId\n"
+        self.assertEqual(self._lookup_of(body, "find order by order.productId"),
+                         "order.productId")
+
+    def test_a_create_alias_from_an_earlier_step_is_admitted(self):
+        body = ("    create order as placed\n"
+                "    find product by placed.productId\n")
+        self.assertEqual(self._lookup_of(body, "find product by placed.productId"),
+                         "placed.productId")
+
+    def test_a_derived_field_is_refused(self):
+        for body in ("    find order\n    find product by order.total\n",
+                     "    create order as placed\n"
+                     "    update product by placed.total\n"):
+            with self.subTest(body=body):
+                with self.assertRaises(LowerError) as ctx:
+                    ir(LOOKUP_SRC % body)
+                self.assertIn("`derived`", str(ctx.exception))
+
+    def test_a_password_field_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir(LOOKUP_SRC % "    find order\n    delete product by order.secret\n")
+        msg = str(ctx.exception)
+        self.assertIn("Password", msg)
+        self.assertIn("RFC-0052", msg)
+
+    def test_input_fields_are_admitted_even_when_declared_derived_or_password(self):
+        for ref in ("input.productId", "input.total", "input.secret"):
+            with self.subTest(ref=ref):
+                self.assertEqual(
+                    self._lookup_of("    find product by %s\n" % ref,
+                                    "find product by %s" % ref), ref)
+
+    def test_an_undeclared_input_field_is_refused(self):
+        with self.assertRaises(LowerError):
+            ir(LOOKUP_SRC % "    find product by input.nope\n")
+
+    def test_bare_caller_and_network_result_refs_are_admitted(self):
+        cases = [("    find product by productId\n", "find product by productId"),
+                 ("    find product by caller.subject\n",
+                  "find product by caller.subject"),
+                 ("    call OrdersApi as fetched\n"
+                  "    find product by fetched.id\n", "find product by fetched.id")]
+        for body, step in cases:
+            with self.subTest(step=step):
+                self.assertEqual(self._lookup_of(body, step), step.split(" by ")[1])
+
+    def test_a_lookup_nested_in_a_guard_or_parallel_block_is_checked_too(self):
+        """The post-pass walks into guard and block children, so a Password
+        key cannot slip through by sitting inside `when` or `parallel`."""
+        for body in ("    find order\n    when input.stock > 0\n"
+                     "        find product by order.secret\n",
+                     "    find order\n    parallel\n"
+                     "        find product by order.secret\n    merge\n"):
+            with self.subTest(body=body):
+                with self.assertRaises(LowerError) as ctx:
+                    ir(LOOKUP_SRC % body)
+                self.assertIn("Password", str(ctx.exception))
+
+    def test_an_unknown_caller_field_is_refused(self):
+        with self.assertRaises(LowerError):
+            ir(LOOKUP_SRC % "    find product by caller.email\n")
+
+
 class TestControlFlow(unittest.TestCase):
     """Guards and blocks: one Guard kind with a mode, not three kinds."""
 
