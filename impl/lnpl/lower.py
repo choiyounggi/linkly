@@ -2776,11 +2776,12 @@ def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
             if value.op == "*" and other == "scalar":
                 return "money"
             raise LowerError(
-                "workflow %s: %r combines a Money value with a %s value via "
-                "%r, which RFC-0051 does not evaluate — Money supports +/-/"
-                "copy against Money, and * only against a plain Integer "
+                "workflow %s: %r combines a Money value with %s %s value "
+                "via %r, which RFC-0051 does not evaluate — Money supports "
+                "+/-/copy against Money, and * only against a plain Integer "
                 "(%s %s %s)"
-                % (scope.workflow_name, text, other, value.op,
+                % (scope.workflow_name, text,
+                   "an" if other == "instant" else "a", other, value.op,
                    _describe(value.left), value.op, _describe(value.right)))
         if left == "instant" and right == "instant":
             if value.op == "-":

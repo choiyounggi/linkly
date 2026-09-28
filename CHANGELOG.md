@@ -54,6 +54,14 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   response can route to a fallback branch instead of the comparison
   `RunError`; unlike `exists`/`missing` they may be `and` terms, and
   `lnpl vocab` now lists both predicate tables (issue #177, RFC-0050).
+- Money fields can be copied, added, subtracted, and multiplied by an
+  Integer in `set`, and compared Money-to-Money in guards under all six
+  comparators, evaluated exactly in minor units (previously a compile
+  refusal); Decimal, Money division and Money × Money stay refused, a
+  currency mismatch fails with `money-currency-mismatch`, `expect result`
+  now evaluates Money order comparisons, and mode B refuses a Money guard
+  as a recorded differential exemption instead of a false EQUIVALENT
+  (issue #172, RFC-0051).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0

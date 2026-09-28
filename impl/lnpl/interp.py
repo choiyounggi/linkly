@@ -753,10 +753,10 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
     (`money.parse_money_literal`) and `money_fields(ref)` true, this evaluates
     the comparison directly — `==`/`!=` as structural wire-dict equality
     (RFC-0044 §3's exact-scale rule makes the two sides' normal form agree);
-    any other comparator raises `RunError`, since RFC-0044 §5's order
-    evaluator's only caller is RFC-0045's sum/avg/min/max, not `expect
-    result`. `MoneyLiteral` is not in `condition.py`'s `Value` grammar at all
-    (RFC-0044 §3), so this must run BEFORE `parse_condition` below, which
+    the order comparators go through `money.compare` (RFC-0051 §3 — the same
+    evaluator a Money guard uses), so different currencies raise
+    `money-currency-mismatch`. `MoneyLiteral` is not in `condition.py`'s
+    `Value` grammar at all (RFC-0044 §3), so this must run BEFORE `parse_condition` below, which
     would otherwise raise `ConditionError` on the literal token. Every other
     shape (a non-money ref, a non-money-literal-shaped value, no `money_fields`
     at all) falls through unchanged to the existing path.
@@ -776,13 +776,20 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
             except money.MoneyError as exc:
                 raise RunError(str(exc))
             if parsed is not None:
-                if op not in ("==", "!="):
-                    raise RunError(
-                        "Money order comparisons (%s) are not supported in "
-                        "`expect result` — only sum/avg/min/max evaluate "
-                        "Money order (RFC-0044 §5); use == or != instead." % op)
                 actual = resolve_reference(ref, payload, bindings, caller)
-                return (actual == parsed) if op == "==" else (actual != parsed)
+                if op in ("==", "!="):
+                    return (actual == parsed) if op == "==" else (actual != parsed)
+                try:
+                    c = money.compare(
+                        money.encode_money(actual["amount"], actual["currency"]),
+                        money.encode_money(parsed["amount"], parsed["currency"]))
+                except money.MoneyError as e:
+                    raise RunError("%s (%s) in `expect result` (%r)"
+                                   % (e.message, e.code, condition))
+                except (TypeError, KeyError):
+                    raise RunError("%s=%r is not a Money value in `expect "
+                                   "result` (%r)" % (ref, actual, condition))
+                return {'<': c < 0, '<=': c <= 0, '>': c > 0, '>=': c >= 0}[op]
 
     # Import here to avoid circular dependency
     from .condition import (And, Comparison, ConditionError, NumericPredicate,
@@ -889,6 +896,22 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, ca
         # A reference that names nothing behaves as it did before RFC-0015:
         # `null < X`, `null == X` and the rest are all false, on either side.
         holds = False
+    elif isinstance(left, tuple) or isinstance(right, tuple):
+        # RFC-0051 §3: equality is structural (different currencies are
+        # simply unequal); order goes through `money.compare`.
+        if not (isinstance(left, tuple) and isinstance(right, tuple)):
+            raise RunError(
+                "cannot compare a Money value with a plain number: %s "
+                "(in %r)" % (_value_text(cmp_node.left), condition))
+        if op in ('==', '!='):
+            holds = (left == right) if op == '==' else (left != right)
+        else:
+            from . import money
+            try:
+                c = money.compare(left, right)
+            except money.MoneyError as e:
+                raise RunError("%s (%s) in %r" % (e.message, e.code, condition))
+            holds = {'<': c < 0, '<=': c <= 0, '>': c > 0, '>=': c >= 0}[op]
     elif op == '<':
         holds = left < right
     elif op == '<=':
@@ -904,13 +927,20 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, ca
     else:
         raise RunError(f"Unknown comparator {op!r}")
     if collector is not None:
-        collector.append({"ref": _value_text(cmp_node.left), "value": left,
-                          "op": op, "expected": right, "holds": holds})
+        # A Money pair is recorded in its wire shape — the one a row holds.
+        collector.append({
+            "ref": _value_text(cmp_node.left),
+            "value": _decode_money(*left) if isinstance(left, tuple) else left,
+            "op": op,
+            "expected": (_decode_money(*right) if isinstance(right, tuple)
+                         else right),
+            "holds": holds})
     return holds
 
 
 def eval_value(value, condition, payload, bindings, caller=None):
-    """A parsed `Value` -> int, or None when a reference resolves to nothing.
+    """A parsed `Value` -> int, a `(minor, currency)` Money pair (RFC-0051),
+    or None when a reference resolves to nothing.
 
     RFC-0015 fixes the domain at signed 64-bit — the width mode B compiles to —
     so a program whose arithmetic would wrap in the compiled path fails in both
@@ -950,6 +980,16 @@ def eval_value(value, condition, payload, bindings, caller=None):
                 return _checked(int(raw), value.name, condition)
             except ValueError:
                 pass
+        if isinstance(raw, dict) and "amount" in raw and "currency" in raw:
+            # RFC-0051 §3: a Money-shaped value, declared or not, becomes a
+            # `(minor, currency)` pair — the shape `_eval_sum_avg` dispatches
+            # on too.
+            from . import money
+            try:
+                return money.encode_money(raw["amount"], raw["currency"])
+            except money.MoneyError as e:
+                raise RunError("%s (%s) in condition %r"
+                               % (e.message, e.code, condition))
         raise RunError(f"Cannot compare non-numeric {value.name}={raw!r} "
                        f"in condition {condition!r}")
     if isinstance(value, Arith):
@@ -957,6 +997,8 @@ def eval_value(value, condition, payload, bindings, caller=None):
         right = eval_value(value.right, condition, payload, bindings, caller)
         if left is None or right is None:
             return None
+        if isinstance(left, tuple) or isinstance(right, tuple):
+            return _eval_money_arith(value, left, right, condition)
         if value.op == '+':
             result = left + right
         elif value.op == '-':
@@ -978,6 +1020,42 @@ def eval_value(value, condition, payload, bindings, caller=None):
                 % (_value_text(value), result, condition))
         return result
     raise RunError(f"Unknown value type: {type(value)}")
+
+
+def _eval_money_arith(value, left, right, condition):
+    """RFC-0051 §3: `Arith` with a Money pair on either side. Pair ± pair and
+    pair × int (either order) evaluate; every other mix is a `RunError` —
+    only an undeclared reference can reach one, since lowering refuses the
+    declared forms."""
+    from . import money
+    op = value.op
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        if op == '+':
+            fn = money.add
+        elif op == '-':
+            fn = money.sub
+        else:
+            raise RunError(
+                "cannot %s two Money values: %s (in %r)"
+                % ("multiply" if op == '*' else "divide",
+                   _value_text(value), condition))
+        try:
+            result = fn(left, right)
+        except money.MoneyError as e:
+            raise RunError("%s (%s) in %r" % (e.message, e.code, condition))
+    else:
+        pair, n = (left, right) if isinstance(left, tuple) else (right, left)
+        if op != '*':
+            raise RunError(
+                "cannot combine a Money value and a plain number with %r: %s "
+                "(in %r)" % (op, _value_text(value), condition))
+        try:
+            result = money.mul_int(pair, n)
+        except money.MoneyError as e:
+            raise RunError("%s (%s) in %r" % (e.message, e.code, condition))
+    minor, currency = result
+    minor = _checked(minor, _value_text(value), condition)
+    return minor, currency
 
 
 def eval_aggregate(agg, expression, rowsets, agg_field_type=None):
@@ -1800,6 +1878,8 @@ class Interpreter:
                 raise RunError(
                     "assignment %r cannot be evaluated: a reference in %r "
                     "resolves to nothing" % (target, effect["expression"]))
+            if isinstance(value, tuple):
+                value = _decode_money(*value)   # RFC-0051: persist the wire shape
             row[field] = value
             # The write above lands in the dict the read bound. For the Fake
             # that dict IS the stored row and this is a no-op; for a real store

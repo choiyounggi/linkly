@@ -94,6 +94,142 @@ class TestNumericPredicateExemption(unittest.TestCase):
         self.assertIn("toolchain unavailable", str(ctx.exception))
 
 
+MONEY_BARE = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    read order
+    %s
+    set order.stock to order.stock + 1
+"""
+
+
+class TestMoneyGuardExemption(unittest.TestCase):
+    """RFC-0051 §6: a guard comparing a declared Money field is a recorded mode
+    B exemption, reported before the toolchain check; a Money-shaped value an
+    undeclared reference carries into mode B's condition channel is refused
+    rather than zeroed (a zero would let mode B evaluate a guard mode A
+    evaluates as money, and still report EQUIVALENT)."""
+
+    def _doc(self, source):
+        doc = lower(parse(source), "money").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        return doc, wf
+
+    def _verify(self, doc, wf, payload=None):
+        payload = payload or {"id": USER["id"]}
+        workdir = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp")
+                                   if os.path.isdir(os.path.join(REPO, ".claude", "tmp"))
+                                   else None)
+        self.addCleanup(shutil.rmtree, workdir, True)
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), workdir)
+
+    def _without_toolchain(self):
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+
+    def test_a_declared_money_guard_is_the_recorded_exemption(self):
+        from tests.test_backend import MONEY_GUARD
+        doc, wf = self._doc(MONEY_GUARD % "when order.total > order.threshold")
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+        self.assertIn("Money guard", str(ctx.exception))
+        self.assertNotIn("toolchain unavailable", str(ctx.exception))
+
+    def test_an_input_money_guard_is_exempted_without_a_toolchain(self):
+        from tests.test_backend import MONEY_GUARD
+        doc, wf = self._doc(MONEY_GUARD % "when input.total > input.threshold")
+        self._without_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+
+    def test_a_create_as_alias_money_guard_is_exempted_without_a_toolchain(self):
+        from tests.test_backend import MONEY_ALIAS_GUARD
+        doc, wf = self._doc(MONEY_ALIAS_GUARD)
+        self._without_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+        self.assertIn("Money guard", str(ctx.exception))
+
+    def test_a_money_free_guard_is_not_exempted(self):
+        # Control: the same document with an Integer guard gets the ordinary
+        # toolchain message — the exemption is scoped to Money guards.
+        from tests.test_backend import MONEY_GUARD
+        doc, wf = self._doc(MONEY_GUARD % "when order.stock > 0")
+        self._without_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def _observe_b(self, source, payload):
+        """Drive `observe_mode_b` up to the binary run with the build and run
+        stubbed, returning the condition values it would pass."""
+        doc, wf = self._doc(source)
+        seen = {}
+        real_build, real_run = backend.build, backend.run_binary
+        backend.build = lambda *a, **k: "unused"
+
+        def run_binary(bin_path, skip=False, condition_fields=None):
+            seen.update(condition_fields or {})
+            return 0, ["status completed"]
+        backend.run_binary = run_binary
+        self.addCleanup(setattr, backend, "build", real_build)
+        self.addCleanup(setattr, backend, "run_binary", real_run)
+        differential.observe_mode_b(doc, wf, "unused", payload=payload)
+        return seen
+
+    def test_a_money_shaped_undeclared_value_is_refused_not_zeroed(self):
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._observe_b(MONEY_BARE % "when extra > limit",
+                            {"id": USER["id"], "limit": 5,
+                             "extra": {"amount": "1.00", "currency": "USD"}})
+        self.assertIn("'extra'", str(ctx.exception))
+        self.assertIn("Money-shaped", str(ctx.exception))
+        self.assertIn("RFC-0051", str(ctx.exception))
+
+    def test_other_non_numeric_values_keep_the_zero_placeholder(self):
+        # Boundary: a Presence guard's field and a plain non-Money dict still
+        # take the i64 placeholder — only a Money-shaped dict is intercepted.
+        seen = self._observe_b(MONEY_BARE % "when extra exists",
+                               {"id": USER["id"], "extra": "abc"})
+        self.assertEqual({"extra": 0}, seen)
+        seen = self._observe_b(MONEY_BARE % "when extra exists",
+                               {"id": USER["id"], "extra": {"amount": "1.00"}})
+        self.assertEqual({"extra": 0}, seen)
+
+    @NEEDS_TOOLS
+    def test_a_money_set_without_a_money_guard_compares_equivalent(self):
+        # RFC-0028 §6: an Assignment is one opaque effect marker in mode B, so
+        # a Money `set` needs no mode B change and still compares.
+        doc, wf = self._doc(MONEY_BARE.replace(
+            "    %s\n    set order.stock to order.stock + 1",
+            "    when order.stock > 0\n    set order.total to order.total * 2"))
+        total = {"amount": "2.50", "currency": "USD"}
+        payload = {"id": USER["id"], "stock": 1, "total": total}
+        rows = {"entity.order": {row_key("entity.order", payload):
+                                 {"id": USER["id"], "stock": 1,
+                                  "total": dict(total)}}}
+        workdir = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, workdir, True)
+        ok, report = differential.verify(doc, wf, payload, rows, workdir)
+        self.assertTrue(ok, "\n".join(report))
+        self.assertIn("EQUIVALENT", report[-1])
+
+
 class TestNormaliseSkips(unittest.TestCase):
     """The projection both modes are compared on."""
 
