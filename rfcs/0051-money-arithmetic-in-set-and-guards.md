@@ -92,8 +92,10 @@ when order.total > order.creditLimit                # Money 대 Money 비교
 없기 때문이다. 결과는 저장소에 기존 Money 와이어 모양
 `{"amount": "37.50", "currency": "USD"}` 그대로 들어간다.
 
-두 값의 통화가 다르면 어떻게 되나: 덧셈·뺄셈·순서 비교(`<`/`<=`/`>`/`>=`)는 그
-스텝을 `money-currency-mismatch`로 실패시킨다(`status: failed`, rc=1). 통화는 필드
+두 값의 통화가 다르면 어떻게 되나: `set`의 덧셈·뺄셈은 그 스텝을
+`money-currency-mismatch`로 실패시키고(`status: failed`, rc=1), 가드의 순서 비교
+(`<`/`<=`/`>`/`>=`)는 오늘의 다른 가드 값 오류(비수치 비교, 0 나눗셈)와 똑같이 실행
+전체를 멈춘다(롤백, `lnpl run`은 `runtime error: ...`, rc=3). 통화는 필드
 선언이 아니라 행 데이터라서 컴파일러는 미리 알 수 없다(RFC-0044 §5). 등가
 (`==`/`!=`)는 실패하지 않는다 — 통화가 다른 두 금액은 그냥 같지 않다.
 
@@ -264,7 +266,13 @@ dict를 싣는다 — 저장 행과 같은 모양을 보여야 마스킹과 진�
 ### 4. 실패 신호
 
 새 결과 클래스를 만들지 않는다. 모든 새 실패는 RFC-0015 §4(RFC-0028 §2 갱신)의
-기존 `RunError` 클래스다 — 그 스텝이 `failed`, `failed at: <스텝명>`, rc=1.
+기존 `RunError`다. 어디서 났느냐에 따라 **기존** 두 경로 중 하나를 탄다 — 이 RFC가
+새 경로를 만들지 않는다:
+
+| 실패가 난 자리 | 관측 |
+|---------------|------|
+| `set`(Assignment) 평가 | 그 스텝이 `failed`, `failed at: <스텝명>`, rc=1 |
+| 가드(`when`/`until`/`or` 대안) 평가 | `RunError`가 실행 밖으로 나간다 — 트랜잭션 롤백(행 불변), `lnpl run`은 `runtime error: ...`, rc=3. 오늘의 비수치 가드 비교·가드 0 나눗셈과 같은 경로다 |
 
 | 조건 | 메시지에 담기는 것 |
 |------|-------------------|
@@ -309,7 +317,9 @@ RFC-0050 §5가 제시한 RFC-0028 §6의 최종 텍스트(RFC-0028 원문 + "�
 > compares Money, which has no compiled evaluator (RFC-0051 §Mode B) — run it in mode
 > A`. 선언된 Money 필드인지는 컴파일된 문서만으로 판정한다: 각 `Entity`의 기본 바인딩
 > 이름과 `create ... as <name>` 별칭(`RepositoryCall.result`)으로 `<binding>.<field>`를
-> 해석하고, refinement는 base로 푼다. `differential.verify`는 이 워크플로를 툴체인
+> 해석하고, `input.<field>`는 그 이름을 **문서 순서상 마지막으로 선언한** `Entity`의
+> 필드로 해석한다(lowering의 `input.<field>` 표와 같은 규칙 — 두 판정이 어긋나지
+> 않는다). refinement는 base로 푼다. `differential.verify`는 이 워크플로를 툴체인
 > 확인보다 **먼저** 알아보고 `DifferentialError`(기록된 RFC-0051 예외)로 거부한다.
 > 선언 타입이 없는 참조가 실행 시 Money 모양 값을 실어 오면, 차동 하네스는 그 값을
 > i64 자리에 `0`으로 채워 넣지 않고 `DifferentialError`로 비교를 거부한다 — `0`으로
@@ -346,9 +356,10 @@ RFC-0050 §5가 제시한 RFC-0028 §6의 최종 텍스트(RFC-0028 원문 + "�
 > Questions ⑤(복합류 base의 refinement — 내부 필드를 지목할 표기가 아직 없다)가 이미
 > 미정으로 남긴 자리다. 이 RFC는 그 미정을 해소하지 않는다(§Alternatives 5) — 대신
 > RFC-0028의 0 나눗셈과 같은 패턴을 따른다: **순서·산술 평가기가 실제로 서로 다른
-> 통화의 두 값을 만나면** `RunError`(`money-currency-mismatch`)로 그 스텝을
-> 실패시킨다 — `status: failed`, `failed at: <스텝명>`, rc=1(RFC-0015 §4의 기존 실패
-> 클래스, 새 결과 클래스를 만들지 않는다). Integer 곱셈(`money × 정수`)에는 통화
+> 통화의 두 값을 만나면** `RunError`(`money-currency-mismatch`)를 낸다(RFC-0015 §4의
+> 기존 실패 클래스, 새 결과 클래스를 만들지 않는다). 집계와 `set`에서 나면 그 스텝이
+> `status: failed`, `failed at: <스텝명>`, rc=1이고, 가드 비교에서 나면 다른 가드 값
+> 오류와 같이 실행 밖으로 나가 롤백되고 `lnpl run`이 rc=3을 낸다(RFC-0051 §4). Integer 곱셈(`money × 정수`)에는 통화
 > 질문이 없다.
 >
 > **등가(`==`/`!=`)는 이 규칙의 대상이 아니다** — §Guide-level Explanation이 이미
@@ -392,15 +403,17 @@ workflow Settle
 | `unitPrice = 1000 JPY`, `qty = 3` | `lineTotal = {"amount": "3000", "currency": "JPY"}` (exponent 0) |
 | `gross = 100.00 USD`, `fees = 30.25 USD` | `net = {"amount": "69.75", "currency": "USD"}` |
 | `gross = 1.250 KWD`에 `0.750 KWD`를 더함 | `{"amount": "2.000", "currency": "KWD"}` (exponent 3) |
-| `gross = 100.00 USD`, `threshold = 50.00 EUR` | 가드 스텝 `failed`, `money-currency-mismatch` |
+| `gross = 100.00 USD`, `threshold = 50.00 EUR` | 가드에서 `RunError`(`money-currency-mismatch`) — 롤백, `lnpl run` rc=3 |
 
 정적 판정은 `impl/tests/test_value_semantics.py`의 `TestMoneyDimension`(허용 형태와
 거부 형태 각각)과 `impl/tests/test_lower.py`의 `TestNumericPredicateRefusesMoney`·
 `TestPresenceRefusesMoney`가, 코덱은 `impl/tests/test_money.py`의
-`SameCurrencySubTest`·`MulIntTest`가 고정한다. 위 표의 런타임 값은 모드 A 런타임
-테스트(`impl/tests/test_value_semantics.py`, 저장소에서 다시 읽어 단언)가, 모드 B
-거부와 차동 예외는 `impl/tests/test_backend.py`·`impl/tests/test_differential_skips.py`가
-고정한다.
+`SameCurrencySubTest`·`MulIntTest`가 고정한다. 위 표의 런타임 값은
+`impl/tests/test_value_semantics.py`의 `TestMoneyRuntime`(저장소에서 다시 읽어 단언)이,
+`expect result`의 순서 비교는 `impl/tests/test_spec_money_literal.py`의
+`TestExpectResultMoneyOrder`가, 모드 B 거부와 차동 예외는 `impl/tests/test_backend.py`의
+`TestModeBRefusesAMoneyGuard`와 `impl/tests/test_differential_skips.py`의
+`TestMoneyGuardExemption`이 고정한다.
 
 ### 컴파일 거부 — Money × Money
 

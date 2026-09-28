@@ -182,6 +182,146 @@ class TestModeBRefusesTheNumericPredicate(unittest.TestCase):
             backend.workflow_uses_numeric_predicate(doc, "wf.nope")
 
 
+MONEY_GUARD = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+        threshold Money
+        lineTotal Money
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    read order
+    %s
+    create order
+"""
+
+
+MONEY_ALIAS_GUARD = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+        threshold Money
+
+entity Audit
+    field
+        id UUID
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    create order as fresh
+    when fresh.total > fresh.threshold
+    create audit
+"""
+
+
+class TestModeBRefusesAMoneyGuard(unittest.TestCase):
+    """RFC-0051 §6 (issue #172): Money carries its currency as row data, so it
+    cannot ride mode B's i64 condition-field channel. A guard that references
+    a declared Money field is refused by name; a Money `set` is untouched —
+    Assignment expressions are never lowered (RFC-0028 §6)."""
+
+    def _refusal(self, source):
+        doc, wf = _predicate_doc(source)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        return str(ctx.exception)
+
+    def test_a_money_guard_on_the_default_binding_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % "when order.total > order.threshold")
+        self.assertIn("create order", msg)
+        self.assertIn("order.total > order.threshold", msg)
+        self.assertIn("compares Money", msg)
+        self.assertIn("RFC-0051", msg)
+
+    def test_a_money_guard_through_input_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % "when input.total > input.threshold")
+        self.assertIn("input.total > input.threshold", msg)
+        self.assertIn("RFC-0051", msg)
+
+    def test_a_money_guard_on_a_create_as_alias_is_refused(self):
+        # Only the `create ... as <alias>` pass knows `fresh.*` is Money —
+        # the entity's default binding is `order`.
+        msg = self._refusal(MONEY_ALIAS_GUARD)
+        self.assertIn("create audit", msg)
+        self.assertIn("fresh.total > fresh.threshold", msg)
+        self.assertIn("RFC-0051", msg)
+        doc, wf = _predicate_doc(MONEY_ALIAS_GUARD)
+        self.assertTrue(backend.workflow_uses_money_guard(doc, wf))
+
+    def test_a_money_guard_only_in_an_or_alternative_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % (
+            "when order.stock > 0\n    or order.total >= order.threshold"))
+        self.assertIn("order.total >= order.threshold", msg)
+
+    def test_an_until_money_guard_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % "until order.total == order.threshold")
+        self.assertIn("order.total == order.threshold", msg)
+
+    def test_a_money_set_without_a_money_guard_still_emits(self):
+        doc, wf = _predicate_doc(MONEY_GUARD.replace(
+            "    %s\n    create order",
+            "    when order.stock > 0\n"
+            "    set order.lineTotal to order.total * order.stock"))
+        self.assertFalse(backend.workflow_uses_money_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_an_integer_guard_in_a_money_document_still_emits(self):
+        doc, wf = _predicate_doc(MONEY_GUARD % "when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_money_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_input_resolves_to_the_last_declaring_entity(self):
+        # Boundary: lowering's `input.<field>` table is last-entity-wins, so a
+        # later Integer `amount` makes `input.amount` a plain number — mode B
+        # must agree and not refuse it; the reverse order is Money.
+        two = """capability postgres
+
+entity %s
+    field
+        id UUID
+        amount %s
+
+entity %s
+    field
+        id UUID
+        amount %s
+
+service S
+    policy
+        timeout 5s
+
+workflow W
+    %s
+    create %s
+"""
+        doc, wf = _predicate_doc(two % ("Ledger", "Money", "Counter", "Integer",
+                                        "when input.amount > 0", "counter"))
+        self.assertFalse(backend.workflow_uses_money_guard(doc, wf))
+        backend.emit_mlir(doc, wf)
+        doc, wf = _predicate_doc(two % ("Counter", "Integer", "Ledger", "Money",
+                                        "when input.amount == input.amount",
+                                        "ledger"))
+        self.assertTrue(backend.workflow_uses_money_guard(doc, wf))
+
+    def test_workflow_uses_money_guard_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(MONEY_GUARD % "when order.stock > 0")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_money_guard(doc, "wf.nope")
+
+
 @NEEDS_TOOLS
 class TestNativeBuild(unittest.TestCase):
     def setUp(self):

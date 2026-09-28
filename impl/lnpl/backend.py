@@ -51,7 +51,7 @@ from lnpl.interp import (RunError, refinement_index, sample_payload,
 # second copy of the seeding rule is the defect Wave 1 removed when three seeding
 # sites became one. `repo_policy` imports nothing from `interp`/`backend`/`cli`,
 # so this is cycle-safe.
-from lnpl.repo_policy import seeded_entities
+from lnpl.repo_policy import binding_name, seeded_entities
 from lnpl import resources
 
 MLIR_OPT = "mlir-opt"
@@ -566,6 +566,71 @@ def workflow_uses_numeric_predicate(document, workflow_id):
                 if _uses_numeric_predicate(_parsed(text)):
                     return True
     return False
+
+
+def _money_declared_fields(document):
+    """Every guard reference name that resolves to a declared Money field
+    (RFC-0051 §6): `<binding>.<field>` for each Entity's default binding and
+    each `create ... as <name>` alias, and `input.<field>` where the field's
+    LAST declaring Entity in document order is Money — lowering's
+    `input.<field>` table is a flat, last-entity-wins dict, and mode B must
+    agree with it on which references are Money."""
+    nodes = {n["id"]: n for n in document["nodes"]}
+    base_of = {name: r["base"] for name, r in refinement_index(document).items()}
+    entities = [n for n in document["nodes"] if n["kind"] == "Entity"]
+
+    def money_fields_of(entity):
+        return {f["name"] for f in entity["fields"]
+                if base_of.get(f["type"], f["type"]) == "Money"}
+
+    result = set()
+    for ent in entities:
+        for field in money_fields_of(ent):
+            result.add("%s.%s" % (binding_name(ent), field))
+    for node in document["nodes"]:
+        if (node["kind"] == "RepositoryCall"
+                and node.get("operation") == "create" and node.get("result")):
+            ent = nodes.get(node["entity"])
+            if ent is not None:
+                for field in money_fields_of(ent):
+                    result.add("%s.%s" % (node["result"], field))
+    last_base = {}
+    for ent in entities:
+        for f in ent["fields"]:
+            last_base[f["name"]] = base_of.get(f["type"], f["type"])
+    result.update("input.%s" % name for name, base in last_base.items()
+                  if base == "Money")
+    return result
+
+
+def _money_guard_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when`/`until` condition or `or`
+    alternative of `workflow_id` that references a declared Money field, or
+    None. Raises `BackendError` for an unknown workflow."""
+    _, steps = _workflow_steps(document, workflow_id)
+    money_fields = _money_declared_fields(document)
+    if not money_fields:
+        return None
+    for step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                parsed = _parsed(text)
+                if parsed is not None and any(
+                        name in money_fields for name in references(parsed)):
+                    return step["name"], text
+    return None
+
+
+def workflow_uses_money_guard(document, workflow_id):
+    """RFC-0051 §6: does any `when`/`until` guard of `workflow_id` —
+    condition or `or` alternative — compare a declared Money field?
+
+    Mode B refuses such a workflow (`emit_mlir`); `differential.verify` asks
+    this first so the recorded exemption does not depend on a toolchain.
+    Raises `BackendError` for an unknown workflow.
+    """
+    return _money_guard_offender(document, workflow_id) is not None
 
 
 def encode_condition_value(value):
@@ -1381,7 +1446,17 @@ def emit_mlir(document, workflow_id, seeded=None, payload=None):
     standard-dialect module and the `lnpl` module cannot describe different
     workflows. The signature and the output are unchanged from before the dialect
     existed; `impl/tests/golden/` holds the pre-change bytes that prove it.
+
+    RFC-0051 §6: a guard comparing a declared Money field is refused before
+    any MLIR is rendered — Money's currency cannot ride an i64 parameter.
     """
+    offender = _money_guard_offender(document, workflow_id)
+    if offender is not None:
+        step_name, guard_text = offender
+        raise BackendError(
+            "step %s: guard %r compares Money, which has no compiled "
+            "evaluator (RFC-0051 §Mode B) — run it in mode A"
+            % (step_name, guard_text))
     return _render_std(*_lnpl_ops(document, workflow_id, seeded, payload))
 
 

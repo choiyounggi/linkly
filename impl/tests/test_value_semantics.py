@@ -364,7 +364,7 @@ class TestMoneyDimension(unittest.TestCase):
     def test_money_plus_a_datetime_is_refused(self):
         self.compile_fails(self.assignment(
             "set product.price to product.price + product.createdAt"),
-            "combines a Money value with a instant value via '+'", "RFC-0051")
+            "combines a Money value with an instant value via '+'", "RFC-0051")
 
     # ---- refused comparisons --------------------------------------------
     def test_money_against_an_integer_field_is_a_mismatch(self):
@@ -447,10 +447,22 @@ class TestModeAEvaluation(unittest.TestCase):
 
     # ---- error -------------------------------------------------------------
     def test_a_non_numeric_value_fails_with_a_domain_error(self):
+        for raw in ("ten", {"value": 10}):
+            with self.subTest(raw=raw):
+                with self.assertRaises(RunError) as ctx:
+                    self.holds("input.amount > 0", {"amount": raw})
+                self.assertIn("non-numeric", str(ctx.exception))
+                self.assertIn("amount", str(ctx.exception))
+
+    def test_a_money_value_against_a_number_fails_with_a_domain_error(self):
+        # RFC-0051: a Money-shaped value is money now, not "non-numeric" — but
+        # it still cannot meet a plain number, and that still fails the run.
         with self.assertRaises(RunError) as ctx:
-            self.holds("input.amount > 0", {"amount": {"amount": "10", "currency": "USD"}})
-        self.assertIn("non-numeric", str(ctx.exception))
-        self.assertIn("amount", str(ctx.exception))
+            self.holds("input.amount > 0",
+                       {"amount": {"amount": "10.00", "currency": "USD"}})
+        self.assertIn("cannot compare a Money value with a plain number",
+                      str(ctx.exception))
+        self.assertIn("input.amount", str(ctx.exception))
 
     def test_arithmetic_past_the_64_bit_range_fails(self):
         with self.assertRaises(RunError) as ctx:
@@ -542,6 +554,254 @@ class TestAssignmentRuntime(unittest.TestCase):
         self.assertEqual(
             seed["entity.product"][row_key("entity.product", payload)]["stock"], 5,
             "the caller's seed must be untouched")
+
+
+MONEY_RUNTIME = """capability postgres
+
+entity Order
+    field
+        id UUID
+        qty Integer
+        unitPrice Money
+        lineTotal Money
+        gross Money
+        fees Money
+        net Money
+        total Money
+        threshold Money
+
+service S
+    policy
+        timeout 5s
+
+workflow PriceLine
+    read order
+    set order.lineTotal to order.unitPrice * order.qty
+
+workflow ScaleLine
+    read order
+    set order.lineTotal to 3 * order.unitPrice
+
+workflow AddUp
+    read order
+    set order.total to order.gross + order.fees
+
+workflow Settle
+    read order
+    set order.net to order.gross - order.fees
+
+workflow Carry
+    read order
+    set order.net to input.net
+
+workflow Approve
+    read order
+    when order.total > order.threshold
+    set order.net to order.total
+
+workflow Match
+    read order
+    when order.total == order.threshold
+    set order.net to order.total
+"""
+
+
+def usd(amount, currency="USD"):
+    return {"amount": amount, "currency": currency}
+
+
+class TestMoneyRuntime(unittest.TestCase):
+    """RFC-0051 §3 — mode A evaluates the Gate-1 Money subset in exact minor
+    units (issue #172: s1 F-1, s3 F-1). Every value is read back through the
+    repository, not only the trace."""
+
+    def run_on(self, workflow, row, payload_extra=None):
+        doc = compile_doc(MONEY_RUNTIME, "money")
+        [wf] = [n for n in doc["nodes"]
+                if n["kind"] == "Workflow" and n["name"] == workflow]
+        payload = dict({"id": PRODUCT_ID}, **(payload_extra or {}))
+        key = row_key("entity.order", payload)
+        interp = Interpreter(doc, repo_rows={
+            "entity.order": {key: dict({"id": PRODUCT_ID}, **row)}})
+        result = interp.run_workflow(wf["id"], payload)
+        return result, interp.repo.rows["entity.order"][key]
+
+    # ---- normal ------------------------------------------------------------
+    def test_money_times_an_integer_field_is_exact(self):
+        # s1 F-1: 12.50 USD × 3.
+        result, row = self.run_on("PriceLine",
+                                  {"unitPrice": usd("12.50"), "qty": 3})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(usd("37.50"), row["lineTotal"])
+
+    def test_an_exponent_zero_currency_multiplies_without_a_decimal_point(self):
+        result, row = self.run_on("PriceLine",
+                                  {"unitPrice": usd("1000", "JPY"), "qty": 3})
+        self.assertEqual(usd("3000", "JPY"), row["lineTotal"])
+
+    def test_a_literal_on_the_left_multiplies_the_same_way(self):
+        result, row = self.run_on("ScaleLine", {"unitPrice": usd("0.05")})
+        self.assertEqual(usd("0.15"), row["lineTotal"])
+
+    def test_an_exponent_three_currency_adds_with_three_places(self):
+        result, row = self.run_on("AddUp", {"gross": usd("1.250", "KWD"),
+                                            "fees": usd("0.750", "KWD")})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(usd("2.000", "KWD"), row["total"])
+
+    def test_money_minus_money_is_exact(self):
+        # s3 F-1: 100.00 USD − 30.25 USD.
+        result, row = self.run_on("Settle", {"gross": usd("100.00"),
+                                             "fees": usd("30.25")})
+        self.assertEqual(usd("69.75"), row["net"])
+
+    def test_a_money_shaped_payload_value_is_copied(self):
+        # s3 F-1's operator-free copy from the input.
+        result, row = self.run_on("Carry", {"net": usd("0.00")},
+                                  {"net": usd("69.75")})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(usd("69.75"), row["net"])
+
+    def test_a_same_currency_money_guard_takes_the_branch(self):
+        result, row = self.run_on("Approve", {"total": usd("500.00"),
+                                              "threshold": usd("100.00"),
+                                              "net": usd("0.00")})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(usd("500.00"), row["net"])
+
+    def test_a_skipped_money_guard_records_wire_shaped_evaluations(self):
+        result, row = self.run_on("Approve", {"total": usd("50.00"),
+                                              "threshold": usd("100.00"),
+                                              "net": usd("0.00")})
+        self.assertEqual(usd("0.00"), row["net"])
+        [record] = result["skipped"]
+        [evaluation] = record["evaluations"]
+        self.assertEqual({"ref": "order.total", "value": usd("50.00"),
+                          "op": ">", "expected": usd("100.00"),
+                          "holds": False}, evaluation)
+
+    # ---- error -------------------------------------------------------------
+    def test_different_currencies_under_an_order_comparator_stop_the_run(self):
+        # A guard value fault takes the existing guard path (like a
+        # non-numeric or divide-by-zero guard): the RunError escapes the run,
+        # which rolls back — `lnpl run` reports it as a runtime error, rc=3.
+        doc = compile_doc(MONEY_RUNTIME, "money")
+        [wf] = [n for n in doc["nodes"] if n.get("name") == "Approve"]
+        key = row_key("entity.order", {"id": PRODUCT_ID})
+        interp = Interpreter(doc, repo_rows={"entity.order": {key: {
+            "id": PRODUCT_ID, "total": usd("500.00"),
+            "threshold": usd("100.00", "EUR"), "net": usd("0.00")}}})
+        with self.assertRaises(RunError) as ctx:
+            interp.run_workflow(wf["id"], {"id": PRODUCT_ID})
+        self.assertIn("money-currency-mismatch", str(ctx.exception))
+        self.assertIn("order.total > order.threshold", str(ctx.exception))
+        self.assertEqual(usd("0.00"),
+                         interp.repo.rows["entity.order"][key]["net"])
+
+    def test_subtracting_different_currencies_fails_the_run(self):
+        result, row = self.run_on("Settle", {"gross": usd("100.00"),
+                                             "fees": usd("1.00", "EUR"),
+                                             "net": usd("0.00")})
+        self.assertEqual("failed", result["status"])
+        self.assertIn("money-currency-mismatch", result["failure_reason"])
+        self.assertEqual(usd("0.00"), row["net"])
+
+    def test_a_product_past_the_64_bit_range_fails_the_run(self):
+        result, row = self.run_on("PriceLine", {"unitPrice": usd("1.00"),
+                                                "qty": 2 ** 62,
+                                                "lineTotal": usd("0.00")})
+        self.assertEqual("failed", result["status"])
+        self.assertIn("value out of the 64-bit range", result["failure_reason"])
+        self.assertEqual(usd("0.00"), row["lineTotal"])
+
+    def test_a_value_with_the_wrong_scale_fails_the_run(self):
+        result, row = self.run_on("Settle", {"gross": usd("100.0"),
+                                             "fees": usd("1.00"),
+                                             "net": usd("0.00")})
+        self.assertEqual("failed", result["status"])
+        self.assertIn("money-encode-precision", result["failure_reason"])
+
+    def test_a_money_payload_value_meeting_an_integer_fails_the_run(self):
+        # An undeclared ref can carry Money where lowering could not see it.
+        doc = compile_doc(MONEY_RUNTIME.replace(
+            "set order.net to input.net", "set order.qty to order.qty + extra"),
+            "money")
+        [wf] = [n for n in doc["nodes"] if n.get("name") == "Carry"]
+        key = row_key("entity.order", {"id": PRODUCT_ID})
+        interp = Interpreter(doc, repo_rows={
+            "entity.order": {key: {"id": PRODUCT_ID, "qty": 1}}})
+        result = interp.run_workflow(wf["id"], {"id": PRODUCT_ID,
+                                                "extra": usd("1.00")})
+        self.assertEqual("failed", result["status"])
+        self.assertIn("Money", result["failure_reason"])
+        self.assertEqual(1, interp.repo.rows["entity.order"][key]["qty"])
+
+    def _run_bare(self, expression, payload):
+        """`set order.qty to <expression>` over undeclared (payload) refs —
+        lowering cannot see their shapes, so the refusal is the runtime's."""
+        doc = compile_doc(MONEY_RUNTIME.replace(
+            "set order.net to input.net", "set order.qty to " + expression),
+            "money")
+        [wf] = [n for n in doc["nodes"] if n.get("name") == "Carry"]
+        key = row_key("entity.order", {"id": PRODUCT_ID})
+        interp = Interpreter(doc, repo_rows={
+            "entity.order": {key: {"id": PRODUCT_ID, "qty": 7}}})
+        result = interp.run_workflow(wf["id"], dict({"id": PRODUCT_ID},
+                                                    **payload))
+        return result, interp.repo.rows["entity.order"][key]
+
+    def test_money_combinations_lowering_cannot_see_fail_the_run(self):
+        a, b = usd("2.00"), usd("3.00")
+        for expression, payload, message in (
+                ("left * right", {"left": a, "right": b},
+                 "cannot multiply two Money values"),
+                ("left / right", {"left": a, "right": b},
+                 "cannot divide two Money values"),
+                ("left / right", {"left": a, "right": 2},
+                 "cannot combine a Money value and a plain number with '/'"),
+                ("left / right", {"left": 2, "right": a},
+                 "cannot combine a Money value and a plain number with '/'"),
+                ("left + right", {"left": a,
+                                  "right": "2026-07-01T00:00:00Z"},
+                 "cannot combine a Money value and a plain number with '+'")):
+            with self.subTest(expression=expression, payload=payload):
+                result, row = self._run_bare(expression, payload)
+                self.assertEqual("failed", result["status"])
+                self.assertIn(message, result["failure_reason"])
+                self.assertIn(expression, result["failure_reason"])
+                self.assertEqual(7, row["qty"])
+
+    # ---- boundary ----------------------------------------------------------
+    def test_equality_across_currencies_is_false_not_a_failure(self):
+        result, row = self.run_on("Match", {"total": usd("100.00"),
+                                            "threshold": usd("100.00", "EUR"),
+                                            "net": usd("0.00")})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(1, len(result["skipped"]))
+        self.assertEqual(usd("0.00"), row["net"])
+
+    def test_equal_amounts_in_one_currency_are_equal(self):
+        result, row = self.run_on("Match", {"total": usd("100.00"),
+                                            "threshold": usd("100.00"),
+                                            "net": usd("0.00")})
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(usd("100.00"), row["net"])
+
+    def test_an_unresolved_side_of_a_money_comparison_is_false(self):
+        # RFC-0015: a reference that names nothing compares false — Money
+        # does not turn it into a failure.
+        result, row = self.run_on("Approve", {"total": usd("500.00"),
+                                              "net": usd("0.00")})
+        self.assertEqual("completed", result["status"])
+        [record] = result["skipped"]
+        self.assertIsNone(record["evaluations"][0]["expected"])
+        self.assertEqual(usd("0.00"), row["net"])
+
+    def test_a_negative_result_keeps_its_sign(self):
+        result, row = self.run_on("Settle", {"gross": usd("1.00"),
+                                             "fees": usd("1.05")})
+        self.assertEqual(usd("-0.05"), row["net"])
 
 
 class TestIrSchemaGate(unittest.TestCase):

@@ -157,15 +157,59 @@ class TestExpectResultMoneyEquality(unittest.TestCase):
         passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 0, lines)
 
-    # (에러) 순서 연산은 명시 거부 — literal shape/scale is valid (2 places,
-    # USD), so the reject comes from `_condition_holds` at run time, not the
-    # manifest-stage literal check.
-    def test_an_order_comparison_on_a_money_ref_is_refused(self):
+    # (정상) RFC-0051 §3 opens order comparison: the same `money.compare`
+    # evaluator a guard uses (100.50 USD < 200.00 USD).
+    def test_an_order_comparison_on_a_money_ref_is_evaluated(self):
         src = MONEY_SRC.replace("result product.price == 100.50USD",
                                 "result product.price < 200.00USD")
         doc, manifest = build(src)
-        with self.assertRaises(SpecError):
-            run_manifest(manifest, doc)
+        passed, failed, lines = run_manifest(manifest, doc)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)   # `completed` + the result line
+
+
+class TestExpectResultMoneyOrder(unittest.TestCase):
+    """RFC-0051 §3: `expect result <ref> <order-cmp> <MoneyLiteral>`."""
+
+    def _run(self, clause):
+        src = MONEY_SRC.replace("result product.price == 100.50USD",
+                                "result " + clause)
+        doc, manifest = build(src)
+        return run_manifest(manifest, doc)
+
+    # (에러) a false order comparison is a failed case, not a refusal.
+    def test_a_false_order_comparison_fails_the_case(self):
+        passed, failed, lines = self._run("product.price > 200.00USD")
+        self.assertEqual((passed, failed), (1, 1), lines)   # `completed` holds
+
+    # (경계) the stored value itself: <= and >= hold, < and > do not.
+    def test_the_boundary_value_is_inclusive_only_for_the_inclusive_comparators(self):
+        for clause, want_failed in (("product.price <= 100.50USD", 0),
+                                    ("product.price >= 100.50USD", 0),
+                                    ("product.price < 100.50USD", 1),
+                                    ("product.price > 100.50USD", 1)):
+            with self.subTest(clause=clause):
+                passed, failed, lines = self._run(clause)
+                self.assertEqual(failed, want_failed, lines)
+
+    # (경계) an order comparison against a ref holding no Money value is a
+    # RunError naming the ref, not a Python TypeError.
+    def test_an_order_comparison_on_an_absent_value_raises(self):
+        from lnpl.interp import RunError, _condition_holds
+        for actual in (None, "12.00"):
+            with self.subTest(actual=actual):
+                with self.assertRaises(RunError) as ctx:
+                    _condition_holds("product.price < 1.00USD", {},
+                                     {"product": {"price": actual}},
+                                     money_fields=lambda ref: True)
+                self.assertIn("product.price", str(ctx.exception))
+                self.assertIn("is not a Money value", str(ctx.exception))
+
+    # (에러) different currencies under an order comparator fail loudly.
+    def test_a_cross_currency_order_comparison_raises(self):
+        with self.assertRaises(SpecError) as ctx:
+            self._run("product.price < 200.00EUR")
+        self.assertIn("money-currency-mismatch", str(ctx.exception))
 
 
 class TestInputFieldMoneySeeding(unittest.TestCase):
