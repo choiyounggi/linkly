@@ -843,3 +843,66 @@ class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
                       "`lnpl spec` must report that a step derives no Effect; "
                       "got %r" % err.getvalue())
         self.assertIn("ponder", err.getvalue())
+
+
+def _f5_spec_source():
+    """The F-5 program (issue #177) with three spec cases appended —
+    derived from the shared fixture, not a copy of it."""
+    from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+    return F5_SOURCE + """    spec
+        given
+            call Fx returns 200 body.rate 1350
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-numeric
+
+    spec
+        given
+            call Fx returns 200 body.rate abc
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-numeric
+
+    spec
+        given
+            call Fx returns 200 body.rate abc
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-not-numeric
+"""
+
+
+class TestExpectResultWithNumericPredicate(unittest.TestCase):
+    """RFC-0050 / issue #177: `expect result <ref> is-numeric` runs through
+    the shared `_condition_holds` evaluator — no spec.py change."""
+
+    def setUp(self):
+        decls = parse(_f5_spec_source())
+        self.doc = lower(decls, "fx").to_document()
+        self.cases = extract(decls, "fx")["cases"]
+
+    def _run(self, index):
+        return run_manifest({"spec_version": "0.1", "module": "fx",
+                             "cases": [self.cases[index]]}, self.doc)
+
+    def test_a_numeric_rate_passes_the_expectation(self):
+        passed, failed, lines = self._run(0)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2)
+
+    def test_a_non_numeric_rate_fails_the_positive_expectation(self):
+        passed, failed, lines = self._run(1)
+        self.assertEqual(failed, 1, lines)
+        self.assertEqual(passed, 1, "`completed` still holds — no RunError")
+        self.assertIn("fxResult.rate is-numeric", "\n".join(lines))
+
+    def test_a_non_numeric_rate_passes_the_negative_expectation(self):
+        passed, failed, lines = self._run(2)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2)

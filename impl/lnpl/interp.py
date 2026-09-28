@@ -808,7 +808,7 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
         return _comparison_holds(cond, condition, payload, bindings, collector, caller)
 
     if isinstance(cond, NumericPredicate):
-        raise _numeric_predicate_not_yet(cond)
+        return _numeric_predicate_holds(cond, payload, bindings, collector, caller)
 
     if isinstance(cond, And):
         # Every term is evaluated, not short-circuited: the terms are pure, so
@@ -817,20 +817,60 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
         results = []
         for term in cond.terms:
             if isinstance(term, NumericPredicate):
-                raise _numeric_predicate_not_yet(term)
-            results.append(_comparison_holds(term, condition, payload, bindings,
-                                             collector, caller))
+                results.append(_numeric_predicate_holds(term, payload, bindings,
+                                                        collector, caller))
+            else:
+                results.append(_comparison_holds(term, condition, payload,
+                                                 bindings, collector, caller))
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
 
 
-def _numeric_predicate_not_yet(pred):
-    """RFC-0050 Track A boundary: the predicate parses and lowers, but its
-    runtime truth table lands in t177b. One clear refusal until then."""
-    return RunError(
-        "numeric-shape predicate (%r) runtime evaluation is not yet "
-        "implemented — RFC-0050, t177b" % pred.kind)
+def _numeric_predicate_holds(pred, payload, bindings, collector=None, caller=None):
+    """`<ref> is-numeric` / `<ref> is-not-numeric` (RFC-0050 §3).
+
+    Never raises. `is-not-numeric` is the exact complement for every value,
+    an absent reference included — like `exists`/`missing`, not like a
+    comparison's "unresolved -> false on both sides". The collector entry has
+    the Presence shape (`expected` is None).
+    """
+    raw = resolve_reference(pred.field, payload, bindings, caller)
+    numeric = _is_numeric_shaped(raw)
+    holds = numeric if pred.kind == "is-numeric" else not numeric
+    if collector is not None:
+        collector.append({"ref": pred.field, "value": raw, "op": pred.kind,
+                          "expected": None, "holds": holds})
+    return holds
+
+
+def _is_numeric_shaped(raw):
+    """True exactly where `eval_value` reads a resolved reference as a number
+    instead of raising (RFC-0050 §3): bool, int, an instant string
+    `encode_instant` accepts, an `int()`-parseable string. A zoneless or
+    invalid instant-shaped string is False — its `ConditionError` is caught
+    here, never raised. The i64 range is not judged (RFC-0050 §Open
+    Questions 2).
+    """
+    from .condition import (ConditionError, encode_instant, is_instant_text,
+                            looks_like_instant)
+    if isinstance(raw, (bool, int)):
+        return True
+    if isinstance(raw, str):
+        # Same dispatch as `eval_value`: instant-shaped text is never also
+        # tried as an integer.
+        if is_instant_text(raw) or looks_like_instant(raw):
+            try:
+                encode_instant(raw, "value")
+            except ConditionError:
+                return False
+            return True
+        try:
+            int(raw)
+        except ValueError:
+            return False
+        return True
+    return False
 
 
 def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, caller=None):

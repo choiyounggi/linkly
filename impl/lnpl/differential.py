@@ -375,7 +375,18 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
 
     `network` (RFC-0027 §8) is mode A's `NetworkDriver` only — see
     `observe_mode_a`.
+
+    A workflow using the numeric-shape predicate is a recorded exemption
+    (RFC-0050 §Mode B): mode B refuses to build it, so there is nothing to
+    compare. That is checked first, so the answer does not depend on whether
+    a toolchain happens to be installed.
     """
+    if backend.workflow_uses_numeric_predicate(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses the numeric-shape predicate (is-numeric/"
+            "is-not-numeric) — mode B has no compiled evaluator for it "
+            "(RFC-0050 §Mode B, recorded exemption); differential comparison "
+            "is not attempted" % workflow_id)
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "

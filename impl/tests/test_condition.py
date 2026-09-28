@@ -420,6 +420,67 @@ class TestNumericPredicate(unittest.TestCase):
                  NumericPredicate("b", "is-not-numeric"))), And)
 
 
+class TestNumericPredicateTruthTable(unittest.TestCase):
+    """RFC-0050 §3: `is-numeric` holds exactly where a comparison would read
+    the value as a number; `is-not-numeric` is its complement for EVERY
+    input, `None` included. Neither ever raises."""
+
+    CASES = [
+        ("bool true", True, True),
+        ("bool false", False, True),
+        ("int", 1350, True),
+        ("int-parseable str", "1350", True),
+        ("negative int str", "-3", True),
+        ("zoned instant", "2026-09-28T10:00:00Z", True),
+        ("zoneless instant", "2026-09-28T10:00:00", False),
+        ("zoned but invalid date", "2026-13-40T10:00:00Z", False),
+        ("dict", {"a": 1}, False),
+        ("list", [1, 2], False),
+        ("plain str", "abc", False),
+        ("decimal str", "13.5", False),
+        ("empty str", "", False),
+    ]
+
+    def _holds(self, kind, payload, collector=None):
+        from lnpl.interp import _condition_holds
+        return _condition_holds("v %s" % kind, payload, {}, collector=collector)
+
+    def test_every_value_classifies_and_the_negative_is_the_complement(self):
+        for label, raw, numeric in self.CASES:
+            with self.subTest(label):
+                self.assertIs(self._holds("is-numeric", {"v": raw}), numeric)
+                self.assertIs(self._holds("is-not-numeric", {"v": raw}), not numeric)
+
+    def test_an_absent_reference_is_not_numeric(self):
+        self.assertIs(self._holds("is-numeric", {}), False)
+        self.assertIs(self._holds("is-not-numeric", {}), True)
+        self.assertIs(self._holds("is-numeric", {"v": None}), False)
+
+    def test_a_zoneless_instant_does_not_raise(self):
+        # A comparison on the same value is a RunError (RFC-0016); the
+        # predicate classifies it instead.
+        from lnpl.interp import RunError
+        with self.assertRaises(RunError):
+            self._holds("> 0", {"v": "2026-09-28T10:00:00"})
+        self.assertIs(self._holds("is-not-numeric", {"v": "2026-09-28T10:00:00"}), True)
+
+    def test_the_collector_gets_one_presence_shaped_entry(self):
+        collector = []
+        self._holds("is-not-numeric", {"v": "abc"}, collector)
+        self.assertEqual(collector, [{"ref": "v", "value": "abc",
+                                      "op": "is-not-numeric", "expected": None,
+                                      "holds": True}])
+
+    def test_an_and_collects_one_entry_per_term_in_source_order(self):
+        from lnpl.interp import _condition_holds
+        collector = []
+        holds = _condition_holds("s == 200 and v is-numeric",
+                                 {"s": 200, "v": "x"}, {}, collector=collector)
+        self.assertIs(holds, False)
+        self.assertEqual([e["op"] for e in collector], ["==", "is-numeric"])
+        self.assertEqual(collector[1]["holds"], False)
+
+
 class TestModeARefusesUnevaluableConditions(unittest.TestCase):
     """Issue #3's acceptance bullet: mode A must refuse what it cannot evaluate.
 

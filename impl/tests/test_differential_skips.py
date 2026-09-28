@@ -44,6 +44,56 @@ def _observation(order, skips):
             "text": "\n".join(["step %s" % n for n in order] + ["status completed"])}
 
 
+class TestNumericPredicateExemption(unittest.TestCase):
+    """RFC-0050 §5: a workflow using `is-numeric`/`is-not-numeric` is a
+    recorded mode B exemption. `verify` says so BEFORE the toolchain check,
+    so the answer is the same with or without LLVM installed."""
+
+    def _f5(self):
+        from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+        doc = lower(parse(F5_SOURCE), "fx").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        return doc, wf
+
+    def _verify(self, doc, wf):
+        payload = {"id": USER["id"]}
+        workdir = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp")
+                                   if os.path.isdir(os.path.join(REPO, ".claude", "tmp"))
+                                   else None)
+        self.addCleanup(shutil.rmtree, workdir, True)
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), workdir)
+
+    def test_verify_raises_the_recorded_exemption(self):
+        doc, wf = self._f5()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0050", str(ctx.exception))
+        self.assertNotIn("toolchain unavailable", str(ctx.exception))
+
+    def test_the_exemption_fires_without_a_toolchain(self):
+        doc, wf = self._f5()
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0050", str(ctx.exception))
+
+    def test_a_workflow_without_the_predicate_is_not_exempted(self):
+        # Control: without a toolchain, a predicate-free workflow still gets
+        # the ordinary toolchain message — the exemption is scoped.
+        with open(CHECKOUT_LNPL) as f:
+            doc = lower(parse(f.read()), "checkout").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+
 class TestNormaliseSkips(unittest.TestCase):
     """The projection both modes are compared on."""
 
