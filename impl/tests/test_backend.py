@@ -107,6 +107,81 @@ class TestComparisonsSkipsNumericPredicateTerms(unittest.TestCase):
         self.assertEqual(backend._comparisons(None), ())
 
 
+def _predicate_doc(source):
+    doc = lower(parse(source), "fx").to_document()
+    wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+    return doc, wf
+
+
+PREDICATE_WHEN = """capability postgres
+
+entity Quote
+    field
+        id UUID
+        rate Integer
+
+service QuoteService
+    policy
+        timeout 5s
+
+workflow Convert
+    %s
+    create quote
+"""
+
+
+class TestModeBRefusesTheNumericPredicate(unittest.TestCase):
+    """RFC-0050 §5 (issue #177): mode B has no compiled evaluator for
+    `is-numeric`/`is-not-numeric`, so it refuses the workflow by name rather
+    than compiling half of a mixed `and` or falling back to `%skip`. No
+    toolchain needed — the refusal happens while rendering MLIR text."""
+
+    def _refusal(self, source):
+        doc, wf = _predicate_doc(source)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        return str(ctx.exception)
+
+    def test_the_f5_program_is_refused_naming_the_step_and_guard(self):
+        from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+        msg = self._refusal(F5_SOURCE)
+        self.assertIn("create quote", msg)
+        self.assertIn("fxResult.status == 200 and fxResult.rate is-numeric", msg)
+        self.assertIn("RFC-0050", msg)
+
+    def test_a_bare_when_predicate_is_refused(self):
+        msg = self._refusal(PREDICATE_WHEN % "when input.rate is-numeric")
+        self.assertIn("input.rate is-numeric", msg)
+
+    def test_a_predicate_only_in_an_or_alternative_is_refused(self):
+        msg = self._refusal(PREDICATE_WHEN
+                            % "when input.rate > 0\n    or input.rate is-not-numeric")
+        self.assertIn("input.rate is-not-numeric", msg)
+
+    def test_an_until_predicate_is_refused(self):
+        msg = self._refusal(PREDICATE_WHEN % "until input.rate is-numeric")
+        self.assertIn("input.rate is-numeric", msg)
+
+    def test_the_same_workflow_without_the_predicate_still_emits(self):
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate > 0")
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_workflow_uses_numeric_predicate(self):
+        from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+        self.assertTrue(backend.workflow_uses_numeric_predicate(*_predicate_doc(F5_SOURCE)))
+        self.assertTrue(backend.workflow_uses_numeric_predicate(*_predicate_doc(
+            PREDICATE_WHEN % "when input.rate > 0\n    or input.rate is-numeric")))
+        self.assertFalse(backend.workflow_uses_numeric_predicate(*_predicate_doc(
+            PREDICATE_WHEN % "when input.rate > 0")))
+        self.assertFalse(backend.workflow_uses_numeric_predicate(*_predicate_doc(
+            PREDICATE_WHEN % "when input.rate exists")))
+
+    def test_workflow_uses_numeric_predicate_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(PREDICATE_WHEN % "when input.rate > 0")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_numeric_predicate(doc, "wf.nope")
+
+
 @NEEDS_TOOLS
 class TestNativeBuild(unittest.TestCase):
     def setUp(self):

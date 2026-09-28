@@ -42,7 +42,7 @@ import sys
 import tempfile
 
 from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
-                            Ref, encode_instant, guard_condition_text,
+                            NumericPredicate, Ref, encode_instant, guard_condition_text,
                             is_instant_text, looks_like_instant, parse_condition,
                             references)
 from lnpl.interp import (RunError, refinement_index, sample_payload,
@@ -538,6 +538,34 @@ def condition_field_names(document, workflow_id):
                     # compares against a register nobody wrote.
                     fields.update(references(parsed))
     return sorted(fields)
+
+
+def _uses_numeric_predicate(parsed):
+    """True if a parsed condition is, or has an `and` term that is, an
+    `is-numeric`/`is-not-numeric` predicate (RFC-0050)."""
+    if isinstance(parsed, NumericPredicate):
+        return True
+    return isinstance(parsed, And) and any(
+        isinstance(t, NumericPredicate) for t in parsed.terms)
+
+
+def workflow_uses_numeric_predicate(document, workflow_id):
+    """RFC-0050 §5: does any `when`/`until` guard of `workflow_id` —
+    condition or `or` alternative — use the numeric-shape predicate?
+
+    Mode B refuses such a workflow (`_render_std`); `differential.verify`
+    asks this first so the recorded exemption does not depend on a toolchain.
+    Walks the same `_workflow_steps` enumeration `condition_field_names` does.
+    Raises `BackendError` for an unknown workflow.
+    """
+    _, steps = _workflow_steps(document, workflow_id)
+    for _step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                if _uses_numeric_predicate(_parsed(text)):
+                    return True
+    return False
 
 
 def encode_condition_value(value):
@@ -1238,6 +1266,19 @@ def _render_std(module_attrs, ops):
         sym = strings[entry["name"]]
         guard_mode = entry["guard_mode"]
         guard_str = entry["guard_condition"]
+
+        # RFC-0050 §5: no compiled evaluator for `is-numeric`/`is-not-numeric`.
+        # Refuse by name — compiling only the Comparison half of a mixed `and`,
+        # or falling back to the run-level `%skip` flag, would let mode B take a
+        # branch mode A does not.
+        if guard_mode in ("when", "until"):
+            for text in (guard_str,) + tuple(entry["guard_alternatives"] or ()):
+                if _uses_numeric_predicate(_parsed(text)):
+                    raise BackendError(
+                        "step %s: guard %r uses the numeric-shape predicate "
+                        "(is-numeric/is-not-numeric), which mode B has no "
+                        "compiled evaluator for (RFC-0050 §Mode B) — this "
+                        "workflow runs in mode A only" % (entry["name"], text))
 
         guard_desc = ""
         if guard_mode and guard_str:
