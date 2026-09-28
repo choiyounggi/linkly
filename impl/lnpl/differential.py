@@ -390,7 +390,9 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     (RFC-0050 §Mode B): mode B refuses to build it, so there is nothing to
     compare. That is checked first, so the answer does not depend on whether
     a toolchain happens to be installed. A workflow whose guard compares a
-    declared Money field is the same kind of exemption (RFC-0051 §Mode B).
+    declared Money field is the same kind of exemption (RFC-0051 §Mode B), and
+    so is one whose repository call carries a `by <ref>` lookup key (RFC-0052
+    §Mode B).
     """
     if backend.workflow_uses_numeric_predicate(document, workflow_id):
         raise DifferentialError(
@@ -403,6 +405,12 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "workflow %r uses a Money guard comparison — mode B has no "
             "compiled evaluator for it (RFC-0051 §Mode B, recorded exemption); "
             "differential comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_lookup(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses a lookup key (by <ref>) on a repository call — "
+            "mode B has no compiled evaluator for it (RFC-0052 §Mode B, "
+            "recorded exemption); differential comparison is not attempted"
+            % workflow_id)
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "

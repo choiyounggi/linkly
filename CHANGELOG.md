@@ -62,6 +62,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   now evaluates Money order comparisons, and mode B refuses a Money guard
   as a recorded differential exemption instead of a false EQUIVALENT
   (issue #172, RFC-0051).
+- `find`/`read`/`load`/`authenticate`/`update`/`delete <Entity> by <ref>`
+  addresses the row under the ref's value instead of the payload `id`, so
+  one workflow can create an order under its own id while finding and
+  decrementing stock under the product id (probe-v0.8 s1 F-3/F-6); a `set`
+  on a row read that way persists under the same key, a ref with no value
+  fails the step, a first read `by input.<field>` is seeded under that
+  field's value, and mode B refuses such a workflow as a recorded
+  differential exemption. Other trailing words on those verbs are now a
+  compile error instead of being silently dropped; `create` keeps
+  `as <name>` only (issue #175, RFC-0052).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0

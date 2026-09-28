@@ -638,6 +638,24 @@ def caller_view(claims):
     return {"subject": subject, "role": role}
 
 
+def _resolve_lookup_key(entity_id, lookup_ref, payload, bindings, caller):
+    """issue #175: the execute/persist key for a RepositoryCall node.
+
+    `lookup_ref is None` is the pre-#175 shape, unchanged: the entity's own
+    payload id. A `by <ref>` value that resolves to nothing fails the step
+    with a named RunError -- never the `"-"` sentinel, never a silent miss
+    (RFC-0052 §3). A non-string value is stringified the way `row_key`
+    stringifies a payload id.
+    """
+    if lookup_ref is None:
+        return row_key(entity_id, payload)
+    value = resolve_reference(lookup_ref, payload, bindings, caller)
+    if value is None:
+        raise RunError("repository %s: lookup key %r resolved to no value"
+                       % (entity_id, lookup_ref))
+    return row_key(entity_id, {"id": value})
+
+
 def resolve_reference(name, payload, bindings, caller=None):
     """Resolve a condition/expectation `Reference` to a value (RFC-0012 §G12.1).
 
@@ -1618,6 +1636,11 @@ class Interpreter:
         # `Aggregate` is not a `Value` (RFC-0025 §2) — so only step execution
         # needs it; `_flatten_items` (guard evaluation) does not.
         rowsets = {}
+        # issue #175 / RFC-0052 §3: the key each single-row binding was read
+        # under, so a later `set` persists a `by`-read row where it came from
+        # rather than under a recomputed payload-id key. Per run, like
+        # `bindings`.
+        binding_keys = {}
         # issue #96: refs from every `Response` node a step that actually ran
         # (not one a guard skipped, not one that failed) owns, in program
         # order. Collected here rather than by a second walk of the document
@@ -1650,7 +1673,8 @@ class Interpreter:
                     # stop pulling further items once it has.
                     self._run_parallel_block(item_id, wf["name"], result, root,
                                              con, payload, bindings, rowsets,
-                                             deadline, response_refs, notes)
+                                             deadline, response_refs, notes,
+                                             binding_keys)
                     if result["status"] == "failed":
                         break
                     continue
@@ -1663,7 +1687,7 @@ class Interpreter:
                     attempts += 1
                     try:
                         self._run_step(step, span, con, payload, deadline, bindings,
-                                       rowsets)
+                                       rowsets, binding_keys)
                         last_error = None
                         break
                     except RunError as exc:
@@ -1815,7 +1839,7 @@ class Interpreter:
         return result
 
     def _run_step(self, step, span, con, payload, deadline, bindings, rowsets,
-                 lock=None):
+                 binding_keys, lock=None):
         # issue #108 D4: `lock` is `None` on every pre-#108 call site (the
         # sequential main loop) and this method is then byte-identical to
         # before — the `if lock is not None` guards below are no-ops. Only
@@ -1833,14 +1857,14 @@ class Interpreter:
             for child_id in step.get("children", []):
                 effect = self.nodes[child_id]
                 self._run_effect(effect, span, con, payload, bindings, rowsets,
-                                 deadline, lock=lock)
+                                 binding_keys, deadline, lock=lock)
             self.clock.advance()
         finally:
             if lock is not None:
                 lock.release()
 
     def _run_effect(self, effect, span, con, payload, bindings, rowsets,
-                    deadline=None, lock=None):
+                    binding_keys, deadline=None, lock=None):
         kind = effect["kind"]
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
@@ -1922,7 +1946,8 @@ class Interpreter:
                 # stored row's exact content.
                 row[SCHEMA_GEN_KEY] = schema_generation(entity_node)
             try:
-                self.repo.persist(entity_id, row_key(entity_id, payload), row)
+                self.repo.persist(entity_id, binding_keys.get(
+                    binding, row_key(entity_id, payload)), row)
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             finally:
@@ -1992,28 +2017,26 @@ class Interpreter:
                 # `bindings` — last write wins, same rule, different scope.
                 rowsets[binding_name(entity_node)] = rows
         elif kind == "RepositoryCall":
-            if effect.get("lookup"):
-                # issue #175 Track A interim: never fall back to the payload
-                # `id` key, which would address the wrong row. t175b replaces
-                # this with the RFC-0052 §Runtime key derivation.
-                raise RunError(
-                    "repository %s: a `by %s` lookup key has no runtime "
-                    "support yet (RFC-0052 §Runtime lands in a follow-up "
-                    "task) — this workflow cannot run in mode A until then"
-                    % (effect["entity"], effect["lookup"]))
             # One of two places a driver fault is translated. A DriverError
             # becomes a RunError with its message and cause intact, so a real
             # backend's failure is an ordinary failed run — the same status and
             # the same rc a Fake failure produces — instead of a traceback.
+            # issue #175 / RFC-0052 §3: resolved outside the `try` — an
+            # unresolved lookup is the step's own RunError, not a driver fault.
+            key = _resolve_lookup_key(effect["entity"], effect.get("lookup"),
+                                      payload, bindings, self.caller)
             try:
-                row = self.repo.execute(effect["entity"], effect["operation"],
-                                        row_key(effect["entity"], payload))
+                row = self.repo.execute(effect["entity"], effect["operation"], key)
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             # issue #147 D3: never expose the storage-layer stamp through a
             # `read` binding — the row's only observable surface here.
             row = strip_schema_gen(row)
             child.attrs["found"] = row is not None
+            if effect.get("lookup"):
+                # D6: the ref text only — never the key or value it resolved
+                # to, so there is nothing here for masking to miss.
+                child.attrs["lookup"] = effect["lookup"]
             if effect["operation"] == "read" and isinstance(row, dict):
                 # RFC-0012 §G12.2: a completed read binds its row into the
                 # execution scope, last write wins. Only reads bind — create /
@@ -2024,6 +2047,7 @@ class Interpreter:
                 entity_node = self.nodes.get(effect["entity"])
                 if entity_node is not None:
                     bindings[binding_name(entity_node)] = row
+                    binding_keys[binding_name(entity_node)] = key
                     # issue #85: a schema change that ran ahead of a
                     # backfill is otherwise silent — the row simply reads
                     # back wrong-shaped. Warn (never block: RFC-0021's
@@ -2309,7 +2333,7 @@ class Interpreter:
 
     def _execute_step_with_retry(self, step, workflow_name, con, payload,
                                  deadline, bindings, rowsets, lock,
-                                 cancel_event):
+                                 cancel_event, binding_keys):
         """Run one step to completion under its retry policy; never raises —
         returns `(span, entry, error, response_ext, notes_ext)`, `error`
         being the final `RunError` or `None`. `_run_parallel_block`'s
@@ -2338,7 +2362,7 @@ class Interpreter:
                 break
             try:
                 self._run_step(step, span, con, payload, deadline, bindings,
-                               rowsets, lock=lock)
+                               rowsets, binding_keys, lock=lock)
                 last_error = None
                 break
             except RunError as exc:
@@ -2377,7 +2401,7 @@ class Interpreter:
 
     def _run_parallel_block(self, group, workflow_name, result, root, con,
                             payload, bindings, rowsets, deadline,
-                            response_refs, notes):
+                            response_refs, notes, binding_keys):
         """issue #108 D1-D4/D6/D7: run one `parallel` block's steps
         concurrently on a block-scoped `ThreadPoolExecutor` — created and
         shut down within this call, so no task from this block outlives it
@@ -2411,7 +2435,7 @@ class Interpreter:
         def worker(step):
             outcome = self._execute_step_with_retry(
                 step, workflow_name, con, payload, deadline, bindings,
-                rowsets, lock, cancel_event)
+                rowsets, lock, cancel_event, binding_keys)
             outcomes[step["id"]] = outcome
             error = outcome[2]
             if error is not None:

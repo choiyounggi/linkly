@@ -167,6 +167,18 @@ LINK_PAYLOAD = {
 SHORTEN_PATH = "/shorten-service/shorten"
 
 
+LOOKUP_SERVE_SRC = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service OrderService
+workflow Restock
+    find stock by input.productId
+"""
+
+
 class ServerTestCase(unittest.TestCase):
     """Boots one server per test on an ephemeral port; teardown always runs."""
 
@@ -358,6 +370,19 @@ class ServeSemanticsTest(ServerTestCase):
         self.assertEqual("completed", body["status"])
         skipped_steps = [s for rec in body["skipped"] for s in rec["steps"]]
         self.assertEqual(["update payment"], skipped_steps)
+
+    def test_a_by_input_read_finds_the_row_the_seed_rule_put_under_that_field(self):
+        """issue #175 / RFC-0052 §4: a served workflow seeds through
+        `default_rows`, so `find stock by input.productId` finds its row
+        under the product id although the request's own `id` is the order's.
+        Before the seed-key rule the row sat under `entity.stock#O1` and the
+        read missed (500)."""
+        port = self.start(compile_src(LOOKUP_SERVE_SRC, "orders"))
+        resp, body = self.post_json(port, "/order-service/restock",
+                                    {"id": "O1", "productId": "P1", "onHand": 5})
+        self.assertEqual(200, resp.status, body)
+        self.assertEqual("completed", body["status"])
+        self.assertEqual("P1", body["bindings"]["stock"]["productId"])
 
     def test_masking_holds_on_the_200_response_channel(self):
         # D7: the HTTP response is a NEW output channel — sweep it: raw canary
