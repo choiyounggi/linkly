@@ -1262,6 +1262,40 @@ class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
             self._lower("widget.name exists")
         self.assertIn("not a declared entity", str(caught.exception))
 
+    # ---- issue #177 / RFC-0050: the numeric-shape predicate -----------------
+    def test_a_numeric_predicate_on_a_declared_integer_field_lowers(self):
+        mod = self._lower("product.stock is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "product.stock is-numeric")
+
+    def test_a_numeric_predicate_on_a_declared_text_field_is_refused(self):
+        # Same `_dimension_of` rule a comparison or a presence check gets.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.name is-not-numeric")
+        self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+    def test_a_numeric_predicate_reference_is_checked_the_same_way(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("widget.stock is-numeric")
+        self.assertIn("not a declared entity", str(caught.exception))
+
+    def test_a_text_predicate_mixed_into_and_is_refused_not_crashed(self):
+        # The widened `And` must still reach the dimension check, and the
+        # `_comparisons` consumers must skip the predicate term cleanly.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.stock > 1 and product.name is-numeric")
+        self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+    def test_a_predicate_mixed_into_and_with_a_valid_comparison_lowers(self):
+        mod = self._lower("product.stock > 1 and product.stock is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "product.stock > 1 and product.stock is-numeric")
+
+    def test_a_bare_numeric_predicate_is_decided_at_runtime(self):
+        mod = self._lower("rate is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "rate is-numeric")
+
     # ---- boundary: the bare form must be untouched -------------------------
     def test_a_bare_reference_is_not_checked(self):
         # RFC-0012 G12.3: bare names are payload fields. They are NOT entity
@@ -1281,6 +1315,60 @@ class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
         source = SCOPED_SOURCE.replace("when %s", "repeat 2")
         mod = lower(parse(source), "shop")
         self.assertEqual(mod.get("wf.checkout.guard.1")["count"], 2)
+
+
+NUMERIC_PREDICATE_SOURCE = """
+capability postgres
+entity Order
+    field
+        id UUID
+        amount Integer
+service OrderService
+    security
+        jwt
+    policy
+        timeout 5s
+workflow Convert
+    call Fx as fxResult
+    when %s
+    create order
+"""
+
+
+class TestNumericPredicateOnUndeclaredReferences(unittest.TestCase):
+    """Issue #177 / RFC-0050 static rule: a predicate on a reference the
+    document gives no type — a network result field, `caller.*`, a bare
+    payload field — lowers and is decided at runtime."""
+
+    def _lower(self, when_line):
+        return lower(parse(NUMERIC_PREDICATE_SOURCE % when_line), "fx")
+
+    def _guard(self, mod):
+        guards = [n for n in mod.to_document()["nodes"] if n["kind"] == "Guard"]
+        self.assertEqual(len(guards), 1)
+        return guards[0]
+
+    def test_a_network_result_field_lowers(self):
+        guard = self._guard(self._lower(
+            "fxResult.status == 200 and fxResult.rate is-numeric"))
+        self.assertEqual(guard["condition"],
+                         "fxResult.status == 200 and fxResult.rate is-numeric")
+
+    def test_a_caller_field_lowers(self):
+        guard = self._guard(self._lower("caller.role is-not-numeric"))
+        self.assertEqual(guard["condition"], "caller.role is-not-numeric")
+
+    def test_an_or_alternative_using_the_predicate_passes_the_guard_check(self):
+        guard = self._guard(self._lower(
+            "fxResult.status != 200\n    or fxResult.rate is-not-numeric"))
+        self.assertEqual(guard["condition"], "fxResult.status != 200")
+        self.assertEqual(guard["alternatives"], ["fxResult.rate is-not-numeric"])
+
+    def test_an_or_alternative_on_an_undeclared_binding_is_still_refused(self):
+        # The alternative goes through the same reference check.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("fxResult.status != 200\n    or widget.rate is-numeric")
+        self.assertIn("not a declared entity", str(caught.exception))
 
 
 ASSIGN_SOURCE = """

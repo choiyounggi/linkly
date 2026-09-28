@@ -251,11 +251,15 @@ def _parsed(cond_str):
 
 
 def _comparisons(cond):
-    """The Comparison terms of a parsed condition, in source order."""
+    """The Comparison terms of a parsed condition, in source order.
+
+    A `NumericPredicate` term of an `and` (RFC-0050) is not a comparison and
+    is skipped.
+    """
     if isinstance(cond, Comparison):
         return (cond,)
     if isinstance(cond, And):
-        return cond.terms
+        return tuple(t for t in cond.terms if isinstance(t, Comparison))
     return ()
 
 

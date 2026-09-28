@@ -235,7 +235,15 @@
       "logical_operators": [
         "and"
       ],
+      "numeric_predicate_kinds": [
+        "is-numeric",
+        "is-not-numeric"
+      ],
       "payload_namespace": "input",
+      "presence_kinds": [
+        "exists",
+        "missing"
+      ],
       "read_verbs": [
         "authenticate",
         "load",

@@ -110,6 +110,16 @@ class TestCliVocab(unittest.TestCase):
         self.assertIsInstance(doc["reserved"], list)
         self.assertGreater(len(doc["reserved"]), 0)
 
+    def test_guard_predicate_words_are_exposed_from_the_lexer(self):
+        # Issue #177: presence words were never exposed; the numeric-shape
+        # predicate words are new (RFC-0050). Both come from `lnpl.lexer`.
+        rc, out, _err = _main(["vocab", "--json"])
+        self.assertEqual(rc, 0)
+        keywords = json.loads(out)["keywords"]
+        self.assertEqual(keywords["presence_kinds"], ["exists", "missing"])
+        self.assertEqual(keywords["numeric_predicate_kinds"],
+                         ["is-numeric", "is-not-numeric"])
+
     def test_spec_expectations_carries_expects_and_given_forms(self):
         rc, out, _err = _main(["vocab", "--json"])
         self.assertEqual(rc, 0)
