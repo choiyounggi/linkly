@@ -201,7 +201,7 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 **테스트 3,670여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 49편 — 46편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048은 `Draft`.** RFC-0007은
+**RFC 50편 — 46편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048·RFC-0049는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -265,8 +265,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0046 RFC 예제 문법 재정렬 — RFC-0037/0008/0014 §Examples](rfcs/0046-rfc-example-realignment.md) | Accepted RFC 세 건의 `## Examples` 블록이 조용히 실행 불가능해졌다: RFC-0037의 대표 예제는 `when` 가드(스텝 하나만 소유) 아래 스텝 둘을 나란히 인덴트해(새 산문 스니펫 게이트가 컴파일하면) 컴파일 에러이고, RFC-0008·RFC-0014의 예제는 pre-RFC-0002 폐기 문법(`inputs`/`step <이름>`/`guard when`/`effect`/`kind`)을 써서 미선언 동사가 강한 실패 대신 조용한 no-op로 통과했다. 이 RFC는 세 `§Examples` 절 각각을 지금 필요한 치환 후 최종 텍스트로 갱신한다 — RFC-0037은 `pipeline` 블록으로 감싸고, RFC-0008은 `examples/guarded.lnpl`과 동기화하고, RFC-0014의 라운드 계수 예제는 현재 문법으로 다시 쓴다 — 세 RFC의 나머지 본문은 그대로 둔다(Accepted RFC는 직접 편집하지 않는다). 코드 변경 없음 — 구현은 후속 태스크. *RFC-0037 §Examples, RFC-0008 §Examples, RFC-0014 §Examples 갱신* |
 | [0047 집계 필드 타입의 IR 전달 — `agg_field_type`](rfcs/0047-aggregate-field-type-carriage.md) | 빈 RowSet의 Money `sum`이 RFC-0045 §5의 `{"amount": "0", "currency": null}`이 아니라 정수 `0`을 냈다 — `eval_aggregate`가 각 행의 Python 모양으로 타입을 분간하는데, 빈 RowSet엔 볼 행이 없다. `lower.py`의 `_check_aggregate`는 집계 대상 필드의 선언 base 타입을 이미 정적으로 알고 있으므로, 이 RFC는 그 값을 새 선택 키 `nodeAssignment.agg_field_type`(`Integer`/`DateTime`/`Money`, `count`와 비집계 대입에는 없음)에 실어 실행까지 전달한다 — `eval_aggregate`도 짝이 되는 선택 키워드 인자를 받는다. 이 RFC 이전에 컴파일된 IR 문서(키가 없음)는 재컴파일 전까지 기존 정수 `0`을 유지한다 — 의도된 하위호환 바닥이다. 모드 B는 `Assignment` 노드를 아예 컴파일하지 않으므로 이 RFC는 모드 A 전용이다. *RFC-0045 §Reference-level Specification/1. `AggFunc` 문법, §Reference-level Specification/5. `sum`의 Money 확장 갱신* |
 | [0048 컬렉션 필드 비목표 확정과 RowSet `group by`](rfcs/0048-collections-non-goal-and-rowset-group-by.md) | RFC-0001의 미결 질문 1(제네릭/컬렉션 필드 타입)을 영구 비목표로 확정한다 — v1은 `FieldType`에 `List`/`Map` 생산 규칙을 끝내 더하지 않으며, 관계는 엔티티 참조로, 다건 조회는 `list where`(RFC-0038)로 표현한다. RFC-0038과 RFC-0045가 각각 이월했던 `group by` 질문도 함께 닫는다 — `list <별칭> from <엔티티> where <조건> group by <키> aggregate <함수>`가 새 IR 노드 종류(`RepositoryCall`이 아니다)로 하강해 고정 2컬럼(`key`, `value`)의 파생 RowSet에 `<별칭>`을 바인딩하고, 그룹당 집계는 기존 5종을 그대로 재사용한다 — 소비도 기존 RowSet 연산(order by/limit/집계)만 허용하고 재그룹화는 v1에서 거부한다. 설계만 확정한다(Draft) — 구현은 후속 이슈. *RFC-0001 §Open Questions/1, RFC-0025 §Reference-level Specification/1, §Reference-level Specification/3, RFC-0012 §G12.2, RFC-0038 §Reference-level Specification/2, §Open Questions/1, RFC-0045 §Open Questions/1 갱신* |
+| [0049 `emit ... with`와 `payloadMap`](rfcs/0049-emit-payload-mapping.md) | `payloadMap`은 RFC-0001부터 스키마에만 존재하고 아무도 채우지도 읽지도 않던 필드였다 — `emit`의 이벤트 이름 뒤 나머지 단어는 조용히 버려졌다. `emit`/`publish <Event> with <ref> <ref>...`를 열어, 세 허용 원천(`create ... as`/read 바인딩의 non-`derived` 필드, `input.<field>`, `call ... as <name>` 네트워크 결과 바인딩(무검사)) 중 하나로 발행 payload를 순서 있는 `payloadMap` 배열로 구성한다. 맨 이름, `derived` 필드, Password 필드, 중복 매핑 필드명, 그 밖의 trailing 단어는 컴파일 거부다(호환성 파괴 — 전체 코퍼스 스윕 결과 기존 위험 사례 0건). Mode B는 영향 없음(어느 형태든 `EventEmit` payload를 lowering한 적이 없다). 설계와 구현이 이 RFC와 함께 나간다(Draft). *RFC-0002 §Full grammar 갱신* |
 
-46편이 `Accepted`, 2편(`0034`, `0048`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+46편이 `Accepted`, 3편(`0034`, `0048`, `0049`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,

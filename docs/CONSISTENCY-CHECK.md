@@ -1570,3 +1570,17 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 **우선도:** 낮음 — 현재 19→20 정정은 구현 사실(20개 노드)과 일치하므로 정확하다. 하지만 원칙 기반의 명시성을 위해 **향후 RFC-0001을 개정할 때** (Supersedes로든 Updates로든) "숫자는 표의 재술이며 개정 사항이 아니다"를 명시할 것을 권장한다.
 
 **비규범성:** RFC-0001의 본문을 지금 수정하지 않는다 (Accepted RFC 신규 정규화 추가 금지). 이 기록 자체가 충분하다.
+
+---
+
+### 발견 F5: RFC-0002 StepLine 3단어 상한과 실제 with-절 문법의 어긋남 (2026-09-28 기록)
+
+**사실:** RFC-0002 `### Full grammar`의 `StepLine` 프로덕션은 `StepLine ::= Verb Word? Word? Word? EOL`로, 동사 뒤 trailing 단어를 최대 3개까지만 허용한다. 그러나 RFC-0037의 예시 `call OrdersApi with order.id order.sku as r`(issue #109 D6)은 동사 뒤 6개 단어를 쓰고, RFC-0039의 예시 `note "picked-tier-{}-for-{}-orders" with customer.tier order.count`는 4개 단어를 쓴다. 둘 다 이미 Accepted RFC의 `## Examples`에 실려 있다.
+
+**검증:** `grep -n "^- Updates:" rfcs/0037-http-resilience.md rfcs/0039-note-verb-and-canonical-line.md` — RFC-0037은 `Updates: RFC-0027 §Reference-level Specification/1`만 갖고, RFC-0039는 `Updates:` 헤더가 아예 없다. 둘 중 어느 쪽도 RFC-0002 `§Full grammar`를 지목하지 않는다. 실제 렉서는 `Line.tokens = body.split()`로 무제한이며, RFC-0002 `§Full grammar` 자신의 산문도 이미 그렇게 말한다 — EBNF가 파서보다 과소 집계된 것이지, 파서가 EBNF를 어긴 것이 아니다.
+
+**판정:** 어긋남 확정. RFC-0007 §5("어긋남을 발견했으면 고치기 전에 기록한다")에 따라 고치기 전에 이 문서에 먼저 남긴다.
+
+**향후 처리:** 이 RFC(RFC-0049)가 `Updates: RFC-0002 §Full grammar`로 해소한다 — `StepLine ::= Verb Word? Word? Word? EOL`을 `StepLine ::= Verb Word* EOL`로 대체하는 자기완결적 최신 텍스트를 RFC-0049 자신이 싣는다(RFC-0007 §2.2 규칙 4).
+
+**영향도:** 낮음 — 실행에는 영향 없음(파서가 이미 무제한이었다), 문서 신뢰도 문제일 뿐이다.

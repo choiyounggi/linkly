@@ -1,0 +1,132 @@
+{
+  "lir_version": "0.1",
+  "module": "emitted",
+  "nodes": [
+    {
+      "kind": "Service",
+      "id": "svc.shop",
+      "name": "ShopService",
+      "requires": [
+        "cap.postgres"
+      ],
+      "constraints": [
+        "policy.shop"
+      ],
+      "children": [
+        "wf.checkout"
+      ],
+      "line": 23
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.order",
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "customerId",
+          "type": "Text"
+        }
+      ],
+      "line": 16
+    },
+    {
+      "kind": "Event",
+      "id": "event.order.placed",
+      "name": "OrderPlaced",
+      "line": 21
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.checkout",
+      "name": "Checkout",
+      "children": [
+        "wf.checkout.step.1",
+        "wf.checkout.step.2",
+        "wf.checkout.step.3"
+      ],
+      "line": 27
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.checkout.step.1",
+      "name": "create order as newOrder",
+      "children": [
+        "wf.checkout.step.1.repo"
+      ],
+      "line": 28
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.checkout.step.1.repo",
+      "entity": "entity.order",
+      "operation": "create",
+      "result": "newOrder",
+      "line": 28
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.checkout.step.2",
+      "name": "call OrdersApi as orderResult",
+      "children": [
+        "wf.checkout.step.2.net"
+      ],
+      "line": 29
+    },
+    {
+      "kind": "NetworkCall",
+      "id": "wf.checkout.step.2.net",
+      "target": "OrdersApi",
+      "result": "orderResult",
+      "line": 29
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.checkout.step.3",
+      "name": "emit orderPlaced with newOrder.id input.customerId orderResult.status",
+      "children": [
+        "wf.checkout.step.3.emit"
+      ],
+      "line": 30
+    },
+    {
+      "kind": "EventEmit",
+      "id": "wf.checkout.step.3.emit",
+      "event": "event.order.placed",
+      "payloadMap": [
+        {
+          "field": "id",
+          "ref": "newOrder.id"
+        },
+        {
+          "field": "customerId",
+          "ref": "input.customerId"
+        },
+        {
+          "field": "status",
+          "ref": "orderResult.status"
+        }
+      ],
+      "line": 30
+    },
+    {
+      "kind": "Policy",
+      "id": "policy.shop",
+      "rules": [
+        {
+          "name": "retry",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres",
+      "line": 14
+    }
+  ]
+}

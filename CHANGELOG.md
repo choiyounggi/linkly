@@ -43,6 +43,13 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   second `set` on the same binding in one run no longer raises a phantom
   write conflict.
 
+### Added
+- `emit`/`publish <Event> with <ref>...` maps the emitted event's payload
+  from workflow bindings (created-row fields, `input.*`, network-call
+  results) instead of always carrying the raw masked input; trailing
+  words after `emit <Event>` that are not a `with`-clause now raise a
+  compile error instead of being silently dropped (issue #178, RFC-0049).
+
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
 now reach the last two places they had not: `spec` blocks can seed and

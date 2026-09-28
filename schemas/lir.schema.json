@@ -1163,7 +1163,23 @@
           "$ref": "#/$defs/nodeId"
         },
         "payloadMap": {
-          "type": "string"
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "ref"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [

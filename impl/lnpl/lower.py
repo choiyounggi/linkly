@@ -172,6 +172,7 @@ VERB_ALIASES = {
 GUARD_SUBJECT = "guard condition"
 ASSIGN_SUBJECT = "assignment"
 RESPOND_SUBJECT = "response"
+EMIT_SUBJECT = "emit"
 
 # The verbs that put a SINGLE-ROW binding in the execution scope, computed from
 # the same test the lowerer uses to build `read_entities`. A refusal that names
@@ -2308,6 +2309,11 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         text = "respond %s" % " ".join(child["refs"])
                         _check_respond(child["refs"], scope, text, base_of or {})
                         continue
+                    if child["kind"] == "EventEmit":
+                        if child.get("payloadMap"):
+                            _check_emit_payload(child["payloadMap"], scope,
+                                                workflow_name, base_of or {})
+                        continue
                     if child["kind"] != "Assignment":
                         continue
                     rhs = parse_value_or_aggregate(child["expression"])
@@ -2567,6 +2573,53 @@ def _check_respond(refs, scope, text, base_of):
                 "chokepoint: a masked field's value must never leave "
                 "through an unmasked one)"
                 % (scope.workflow_name, ref, declared))
+
+
+def _check_emit_payload(payload_map, scope, workflow_name, base_of):
+    """issue #178, R3/R11: `emit ... with`'s own reference rule.
+
+    Mirrors `_check_respond`'s two-check split (field must resolve, field
+    must not be Password) with two differences: (1) a network-result
+    binding (`call ... as <name>`) is ADMITTED here, unlike `respond` --
+    `scope.resolve_field` returns `None` for both a bare ref and a
+    network-result ref, so the dot-check below runs FIRST and is the only
+    thing that can tell the two apart; (2) a `derived` field is refused
+    (RFC-0030 §3 / issue #95 -- a derived field is never seeded from the
+    create payload and is only ever populated by an explicit
+    `set`/`format` step, so its value is not reliably present to map into
+    an emitted payload).
+    """
+    for entry in payload_map:
+        ref = entry["ref"]
+        field_name = entry["field"]
+        text = "emit with %s" % ref
+        if "." not in ref:
+            raise LowerError(
+                "workflow %s: %s names %r, which must be a bound row's "
+                "field (`<binding>.<field>`), a network-result binding "
+                "(`<name>.<field>` from `call ... as <name>`), or "
+                "`input.<field>` -- not a bare name"
+                % (workflow_name, text, ref))
+        field = scope.resolve_field(ref, text, EMIT_SUBJECT)
+        if field is None:
+            continue  # network-result binding -- no declared shape, admitted
+        if field.get("derived"):
+            raise LowerError(
+                "workflow %s: %s names field %r, which is `derived` "
+                "(server-computed, RFC-0030 §3) -- a with-clause must "
+                "map a value this workflow itself provided or "
+                "explicitly computed (`set`/`format`), not a field only "
+                "the server may fill" % (workflow_name, text, field_name))
+        declared = field.get("type")
+        base = base_of.get(declared, declared)
+        if base == "Password":
+            raise LowerError(
+                "workflow %s: %s has declared type %s, whose base is "
+                "Password -- emit must not surface a Password field in "
+                "an emitted event payload (issue #43's masking "
+                "chokepoint: a masked field's value must never leave "
+                "through an unmasked one)"
+                % (workflow_name, text, declared))
 
 
 def _check_literal_zero_divisor(value, where):
@@ -3132,7 +3185,38 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
             raise LowerError(
                 "line %d: `%s` needs the event to emit as its object "
                 "(e.g. `emit userCreated`)" % (lineno, verb))
-        return _node(kind, eid, event=_event_ref(obj, lineno), line=lineno)
+        if not rest:
+            return _node(kind, eid, event=_event_ref(obj, lineno), line=lineno)
+        # issue #178, RFC-0049: `with <ref>...` maps the emitted payload from
+        # workflow bindings instead of the raw input. Any other trailing
+        # words used to be silently dropped (`rest` was never inspected) —
+        # that silence is the bug this RFC closes, so it is now a LowerError.
+        if rest[0] != "with":
+            raise LowerError(
+                "line %d: `%s` accepts either no trailing words or "
+                "`with <ref>...`, got %r" % (lineno, verb, tuple(rest)))
+        arg_tokens = rest[1:]
+        if not arg_tokens:
+            raise LowerError(
+                "line %d: `with` needs at least one reference" % lineno)
+        from .condition import _is_reference_name
+        payload_map = []
+        seen_fields = {}
+        for tok in arg_tokens:
+            if not _is_reference_name(tok):
+                raise LowerError(
+                    "line %d: `with` argument must be camelCase or "
+                    "binding.field, got %r" % (lineno, tok))
+            field_name = tok.rpartition(".")[2] if "." in tok else tok
+            if field_name in seen_fields:
+                raise LowerError(
+                    "line %d: `with` maps field %r from both %r and %r -- "
+                    "each mapped field name must be unique"
+                    % (lineno, field_name, seen_fields[field_name], tok))
+            seen_fields[field_name] = tok
+            payload_map.append({"field": field_name, "ref": tok})
+        return _node(kind, eid, event=_event_ref(obj, lineno),
+                    payloadMap=payload_map, line=lineno)
 
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
 
