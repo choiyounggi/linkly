@@ -177,15 +177,15 @@ workflow W
         # TypeError out of the interpreter at run time.
         #
         # RFC-0016 narrowed the refusal rather than relaxing it: `DateTime` left
-        # this branch (it has an evaluator now — epoch milliseconds), so the
-        # message names the two types that DO compute instead of listing the
-        # ones that do not. `Money` is still refused here, which is what this
+        # this branch (it has an evaluator now — epoch milliseconds). RFC-0051
+        # did the same for `Money`: it is a dimension of its own now, so
+        # `price > 0` is refused as a MISMATCH (Money against a plain number),
+        # not as "no evaluator" — still at compile time, which is what this
         # test guards.
         self.compile_fails(self.workflow("    read product\n"
                                          "    when product.price > 0\n"
                                          "    create product"),
-                           "neither Integer nor DateTime", "Money",
-                           "no evaluator")
+                           "compares", "(money)", "(scalar)", "RFC-0051")
 
     def test_an_input_field_no_entity_declares_is_refused(self):
         self.compile_fails(self.workflow("    when input.quantitee > 0\n"
@@ -270,6 +270,146 @@ workflow W
             "    set product.stock to product.stock - 1"), "control")
         self.assertEqual(len(nodes_of(doc, "Guard")), 1)
         self.assertEqual(len(nodes_of(doc, "Assignment")), 1)
+
+
+class TestMoneyDimension(unittest.TestCase):
+    """RFC-0051 — the Money dimension in `set` and guards (issue #172).
+
+    Admitted: copy, Money ± Money, Money × Integer (either order, a literal
+    included), Money-vs-Money comparison. Everything else Money is a compile
+    refusal that names RFC-0051; Decimal stays refused by the catch-all.
+    """
+
+    FIELDS = ("stock Integer\n        cost Money\n        createdAt DateTime"
+              "\n        rate Decimal")
+
+    def source(self, body):
+        return TestStaticRejections.workflow(None, body, self.FIELDS)
+
+    def assignment(self, line):
+        return self.source("    read product\n    create product\n    " + line)
+
+    def guard(self, cond):
+        return self.source("    read product\n    when %s\n    create product"
+                           % cond)
+
+    def compile_fails(self, source, *fragments):
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(source, "m")
+        message = str(ctx.exception)
+        for fragment in fragments:
+            self.assertIn(fragment, message)
+        return message
+
+    # ---- admitted --------------------------------------------------------
+    def test_admitted_money_assignments_lower_with_the_expression_verbatim(self):
+        for expr in ("product.cost",                        # copy
+                     "input.cost",                          # copy from input
+                     "product.price + product.cost",
+                     "product.price - product.cost",
+                     "product.price * product.stock",
+                     "product.stock * product.price",
+                     "product.price * 3",
+                     "3 * product.price"):
+            with self.subTest(expr=expr):
+                doc = compile_doc(self.assignment(
+                    "set product.price to %s" % expr), "m")
+                [node] = nodes_of(doc, "Assignment")
+                self.assertEqual("product.price", node["target"])
+                self.assertEqual(expr, node["expression"])
+
+    def test_a_money_guard_compares_money_with_money_under_every_comparator(self):
+        for op in ("==", "!=", "<", "<=", ">", ">="):
+            with self.subTest(op=op):
+                doc = compile_doc(self.guard(
+                    "product.price %s product.cost" % op), "m")
+                [guard] = nodes_of(doc, "Guard")
+                self.assertEqual("product.price %s product.cost" % op,
+                                 guard["condition"])
+
+    def test_money_arithmetic_may_meet_money_inside_a_guard(self):
+        doc = compile_doc(self.guard(
+            "product.price - product.cost > product.cost"), "m")
+        self.assertEqual(1, len(nodes_of(doc, "Guard")))
+
+    # ---- refused arithmetic ---------------------------------------------
+    def test_money_times_money_is_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.price to product.price * product.cost"),
+            "multiplies two Money values", "RFC-0051")
+
+    def test_money_divided_by_money_is_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.price to product.price / product.cost"),
+            "divides two Money values", "RFC-0051")
+
+    def test_money_divided_by_an_integer_is_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.price to product.price / product.stock"),
+            "combines a Money value with a scalar value via '/'", "RFC-0051")
+
+    def test_an_integer_divided_by_money_is_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.stock to product.stock / product.price"),
+            "combines a Money value with a scalar value via '/'", "RFC-0051")
+
+    def test_money_plus_a_number_literal_is_refused(self):
+        # Boundary: a literal is admitted ONLY under `*` — `price + 3` has no
+        # currency to add in.
+        self.compile_fails(self.assignment(
+            "set product.price to product.price + 3"),
+            "combines a Money value with a scalar value via '+'",
+            "a number literal", "RFC-0051")
+
+    def test_money_plus_a_datetime_is_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.price to product.price + product.createdAt"),
+            "combines a Money value with a instant value via '+'", "RFC-0051")
+
+    # ---- refused comparisons --------------------------------------------
+    def test_money_against_an_integer_field_is_a_mismatch(self):
+        self.compile_fails(self.guard("product.price > product.stock"),
+                           "product.price (money)", "product.stock (scalar)",
+                           "Money compares only to Money (RFC-0051)")
+
+    def test_money_against_a_datetime_is_a_mismatch(self):
+        self.compile_fails(self.guard("product.createdAt < product.price"),
+                           "(instant)", "(money)", "RFC-0051")
+
+    def test_a_non_money_mismatch_keeps_its_rfc_0016_message_only(self):
+        message = self.compile_fails(
+            self.guard("product.createdAt > product.stock"),
+            "compares like with like")
+        self.assertNotIn("RFC-0051", message)
+
+    # ---- target vs right-hand side --------------------------------------
+    def test_assigning_money_to_an_integer_field_is_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.stock to product.price"),
+            "assigns product.price (money) to product.stock (scalar)",
+            "RFC-0051")
+
+    def test_assigning_an_integer_to_a_money_field_is_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.price to product.stock + 1"),
+            "to product.price (money)", "RFC-0051")
+
+    def test_an_undeclared_right_hand_side_is_left_to_the_runtime(self):
+        # Boundary: a bare reference has no declared type, so the new
+        # target/RHS check has nothing to compare and must not refuse.
+        doc = compile_doc(self.assignment("set product.price to amount"), "m")
+        self.assertEqual(1, len(nodes_of(doc, "Assignment")))
+
+    # ---- Decimal stays refused --------------------------------------------
+    def test_a_decimal_guard_is_still_refused_citing_rfc_0044(self):
+        self.compile_fails(self.guard("product.rate > 0"),
+                           "neither Integer nor DateTime", "Decimal",
+                           "RFC-0051", "RFC-0044")
+
+    def test_decimal_arithmetic_is_still_refused(self):
+        self.compile_fails(self.assignment(
+            "set product.price to product.price * product.rate"),
+            "neither Integer nor DateTime", "Decimal", "RFC-0044")
 
 
 class TestModeAEvaluation(unittest.TestCase):

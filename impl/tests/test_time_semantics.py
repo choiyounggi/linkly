@@ -304,13 +304,17 @@ class TestDimensionRules(unittest.TestCase):
         compile_doc(source, "m")
 
     def test_error_a_type_with_no_evaluator_is_still_refused(self):
+        """RFC-0051 gave Money a dimension of its own, so `fee > 0` is now a
+        dimension MISMATCH (money vs scalar) rather than "no evaluator" — it
+        is still a compile-time refusal."""
         source = REFUND_WINDOW.replace("        createdAt DateTime",
                                        "        createdAt DateTime\n"
                                        "        fee Money")
         source = source.replace(
             "when input.requestedAt - payment.createdAt <= 30d",
             "when payment.fee > 0")
-        self.compile_fails(source, "neither Integer nor DateTime", "Money")
+        self.compile_fails(source, "compares", "payment.fee (money)",
+                           "(scalar)", "RFC-0051")
 
 
 class TestTimeWindowBoundaries(unittest.TestCase):

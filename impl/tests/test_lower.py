@@ -1317,6 +1317,97 @@ class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
         self.assertEqual(mod.get("wf.checkout.guard.1")["count"], 2)
 
 
+MONEY_PREDICATE_SOURCE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+        price Money
+        cost Money
+entity Order
+    field
+        id UUID
+service ShopService
+    policy
+        retry 0
+workflow Checkout
+    find product
+    when %s
+    create order
+"""
+
+
+class TestNumericPredicateRefusesMoney(unittest.TestCase):
+    """RFC-0051 §Compatibility: once Money is a dimension, `_dimension_of` no
+    longer refuses a Money field under the numeric-shape predicate (RFC-0050)
+    by itself — a structural check on the predicate's own field does."""
+
+    def _lower(self, condition):
+        return lower(parse(MONEY_PREDICATE_SOURCE % condition), "shop")
+
+    def test_a_money_field_under_either_predicate_is_refused(self):
+        for kind in ("is-numeric", "is-not-numeric"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(LowerError) as caught:
+                    self._lower("product.price %s" % kind)
+                message = str(caught.exception)
+                self.assertIn("product.price", message)
+                self.assertIn("declared type is Money", message)
+                self.assertIn("RFC-0050", message)
+                self.assertIn("RFC-0051", message)
+
+    def test_a_money_predicate_inside_and_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.stock > 1 and product.cost is-numeric")
+        self.assertIn("product.cost", str(caught.exception))
+        self.assertIn("RFC-0050", str(caught.exception))
+
+    def test_the_check_is_scoped_to_the_predicate_field(self):
+        # A Money comparison and an Integer predicate in one `and` both hold.
+        cond = "product.price > product.cost and product.stock is-numeric"
+        mod = self._lower(cond)
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"], cond)
+
+    def test_an_undeclared_reference_under_the_predicate_is_unaffected(self):
+        mod = self._lower("price is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "price is-numeric")
+
+
+class TestPresenceRefusesMoney(unittest.TestCase):
+    """RFC-0051 §Compatibility: `exists`/`missing` on a declared Money field
+    stays refused — the Gate-1 subset opens Money comparison and arithmetic
+    only, not presence."""
+
+    def _lower(self, condition):
+        return lower(parse(MONEY_PREDICATE_SOURCE % condition), "shop")
+
+    def test_money_exists_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.price exists")
+        message = str(caught.exception)
+        self.assertIn("product.price", message)
+        self.assertIn("declared type is Money", message)
+        self.assertIn("RFC-0051", message)
+
+    def test_money_missing_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.cost missing")
+        self.assertIn("product.cost", str(caught.exception))
+        self.assertIn("RFC-0051", str(caught.exception))
+
+    def test_integer_exists_is_still_admitted(self):
+        mod = self._lower("product.stock exists")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "product.stock exists")
+
+    def test_an_undeclared_reference_under_presence_is_unaffected(self):
+        mod = self._lower("price missing")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "price missing")
+
+
 NUMERIC_PREDICATE_SOURCE = """
 capability postgres
 entity Order
