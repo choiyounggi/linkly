@@ -633,6 +633,32 @@ def workflow_uses_money_guard(document, workflow_id):
     return _money_guard_offender(document, workflow_id) is not None
 
 
+def _lookup_offender(document, workflow_id):
+    """`(step_name, entity_id, lookup_ref)` of the first reachable
+    RepositoryCall of `workflow_id` carrying a `lookup` key (issue #175), or
+    None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is not None and effect["kind"] == "RepositoryCall"
+                    and effect.get("lookup")):
+                return step["name"], effect["entity"], effect["lookup"]
+    return None
+
+
+def workflow_uses_lookup(document, workflow_id):
+    """RFC-0052 §6: does any reachable RepositoryCall of `workflow_id` carry
+    a `by <ref>` lookup key?
+
+    Mode B refuses such a workflow (`emit_mlir`) — the single-key seed
+    projection cannot say which row a lookup addresses; `differential.verify`
+    asks this first so the recorded exemption does not depend on a toolchain.
+    Raises `BackendError` for an unknown workflow.
+    """
+    return _lookup_offender(document, workflow_id) is not None
+
+
 def encode_condition_value(value):
     """Coerce a condition-field value to the i64 the guard compares against.
 
@@ -1457,6 +1483,13 @@ def emit_mlir(document, workflow_id, seeded=None, payload=None):
             "step %s: guard %r compares Money, which has no compiled "
             "evaluator (RFC-0051 §Mode B) — run it in mode A"
             % (step_name, guard_text))
+    lookup_offender = _lookup_offender(document, workflow_id)
+    if lookup_offender is not None:
+        step_name, entity_id, lookup_ref = lookup_offender
+        raise BackendError(
+            "step %s: %s uses a lookup key (by %s), which the single-key "
+            "seed projection cannot model (RFC-0052 §Mode B) — run it in "
+            "mode A" % (step_name, entity_id, lookup_ref))
     return _render_std(*_lnpl_ops(document, workflow_id, seeded, payload))
 
 

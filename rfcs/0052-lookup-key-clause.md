@@ -198,8 +198,9 @@ workflow <W>: lookup key '<ref>' has declared type <T>, whose base is Password -
 
 - 그 엔티티의 첫 read가 `by input.<field>`이면 시드 행을
   `row_key(entity_id, {"id": payload[<field>]})` 아래 둔다. 행 내용은 여전히 payload의
-  복사본이다. payload에 그 필드가 없으면 그 read가 §3의 3번으로 실패하므로 시드 행의
-  위치는 관측되지 않는다.
+  복사본이다. payload에 그 필드가 없으면(값이 없으면) 그 엔티티는 **시드하지 않는다** —
+  `entity#None` 같은 키도, payload `id` 키로의 대체도 없다. 그 read는 §3의 3번
+  `RunError`로 실패하고, 영속 저장소에도 떠돌이 행이 남지 않는다.
 - 그 밖의 경우(`by` 없음, bare·`caller.*`·네트워크 결과·바인딩 참조)는 지금처럼 payload
   `id` 키다. 특히 **바인딩 참조 조회(`by order.productId`)는 기본 정책이 시드할 수 없다** —
   그 행은 실제 저장소, spec `given`, 또는 같은 워크플로의 앞선 `create`에서 와야 한다.

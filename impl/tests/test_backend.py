@@ -227,6 +227,66 @@ workflow Approve
 """
 
 
+LOOKUP_MODULE = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service Orders
+    policy
+        retry 0
+workflow Restock
+%s
+workflow Audit
+    find stock
+"""
+
+
+class TestModeBRefusesALookupKey(unittest.TestCase):
+    """RFC-0052 §6 (issue #175): a `by <ref>` repository call addresses a key
+    the single-key seed projection cannot model, so mode B refuses the
+    workflow by name before rendering; a `by`-free workflow in the same
+    module is untouched."""
+
+    def _doc(self, body):
+        return lower(parse(LOOKUP_MODULE % body), "orders").to_document()
+
+    def test_a_by_read_is_refused_by_step_entity_and_rfc(self):
+        doc = self._doc("    find stock by input.productId")
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, "wf.restock")
+        self.assertEqual(
+            str(ctx.exception),
+            "step find stock by input.productId: entity.stock uses a lookup "
+            "key (by input.productId), which the single-key seed projection "
+            "cannot model (RFC-0052 §Mode B) — run it in mode A")
+        self.assertTrue(backend.workflow_uses_lookup(doc, "wf.restock"))
+
+    def test_update_delete_and_guarded_or_parallel_by_calls_are_refused(self):
+        for body in ("    find stock\n    update stock by input.productId",
+                     "    find stock\n    delete stock by productId",
+                     "    when onHand > 0\n        find stock by input.productId",
+                     "    parallel\n        find stock by input.productId\n"
+                     "        find stock\n    merge"):
+            with self.subTest(body=body):
+                doc = self._doc(body)
+                self.assertTrue(backend.workflow_uses_lookup(doc, "wf.restock"))
+                with self.assertRaises(backend.BackendError) as ctx:
+                    backend.emit_mlir(doc, "wf.restock")
+                self.assertIn("RFC-0052", str(ctx.exception))
+
+    def test_a_by_free_workflow_in_the_same_module_still_renders(self):
+        doc = self._doc("    find stock by input.productId")
+        self.assertFalse(backend.workflow_uses_lookup(doc, "wf.audit"))
+        self.assertIn("func.func", backend.emit_mlir(doc, "wf.audit"))
+        self.assertFalse(backend.workflow_uses_lookup(golden(), "wf.login"))
+
+    def test_an_unknown_workflow_is_a_backend_error(self):
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_lookup(self._doc("    find stock"), "wf.nope")
+
+
 class TestModeBRefusesAMoneyGuard(unittest.TestCase):
     """RFC-0051 §6 (issue #172): Money carries its currency as row data, so it
     cannot ride mode B's i64 condition-field channel. A guard that references

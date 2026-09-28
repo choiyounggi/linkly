@@ -646,6 +646,52 @@ def run_shop_src(src, given, expect):
     return run_manifest(extract(decls, "shop"), doc)
 
 
+LOOKUP_SPEC_SRC = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service StockService
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    spec
+        given
+            input.id O1
+            input.productId P1
+            stored stock onHand 7
+        when
+            restock
+        expect
+            completed
+            result stock.onHand == 7
+"""
+
+
+class TestLookupKeyGiven(unittest.TestCase):
+    """issue #175 / RFC-0052 §4: a spec case seeds through `default_rows`, so
+    a single-row `given` for an entity first read `by input.<field>` lands
+    under that field's value — the key the read addresses — even though the
+    case's own `id` is different. `stored` then overrides that row."""
+
+    def test_a_by_input_read_finds_the_given_row_and_expect_result_reads_it(self):
+        decls = parse(LOOKUP_SPEC_SRC)
+        doc = lower(decls, "stock").to_document()
+        passed, failed, lines = run_manifest(extract(decls, "stock"), doc)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)
+
+    def test_a_wrong_expectation_on_that_row_still_fails(self):
+        src = LOOKUP_SPEC_SRC.replace("result stock.onHand == 7",
+                                      "result stock.onHand == 8")
+        decls = parse(src)
+        doc = lower(decls, "stock").to_document()
+        passed, failed, lines = run_manifest(extract(decls, "stock"), doc)
+        self.assertEqual(failed, 1, lines)
+
+
 class TestNoOpStepFailsTheSpec(unittest.TestCase):
     """`effects complete` — every step that ran performed at least one Effect.
 

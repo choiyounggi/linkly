@@ -35,9 +35,13 @@ one row. That is what lets mode B answer "does this create conflict?" from the
 document alone — E conflicts iff it is seeded, or an earlier call in
 `repository_calls` already created it. No interpreter state, no runtime channel.
 
+RFC-0052 (issue #175) relaxes this per entity: a `by <ref>` read/update/delete
+addresses the ref's value instead, and mode B refuses any workflow that uses one.
+
 Imports nothing from `interp`, `backend`, or `cli`: mode B imports this module,
 and a cycle would break the build.
 """
+from .lexer import PAYLOAD_NAMESPACE
 
 READ_OPS = ("read", "query")
 
@@ -91,6 +95,42 @@ def repository_calls(document, workflow_id):
 
     walk(workflow.get("children", []))
     return calls
+
+
+def lookup_key_source(document, workflow_id, entity_id):
+    """issue #175 / RFC-0052 §4: the `lookup` ref of `entity_id`'s FIRST
+    `read` reachable from `workflow_id`, in declared order, or `None` (no
+    `by` on that read, or the entity is never read).
+
+    Same reachability walk as `repository_calls`, kept separate so that
+    function's `(entity_id, operation)` shape — and its five callers — stay
+    unchanged for a value only the seed rule needs.
+    """
+    nodes = {n["id"]: n for n in document["nodes"]}
+    workflow = nodes.get(workflow_id)
+    if workflow is None or workflow["kind"] != "Workflow":
+        return None
+
+    def first_read(ids):
+        for node_id in ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            if node["kind"] == "WorkflowStep":
+                for child_id in node.get("children", []):
+                    child = nodes.get(child_id)
+                    if (child is not None and child["kind"] == "RepositoryCall"
+                            and child["entity"] == entity_id
+                            and child["operation"] == "read"):
+                        return child
+            else:
+                found = first_read(node.get("children", []))
+                if found is not None:
+                    return found
+        return None
+
+    read = first_read(workflow.get("children", []))
+    return read.get("lookup") if read is not None else None
 
 
 def event_emissions(document, workflow_id):
@@ -170,9 +210,29 @@ def default_rows(document, workflow_id, payload):
 
     The row is a copy of the payload — the caller's dict must not become shared
     mutable state once `create` starts writing into these tables.
+
+    issue #175 / RFC-0052 §4: when an entity's first read is
+    `by input.<field>`, its row lives under that field's value instead of the
+    payload `id` — the key that read will address. Every other lookup (bare,
+    `caller.*`, a bound or network-result ref) is not payload-derivable here
+    and keeps the payload-id key. A payload without that field seeds no row
+    for the entity at all.
     """
-    return {entity_id: {row_key(entity_id, payload): dict(payload)}
-            for entity_id in seeded_entities(document, workflow_id)}
+    rows = {}
+    for entity_id in seeded_entities(document, workflow_id):
+        source = lookup_key_source(document, workflow_id, entity_id)
+        if source is not None and source.startswith(PAYLOAD_NAMESPACE + "."):
+            value = payload.get(source.partition(".")[2])
+            if value is None:
+                # No value, no key: the read fails with its named RunError
+                # anyway, and an `entity#None` row would outlive that failed
+                # run in a persistent store — so seed nothing for it.
+                continue
+            key = row_key(entity_id, {"id": value})
+        else:
+            key = row_key(entity_id, payload)
+        rows[entity_id] = {key: dict(payload)}
+    return rows
 
 
 def seed_bindings(document, workflow_id, payload, seeded=None):

@@ -230,6 +230,63 @@ class TestMoneyGuardExemption(unittest.TestCase):
         self.assertIn("EQUIVALENT", report[-1])
 
 
+class TestLookupKeyExemption(unittest.TestCase):
+    """RFC-0052 §6 (issue #175): a workflow with a `by <ref>` repository call
+    is a recorded mode B exemption, reported before the toolchain check —
+    never a false EQUIVALENT. A `by`-free workflow in the same module still
+    compares."""
+
+    def _doc(self, body):
+        from tests.test_backend import LOOKUP_MODULE
+        return lower(parse(LOOKUP_MODULE % body), "orders").to_document()
+
+    def _workdir(self):
+        base = os.path.join(REPO, ".claude", "tmp")
+        os.makedirs(base, exist_ok=True)
+        workdir = tempfile.mkdtemp(prefix="lnpl-t175-", dir=base)
+        self.addCleanup(shutil.rmtree, workdir, True)
+        return workdir
+
+    def _verify(self, doc, wf, payload):
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), self._workdir())
+
+    def test_a_by_workflow_is_the_recorded_exemption_without_a_toolchain(self):
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+        doc = self._doc("    find stock by input.productId")
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, "wf.restock", {"id": "O1", "productId": "P1"})
+        msg = str(ctx.exception)
+        self.assertIn("lookup key", msg)
+        self.assertIn("RFC-0052", msg)
+        self.assertNotIn("toolchain unavailable", msg)
+
+    @NEEDS_TOOLS
+    def test_a_by_free_workflow_in_the_same_module_compares_equivalent(self):
+        doc = self._doc("    find stock by input.productId")
+        ok, report = self._verify(doc, "wf.audit", {"id": "O1", "productId": "P1",
+                                                    "onHand": 3})
+        self.assertTrue(ok, "\n".join(report))
+        self.assertIn("EQUIVALENT", report[-1])
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "orders.lnpl")
+        from tests.test_backend import LOOKUP_MODULE
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(LOOKUP_MODULE % "    find stock by input.productId")
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.restock"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0052", text)
+                self.assertNotIn("EQUIVALENT", text)
+
+
 class TestNormaliseSkips(unittest.TestCase):
     """The projection both modes are compared on."""
 
