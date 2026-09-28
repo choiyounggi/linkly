@@ -785,8 +785,8 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
                 return (actual == parsed) if op == "==" else (actual != parsed)
 
     # Import here to avoid circular dependency
-    from .condition import (And, Comparison, ConditionError, Presence,
-                            parse_condition)
+    from .condition import (And, Comparison, ConditionError, NumericPredicate,
+                            Presence, parse_condition)
 
     try:
         cond = parse_condition(condition)
@@ -807,15 +807,30 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
     if isinstance(cond, Comparison):
         return _comparison_holds(cond, condition, payload, bindings, collector, caller)
 
+    if isinstance(cond, NumericPredicate):
+        raise _numeric_predicate_not_yet(cond)
+
     if isinstance(cond, And):
         # Every term is evaluated, not short-circuited: the terms are pure, so
         # the result is the same, and a value fault in a later term must surface
         # in both modes rather than depending on where the run stopped reading.
-        results = [_comparison_holds(term, condition, payload, bindings, collector, caller)
-                   for term in cond.terms]
+        results = []
+        for term in cond.terms:
+            if isinstance(term, NumericPredicate):
+                raise _numeric_predicate_not_yet(term)
+            results.append(_comparison_holds(term, condition, payload, bindings,
+                                             collector, caller))
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
+
+
+def _numeric_predicate_not_yet(pred):
+    """RFC-0050 Track A boundary: the predicate parses and lowers, but its
+    runtime truth table lands in t177b. One clear refusal until then."""
+    return RunError(
+        "numeric-shape predicate (%r) runtime evaluation is not yet "
+        "implemented — RFC-0050, t177b" % pred.kind)
 
 
 def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, caller=None):

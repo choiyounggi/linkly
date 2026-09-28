@@ -49,6 +49,11 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   results) instead of always carrying the raw masked input; trailing
   words after `emit <Event>` that are not a `with`-clause now raise a
   compile error instead of being silently dropped (issue #178, RFC-0049).
+- Guard predicates `<ref> is-numeric` / `<ref> is-not-numeric` ask whether
+  a value reads as a number without failing, so a non-numeric external
+  response can route to a fallback branch instead of the comparison
+  `RunError`; unlike `exists`/`missing` they may be `and` terms, and
+  `lnpl vocab` now lists both predicate tables (issue #177, RFC-0050).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0

@@ -171,8 +171,15 @@ def render_grammar():
     lines.append("\n가드를 두 줄 잇달아 쓰면 **파싱 에러**다 — 조건 두 개는 `and`로 이어 "
                  "한 가드로 쓴다. 선언이 가드로 끝나도(감쌀 항목이 없어도) 에러다.\n")
     lines.append("가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — "
-                 "존재 검사(`exists`/`missing`)도 마찬가지다. `Text`·`Money` 필드에 "
-                 "가드를 걸면 lowering이 거부한다(RFC-0016).\n")
+                 "존재 검사(`exists`/`missing`)도 숫자 형태 술어(%s)도 "
+                 "마찬가지다. `Text`·`Money` 필드에 가드를 걸면 lowering이 "
+                 "거부한다(RFC-0016).\n"
+                 % "/".join("`%s`" % k for k in kw["numeric_predicate_kinds"]))
+    lines.append("숫자 형태 술어는 값이 숫자로 읽히는지를 **실패 없이** 묻는다 — "
+                 "비수치 값의 비교는 `RunError`지만 `<ref> is-numeric`은 거짓일 "
+                 "뿐이다. 존재 검사와 달리 `and` 안에 쓸 수 있다: "
+                 "`when fxResult.status == 200 and fxResult.rate is-numeric`. "
+                 "대체 경로는 `or fxResult.rate is-not-numeric`(RFC-0050).\n")
     # r1 N-5: the only block example here was `parallel … merge`, so an author
     # who wrote `pipeline … merge` learned "merge is parallel-only" from a
     # refusal and never learned where a pipeline actually ends.
@@ -681,6 +688,10 @@ RFC_ROUTES = {
              "`emit ... with` 절과 `payloadMap`이 무엇을 허용·거부하는지, "
              "이전에 조용히 버려지던 나머지 단어가 왜 이제 컴파일 "
              "거부인지", ()),
+    "0050": ("외부 응답 값이 숫자가 아니면 RunError 대신 대체 경로로 "
+             "보내고 싶다 — `is-numeric`/`is-not-numeric` 술어가 무엇을 "
+             "숫자로 보는지, 왜 `exists`/`missing`과 달리 `and` 안에 쓸 수 "
+             "있는지, 모드 B가 왜 그 워크플로를 거부하는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

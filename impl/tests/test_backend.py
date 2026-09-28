@@ -86,6 +86,27 @@ class TestMlirEmission(unittest.TestCase):
             backend.emit_mlir(golden(), "wf.nope")
 
 
+class TestComparisonsSkipsNumericPredicateTerms(unittest.TestCase):
+    """Issue #177 / RFC-0050: an `and` may now hold a `NumericPredicate`.
+    `backend._comparisons` (an independent copy of lower's) must yield only
+    the `Comparison` terms — never hand a predicate to `_emit_condition`,
+    which reads `.left`/`.right`. Mode B's refusal itself is t177b's."""
+
+    def test_mixed_and_yields_only_the_comparisons(self):
+        from lnpl.condition import Comparison, parse_condition
+        terms = backend._comparisons(
+            parse_condition("a > 1 and b is-numeric and c < 2"))
+        self.assertEqual(len(terms), 2)
+        self.assertTrue(all(isinstance(t, Comparison) for t in terms))
+
+    def test_bare_predicate_yields_nothing(self):
+        from lnpl.condition import parse_condition
+        self.assertEqual(backend._comparisons(parse_condition("b is-not-numeric")), ())
+
+    def test_no_condition_yields_nothing(self):
+        self.assertEqual(backend._comparisons(None), ())
+
+
 @NEEDS_TOOLS
 class TestNativeBuild(unittest.TestCase):
     def setUp(self):

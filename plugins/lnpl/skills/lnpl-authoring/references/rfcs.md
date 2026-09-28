@@ -60,5 +60,6 @@
 | RFC-0047 집계 필드 타입의 IR 전달 (`agg_field_type`) | 빈 RowSet의 Money `sum`이 왜 정수 `0`이 아니라 `{"amount": "0", "currency": null}`이어야 하는지, `nodeAssignment.agg_field_type`이 왜 필요한지, 그 필드가 왜 필수가 아니라 선택인지, 옛 컴파일러가 낸 IR 문서가 재컴파일 전까지 왜 여전히 정수 `0`을 내는지 | `rfcs/0047-aggregate-field-type-carriage.md` |
 | RFC-0048 컬렉션 필드 비목표 확정과 RowSet `group by` | 필드에 List/Map 같은 컬렉션 타입을 쓰고 싶다 — 왜 안 되고 대신 무엇을 쓰는지, RowSet `group by`가 (key, value) 파생 RowSet으로 어떻게 설계됐는지, 그룹당 집계가 기존 5종을 어떻게 재사용하는지, 그룹별 원본 행 목록은 왜 아직 없는지 | `rfcs/0048-collections-non-goal-and-rowset-group-by.md` |
 | RFC-0049 `emit ... with`와 `payloadMap` | emit이 발행하는 페이로드를 워크플로 바인딩(생성된 행, input, 네트워크 호출 결과)에서 직접 채우고 싶다 — `emit ... with` 절과 `payloadMap`이 무엇을 허용·거부하는지, 이전에 조용히 버려지던 나머지 단어가 왜 이제 컴파일 거부인지 | `rfcs/0049-emit-payload-mapping.md` |
+| RFC-0050 숫자 형태 가드 술어 — `is-numeric` / `is-not-numeric` | 외부 응답 값이 숫자가 아니면 RunError 대신 대체 경로로 보내고 싶다 — `is-numeric`/`is-not-numeric` 술어가 무엇을 숫자로 보는지, 왜 `exists`/`missing`과 달리 `and` 안에 쓸 수 있는지, 모드 B가 왜 그 워크플로를 거부하는지 | `rfcs/0050-numeric-guard-predicate.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

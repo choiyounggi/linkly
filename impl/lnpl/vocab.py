@@ -16,7 +16,8 @@ from lnpl.diagnostics import CODES, ENFORCEMENT, SEVERITY_OF
 from lnpl.lexer import (ARITH_OPS, ASSIGN_KEYWORDS, COMPARATORS,
                         DURATION_UNITS, GUARD_ALT_KEYWORD, KEYWORDS_CLAUSE,
                         KEYWORDS_CONTROL, KEYWORDS_TOP, LOGICAL_OPS,
-                        PAYLOAD_NAMESPACE, RESERVED, SCHEDULE_AT,
+                        NUMERIC_PREDICATE_KINDS, PAYLOAD_NAMESPACE,
+                        PRESENCE_KINDS, RESERVED, SCHEDULE_AT,
                         SCHEDULE_KEYWORD, SCHEDULE_RECURRENCES, SCHEDULE_ZONES)
 from lnpl.lower import (ARGUMENT_MECHANISMS, PERF_METRICS, POLICY_NAMES,
                         READ_VERBS, SECURITY_MECHANISMS, VALUELESS_PERF,
@@ -59,6 +60,8 @@ def vocabulary_document():
             "arithmetic_operators": list(ARITH_OPS),
             "logical_operators": list(LOGICAL_OPS),
             "guard_alt_keyword": GUARD_ALT_KEYWORD,
+            "presence_kinds": list(PRESENCE_KINDS),
+            "numeric_predicate_kinds": list(NUMERIC_PREDICATE_KINDS),
             "assign_keywords": list(ASSIGN_KEYWORDS),
             "payload_namespace": PAYLOAD_NAMESPACE,
             "schedule_keyword": SCHEDULE_KEYWORD,

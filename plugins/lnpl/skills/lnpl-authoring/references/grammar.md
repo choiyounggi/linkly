@@ -96,7 +96,9 @@ merge
 
 가드를 두 줄 잇달아 쓰면 **파싱 에러**다 — 조건 두 개는 `and`로 이어 한 가드로 쓴다. 선언이 가드로 끝나도(감쌀 항목이 없어도) 에러다.
 
-가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — 존재 검사(`exists`/`missing`)도 마찬가지다. `Text`·`Money` 필드에 가드를 걸면 lowering이 거부한다(RFC-0016).
+가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — 존재 검사(`exists`/`missing`)도 숫자 형태 술어(`is-numeric`/`is-not-numeric`)도 마찬가지다. `Text`·`Money` 필드에 가드를 걸면 lowering이 거부한다(RFC-0016).
+
+숫자 형태 술어는 값이 숫자로 읽히는지를 **실패 없이** 묻는다 — 비수치 값의 비교는 `RunError`지만 `<ref> is-numeric`은 거짓일 뿐이다. 존재 검사와 달리 `and` 안에 쓸 수 있다: `when fxResult.status == 200 and fxResult.rate is-numeric`. 대체 경로는 `or fxResult.rate is-not-numeric`(RFC-0050).
 
 
 ## 블록의 시작과 종결

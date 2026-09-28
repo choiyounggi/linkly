@@ -361,5 +361,52 @@ class TestIrSchemaGate(unittest.TestCase):
                           "the gate no longer runs the %r negative" % label)
 
 
+NUMERIC_ALT_SOURCE = """capability postgres
+
+entity Payment
+    field
+        id UUID
+        status Integer
+        rate Integer
+
+service PaymentService
+    policy
+        timeout 5s
+
+workflow Convert
+    when input.status != 200
+    or input.rate is-not-numeric
+    create payment
+"""
+
+
+class TestNumericPredicateTrackA(unittest.TestCase):
+    """Issue #177 / RFC-0050, Track A boundary: the predicate parses as an
+    `or` alternative, and mode A refuses it with ONE clear `RunError` until
+    the runtime truth table lands (t177b) — never an `AttributeError` from
+    a code path that assumed every `and` term is a `Comparison`."""
+
+    def test_an_or_alternative_with_the_predicate_parses_and_lowers(self):
+        doc = compile_doc(NUMERIC_ALT_SOURCE, "convert")
+        guards = nodes_of(doc, "Guard")
+        self.assertEqual(guards[0]["alternatives"], ["input.rate is-not-numeric"])
+
+    def test_a_bare_predicate_raises_the_stub_run_error(self):
+        with self.assertRaises(RunError) as ctx:
+            _condition_holds("input.rate is-numeric", {"rate": 1350}, {})
+        self.assertIn("numeric-shape predicate", str(ctx.exception))
+
+    def test_a_predicate_inside_and_raises_the_same_stub_run_error(self):
+        with self.assertRaises(RunError) as ctx:
+            _condition_holds("input.status == 200 and input.rate is-numeric",
+                             {"status": 200, "rate": 1350}, {})
+        self.assertIn("numeric-shape predicate", str(ctx.exception))
+
+    def test_an_absent_reference_still_reaches_the_stub_not_a_crash(self):
+        with self.assertRaises(RunError) as ctx:
+            _condition_holds("input.rate is-not-numeric", {}, {})
+        self.assertIn("is-not-numeric", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

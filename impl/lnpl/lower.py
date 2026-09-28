@@ -968,7 +968,8 @@ def _parse_predicate_terms(cond_text, lineno, entity, base_of):
     function only judges what that parser already produced, against the
     entity being listed.
     """
-    from .condition import And, ConditionError, Presence, Ref, parse_condition, value_to_string
+    from .condition import (And, ConditionError, NumericPredicate, Presence, Ref,
+                            parse_condition, value_to_string)
 
     try:
         cond = parse_condition(cond_text)
@@ -978,6 +979,12 @@ def _parse_predicate_terms(cond_text, lineno, entity, base_of):
         raise LowerError(
             "line %d: `list where` supports comparisons only (no `exists`/"
             "`missing` presence checks), got %r" % (lineno, cond_text))
+    if isinstance(cond, NumericPredicate) or (
+            isinstance(cond, And)
+            and any(isinstance(t, NumericPredicate) for t in cond.terms)):
+        raise LowerError(
+            "line %d: `list where` supports comparisons only (no `is-numeric`/"
+            "`is-not-numeric` predicates), got %r" % (lineno, cond_text))
     terms = cond.terms if isinstance(cond, And) else (cond,)
 
     fields_by_name = {f["name"]: f for f in entity["fields"]}
@@ -2774,12 +2781,16 @@ def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
 
 
 def _comparisons(cond):
-    """The Comparison terms of a condition, whether or not it is an `and`."""
+    """The Comparison terms of a condition, whether or not it is an `and`.
+
+    An `and` may also hold a `NumericPredicate` (RFC-0050) — not a comparison,
+    so it is skipped here; its reference is still checked via `references()`.
+    """
     from .condition import And, Comparison
     if isinstance(cond, Comparison):
         return (cond,)
     if isinstance(cond, And):
-        return cond.terms
+        return tuple(t for t in cond.terms if isinstance(t, Comparison))
     return ()
 
 
