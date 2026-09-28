@@ -785,6 +785,35 @@ class TestNoteExcludedFromEffectsCount(unittest.TestCase):
         self.assertTrue(any("note " in l for l in lines), lines)
 
 
+# issue #178: emit ... with maps the payload from a create-as binding and the
+# run's input, instead of the raw masked input SHOP's plain `emit orderPlaced`
+# already covers (TestEventExpectation, unchanged).
+SHOP_WITH_MAPPED_EMIT = SHOP.replace(
+    "    create order\n    emit orderPlaced\n",
+    "    create order as newOrder\n"
+    "    emit orderPlaced with newOrder.id input.stock\n")
+
+
+class TestEmittedPayloadMapping(unittest.TestCase):
+    """issue #178: `emitted ... payload ... exists` against a
+    `with`-mapped payload — no spec.py code change, `_expect_emitted`
+    already reads `e["payload"].get(field)` generically."""
+
+    def test_mapped_fields_are_assertable(self):
+        passed, failed, lines = run_shop_src(
+            SHOP_WITH_MAPPED_EMIT, ["valid product"],
+            ["emitted OrderPlaced payload id exists",
+             "emitted OrderPlaced payload stock exists"])
+        self.assertEqual(failed, 0, lines)
+
+    def test_an_unmapped_field_is_missing(self):
+        # Boundary: SHOP's Order.total is never in this with-clause.
+        passed, failed, lines = run_shop_src(
+            SHOP_WITH_MAPPED_EMIT, ["valid product"],
+            ["emitted OrderPlaced payload total missing"])
+        self.assertEqual(failed, 0, lines)
+
+
 class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
     """`lnpl spec` reports compile diagnostics like `compile` and `run` do.
 

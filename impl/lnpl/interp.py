@@ -2060,9 +2060,43 @@ class Interpreter:
                 raise RunError("EventEmit has no event reference")
             if event_ref not in self.nodes:
                 raise RunError("EventEmit references undeclared event %r" % event_ref)
+            # issue #178, RFC-0049: when `emit ... with` mapped the payload
+            # at compile time, build it from the mapped refs instead of the
+            # raw input -- each field resolved through the one resolver and
+            # masked through the one chokepoint, exactly as plain `emit`'s
+            # masked-input payload already is, just per field instead of
+            # for the whole dict.
+            payload_map = effect.get("payloadMap")
+            if payload_map:
+                built_payload = {}
+                for entry in payload_map:
+                    field = entry["field"]
+                    ref = entry["ref"]
+                    raw = resolve_reference(ref, payload, bindings, self.caller)
+                    binding, _, _ref_field = ref.partition(".")
+                    if binding == PAYLOAD_NAMESPACE:
+                        masked = mask_payload({field: raw}, self._entity_node())
+                    else:
+                        # A `create ... as <name>` row's entity id rides on
+                        # the row itself (`_CreatedRow`, since its binding
+                        # name is the author's own choice, not the entity's
+                        # default binding name `_entity_id_for_binding`
+                        # resolves) — checked first so a create-as bound
+                        # Password field masks the same as a read-bound one.
+                        entity_id = getattr(bindings.get(binding), "entity_id", None)
+                        if entity_id is None:
+                            entity_id = self._entity_id_for_binding(binding)
+                        if entity_id is None:
+                            masked = {field: raw}
+                        else:
+                            entity_view = self._entity_view(self.nodes[entity_id])
+                            masked = mask_payload({field: raw}, entity_view)
+                    built_payload[field] = masked[field]
+            else:
+                built_payload = mask_payload(payload, self._entity_node())
             emission = {"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1),
                         "event": event_ref,
-                        "payload": mask_payload(payload, self._entity_node())}
+                        "payload": built_payload}
             # issue #102: persisted before the in-memory outbox sees it, so a
             # driver fault here (translated to RunError below, the same as
             # every other repo call) never leaves an emission counted in

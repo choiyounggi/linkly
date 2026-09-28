@@ -201,10 +201,31 @@ MUTATIONS = [
      "lnpl/interp.py",
      '"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1)',
      '"emission_id": "fixed"'),
-    ("EventEmit: publish the payload unmasked",
+    # Re-anchored 2026-09-28: issue #178/RFC-0049's `emit ... with` refactor
+    # split the plain-`emit` payload into a local `built_payload` (still
+    # `mask_payload(payload, self._entity_node())` for the no-`payloadMap`
+    # path) assigned into `emission["payload"]` two lines later, so the old
+    # single-line `"payload": mask_payload(...)` anchor no longer exists.
+    ("EventEmit: publish the payload unmasked (plain `emit`, no `with`)",
      "lnpl/interp.py",
-     '"payload": mask_payload(payload, self._entity_node())',
-     '"payload": dict(payload)'),
+     'built_payload = mask_payload(payload, self._entity_node())',
+     "built_payload = dict(payload)"),
+    # issue #178/RFC-0049: the `emit ... with` branch masks each mapped
+    # field through the same chokepoint, per ref kind. This is the
+    # create-as/read-bound branch `test_a_non_password_mapped_field_is_not_masked`
+    # exercises with a real Password field.
+    ("EventEmit: publish a with-mapped field unmasked (create-as/read-bound ref)",
+     "lnpl/interp.py",
+     '                        if entity_id is None:\n'
+     '                            masked = {field: raw}\n'
+     '                        else:\n'
+     '                            entity_view = self._entity_view(self.nodes[entity_id])\n'
+     '                            masked = mask_payload({field: raw}, entity_view)\n',
+     '                        if entity_id is None:\n'
+     '                            masked = {field: raw}\n'
+     '                        else:\n'
+     '                            entity_view = self._entity_view(self.nodes[entity_id])\n'
+     '                            masked = {field: raw}\n'),
     ("Reviewer: rubber-stamp instead of assessing",
      "lnpl/agents.py",
      "        if approve is None:\n            ok, why = self._assess(proposal_id)",

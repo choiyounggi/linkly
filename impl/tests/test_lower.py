@@ -162,6 +162,107 @@ class TestVerbLexicon(unittest.TestCase):
         self.assertIn("needs the event to emit", str(ctx.exception))
 
 
+EMIT_WITH_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        customerId Text
+        total Integer derived
+
+entity Customer
+    field
+        id UUID
+        secret Password
+
+event OrderPlaced
+
+service Orders
+    policy
+        retry 0
+
+workflow Checkout
+    create order as newOrder
+    find customer
+    call OrdersApi as orderResult
+"""
+
+
+class TestEmitWithClause(unittest.TestCase):
+    """issue #178, RFC-0049: `emit <Event> with <ref>...` -> `payloadMap`."""
+
+    def test_bare_emit_stays_payloadmap_free(self):
+        # R2: byte-identical to the pre-#178 node — no `payloadMap` key.
+        doc = ir(EMIT_WITH_SRC + "    emit orderPlaced\n")
+        node = by_id(doc)["wf.checkout.step.4.emit"]
+        self.assertEqual(node["kind"], "EventEmit")
+        self.assertNotIn("payloadMap", node)
+
+    def test_with_clause_compiles_to_the_payload_map_shape(self):
+        # R1: create-as alias field + input.<field>, ordered, field = the
+        # ref's own trailing dot-segment.
+        doc = ir(EMIT_WITH_SRC +
+                 "    emit orderPlaced with newOrder.id input.customerId\n")
+        node = by_id(doc)["wf.checkout.step.4.emit"]
+        self.assertEqual(node["payloadMap"],
+                         [{"field": "id", "ref": "newOrder.id"},
+                          {"field": "customerId", "ref": "input.customerId"}])
+
+    def test_a_bare_ref_in_with_is_refused(self):
+        # R3: neither a bound row's field, a network-result binding, nor
+        # `input.<field>` -- the dot-check runs before any scope lookup.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with unknownRef\n")
+        self.assertIn("unknownRef", str(ctx.exception))
+
+    def test_a_network_result_ref_is_admitted_unchecked(self):
+        # R3: `call ... as <name>` has no declared shape to check against --
+        # `scope.resolve_field` returns None for it, same as a bare ref, but
+        # the dot-check above already told the two apart.
+        doc = ir(EMIT_WITH_SRC + "    emit orderPlaced with orderResult.status\n")
+        node = by_id(doc)["wf.checkout.step.4.emit"]
+        self.assertEqual(node["payloadMap"],
+                         [{"field": "status", "ref": "orderResult.status"}])
+
+    def test_a_password_field_ref_is_refused(self):
+        # R4: the masking chokepoint (issue #43), same rule `respond` uses.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with customer.secret\n")
+        msg = str(ctx.exception)
+        self.assertIn("customer.secret", msg)
+        self.assertIn("Password", msg)
+
+    def test_duplicate_mapped_field_names_are_refused(self):
+        # R5: `newOrder.id` and `customer.id` both map to trailing field `id`.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC +
+               "    emit orderPlaced with newOrder.id customer.id\n")
+        msg = str(ctx.exception)
+        self.assertIn("id", msg)
+        self.assertIn("newOrder.id", msg)
+        self.assertIn("customer.id", msg)
+
+    def test_non_with_trailing_words_are_now_refused(self):
+        # R6: previously silently dropped -- issue #178's root defect.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced foo bar\n")
+        self.assertIn("('foo', 'bar')", str(ctx.exception))
+
+    def test_with_and_no_refs_is_refused(self):
+        # R7: boundary -- zero refs after `with`.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with\n")
+        self.assertIn("with` needs at least one reference", str(ctx.exception))
+
+    def test_a_derived_field_ref_is_refused(self):
+        # R11: `total` is `derived` and never `set`/`format`-assigned.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with newOrder.total\n")
+        msg = str(ctx.exception)
+        self.assertIn("newOrder.total", msg)
+        self.assertIn("derived", msg)
+
+
 class TestControlFlow(unittest.TestCase):
     """Guards and blocks: one Guard kind with a mode, not three kinds."""
 
