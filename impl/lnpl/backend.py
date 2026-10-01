@@ -659,6 +659,34 @@ def workflow_uses_lookup(document, workflow_id):
     return _lookup_offender(document, workflow_id) is not None
 
 
+def _refuse_money_or_lookup(document, workflow_id):
+    """RFC-0051/0052 §Mode B: refuse, by name, a Money-guard or lookup-key
+    workflow — called by `build()` immediately before `verify_lnpl_module()`
+    reaches any toolchain lookup, and by `emit_mlir()` for direct callers.
+    Single source of both messages: reuses `_money_guard_offender` and
+    `_lookup_offender` verbatim, in the same Money-then-Lookup order
+    `emit_mlir()` already used, so the two call sites cannot drift apart.
+    The numeric-shape predicate (RFC-0050) is deliberately NOT checked
+    here — its refusal in `_render_std` depends on `_lnpl_ops`'s
+    seed/payload-truncated ops stream, which a document-level check here
+    cannot safely replicate.
+    """
+    offender = _money_guard_offender(document, workflow_id)
+    if offender is not None:
+        step_name, guard_text = offender
+        raise BackendError(
+            "step %s: guard %r compares Money, which has no compiled "
+            "evaluator (RFC-0051 §Mode B) — run it in mode A"
+            % (step_name, guard_text))
+    lookup_offender = _lookup_offender(document, workflow_id)
+    if lookup_offender is not None:
+        step_name, entity_id, lookup_ref = lookup_offender
+        raise BackendError(
+            "step %s: %s uses a lookup key (by %s), which the single-key "
+            "seed projection cannot model (RFC-0052 §Mode B) — run it in "
+            "mode A" % (step_name, entity_id, lookup_ref))
+
+
 def encode_condition_value(value):
     """Coerce a condition-field value to the i64 the guard compares against.
 
@@ -1476,20 +1504,7 @@ def emit_mlir(document, workflow_id, seeded=None, payload=None):
     RFC-0051 §6: a guard comparing a declared Money field is refused before
     any MLIR is rendered — Money's currency cannot ride an i64 parameter.
     """
-    offender = _money_guard_offender(document, workflow_id)
-    if offender is not None:
-        step_name, guard_text = offender
-        raise BackendError(
-            "step %s: guard %r compares Money, which has no compiled "
-            "evaluator (RFC-0051 §Mode B) — run it in mode A"
-            % (step_name, guard_text))
-    lookup_offender = _lookup_offender(document, workflow_id)
-    if lookup_offender is not None:
-        step_name, entity_id, lookup_ref = lookup_offender
-        raise BackendError(
-            "step %s: %s uses a lookup key (by %s), which the single-key "
-            "seed projection cannot model (RFC-0052 §Mode B) — run it in "
-            "mode A" % (step_name, entity_id, lookup_ref))
+    _refuse_money_or_lookup(document, workflow_id)
     return _render_std(*_lnpl_ops(document, workflow_id, seeded, payload))
 
 
@@ -1580,6 +1595,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
     lnpl_text = emit_lnpl_mlir(document, workflow_id, seeded, payload)
     with open(lnpl_path, "w", encoding="utf-8") as fh:
         fh.write(lnpl_text)
+    _refuse_money_or_lookup(document, workflow_id)
     verify_lnpl_module(lnpl_text, path=lnpl_path)
 
     with open(mlir_path, "w", encoding="utf-8") as fh:

@@ -230,6 +230,14 @@ class TestMoneyGuardExemption(unittest.TestCase):
         self.assertIn("EQUIVALENT", report[-1])
 
 
+def _predicate_money_guard_doc():
+    from tests.test_backend import MONEY_GUARD
+    doc = lower(parse(MONEY_GUARD % "when order.total > order.threshold"),
+                "money").to_document()
+    wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+    return doc, wf
+
+
 class TestLookupKeyExemption(unittest.TestCase):
     """RFC-0052 §6 (issue #175): a workflow with a `by <ref>` repository call
     is a recorded mode B exemption, reported before the toolchain check —
@@ -285,6 +293,114 @@ class TestLookupKeyExemption(unittest.TestCase):
                 self.assertEqual(rc, 4, text)
                 self.assertIn("RFC-0052", text)
                 self.assertNotIn("EQUIVALENT", text)
+
+    def _forbid_tool(self):
+        real_tool = backend.tool
+
+        def _guard(*_a, **_k):
+            raise AssertionError(
+                "tool() called before the mode B exemption guard")
+        backend.tool = _guard
+        self.addCleanup(setattr, backend, "tool", real_tool)
+
+    def _hide_tools(self):
+        """Make every mlir-opt lookup fail: tool() tries LNPL_LLVM_BIN, then
+        BREW_LLVM_BIN, then PATH, so all three are emptied (and restored)."""
+        from unittest import mock
+        empty = self._workdir()
+        patcher = mock.patch.dict(os.environ, {"PATH": empty})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("LNPL_LLVM_BIN", None)
+        brew = mock.patch.object(backend, "BREW_LLVM_BIN", empty)
+        brew.start()
+        self.addCleanup(brew.stop)
+        with self.assertRaises(backend.BackendError):
+            backend.tool("mlir-opt")
+
+    def test_build_refuses_the_lookup_before_any_toolchain_lookup(self):
+        doc = self._doc("    find stock by input.productId")
+        workdir = self._workdir()
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, "wf.restock", workdir, seeded=frozenset())
+        self.assertIn("RFC-0052", str(ctx.exception))
+
+    def test_build_refuses_a_money_guard_before_any_toolchain_lookup(self):
+        doc, wf = _predicate_money_guard_doc()
+        workdir = self._workdir()
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir, seeded=frozenset())
+        self.assertIn("RFC-0051", str(ctx.exception))
+
+    def test_build_still_raises_the_duration_overflow_error_first(self):
+        # Placement pin: the refusal call sits after emit_lnpl_mlir, so an
+        # overflowing timeout is still reported first.
+        from tests.test_backend import MONEY_GUARD
+        overflow_source = (MONEY_GUARD % "when order.total > order.threshold"
+                           ).replace("timeout 5s", "timeout 100000000000000000d")
+        doc = lower(parse(overflow_source), "money").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        workdir = self._workdir()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir, seeded=frozenset())
+        self.assertNotIn("RFC-0051", str(ctx.exception))
+        self.assertIn("100000000000000000d", str(ctx.exception))
+
+    def test_a_refused_lookup_document_still_leaves_the_module_on_disk(self):
+        # Placement pin: the refusal call sits after the module write.
+        doc = self._doc("    find stock by input.productId")
+        workdir = self._workdir()
+        with self.assertRaises(backend.BackendError):
+            backend.build(doc, "wf.restock", workdir)
+        self.assertTrue(os.path.isfile(
+            os.path.join(workdir, "module.lnpl.mlir")))
+
+    def test_build_and_diff_agree_on_a_money_and_lookup_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "orders.lnpl")
+        from tests.test_backend import LOOKUP_MODULE
+        fields = ("entity Stock\n    field\n        id Text\n"
+                  "        productId Text\n        onHand Integer\n")
+        source = (LOOKUP_MODULE % "    find stock by input.productId").replace(
+            fields, fields + "        price Money\n        limit Money\n"
+        ).replace(
+            "workflow Restock\n    find stock by input.productId\n",
+            "workflow Restock\n    find stock by input.productId\n"
+            "    when stock.price > stock.limit\n    update stock\n")
+        self.assertIn("limit Money", source)
+        self.assertIn("when stock.price > stock.limit", source)
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
+    def test_build_and_emit_mlir_raise_identical_lookup_messages(self):
+        doc = self._doc("    find stock by input.productId")
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as build_ctx:
+            backend.build(doc, "wf.restock", self._workdir())
+        with self.assertRaises(backend.BackendError) as emit_ctx:
+            backend.emit_mlir(doc, "wf.restock")
+        self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_build_and_emit_mlir_raise_identical_money_messages(self):
+        doc, wf = _predicate_money_guard_doc()
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as build_ctx:
+            backend.build(doc, wf, self._workdir())
+        with self.assertRaises(backend.BackendError) as emit_ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
 
 
 class TestNormaliseSkips(unittest.TestCase):
