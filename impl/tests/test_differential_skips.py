@@ -238,6 +238,66 @@ def _predicate_money_guard_doc():
     return doc, wf
 
 
+MONEY_AND_NUMERIC_GUARD = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+        threshold Money
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    read order
+    when order.total > order.threshold
+    create order
+    when order.stock is-numeric
+    note "flagged"
+"""
+
+LOOKUP_AND_NUMERIC_GUARD = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service Orders
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    when stock.onHand is-numeric
+    note "flagged"
+workflow Audit
+    find stock
+"""
+
+MONEY_LOOKUP_AND_NUMERIC_GUARD = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+        price Money
+        limit Money
+service Orders
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    when stock.price > stock.limit
+    update stock
+    when stock.onHand is-numeric
+    note "flagged"
+workflow Audit
+    find stock
+"""
+
+
 class TestLookupKeyExemption(unittest.TestCase):
     """RFC-0052 §6 (issue #175): a workflow with a `by <ref>` repository call
     is a recorded mode B exemption, reported before the toolchain check —
@@ -374,6 +434,56 @@ class TestLookupKeyExemption(unittest.TestCase):
         self.assertIn("when stock.price > stock.limit", source)
         with open(src, "w", encoding="utf-8") as fh:
             fh.write(source)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
+    def test_build_and_diff_agree_on_a_money_and_numeric_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "money_numeric.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(MONEY_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.approve"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.approve"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
+    def test_build_and_diff_agree_on_a_lookup_and_numeric_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "lookup_numeric.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(LOOKUP_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0052", diff_text)
+        self.assertIn("RFC-0052", build_text)
+
+    def test_build_and_diff_agree_on_a_money_lookup_and_numeric_document(self):
+        # Boundary (design.md D4): all three exemptions in one workflow —
+        # proves the full Money -> lookup -> numeric chain, not only each pair.
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "triple.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(MONEY_LOOKUP_AND_NUMERIC_GUARD)
         self._hide_tools()
         diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
                                           "--workflow", "wf.restock"])
