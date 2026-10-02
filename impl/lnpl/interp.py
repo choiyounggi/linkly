@@ -1802,10 +1802,32 @@ class Interpreter:
         # §Observability — no second masking rule for this channel either.
         if result["status"] == "completed" and response_refs:
             response = {}
+            reported = set()
             for ref in response_refs:
                 binding, _, field = ref.partition(".")
-                response.setdefault(binding, {})[field] = \
-                    result["bindings"][binding][field]
+                row = result["bindings"].get(binding)
+                if row is None:
+                    # issue #198: the creating step (`create ... as`) sat
+                    # under a guard that did not run this time — `skipped[]`
+                    # already explains why (RFC-0014 keeps a guard rejection
+                    # `completed`), so omit rather than raise.
+                    continue
+                if field not in row:
+                    # issue #198: the bound row exists but this field is
+                    # absent from it (the response-ref twin of
+                    # `stored-row-shape-mismatch`, #85) — omit it and say so
+                    # once per ref, however often `respond` repeats it.
+                    if ref not in reported:
+                        reported.add(ref)
+                        self.diagnostics.add(
+                            code="respond-field-missing",
+                            where=wf["name"], subject=ref,
+                            message="`respond %s` names field %r, which is "
+                                    "absent from the bound row %r — omitted "
+                                    "from the response"
+                                    % (ref, field, binding))
+                    continue
+                response.setdefault(binding, {})[field] = row[field]
             result["response"] = response
         # issue #102, D5: additive and non-destructive, the same `response`
         # precedent (issue #96) — a run that never emits gets no `emissions`

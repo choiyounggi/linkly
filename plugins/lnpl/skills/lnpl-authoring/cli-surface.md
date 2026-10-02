@@ -446,7 +446,11 @@ cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다
 `rollback`을 떼면 사라진다 — 이슈 #112), `retry-on-non-idempotent`(`retry`를
 떼거나 멱등 메서드로 바꾸면 사라진다 — 이슈 #109), `note-cap-exceeded`(`note`를
 16개 이하로 줄이면 사라진다 — 이슈 #111), `event-consume-cycle`(`consume by`를
-떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)), `info`는 고쳐도 사라지지 않는
+떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118),
+`respond-field-missing`(저장된 행에 누락된 필드를 채우면 사라진다 —
+이슈 #198, 데이터를 고치는 쪽이라는 점은 `stored-row-shape-mismatch`와
+같다), `guard-scoped-binding-escape`(리더를 가드 스코프 안으로 옮기거나
+가드 줄을 반복하면 사라진다 — 이슈 #198)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`, `predicate-not-pushed-down`(`list where`/`order by`/`limit`이
@@ -478,6 +482,9 @@ cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다
 - **`guard-orphaned-steps`는 예외로 `line N`만 갖는다.** 저자가 옮겨야 하는 것이
   그 스텝이라, 노드 id를 되짚게 하는 대신 줄을 바로 가리킨다(RFC-0023 §5,
   RFC-0024가 손대지 않은 범위다).
+- **`guard-scoped-binding-escape`도 `line N`만 갖는다** — 저자가
+  옮겨야 하는 것이 그 `respond`/`set`/`format`/`emit ... with` 줄이라,
+  줄을 바로 가리킨다(issue #198).
 - **`aggregation-orphaned-list`도 `line N`만 갖는다** — 같은 이유다: 저자가
   고쳐야 하는 것은 그 `set` 줄(또는 그 앞에 `list`를 추가하는 것)이라, 줄을
   바로 가리킨다(RFC-0025 §4).

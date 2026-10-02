@@ -156,6 +156,8 @@ capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
 | note-cap-exceeded | warning | 워크플로 하나에 `note`가 16개를 초과할 때 — "필요한 로그만"을 어휘 차원에서 지킨다 (issue #111) | 컴파일 타임 — lowering |
 | event-consume-cycle | warning | `event <E> consume by <W>`가 선언돼 있고, `W`(그 자식 워크플로 포함)가 결국 `E`를 다시 `emit`/`publish`할 때 — 런타임 무한 재디스패치의 정적 신호. 가드가 실제로는 그 경로를 막을 수 있어 에러가 아니라 경고다 (issue #118) | 컴파일 타임 — lowering, 모든 워크플로를 다 내린 뒤 |
 | predicate-not-pushed-down | info | `list where`/`order by`/`limit`이 있는 `list <Entity>`가 `supports_predicate`를 선언하지 않은 드라이버로 실행돼, 코어가 전체 행을 fetch한 뒤 로컬에서 필터/정렬/자르기를 했을 때 (issue #164) | 런타임 — 인터프리터 |
+| respond-field-missing | warning | `respond`가 가리키는 바인딩은 있는데, 그 바인딩이 가리키는 필드가 저장된 행에 없을 때 — 그 참조는 응답에서 빠지고 진단이 하나 남는다 (issue #198) | 런타임 — 인터프리터 |
+| guard-scoped-binding-escape | warning | 가드(또는 가드된 `parallel`/`pipeline` 블록) 안의 `create ... as`/`call ... as`/`request ... as`가 만든 바인딩을, 그 가드 스코프 밖의 `respond`/`set`/`format`/`emit ... with`가 읽을 때 (issue #198) | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -169,7 +171,10 @@ capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
 사라진다 — 이슈 #112) · `retry-on-non-idempotent`(`retry`를 떼거나 멱등
 메서드로 바꾸면 사라진다 — 이슈 #109) · `note-cap-exceeded`(`note`를 16개
 이하로 줄이면 사라진다 — 이슈 #111) · `event-consume-cycle`(`consume by`를
-떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)),
+떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118) ·
+`respond-field-missing`(저장된 행에 누락된 필드를 채우면 사라진다 — 이슈 #198,
+RFC-0021 질문의 데이터판) · `guard-scoped-binding-escape`(리더를 가드 스코프
+안으로 옮기거나 가드 줄을 반복하면 사라진다 — 이슈 #198)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

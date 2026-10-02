@@ -58,7 +58,8 @@ lnpl compile <파일>
 `aggregation-orphaned-list`, `event-source-mismatch`, `event-source-orphaned`,
 `derived-never-assigned`, `declared-not-bound`, `stored-row-shape-mismatch`,
 `rollback-escapes-network`, `retry-on-non-idempotent`, `note-cap-exceeded`,
-`event-consume-cycle`, `predicate-not-pushed-down` 중 하나라도 나오면, 그게
+`event-consume-cycle`, `predicate-not-pushed-down`, `respond-field-missing`,
+`guard-scoped-binding-escape` 중 하나라도 나오면, 그게
 의도한 것인지 사용자에게 확인하고 넘어간다. 조용히 무시하지 않는다.
 
 `guard-orphaned-steps`는 특히 조용히 넘기지 마라 — 가드는 **다음 항목 하나**만

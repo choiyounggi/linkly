@@ -1492,6 +1492,8 @@ def lower(decls, module_name):
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
         _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
                            mod.diagnostics, d.name)
+        _check_guard_scoped_binding_reads(ctx.emitted, top_ids, d.name,
+                                          mod.diagnostics)
         _check_parallel_write_conflict(ctx.emitted, registry, d.name)
         _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
                                      d.name, mod.diagnostics)
@@ -1897,6 +1899,88 @@ def _check_guard_scope(emitted, top_ids, step_lines, registry, diagnostics,
                             "whether or not that condition held. %s"
                             % (guard.get("mode", "when"), text, step["name"],
                                ORPHAN_HINT))
+
+
+def _check_guard_scoped_binding_reads(emitted, top_ids, workflow_name,
+                                      diagnostics):
+    """`guard-scoped-binding-escape` (warning) -- issue #198.
+
+    `create ... as <name>` / `call ... as <name>` / `request ... as
+    <name>` binds <name> only when the guard owning that step held. A
+    later `respond`/`set`/`format`/`emit ... with` outside that guard's
+    scope that reads <name> may run on a path where it was never bound
+    -- the same leaked-protection shape `_check_guard_scope` already
+    catches for entity state (RFC-0023), generalised to RFC-0027 result
+    bindings via the same `_guard_owner_map`/`_guard_key` machinery #98
+    built. A binding also created unconditionally anywhere in the
+    workflow is never flagged -- it is always bound by the time any
+    reader runs.
+    """
+    from .condition import ConditionError, parse_value_or_aggregate, references
+
+    by_id = {node["id"]: node for node in emitted}
+    owner = _guard_owner_map(top_ids, by_id)
+    step_of = {child_id: node for node in emitted
+               if node["kind"] == "WorkflowStep"
+               for child_id in node.get("children") or []}
+
+    creator_scopes = {}
+    unconditional = set()
+    for node in emitted:
+        if node["kind"] not in ("RepositoryCall", "NetworkCall"):
+            continue
+        name = node.get("result")
+        if not name:
+            continue
+        key = _guard_key(owner.get(node["id"]))
+        if key is None:
+            unconditional.add(name)
+        else:
+            creator_scopes.setdefault(name, set()).add(key)
+    guarded = {name: keys for name, keys in creator_scopes.items()
+               if name not in unconditional}
+    if not guarded:
+        return
+
+    for node in emitted:
+        if node["kind"] == "Response":
+            refs = list(node.get("refs") or [])
+            rendering = "`respond %s`" % " ".join(refs)
+        elif node["kind"] == "Assignment":
+            try:
+                rhs = parse_value_or_aggregate(node.get("expression"))
+            except ConditionError:
+                continue
+            refs = list(references(rhs))
+            rendering = "the assignment to `%s`" % node.get("target")
+        elif node["kind"] == "EventEmit":
+            refs = [entry["ref"] for entry in node.get("payloadMap") or []]
+            # The author's own verb and event word (`emit`/`publish`
+            # both derive an EventEmit), not the lowered event id.
+            words = step_of[node["id"]]["name"].split()
+            rendering = "`%s ... with`" % " ".join(words[:2])
+        else:
+            continue
+        if not refs:
+            continue
+        reader_key = _guard_key(owner.get(node["id"]))
+        flagged = set()
+        for ref in refs:
+            binding = ref.split(".")[0]
+            if binding not in guarded or binding in flagged:
+                continue
+            if reader_key in guarded[binding]:
+                continue
+            flagged.add(binding)
+            where = node.get("line")
+            where_str = ("line %d" % where) if where else workflow_name
+            diagnostics.add(
+                code="guard-scoped-binding-escape",
+                where=where_str, subject=binding, line=where,
+                message="%s reads %r, which `create .../call .../"
+                        "request ... as %s` binds only inside a guard "
+                        "this step is not in. %s"
+                        % (rendering, binding, binding, ORPHAN_HINT))
 
 
 def _check_event_refs(emitted, declared_event_ids, workflow_name):

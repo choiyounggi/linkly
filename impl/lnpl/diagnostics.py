@@ -60,6 +60,8 @@ CODES = (
     "note-cap-exceeded",            # #111 a workflow has more than NOTE_CAP `note` annotations
     "event-consume-cycle",          # #118 `consume by` + that workflow's own `emit` reaches the event again
     "predicate-not-pushed-down",    # issue #164  list where ran against a driver that does not declare supports_predicate
+    "respond-field-missing",        # issue #198  `respond` names a field absent from the bound row
+    "guard-scoped-binding-escape",  # issue #198  `respond`/`set`/`format`/`emit ... with` reads a `create .../call .../request ... as` binding outside the guard that creates it
 )
 
 # code -> grade (#52). One question decides every row:
@@ -146,6 +148,12 @@ SEVERITY_OF = {
     # program edit removes this, only configuring a driver with
     # `supports_predicate = True` does. Same test as `declared-not-enforced`.
     "predicate-not-pushed-down": "info",
+    # issue #198: backfilling the stored row (or dropping the ref from
+    # `respond`) removes this — same test as `stored-row-shape-mismatch`.
+    "respond-field-missing":       "warning",
+    # issue #198: moving the reader under the guard that creates the binding
+    # removes this — same test as `guard-orphaned-steps`.
+    "guard-scoped-binding-escape": "warning",
 }
 
 
@@ -173,6 +181,8 @@ HINTS = {
     "note-cap-exceeded": "Trim this workflow's `note` annotations below NOTE_CAP.",
     "event-consume-cycle": "Break the cycle — drop the `consume by`, or the `emit` that re-triggers it — unless a guard inside the consuming workflow is known to stop it at runtime.",
     "predicate-not-pushed-down": "No program edit removes this — the deployed repository driver does not declare supports_predicate; the core over-fetches then filters locally. See docs/cost-model.md's list_where_no_pushdown row for the resulting complexity, or configure a driver with supports_predicate = True if lower transfer volume matters.",
+    "respond-field-missing": "Backfill the stored row (add the missing field) or stop respond-ing it — `lnpl migrate` can backfill a missing field across existing rows, the same path `stored-row-shape-mismatch` names.",
+    "guard-scoped-binding-escape": "Repeat the guard line before this step, or wrap both in a `parallel` block.",
 }
 
 

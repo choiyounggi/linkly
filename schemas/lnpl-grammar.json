@@ -108,6 +108,14 @@
       {
         "code": "predicate-not-pushed-down",
         "severity": "info"
+      },
+      {
+        "code": "respond-field-missing",
+        "severity": "warning"
+      },
+      {
+        "code": "guard-scoped-binding-escape",
+        "severity": "warning"
       }
     ],
     "enforcement": [
