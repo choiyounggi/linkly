@@ -44,6 +44,9 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   write conflict.
 
 ### Added
+- `scripts/load_probe.py` (stdlib open-loop load generator) and
+  `docs/postgres-load-ceiling.md` (measured sustained-load ceiling and
+  root cause for the postgres backend) — issue #180.
 - `emit`/`publish <Event> with <ref>...` maps the emitted event's payload
   from workflow bindings (created-row fields, `input.*`, network-call
   results) instead of always carrying the raw masked input; trailing
