@@ -627,6 +627,9 @@ connection pool이 필요하다면 `psycopg_pool.ConnectionPool` 같은
 그 스레드의 `close()`가 닫아야 한다 — 스레드-지역 풀이 갖는 근본적인
 한계이지 버그가 아니다).
 
+postgres 백엔드가 실제로 connection pool을 들고 오지 않았을 때 고부하에서
+보이는 상한은 측정·근인 조사가 끝났다: [docs/postgres-load-ceiling.md](postgres-load-ceiling.md).
+
 ### TCK로 검증하기
 
 외부 캐시 드라이버는 `lnpl.testing.CacheDriverTCK`를 상속해 자기 CI에서
