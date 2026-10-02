@@ -20,7 +20,7 @@ import unittest
 from lnpl import cli
 from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import SCHEMA_GEN_KEY, schema_generation, strip_schema_gen
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 from tests.fixtures import VALUE_INVENTORY
 
@@ -154,6 +154,15 @@ class WriteInjectionTest(CliTestCase):
         self.doc = cli.compile_source([self.source])
         self.product_id = _entity_node(self.doc, "Product")["id"]
         self.order_id = _entity_node(self.doc, "Order")["id"]
+        # issue #197: a persistent store is not seeded from the request
+        # payload, so the Product row `PlaceOrder` reads is stored here.
+        target = next(n["id"] for n in self.doc["nodes"] if n["kind"] == "Workflow")
+        driver = SqliteRepositoryDriver(self.db)
+        try:
+            driver.seed(default_rows(self.doc, target,
+                                     {"id": "p-1", "stock": 9, "quantity": 4}))
+        finally:
+            driver.close()
 
     def _raw_row(self, entity_id, key):
         driver = SqliteRepositoryDriver(self.db)

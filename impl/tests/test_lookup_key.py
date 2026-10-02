@@ -235,6 +235,10 @@ class TestSeedWithoutTheLookupField(unittest.TestCase):
         self.assertEqual(set(rows), {PRODUCT})
         driver = SqliteRepositoryDriver(os.path.join(_tmp_store_dir(self), "s.db"))
         self.addCleanup(driver.close)
+        # issue #197: a persistent store is not seeded by the run, so the
+        # Product row the first step reads is stored here. Stock is not --
+        # the default seed has no row for it, which is the case under test.
+        driver.seed({PRODUCT: rows[PRODUCT]})
         interp = Interpreter(doc, repo_rows=rows, repository=driver)
         result = interp.run_workflow(WORKFLOW, payload)
         self.assertEqual(result["status"], "failed")

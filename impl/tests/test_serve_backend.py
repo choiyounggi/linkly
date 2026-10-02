@@ -31,6 +31,7 @@ from lnpl.cli import main
 from lnpl.drivers import HmacTokenProvider, SqliteRepositoryDriver, audience_for_path
 from lnpl.lower import lower
 from lnpl.parser import parse
+from lnpl.repo_policy import default_rows
 from lnpl.serve import serve
 
 from tests.fixtures import SECRET_ACCOUNT
@@ -211,8 +212,20 @@ class MaskingAcrossBackendsTest(BackendServerTestCase):
     def payload(self):
         return {"id": "a-1", "label": "primary", "cardSecret": self.SECRET_VALUE}
 
+    def seed_account(self, doc, path):
+        """Store the Account row `Fetch` reads -- a persistent store is not
+        seeded from the request payload (issue #197)."""
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        driver = SqliteRepositoryDriver(path)
+        try:
+            driver.seed(default_rows(doc, target, self.payload()))
+        finally:
+            driver.close()
+
     def test_the_secret_does_not_reach_the_response_on_a_real_store(self):
-        port = self.start(compile_source(SECRET_ACCOUNT),
+        doc = compile_source(SECRET_ACCOUNT)
+        self.seed_account(doc, self.store())
+        port = self.start(doc,
                           repository_factory=self.sqlite_factory(self.store()))
 
         resp, raw = self.post(port, ACCOUNT_PATH, self.payload())
@@ -238,8 +251,9 @@ class MaskingAcrossBackendsTest(BackendServerTestCase):
         carry the real value. Stating that here keeps the two assertions above
         from being read as a claim about the store."""
         path = self.store()
-        port = self.start(compile_source(SECRET_ACCOUNT),
-                          repository_factory=self.sqlite_factory(path))
+        doc = compile_source(SECRET_ACCOUNT)
+        self.seed_account(doc, path)
+        port = self.start(doc, repository_factory=self.sqlite_factory(path))
         self.post(port, ACCOUNT_PATH, self.payload())
 
         driver = SqliteRepositoryDriver(path)

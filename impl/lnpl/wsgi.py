@@ -772,6 +772,8 @@ def map_result(result):
             return 400, "validation-failed"               # M7
     if result.get("failure_kind") == "conflict":
         return 409, "conflict"                            # M8a
+    if result.get("failure_kind") == "not-found":
+        return 404, "not-found"                           # M8b
     return 500, "workflow-failed"                         # M8
 
 
@@ -799,7 +801,12 @@ def map_consume_result(result):
     # checked before the effects-based branch below -- otherwise a conflict
     # (explicitly named as permanent by D7) would fall into that branch's
     # "RepositoryCall failed -> transient" reasoning and never dead-letter.
+    # The same is true of `not-found` (issue #197): the failed step's effect
+    # IS `RepositoryCall`, so without this check it would wrongly fall into
+    # the transient (E6) branch below.
     if result.get("failure_kind") == "conflict":
+        return 422, "event-rejected"
+    if result.get("failure_kind") == "not-found":
         return 422, "event-rejected"
     failed = result["failed_step"]
     for entry in result["steps"]:

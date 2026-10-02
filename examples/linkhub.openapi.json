@@ -18,6 +18,9 @@
           "400": {
             "description": "validation failed"
           },
+          "404": {
+            "description": "a workflow read found no row for the entity it looked up (not-found) -- issue #197"
+          },
           "409": {
             "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
           },
@@ -73,6 +76,9 @@
           "400": {
             "description": "validation failed"
           },
+          "404": {
+            "description": "a workflow read found no row for the entity it looked up (not-found) -- issue #197"
+          },
           "409": {
             "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
           },
@@ -127,6 +133,9 @@
           },
           "400": {
             "description": "validation failed"
+          },
+          "404": {
+            "description": "a workflow read found no row for the entity it looked up (not-found) -- issue #197"
           },
           "409": {
             "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
