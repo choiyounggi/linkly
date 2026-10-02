@@ -23,10 +23,11 @@ import subprocess
 import sys
 import unittest
 
+from lnpl.drivers import FakeNetworkDriver
 from lnpl.interp import Interpreter, RunError, _condition_holds
 from lnpl.lower import LowerError, lower
 from lnpl.parser import ParseError, parse
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -359,6 +360,145 @@ class TestIrSchemaGate(unittest.TestCase):
                       "undeclared property"):
             self.assertIn(label, proc.stdout,
                           "the gate no longer runs the %r negative" % label)
+
+
+NUMERIC_ALT_SOURCE = """capability postgres
+
+entity Payment
+    field
+        id UUID
+        status Integer
+        rate Integer
+
+service PaymentService
+    policy
+        timeout 5s
+
+workflow Convert
+    when input.status != 200
+    or input.rate is-not-numeric
+    create payment
+"""
+
+
+class TestNumericPredicateInConditions(unittest.TestCase):
+    """Issue #177 / RFC-0050: the predicate parses as an `or` alternative
+    and evaluates in mode A — bare, or as an `and` term next to a
+    `Comparison` (never an `AttributeError` from a path that assumed every
+    `and` term is a `Comparison`)."""
+
+    def test_an_or_alternative_with_the_predicate_parses_and_lowers(self):
+        doc = compile_doc(NUMERIC_ALT_SOURCE, "convert")
+        guards = nodes_of(doc, "Guard")
+        self.assertEqual(guards[0]["alternatives"], ["input.rate is-not-numeric"])
+
+    def test_a_bare_predicate_evaluates(self):
+        self.assertTrue(_condition_holds("input.rate is-numeric", {"rate": 1350}, {}))
+        self.assertFalse(_condition_holds("input.rate is-numeric", {"rate": "abc"}, {}))
+
+    def test_a_predicate_inside_and_is_evaluated_with_the_comparison(self):
+        cond = "input.status == 200 and input.rate is-numeric"
+        self.assertTrue(_condition_holds(cond, {"status": 200, "rate": 1350}, {}))
+        self.assertFalse(_condition_holds(cond, {"status": 200, "rate": "abc"}, {}))
+        self.assertFalse(_condition_holds(cond, {"status": 500, "rate": 1350}, {}))
+
+    def test_a_non_numeric_comparison_in_the_same_and_still_raises(self):
+        # RFC-0028 §2's non-numeric RunError row is unchanged: the predicate
+        # guards nothing it is not asked about.
+        with self.assertRaises(RunError) as ctx:
+            _condition_holds("input.rate is-numeric and input.rate >= 0",
+                             {"rate": "abc"}, {})
+        self.assertIn("Cannot compare non-numeric", str(ctx.exception))
+
+    def test_an_absent_reference_is_not_numeric(self):
+        self.assertTrue(_condition_holds("input.rate is-not-numeric", {}, {}))
+        self.assertFalse(_condition_holds("input.rate is-numeric", {}, {}))
+
+
+F5_SOURCE = """capability postgres
+
+entity Quote
+    field
+        id UUID
+
+service QuoteService
+    policy
+        timeout 5s
+
+workflow Convert
+    call Fx as fxResult
+    when fxResult.status == 200 and fxResult.rate is-numeric
+    create quote
+    when fxResult.status != 200
+    or fxResult.rate is-not-numeric
+    note "fallback"
+"""
+
+
+def fx_run(status, body):
+    """Run the F-5 program (issue #177, RFC-0050 §Examples) against a
+    stubbed `Fx` response."""
+    doc = compile_doc(F5_SOURCE, "fx")
+    wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+    payload = {"id": PAYMENT_ID}
+    interp = Interpreter(doc, repo_rows=default_rows(doc, wf, payload),
+                         network=FakeNetworkDriver({"Fx": (status, body)}))
+    return interp, interp.run_workflow(wf, payload)
+
+
+class TestNumericPredicateRuntime(unittest.TestCase):
+    """DoD 1: the F-5 program routes a non-numeric response to the fallback
+    branch instead of dying on the comparison `RunError`."""
+
+    def _matched_alternatives(self, interp):
+        return [log for log in interp.trace.to_dict()["logs"]
+                if log["message"] == "guard alternative matched"]
+
+    # ---- normal: numeric rate -> live branch --------------------------------
+    def test_numeric_rate_takes_the_live_branch(self):
+        interp, result = fx_run(200, {"rate": 1350})
+        self.assertEqual(result["status"], "completed")
+        steps = [s["step"] for s in result["steps"]]
+        self.assertIn("create quote", steps)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["condition"],
+                         "fxResult.status != 200 or fxResult.rate is-not-numeric")
+        self.assertEqual(self._matched_alternatives(interp), [],
+                         "no alternative matched, so no RFC-0028 alt log")
+
+    # ---- error input: non-numeric rate -> fallback, no RunError ------------
+    def test_non_numeric_rate_takes_the_fallback_branch(self):
+        interp, result = fx_run(200, {"rate": "abc"})
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("create quote", [s["step"] for s in result["steps"]])
+        self.assertEqual(len(result["skipped"]), 1)
+        skipped = result["skipped"][0]
+        self.assertEqual(skipped["condition"],
+                         "fxResult.status == 200 and fxResult.rate is-numeric")
+        self.assertEqual(skipped["steps"], ["create quote"])
+        self.assertIn({"ref": "fxResult.rate", "value": "abc", "op": "is-numeric",
+                       "expected": None, "holds": False},
+                      skipped["evaluations"])
+        self.assertEqual(len(self._matched_alternatives(interp)), 1,
+                         "the fallback ran through its `or` alternative")
+
+    # ---- boundary: rate absent -> same as non-numeric ----------------------
+    def test_absent_rate_takes_the_fallback_branch(self):
+        interp, result = fx_run(200, {})
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("create quote", [s["step"] for s in result["steps"]])
+        skipped = result["skipped"][0]
+        self.assertIn({"ref": "fxResult.rate", "value": None, "op": "is-numeric",
+                       "expected": None, "holds": False},
+                      skipped["evaluations"])
+        self.assertEqual(len(self._matched_alternatives(interp)), 1)
+
+    def test_non_200_takes_the_fallback_through_the_primary_condition(self):
+        interp, result = fx_run(500, {"rate": 1350})
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("create quote", [s["step"] for s in result["steps"]])
+        self.assertEqual(self._matched_alternatives(interp), [],
+                         "the primary `status != 200` matched, not the alternative")
 
 
 if __name__ == "__main__":

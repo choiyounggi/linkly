@@ -61,6 +61,19 @@ LOGICAL_OPS = ("and",)
 # `when`/`until`/`repeat`, `or` does not open a new guard on its own.
 GUARD_ALT_KEYWORD = "or"
 
+# RFC-0015 §1 `Presence`: the two existence checks, `<ref> exists|missing`.
+# Moved here from `condition.py` (issue #177) so every guard-condition word
+# the generated reference renders comes from one table module.
+PRESENCE_KINDS = ("exists", "missing")
+
+# RFC-0050 (issue #177): the numeric-shape predicate, `<ref> is-numeric` /
+# `<ref> is-not-numeric` — lets a guard route a non-numeric value (an external
+# response field, say) to a fallback branch instead of the comparison
+# `RunError`. A pair, like `exists`/`missing`, because the language has no
+# `not`. Hyphenated words are single tokens: `Line.tokens` splits on
+# whitespace only.
+NUMERIC_PREDICATE_KINDS = ("is-numeric", "is-not-numeric")
+
 # The assignment step, `set <reference> to <value>`.
 ASSIGN_KEYWORDS = ("set", "to")
 

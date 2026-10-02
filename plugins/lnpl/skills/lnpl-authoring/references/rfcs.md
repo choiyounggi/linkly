@@ -59,5 +59,9 @@
 | RFC-0046 RFC 예제 문법 재정렬 — RFC-0037/0008/0014 §Examples | RFC-0037/0008/0014의 `## Examples` 예제를 그대로 따라 썼는데 컴파일이 안 되거나 이상하게 조용하다 — 세 예제의 치환 후 최종 텍스트가 어디 있는지, `pipeline` 블록이 왜 필요한지, `examples/guarded.lnpl`과 왜 동기화됐는지, `until` 0라운드가 왜 아무 표지도 안 남기던 문제였는지 | `rfcs/0046-rfc-example-realignment.md` |
 | RFC-0047 집계 필드 타입의 IR 전달 (`agg_field_type`) | 빈 RowSet의 Money `sum`이 왜 정수 `0`이 아니라 `{"amount": "0", "currency": null}`이어야 하는지, `nodeAssignment.agg_field_type`이 왜 필요한지, 그 필드가 왜 필수가 아니라 선택인지, 옛 컴파일러가 낸 IR 문서가 재컴파일 전까지 왜 여전히 정수 `0`을 내는지 | `rfcs/0047-aggregate-field-type-carriage.md` |
 | RFC-0048 컬렉션 필드 비목표 확정과 RowSet `group by` | 필드에 List/Map 같은 컬렉션 타입을 쓰고 싶다 — 왜 안 되고 대신 무엇을 쓰는지, RowSet `group by`가 (key, value) 파생 RowSet으로 어떻게 설계됐는지, 그룹당 집계가 기존 5종을 어떻게 재사용하는지, 그룹별 원본 행 목록은 왜 아직 없는지 | `rfcs/0048-collections-non-goal-and-rowset-group-by.md` |
+| RFC-0049 `emit ... with`와 `payloadMap` | emit이 발행하는 페이로드를 워크플로 바인딩(생성된 행, input, 네트워크 호출 결과)에서 직접 채우고 싶다 — `emit ... with` 절과 `payloadMap`이 무엇을 허용·거부하는지, 이전에 조용히 버려지던 나머지 단어가 왜 이제 컴파일 거부인지 | `rfcs/0049-emit-payload-mapping.md` |
+| RFC-0050 숫자 형태 가드 술어 — `is-numeric` / `is-not-numeric` | 외부 응답 값이 숫자가 아니면 RunError 대신 대체 경로로 보내고 싶다 — `is-numeric`/`is-not-numeric` 술어가 무엇을 숫자로 보는지, 왜 `exists`/`missing`과 달리 `and` 안에 쓸 수 있는지, 모드 B가 왜 그 워크플로를 거부하는지 | `rfcs/0050-numeric-guard-predicate.md` |
+| RFC-0051 `set`·가드의 Money 산술 — 같은 통화 부분집합 | Money 필드를 set·가드 산술에 쓰고 싶다 — 어떤 연산이 허용되고 어떤 연산이 여전히 거부되는지, 통화가 다르면 무슨 일이 나는지, 모드 B가 왜 가드 비교를 거부하는지 | `rfcs/0051-money-arithmetic-in-set-and-guards.md` |
+| RFC-0052 조회 키 절 `by <ref>` — read·update·delete가 payload `id` 아닌 키로 행을 지목한다 | find/update/delete가 payload의 id가 아닌 다른 키로 행을 지목하게 하고 싶다(`by <ref>`) — 어떤 참조가 키가 될 수 있고, 값이 없으면 무슨 일이 나며, create는 왜 여전히 as만 받고 모드 B는 왜 거부하는지 | `rfcs/0052-lookup-key-clause.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

@@ -149,6 +149,16 @@ def observe_mode_b(document, workflow_id, workdir, payload=None, seeded=None):
         # `skip` boolean, never through this channel, so its i64 slot is a
         # placeholder no comparison reads. A malformed date-time still raises,
         # because `looks_like_instant` sends it to the encoder.
+        #
+        # A Money-shaped value is NOT such a placeholder: mode A evaluates it
+        # as money (RFC-0051), so a 0 here would have mode B decide the same
+        # guard on a different number — a false verdict, refused instead.
+        if isinstance(raw, dict) and "amount" in raw and "currency" in raw:
+            raise DifferentialError(
+                "condition field %r carried a Money-shaped value into mode B's "
+                "condition-field channel, which has no compiled evaluator "
+                "(RFC-0051 §Mode B) — differential comparison is not attempted"
+                % name)
         if isinstance(raw, (int, bool)) or looks_like_instant(raw):
             values[name] = backend.encode_condition_value(raw)
         else:
@@ -375,7 +385,32 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
 
     `network` (RFC-0027 §8) is mode A's `NetworkDriver` only — see
     `observe_mode_a`.
+
+    A workflow using the numeric-shape predicate is a recorded exemption
+    (RFC-0050 §Mode B): mode B refuses to build it, so there is nothing to
+    compare. That is checked first, so the answer does not depend on whether
+    a toolchain happens to be installed. A workflow whose guard compares a
+    declared Money field is the same kind of exemption (RFC-0051 §Mode B), and
+    so is one whose repository call carries a `by <ref>` lookup key (RFC-0052
+    §Mode B).
     """
+    if backend.workflow_uses_numeric_predicate(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses the numeric-shape predicate (is-numeric/"
+            "is-not-numeric) — mode B has no compiled evaluator for it "
+            "(RFC-0050 §Mode B, recorded exemption); differential comparison "
+            "is not attempted" % workflow_id)
+    if backend.workflow_uses_money_guard(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses a Money guard comparison — mode B has no "
+            "compiled evaluator for it (RFC-0051 §Mode B, recorded exemption); "
+            "differential comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_lookup(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses a lookup key (by <ref>) on a repository call — "
+            "mode B has no compiled evaluator for it (RFC-0052 §Mode B, "
+            "recorded exemption); differential comparison is not attempted"
+            % workflow_id)
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "

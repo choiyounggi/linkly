@@ -638,6 +638,24 @@ def caller_view(claims):
     return {"subject": subject, "role": role}
 
 
+def _resolve_lookup_key(entity_id, lookup_ref, payload, bindings, caller):
+    """issue #175: the execute/persist key for a RepositoryCall node.
+
+    `lookup_ref is None` is the pre-#175 shape, unchanged: the entity's own
+    payload id. A `by <ref>` value that resolves to nothing fails the step
+    with a named RunError -- never the `"-"` sentinel, never a silent miss
+    (RFC-0052 §3). A non-string value is stringified the way `row_key`
+    stringifies a payload id.
+    """
+    if lookup_ref is None:
+        return row_key(entity_id, payload)
+    value = resolve_reference(lookup_ref, payload, bindings, caller)
+    if value is None:
+        raise RunError("repository %s: lookup key %r resolved to no value"
+                       % (entity_id, lookup_ref))
+    return row_key(entity_id, {"id": value})
+
+
 def resolve_reference(name, payload, bindings, caller=None):
     """Resolve a condition/expectation `Reference` to a value (RFC-0012 §G12.1).
 
@@ -753,10 +771,10 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
     (`money.parse_money_literal`) and `money_fields(ref)` true, this evaluates
     the comparison directly — `==`/`!=` as structural wire-dict equality
     (RFC-0044 §3's exact-scale rule makes the two sides' normal form agree);
-    any other comparator raises `RunError`, since RFC-0044 §5's order
-    evaluator's only caller is RFC-0045's sum/avg/min/max, not `expect
-    result`. `MoneyLiteral` is not in `condition.py`'s `Value` grammar at all
-    (RFC-0044 §3), so this must run BEFORE `parse_condition` below, which
+    the order comparators go through `money.compare` (RFC-0051 §3 — the same
+    evaluator a Money guard uses), so different currencies raise
+    `money-currency-mismatch`. `MoneyLiteral` is not in `condition.py`'s
+    `Value` grammar at all (RFC-0044 §3), so this must run BEFORE `parse_condition` below, which
     would otherwise raise `ConditionError` on the literal token. Every other
     shape (a non-money ref, a non-money-literal-shaped value, no `money_fields`
     at all) falls through unchanged to the existing path.
@@ -776,17 +794,24 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
             except money.MoneyError as exc:
                 raise RunError(str(exc))
             if parsed is not None:
-                if op not in ("==", "!="):
-                    raise RunError(
-                        "Money order comparisons (%s) are not supported in "
-                        "`expect result` — only sum/avg/min/max evaluate "
-                        "Money order (RFC-0044 §5); use == or != instead." % op)
                 actual = resolve_reference(ref, payload, bindings, caller)
-                return (actual == parsed) if op == "==" else (actual != parsed)
+                if op in ("==", "!="):
+                    return (actual == parsed) if op == "==" else (actual != parsed)
+                try:
+                    c = money.compare(
+                        money.encode_money(actual["amount"], actual["currency"]),
+                        money.encode_money(parsed["amount"], parsed["currency"]))
+                except money.MoneyError as e:
+                    raise RunError("%s (%s) in `expect result` (%r)"
+                                   % (e.message, e.code, condition))
+                except (TypeError, KeyError):
+                    raise RunError("%s=%r is not a Money value in `expect "
+                                   "result` (%r)" % (ref, actual, condition))
+                return {'<': c < 0, '<=': c <= 0, '>': c > 0, '>=': c >= 0}[op]
 
     # Import here to avoid circular dependency
-    from .condition import (And, Comparison, ConditionError, Presence,
-                            parse_condition)
+    from .condition import (And, Comparison, ConditionError, NumericPredicate,
+                            Presence, parse_condition)
 
     try:
         cond = parse_condition(condition)
@@ -807,15 +832,70 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
     if isinstance(cond, Comparison):
         return _comparison_holds(cond, condition, payload, bindings, collector, caller)
 
+    if isinstance(cond, NumericPredicate):
+        return _numeric_predicate_holds(cond, payload, bindings, collector, caller)
+
     if isinstance(cond, And):
         # Every term is evaluated, not short-circuited: the terms are pure, so
         # the result is the same, and a value fault in a later term must surface
         # in both modes rather than depending on where the run stopped reading.
-        results = [_comparison_holds(term, condition, payload, bindings, collector, caller)
-                   for term in cond.terms]
+        results = []
+        for term in cond.terms:
+            if isinstance(term, NumericPredicate):
+                results.append(_numeric_predicate_holds(term, payload, bindings,
+                                                        collector, caller))
+            else:
+                results.append(_comparison_holds(term, condition, payload,
+                                                 bindings, collector, caller))
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
+
+
+def _numeric_predicate_holds(pred, payload, bindings, collector=None, caller=None):
+    """`<ref> is-numeric` / `<ref> is-not-numeric` (RFC-0050 §3).
+
+    Never raises. `is-not-numeric` is the exact complement for every value,
+    an absent reference included — like `exists`/`missing`, not like a
+    comparison's "unresolved -> false on both sides". The collector entry has
+    the Presence shape (`expected` is None).
+    """
+    raw = resolve_reference(pred.field, payload, bindings, caller)
+    numeric = _is_numeric_shaped(raw)
+    holds = numeric if pred.kind == "is-numeric" else not numeric
+    if collector is not None:
+        collector.append({"ref": pred.field, "value": raw, "op": pred.kind,
+                          "expected": None, "holds": holds})
+    return holds
+
+
+def _is_numeric_shaped(raw):
+    """True exactly where `eval_value` reads a resolved reference as a number
+    instead of raising (RFC-0050 §3): bool, int, an instant string
+    `encode_instant` accepts, an `int()`-parseable string. A zoneless or
+    invalid instant-shaped string is False — its `ConditionError` is caught
+    here, never raised. The i64 range is not judged (RFC-0050 §Open
+    Questions 2).
+    """
+    from .condition import (ConditionError, encode_instant, is_instant_text,
+                            looks_like_instant)
+    if isinstance(raw, (bool, int)):
+        return True
+    if isinstance(raw, str):
+        # Same dispatch as `eval_value`: instant-shaped text is never also
+        # tried as an integer.
+        if is_instant_text(raw) or looks_like_instant(raw):
+            try:
+                encode_instant(raw, "value")
+            except ConditionError:
+                return False
+            return True
+        try:
+            int(raw)
+        except ValueError:
+            return False
+        return True
+    return False
 
 
 def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, caller=None):
@@ -834,6 +914,22 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, ca
         # A reference that names nothing behaves as it did before RFC-0015:
         # `null < X`, `null == X` and the rest are all false, on either side.
         holds = False
+    elif isinstance(left, tuple) or isinstance(right, tuple):
+        # RFC-0051 §3: equality is structural (different currencies are
+        # simply unequal); order goes through `money.compare`.
+        if not (isinstance(left, tuple) and isinstance(right, tuple)):
+            raise RunError(
+                "cannot compare a Money value with a plain number: %s "
+                "(in %r)" % (_value_text(cmp_node.left), condition))
+        if op in ('==', '!='):
+            holds = (left == right) if op == '==' else (left != right)
+        else:
+            from . import money
+            try:
+                c = money.compare(left, right)
+            except money.MoneyError as e:
+                raise RunError("%s (%s) in %r" % (e.message, e.code, condition))
+            holds = {'<': c < 0, '<=': c <= 0, '>': c > 0, '>=': c >= 0}[op]
     elif op == '<':
         holds = left < right
     elif op == '<=':
@@ -849,13 +945,20 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, ca
     else:
         raise RunError(f"Unknown comparator {op!r}")
     if collector is not None:
-        collector.append({"ref": _value_text(cmp_node.left), "value": left,
-                          "op": op, "expected": right, "holds": holds})
+        # A Money pair is recorded in its wire shape — the one a row holds.
+        collector.append({
+            "ref": _value_text(cmp_node.left),
+            "value": _decode_money(*left) if isinstance(left, tuple) else left,
+            "op": op,
+            "expected": (_decode_money(*right) if isinstance(right, tuple)
+                         else right),
+            "holds": holds})
     return holds
 
 
 def eval_value(value, condition, payload, bindings, caller=None):
-    """A parsed `Value` -> int, or None when a reference resolves to nothing.
+    """A parsed `Value` -> int, a `(minor, currency)` Money pair (RFC-0051),
+    or None when a reference resolves to nothing.
 
     RFC-0015 fixes the domain at signed 64-bit — the width mode B compiles to —
     so a program whose arithmetic would wrap in the compiled path fails in both
@@ -895,6 +998,16 @@ def eval_value(value, condition, payload, bindings, caller=None):
                 return _checked(int(raw), value.name, condition)
             except ValueError:
                 pass
+        if isinstance(raw, dict) and "amount" in raw and "currency" in raw:
+            # RFC-0051 §3: a Money-shaped value, declared or not, becomes a
+            # `(minor, currency)` pair — the shape `_eval_sum_avg` dispatches
+            # on too.
+            from . import money
+            try:
+                return money.encode_money(raw["amount"], raw["currency"])
+            except money.MoneyError as e:
+                raise RunError("%s (%s) in condition %r"
+                               % (e.message, e.code, condition))
         raise RunError(f"Cannot compare non-numeric {value.name}={raw!r} "
                        f"in condition {condition!r}")
     if isinstance(value, Arith):
@@ -902,6 +1015,8 @@ def eval_value(value, condition, payload, bindings, caller=None):
         right = eval_value(value.right, condition, payload, bindings, caller)
         if left is None or right is None:
             return None
+        if isinstance(left, tuple) or isinstance(right, tuple):
+            return _eval_money_arith(value, left, right, condition)
         if value.op == '+':
             result = left + right
         elif value.op == '-':
@@ -923,6 +1038,42 @@ def eval_value(value, condition, payload, bindings, caller=None):
                 % (_value_text(value), result, condition))
         return result
     raise RunError(f"Unknown value type: {type(value)}")
+
+
+def _eval_money_arith(value, left, right, condition):
+    """RFC-0051 §3: `Arith` with a Money pair on either side. Pair ± pair and
+    pair × int (either order) evaluate; every other mix is a `RunError` —
+    only an undeclared reference can reach one, since lowering refuses the
+    declared forms."""
+    from . import money
+    op = value.op
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        if op == '+':
+            fn = money.add
+        elif op == '-':
+            fn = money.sub
+        else:
+            raise RunError(
+                "cannot %s two Money values: %s (in %r)"
+                % ("multiply" if op == '*' else "divide",
+                   _value_text(value), condition))
+        try:
+            result = fn(left, right)
+        except money.MoneyError as e:
+            raise RunError("%s (%s) in %r" % (e.message, e.code, condition))
+    else:
+        pair, n = (left, right) if isinstance(left, tuple) else (right, left)
+        if op != '*':
+            raise RunError(
+                "cannot combine a Money value and a plain number with %r: %s "
+                "(in %r)" % (op, _value_text(value), condition))
+        try:
+            result = money.mul_int(pair, n)
+        except money.MoneyError as e:
+            raise RunError("%s (%s) in %r" % (e.message, e.code, condition))
+    minor, currency = result
+    minor = _checked(minor, _value_text(value), condition)
+    return minor, currency
 
 
 def eval_aggregate(agg, expression, rowsets, agg_field_type=None):
@@ -1485,6 +1636,11 @@ class Interpreter:
         # `Aggregate` is not a `Value` (RFC-0025 §2) — so only step execution
         # needs it; `_flatten_items` (guard evaluation) does not.
         rowsets = {}
+        # issue #175 / RFC-0052 §3: the key each single-row binding was read
+        # under, so a later `set` persists a `by`-read row where it came from
+        # rather than under a recomputed payload-id key. Per run, like
+        # `bindings`.
+        binding_keys = {}
         # issue #96: refs from every `Response` node a step that actually ran
         # (not one a guard skipped, not one that failed) owns, in program
         # order. Collected here rather than by a second walk of the document
@@ -1517,7 +1673,8 @@ class Interpreter:
                     # stop pulling further items once it has.
                     self._run_parallel_block(item_id, wf["name"], result, root,
                                              con, payload, bindings, rowsets,
-                                             deadline, response_refs, notes)
+                                             deadline, response_refs, notes,
+                                             binding_keys)
                     if result["status"] == "failed":
                         break
                     continue
@@ -1530,7 +1687,7 @@ class Interpreter:
                     attempts += 1
                     try:
                         self._run_step(step, span, con, payload, deadline, bindings,
-                                       rowsets)
+                                       rowsets, binding_keys)
                         last_error = None
                         break
                     except RunError as exc:
@@ -1682,7 +1839,7 @@ class Interpreter:
         return result
 
     def _run_step(self, step, span, con, payload, deadline, bindings, rowsets,
-                 lock=None):
+                 binding_keys, lock=None):
         # issue #108 D4: `lock` is `None` on every pre-#108 call site (the
         # sequential main loop) and this method is then byte-identical to
         # before — the `if lock is not None` guards below are no-ops. Only
@@ -1700,14 +1857,14 @@ class Interpreter:
             for child_id in step.get("children", []):
                 effect = self.nodes[child_id]
                 self._run_effect(effect, span, con, payload, bindings, rowsets,
-                                 deadline, lock=lock)
+                                 binding_keys, deadline, lock=lock)
             self.clock.advance()
         finally:
             if lock is not None:
                 lock.release()
 
     def _run_effect(self, effect, span, con, payload, bindings, rowsets,
-                    deadline=None, lock=None):
+                    binding_keys, deadline=None, lock=None):
         kind = effect["kind"]
         child = Span(effect["id"].rsplit(".", 1)[-1], kind, self.clock.now)
         span.children.append(child)
@@ -1745,6 +1902,8 @@ class Interpreter:
                 raise RunError(
                     "assignment %r cannot be evaluated: a reference in %r "
                     "resolves to nothing" % (target, effect["expression"]))
+            if isinstance(value, tuple):
+                value = _decode_money(*value)   # RFC-0051: persist the wire shape
             row[field] = value
             # The write above lands in the dict the read bound. For the Fake
             # that dict IS the stored row and this is a no-op; for a real store
@@ -1787,7 +1946,8 @@ class Interpreter:
                 # stored row's exact content.
                 row[SCHEMA_GEN_KEY] = schema_generation(entity_node)
             try:
-                self.repo.persist(entity_id, row_key(entity_id, payload), row)
+                self.repo.persist(entity_id, binding_keys.get(
+                    binding, row_key(entity_id, payload)), row)
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             finally:
@@ -1861,15 +2021,22 @@ class Interpreter:
             # becomes a RunError with its message and cause intact, so a real
             # backend's failure is an ordinary failed run — the same status and
             # the same rc a Fake failure produces — instead of a traceback.
+            # issue #175 / RFC-0052 §3: resolved outside the `try` — an
+            # unresolved lookup is the step's own RunError, not a driver fault.
+            key = _resolve_lookup_key(effect["entity"], effect.get("lookup"),
+                                      payload, bindings, self.caller)
             try:
-                row = self.repo.execute(effect["entity"], effect["operation"],
-                                        row_key(effect["entity"], payload))
+                row = self.repo.execute(effect["entity"], effect["operation"], key)
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             # issue #147 D3: never expose the storage-layer stamp through a
             # `read` binding — the row's only observable surface here.
             row = strip_schema_gen(row)
             child.attrs["found"] = row is not None
+            if effect.get("lookup"):
+                # D6: the ref text only — never the key or value it resolved
+                # to, so there is nothing here for masking to miss.
+                child.attrs["lookup"] = effect["lookup"]
             if effect["operation"] == "read" and isinstance(row, dict):
                 # RFC-0012 §G12.2: a completed read binds its row into the
                 # execution scope, last write wins. Only reads bind — create /
@@ -1880,6 +2047,7 @@ class Interpreter:
                 entity_node = self.nodes.get(effect["entity"])
                 if entity_node is not None:
                     bindings[binding_name(entity_node)] = row
+                    binding_keys[binding_name(entity_node)] = key
                     # issue #85: a schema change that ran ahead of a
                     # backfill is otherwise silent — the row simply reads
                     # back wrong-shaped. Warn (never block: RFC-0021's
@@ -2060,9 +2228,43 @@ class Interpreter:
                 raise RunError("EventEmit has no event reference")
             if event_ref not in self.nodes:
                 raise RunError("EventEmit references undeclared event %r" % event_ref)
+            # issue #178, RFC-0049: when `emit ... with` mapped the payload
+            # at compile time, build it from the mapped refs instead of the
+            # raw input -- each field resolved through the one resolver and
+            # masked through the one chokepoint, exactly as plain `emit`'s
+            # masked-input payload already is, just per field instead of
+            # for the whole dict.
+            payload_map = effect.get("payloadMap")
+            if payload_map:
+                built_payload = {}
+                for entry in payload_map:
+                    field = entry["field"]
+                    ref = entry["ref"]
+                    raw = resolve_reference(ref, payload, bindings, self.caller)
+                    binding, _, _ref_field = ref.partition(".")
+                    if binding == PAYLOAD_NAMESPACE:
+                        masked = mask_payload({field: raw}, self._entity_node())
+                    else:
+                        # A `create ... as <name>` row's entity id rides on
+                        # the row itself (`_CreatedRow`, since its binding
+                        # name is the author's own choice, not the entity's
+                        # default binding name `_entity_id_for_binding`
+                        # resolves) — checked first so a create-as bound
+                        # Password field masks the same as a read-bound one.
+                        entity_id = getattr(bindings.get(binding), "entity_id", None)
+                        if entity_id is None:
+                            entity_id = self._entity_id_for_binding(binding)
+                        if entity_id is None:
+                            masked = {field: raw}
+                        else:
+                            entity_view = self._entity_view(self.nodes[entity_id])
+                            masked = mask_payload({field: raw}, entity_view)
+                    built_payload[field] = masked[field]
+            else:
+                built_payload = mask_payload(payload, self._entity_node())
             emission = {"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1),
                         "event": event_ref,
-                        "payload": mask_payload(payload, self._entity_node())}
+                        "payload": built_payload}
             # issue #102: persisted before the in-memory outbox sees it, so a
             # driver fault here (translated to RunError below, the same as
             # every other repo call) never leaves an emission counted in
@@ -2131,7 +2333,7 @@ class Interpreter:
 
     def _execute_step_with_retry(self, step, workflow_name, con, payload,
                                  deadline, bindings, rowsets, lock,
-                                 cancel_event):
+                                 cancel_event, binding_keys):
         """Run one step to completion under its retry policy; never raises —
         returns `(span, entry, error, response_ext, notes_ext)`, `error`
         being the final `RunError` or `None`. `_run_parallel_block`'s
@@ -2160,7 +2362,7 @@ class Interpreter:
                 break
             try:
                 self._run_step(step, span, con, payload, deadline, bindings,
-                               rowsets, lock=lock)
+                               rowsets, binding_keys, lock=lock)
                 last_error = None
                 break
             except RunError as exc:
@@ -2199,7 +2401,7 @@ class Interpreter:
 
     def _run_parallel_block(self, group, workflow_name, result, root, con,
                             payload, bindings, rowsets, deadline,
-                            response_refs, notes):
+                            response_refs, notes, binding_keys):
         """issue #108 D1-D4/D6/D7: run one `parallel` block's steps
         concurrently on a block-scoped `ThreadPoolExecutor` — created and
         shut down within this call, so no task from this block outlives it
@@ -2233,7 +2435,7 @@ class Interpreter:
         def worker(step):
             outcome = self._execute_step_with_retry(
                 step, workflow_name, con, payload, deadline, bindings,
-                rowsets, lock, cancel_event)
+                rowsets, lock, cancel_event, binding_keys)
             outcomes[step["id"]] = outcome
             error = outcome[2]
             if error is not None:

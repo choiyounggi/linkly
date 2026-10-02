@@ -42,7 +42,7 @@ import sys
 import tempfile
 
 from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
-                            Ref, encode_instant, guard_condition_text,
+                            NumericPredicate, Ref, encode_instant, guard_condition_text,
                             is_instant_text, looks_like_instant, parse_condition,
                             references)
 from lnpl.interp import (RunError, refinement_index, sample_payload,
@@ -51,7 +51,7 @@ from lnpl.interp import (RunError, refinement_index, sample_payload,
 # second copy of the seeding rule is the defect Wave 1 removed when three seeding
 # sites became one. `repo_policy` imports nothing from `interp`/`backend`/`cli`,
 # so this is cycle-safe.
-from lnpl.repo_policy import seeded_entities
+from lnpl.repo_policy import binding_name, seeded_entities
 from lnpl import resources
 
 MLIR_OPT = "mlir-opt"
@@ -251,11 +251,15 @@ def _parsed(cond_str):
 
 
 def _comparisons(cond):
-    """The Comparison terms of a parsed condition, in source order."""
+    """The Comparison terms of a parsed condition, in source order.
+
+    A `NumericPredicate` term of an `and` (RFC-0050) is not a comparison and
+    is skipped.
+    """
     if isinstance(cond, Comparison):
         return (cond,)
     if isinstance(cond, And):
-        return cond.terms
+        return tuple(t for t in cond.terms if isinstance(t, Comparison))
     return ()
 
 
@@ -534,6 +538,153 @@ def condition_field_names(document, workflow_id):
                     # compares against a register nobody wrote.
                     fields.update(references(parsed))
     return sorted(fields)
+
+
+def _uses_numeric_predicate(parsed):
+    """True if a parsed condition is, or has an `and` term that is, an
+    `is-numeric`/`is-not-numeric` predicate (RFC-0050)."""
+    if isinstance(parsed, NumericPredicate):
+        return True
+    return isinstance(parsed, And) and any(
+        isinstance(t, NumericPredicate) for t in parsed.terms)
+
+
+def workflow_uses_numeric_predicate(document, workflow_id):
+    """RFC-0050 §5: does any `when`/`until` guard of `workflow_id` —
+    condition or `or` alternative — use the numeric-shape predicate?
+
+    Mode B refuses such a workflow (`_render_std`); `differential.verify`
+    asks this first so the recorded exemption does not depend on a toolchain.
+    Walks the same `_workflow_steps` enumeration `condition_field_names` does.
+    Raises `BackendError` for an unknown workflow.
+    """
+    _, steps = _workflow_steps(document, workflow_id)
+    for _step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                if _uses_numeric_predicate(_parsed(text)):
+                    return True
+    return False
+
+
+def _money_declared_fields(document):
+    """Every guard reference name that resolves to a declared Money field
+    (RFC-0051 §6): `<binding>.<field>` for each Entity's default binding and
+    each `create ... as <name>` alias, and `input.<field>` where the field's
+    LAST declaring Entity in document order is Money — lowering's
+    `input.<field>` table is a flat, last-entity-wins dict, and mode B must
+    agree with it on which references are Money."""
+    nodes = {n["id"]: n for n in document["nodes"]}
+    base_of = {name: r["base"] for name, r in refinement_index(document).items()}
+    entities = [n for n in document["nodes"] if n["kind"] == "Entity"]
+
+    def money_fields_of(entity):
+        return {f["name"] for f in entity["fields"]
+                if base_of.get(f["type"], f["type"]) == "Money"}
+
+    result = set()
+    for ent in entities:
+        for field in money_fields_of(ent):
+            result.add("%s.%s" % (binding_name(ent), field))
+    for node in document["nodes"]:
+        if (node["kind"] == "RepositoryCall"
+                and node.get("operation") == "create" and node.get("result")):
+            ent = nodes.get(node["entity"])
+            if ent is not None:
+                for field in money_fields_of(ent):
+                    result.add("%s.%s" % (node["result"], field))
+    last_base = {}
+    for ent in entities:
+        for f in ent["fields"]:
+            last_base[f["name"]] = base_of.get(f["type"], f["type"])
+    result.update("input.%s" % name for name, base in last_base.items()
+                  if base == "Money")
+    return result
+
+
+def _money_guard_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when`/`until` condition or `or`
+    alternative of `workflow_id` that references a declared Money field, or
+    None. Raises `BackendError` for an unknown workflow."""
+    _, steps = _workflow_steps(document, workflow_id)
+    money_fields = _money_declared_fields(document)
+    if not money_fields:
+        return None
+    for step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                parsed = _parsed(text)
+                if parsed is not None and any(
+                        name in money_fields for name in references(parsed)):
+                    return step["name"], text
+    return None
+
+
+def workflow_uses_money_guard(document, workflow_id):
+    """RFC-0051 §6: does any `when`/`until` guard of `workflow_id` —
+    condition or `or` alternative — compare a declared Money field?
+
+    Mode B refuses such a workflow (`emit_mlir`); `differential.verify` asks
+    this first so the recorded exemption does not depend on a toolchain.
+    Raises `BackendError` for an unknown workflow.
+    """
+    return _money_guard_offender(document, workflow_id) is not None
+
+
+def _lookup_offender(document, workflow_id):
+    """`(step_name, entity_id, lookup_ref)` of the first reachable
+    RepositoryCall of `workflow_id` carrying a `lookup` key (issue #175), or
+    None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is not None and effect["kind"] == "RepositoryCall"
+                    and effect.get("lookup")):
+                return step["name"], effect["entity"], effect["lookup"]
+    return None
+
+
+def workflow_uses_lookup(document, workflow_id):
+    """RFC-0052 §6: does any reachable RepositoryCall of `workflow_id` carry
+    a `by <ref>` lookup key?
+
+    Mode B refuses such a workflow (`emit_mlir`) — the single-key seed
+    projection cannot say which row a lookup addresses; `differential.verify`
+    asks this first so the recorded exemption does not depend on a toolchain.
+    Raises `BackendError` for an unknown workflow.
+    """
+    return _lookup_offender(document, workflow_id) is not None
+
+
+def _refuse_money_or_lookup(document, workflow_id):
+    """RFC-0051/0052 §Mode B: refuse, by name, a Money-guard or lookup-key
+    workflow — called by `build()` immediately before `verify_lnpl_module()`
+    reaches any toolchain lookup, and by `emit_mlir()` for direct callers.
+    Single source of both messages: reuses `_money_guard_offender` and
+    `_lookup_offender` verbatim, in the same Money-then-Lookup order
+    `emit_mlir()` already used, so the two call sites cannot drift apart.
+    The numeric-shape predicate (RFC-0050) is deliberately NOT checked
+    here — its refusal in `_render_std` depends on `_lnpl_ops`'s
+    seed/payload-truncated ops stream, which a document-level check here
+    cannot safely replicate.
+    """
+    offender = _money_guard_offender(document, workflow_id)
+    if offender is not None:
+        step_name, guard_text = offender
+        raise BackendError(
+            "step %s: guard %r compares Money, which has no compiled "
+            "evaluator (RFC-0051 §Mode B) — run it in mode A"
+            % (step_name, guard_text))
+    lookup_offender = _lookup_offender(document, workflow_id)
+    if lookup_offender is not None:
+        step_name, entity_id, lookup_ref = lookup_offender
+        raise BackendError(
+            "step %s: %s uses a lookup key (by %s), which the single-key "
+            "seed projection cannot model (RFC-0052 §Mode B) — run it in "
+            "mode A" % (step_name, entity_id, lookup_ref))
 
 
 def encode_condition_value(value):
@@ -1235,6 +1386,19 @@ def _render_std(module_attrs, ops):
         guard_mode = entry["guard_mode"]
         guard_str = entry["guard_condition"]
 
+        # RFC-0050 §5: no compiled evaluator for `is-numeric`/`is-not-numeric`.
+        # Refuse by name — compiling only the Comparison half of a mixed `and`,
+        # or falling back to the run-level `%skip` flag, would let mode B take a
+        # branch mode A does not.
+        if guard_mode in ("when", "until"):
+            for text in (guard_str,) + tuple(entry["guard_alternatives"] or ()):
+                if _uses_numeric_predicate(_parsed(text)):
+                    raise BackendError(
+                        "step %s: guard %r uses the numeric-shape predicate "
+                        "(is-numeric/is-not-numeric), which mode B has no "
+                        "compiled evaluator for (RFC-0050 §Mode B) — this "
+                        "workflow runs in mode A only" % (entry["name"], text))
+
         guard_desc = ""
         if guard_mode and guard_str:
             guard_desc = "  (guarded by `%s` %s)" % (guard_mode, guard_str)
@@ -1336,7 +1500,11 @@ def emit_mlir(document, workflow_id, seeded=None, payload=None):
     standard-dialect module and the `lnpl` module cannot describe different
     workflows. The signature and the output are unchanged from before the dialect
     existed; `impl/tests/golden/` holds the pre-change bytes that prove it.
+
+    RFC-0051 §6: a guard comparing a declared Money field is refused before
+    any MLIR is rendered — Money's currency cannot ride an i64 parameter.
     """
+    _refuse_money_or_lookup(document, workflow_id)
     return _render_std(*_lnpl_ops(document, workflow_id, seeded, payload))
 
 
@@ -1427,6 +1595,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
     lnpl_text = emit_lnpl_mlir(document, workflow_id, seeded, payload)
     with open(lnpl_path, "w", encoding="utf-8") as fh:
         fh.write(lnpl_text)
+    _refuse_money_or_lookup(document, workflow_id)
     verify_lnpl_module(lnpl_text, path=lnpl_path)
 
     with open(mlir_path, "w", encoding="utf-8") as fh:

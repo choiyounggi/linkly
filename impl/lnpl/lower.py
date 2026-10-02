@@ -172,6 +172,8 @@ VERB_ALIASES = {
 GUARD_SUBJECT = "guard condition"
 ASSIGN_SUBJECT = "assignment"
 RESPOND_SUBJECT = "response"
+EMIT_SUBJECT = "emit"
+LOOKUP_SUBJECT = "lookup key"
 
 # The verbs that put a SINGLE-ROW binding in the execution scope, computed from
 # the same test the lowerer uses to build `read_entities`. A refusal that names
@@ -967,7 +969,8 @@ def _parse_predicate_terms(cond_text, lineno, entity, base_of):
     function only judges what that parser already produced, against the
     entity being listed.
     """
-    from .condition import And, ConditionError, Presence, Ref, parse_condition, value_to_string
+    from .condition import (And, ConditionError, NumericPredicate, Presence, Ref,
+                            parse_condition, value_to_string)
 
     try:
         cond = parse_condition(cond_text)
@@ -977,6 +980,12 @@ def _parse_predicate_terms(cond_text, lineno, entity, base_of):
         raise LowerError(
             "line %d: `list where` supports comparisons only (no `exists`/"
             "`missing` presence checks), got %r" % (lineno, cond_text))
+    if isinstance(cond, NumericPredicate) or (
+            isinstance(cond, And)
+            and any(isinstance(t, NumericPredicate) for t in cond.terms)):
+        raise LowerError(
+            "line %d: `list where` supports comparisons only (no `is-numeric`/"
+            "`is-not-numeric` predicates), got %r" % (lineno, cond_text))
     terms = cond.terms if isinstance(cond, And) else (cond,)
 
     fields_by_name = {f["name"]: f for f in entity["fields"]}
@@ -2297,6 +2306,9 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                     if child is None:
                         continue
                     if child["kind"] == "RepositoryCall":
+                        if child.get("lookup"):
+                            _check_lookup(child["lookup"], scope,
+                                          workflow_name, base_of or {})
                         if child.get("operation") == "query":
                             if not guarded:
                                 listed.add(child["entity"])
@@ -2307,6 +2319,11 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                     if child["kind"] == "Response":
                         text = "respond %s" % " ".join(child["refs"])
                         _check_respond(child["refs"], scope, text, base_of or {})
+                        continue
+                    if child["kind"] == "EventEmit":
+                        if child.get("payloadMap"):
+                            _check_emit_payload(child["payloadMap"], scope,
+                                                workflow_name, base_of or {})
                         continue
                     if child["kind"] != "Assignment":
                         continue
@@ -2332,10 +2349,8 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                             # RFC-0045 §3/§5: `sum`/`avg`/`min`/`max` can now
                             # produce a Money result (`_check_aggregate` below
                             # is the authority on which source field types
-                            # each func accepts) — the target-dimension check
-                            # widens to admit Money only on this branch, not
-                            # for a plain arithmetic `Value` target, which
-                            # still has no Money evaluator.
+                            # each func accepts); a Money target is a
+                            # dimension like any other since RFC-0051.
                             scope.check_reference(child["target"], text,
                                                   ASSIGN_SUBJECT, is_target=True,
                                                   allow_money=True)
@@ -2359,14 +2374,28 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                             % text,
                                     line=line)
                         else:
-                            scope.check_reference(child["target"], text,
-                                                  ASSIGN_SUBJECT, is_target=True)
+                            target_dim = scope.check_reference(
+                                child["target"], text, ASSIGN_SUBJECT,
+                                is_target=True)
                             for name in references(rhs):
                                 scope.check_reference(name, text, ASSIGN_SUBJECT)
                             # The expression is a `Value` like any other, so
                             # `instant + instant` is as meaningless here as in a
                             # guard.
-                            _value_dimension(rhs, scope, text, ASSIGN_SUBJECT)
+                            rhs_dim = _value_dimension(rhs, scope, text,
+                                                       ASSIGN_SUBJECT)
+                            # RFC-0051: the value must be the target's kind of
+                            # quantity — Money into an Integer field (or the
+                            # reverse) would otherwise pass here and fail at
+                            # run time.
+                            if (target_dim is not None and rhs_dim is not None
+                                    and target_dim != rhs_dim):
+                                raise LowerError(
+                                    "workflow %s: %r assigns %s (%s) to %s "
+                                    "(%s) — RFC-0051 requires the same "
+                                    "dimension on both sides"
+                                    % (workflow_name, text, _describe(rhs),
+                                       rhs_dim, child["target"], target_dim))
                     assigned.add(child["target"])
             else:
                 visit(node.get("children") or [], guarded=guarded)
@@ -2569,6 +2598,88 @@ def _check_respond(refs, scope, text, base_of):
                 % (scope.workflow_name, ref, declared))
 
 
+def _check_lookup(lookup_ref, scope, workflow_name, base_of):
+    """issue #175 / RFC-0052 §Static checks: a `by <ref>` lookup key's rule.
+
+    A bare ref, `input.<field>`, `caller.*` and a network-result binding are
+    payload-derived or runtime-only values -- admitted (RFC-0027 §2). A
+    bound-entity field (`by_binding` or a `create ... as` alias) is refused
+    when it is `derived` or its base is Password. `resolve_field` itself
+    raises RFC-0012 §G12.5 c's "never reads it" refusal for an entity binding
+    this workflow reads nowhere; that gate is whole-workflow membership,
+    order-blind -- a ref admitted here but not yet bound when its step runs
+    fails at run time (RFC-0052 §Runtime), never here.
+    """
+    from .condition import PAYLOAD_NAMESPACE
+    text = "by %s" % lookup_ref
+    field = scope.resolve_field(lookup_ref, text, LOOKUP_SUBJECT)
+    binding = lookup_ref.partition(".")[0]
+    if ("." not in lookup_ref or field is None
+            or binding in (PAYLOAD_NAMESPACE, CALLER_NAMESPACE)):
+        return
+    if field.get("derived"):
+        raise LowerError(
+            "workflow %s: lookup key %r names field %r, which is `derived` "
+            "(server-computed, RFC-0030 §3) -- a row cannot be addressed by a "
+            "field whose value is not reliably present"
+            % (workflow_name, lookup_ref, field["name"]))
+    declared = field.get("type")
+    base = base_of.get(declared, declared)
+    if base == "Password":
+        raise LowerError(
+            "workflow %s: lookup key %r has declared type %s, whose base is "
+            "Password -- a stored key must not be built from a masked field "
+            "(issue #43's masking chokepoint, RFC-0052 §Static checks)"
+            % (workflow_name, lookup_ref, declared))
+
+
+def _check_emit_payload(payload_map, scope, workflow_name, base_of):
+    """issue #178, R3/R11: `emit ... with`'s own reference rule.
+
+    Mirrors `_check_respond`'s two-check split (field must resolve, field
+    must not be Password) with two differences: (1) a network-result
+    binding (`call ... as <name>`) is ADMITTED here, unlike `respond` --
+    `scope.resolve_field` returns `None` for both a bare ref and a
+    network-result ref, so the dot-check below runs FIRST and is the only
+    thing that can tell the two apart; (2) a `derived` field is refused
+    (RFC-0030 §3 / issue #95 -- a derived field is never seeded from the
+    create payload and is only ever populated by an explicit
+    `set`/`format` step, so its value is not reliably present to map into
+    an emitted payload).
+    """
+    for entry in payload_map:
+        ref = entry["ref"]
+        field_name = entry["field"]
+        text = "emit with %s" % ref
+        if "." not in ref:
+            raise LowerError(
+                "workflow %s: %s names %r, which must be a bound row's "
+                "field (`<binding>.<field>`), a network-result binding "
+                "(`<name>.<field>` from `call ... as <name>`), or "
+                "`input.<field>` -- not a bare name"
+                % (workflow_name, text, ref))
+        field = scope.resolve_field(ref, text, EMIT_SUBJECT)
+        if field is None:
+            continue  # network-result binding -- no declared shape, admitted
+        if field.get("derived"):
+            raise LowerError(
+                "workflow %s: %s names field %r, which is `derived` "
+                "(server-computed, RFC-0030 §3) -- a with-clause must "
+                "map a value this workflow itself provided or "
+                "explicitly computed (`set`/`format`), not a field only "
+                "the server may fill" % (workflow_name, text, field_name))
+        declared = field.get("type")
+        base = base_of.get(declared, declared)
+        if base == "Password":
+            raise LowerError(
+                "workflow %s: %s has declared type %s, whose base is "
+                "Password -- emit must not surface a Password field in "
+                "an emitted event payload (issue #43's masking "
+                "chokepoint: a masked field's value must never leave "
+                "through an unmasked one)"
+                % (workflow_name, text, declared))
+
+
 def _check_literal_zero_divisor(value, where):
     """RFC-0028 §Reference-level Specification/2: a literal `0` divisor always
     fails (the run could only ever end in `RunError`), so it is refused here
@@ -2640,18 +2751,43 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
 
     _check_dimensions(cond, scope, text)
 
+    for pred in _numeric_predicates(cond):
+        if scope.check_reference(pred.field, text) == "money":
+            raise LowerError(
+                "workflow %s: guard condition %r applies is-numeric/"
+                "is-not-numeric to %r, whose declared type is Money — the "
+                "numeric-shape predicate does not apply to Money (RFC-0050, "
+                "RFC-0051 section Compatibility); compare it to another "
+                "Money reference instead"
+                % (workflow_name, text, pred.field))
+
+    for pres in _presences(cond):
+        if scope.check_reference(pres.field, text) == "money":
+            raise LowerError(
+                "workflow %s: guard condition %r checks %r for "
+                "existence, but its declared type is Money — Money has no "
+                "exists/missing check either (RFC-0051 section "
+                "Compatibility)"
+                % (workflow_name, text, pres.field))
+
 
 def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
-    """One `Value`'s dimension: `"instant"`, `"scalar"`, or None if undecidable.
+    """One `Value`'s dimension: `"instant"`, `"scalar"`, `"money"`, or None if
+    undecidable.
 
-    RFC-0016 §Reference-level Specification. Two dimensions, not three: a
-    Duration literal IS an i64 count of milliseconds, so it shares `scalar` with
-    Integer. Splitting it out would only add refusals (`stock <= 30d`) that this
-    issue does not ask for and that no program in the tree writes.
+    RFC-0016 §Reference-level Specification. A Duration literal IS an i64 count
+    of milliseconds, so it shares `scalar` with Integer rather than being a
+    dimension of its own. Splitting it out would only add refusals
+    (`stock <= 30d`) that this issue does not ask for and that no program in
+    the tree writes.
 
     None propagates: if either operand's type is not in the document, the whole
     value is undecidable and the comparison is left to the runtime, which is the
     behaviour bare references already had.
+
+    RFC-0051: Money ± Money stays Money, Money × scalar (either order — a
+    literal is a scalar) stays Money; Money × Money, any division touching
+    Money, and Money ± scalar/instant are refused.
     """
     from .condition import Arith, Lit, Ref
 
@@ -2664,6 +2800,28 @@ def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
         right = _value_dimension(value.right, scope, text, subject)
         if left is None or right is None:
             return None
+        if "money" in (left, right):
+            if left == "money" and right == "money":
+                if value.op in ("+", "-"):
+                    return "money"
+                raise LowerError(
+                    "workflow %s: %r %s two Money values, which RFC-0051 does "
+                    "not evaluate (%s %s %s)"
+                    % (scope.workflow_name, text,
+                       "multiplies" if value.op == "*" else "divides",
+                       _describe(value.left), value.op,
+                       _describe(value.right)))
+            other = right if left == "money" else left
+            if value.op == "*" and other == "scalar":
+                return "money"
+            raise LowerError(
+                "workflow %s: %r combines a Money value with %s %s value "
+                "via %r, which RFC-0051 does not evaluate — Money supports "
+                "+/-/copy against Money, and * only against a plain Integer "
+                "(%s %s %s)"
+                % (scope.workflow_name, text,
+                   "an" if other == "instant" else "a", other, value.op,
+                   _describe(value.left), value.op, _describe(value.right)))
         if left == "instant" and right == "instant":
             if value.op == "-":
                 return "scalar"           # elapsed milliseconds
@@ -2711,23 +2869,48 @@ def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
         if left is None or right is None:
             continue                      # undecidable from the document alone
         if left != right:
+            extra = (". Money compares only to Money (RFC-0051)"
+                     if "money" in (left, right) else "")
             raise LowerError(
                 "workflow %s: %r compares %s (%s) with %s (%s) — RFC-0016 "
                 "compares like with like. An instant and a number are not the "
                 "same quantity; subtract two instants to get a duration, then "
-                "compare that to a duration such as `30d`"
+                "compare that to a duration such as `30d`%s"
                 % (scope.workflow_name, text, _describe(term.left), left,
-                   _describe(term.right), right))
+                   _describe(term.right), right, extra))
 
 
 def _comparisons(cond):
-    """The Comparison terms of a condition, whether or not it is an `and`."""
+    """The Comparison terms of a condition, whether or not it is an `and`.
+
+    An `and` may also hold a `NumericPredicate` (RFC-0050) — not a comparison,
+    so it is skipped here; its reference is still checked via `references()`.
+    """
     from .condition import And, Comparison
     if isinstance(cond, Comparison):
         return (cond,)
     if isinstance(cond, And):
-        return cond.terms
+        return tuple(t for t in cond.terms if isinstance(t, Comparison))
     return ()
+
+
+def _numeric_predicates(cond):
+    """The NumericPredicate terms of a condition, whether or not it is an
+    `and` (RFC-0050/RFC-0051) — `_comparisons`'s filter for the other node
+    type."""
+    from .condition import And, NumericPredicate
+    if isinstance(cond, NumericPredicate):
+        return (cond,)
+    if isinstance(cond, And):
+        return tuple(t for t in cond.terms if isinstance(t, NumericPredicate))
+    return ()
+
+
+def _presences(cond):
+    """The Presence term of a condition — a Presence may not sit inside
+    `and` (RFC-0050), so it is either the whole condition or absent."""
+    from .condition import Presence
+    return (cond,) if isinstance(cond, Presence) else ()
 
 
 class _Scope:
@@ -2762,17 +2945,16 @@ class _Scope:
                         is_target=False, allow_money=False):
         """One `Reference`, judged against the document.
 
-        Returns the operand's DIMENSION (`"instant"`, `"scalar"`, or —
-        `allow_money` only — `"money"`), or None when the document does not
+        Returns the operand's DIMENSION (`"instant"`, `"scalar"`, or
+        `"money"` — RFC-0051), or None when the document does not
         declare a type for it — a bare reference names a payload field the
         document never describes, so its dimension is decided at runtime,
         exactly as its value is.
 
-        `allow_money` (RFC-0045 §3/§5): an `Aggregate` assignment target may
-        be Money-declared, since `sum`/`avg`/`min`/`max` now have a real
-        evaluator for it (`impl/lnpl/money.py`) — every other caller (guard
-        conditions, `Value` assignment targets/operands) leaves it False, so
-        their Money refusal (t2 F-4) is unchanged.
+        `allow_money` (RFC-0045 §3/§5): set by the `Aggregate` assignment
+        target only. Since RFC-0051 Money is a dimension for every caller;
+        the flag now only selects the RFC-0045 wording of the refusal the
+        remaining types get.
         """
         field_node = self.resolve_field(name, text, subject, is_target)
         if field_node is None:
@@ -2905,10 +3087,13 @@ class _Scope:
         cannot do is be compared to a plain number, which is a different
         judgement made by `_check_dimensions`.
 
-        RFC-0045 §3/§5 similarly opens `Money`, but ONLY when the caller
-        passes `allow_money=True` (an `Aggregate` assignment target) — a
-        `Value` target/operand still has no Money evaluator, so t2 F-4's
-        refusal stands there unchanged.
+        RFC-0051 does the same for `Money` in every caller: same-currency
+        Money arithmetic and comparison have an evaluator now (`money.py`), so
+        `"money"` is a dimension like the other two and what it cannot do —
+        meet a plain number or an instant — is `_value_dimension`'s and
+        `_check_dimensions`'s judgement. `allow_money` (RFC-0045 §3/§5, an
+        `Aggregate` target) now only picks which refusal the REMAINING types
+        get, not whether Money is admitted.
         """
         declared = field_node.get("type")
         base = self.base_of.get(declared, declared)
@@ -2916,7 +3101,7 @@ class _Scope:
             return "scalar"
         if base == "DateTime":
             return "instant"
-        if allow_money and base == "Money":
+        if base == "Money":
             return "money"
         if allow_money:
             raise LowerError(
@@ -2926,8 +3111,10 @@ class _Scope:
         raise LowerError(
             "workflow %s: %r uses %s, whose declared type %s is neither "
             "Integer nor DateTime — RFC-0016 computes over whole numbers and "
-            "instants only (Money and the composite types have no evaluator in "
-            "either mode)"
+            "instants only (RFC-0051 additionally admits same-currency Money "
+            "arithmetic and comparison; Decimal and the remaining composite "
+            "types still have no evaluator in either mode — RFC-0044 section "
+            "Open Questions 3)"
             % (self.workflow_name, text, name, declared))
 
 
@@ -2936,11 +3123,11 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                    verb_sink=None, base_of=None, namespace=None):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
-    `rest` is the step line's tokens past the object (`tokens[2:]`) — every
-    verb but `NetworkCall` and `create`/`insert` ignores it; those read an
-    `as <name>` trailing clause there (RFC-0027 §2, extended to `create` by
-    issue #97 / RFC-0012 Updates — `update`/`delete` still ignore `rest`,
-    since they answer an affected-row count, not a row). `NetworkCall` also
+    `rest` is the step line's tokens past the object (`tokens[2:]`).
+    `NetworkCall` and `create`/`insert` read an `as <name>` trailing clause
+    there (RFC-0027 §2, extended to `create` by issue #97 / RFC-0012
+    Updates); the read family, `update` and `delete` accept only a
+    `by <ref>` lookup-key clause (issue #175, RFC-0052). `NetworkCall` also
     reads an optional leading `with <ref>...` clause there (issue #109, D6).
 
     `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
@@ -3024,6 +3211,18 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                 rest, lineno, ent, base_of or {})
             return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                         predicate=predicate, order=order, limit=limit, line=lineno)
+        if fixed["operation"] in ("read", "update", "delete") and rest:
+            # issue #175 / RFC-0052: `<verb> <Entity> by <ref>` addresses the
+            # row under the ref's value instead of the payload's `id`. Any
+            # other trailing word used to be dropped silently; it is refused.
+            from .condition import _is_reference_name
+            if len(rest) == 2 and rest[0] == "by" and _is_reference_name(rest[1]):
+                return _node(kind, eid, entity=ent["id"],
+                            operation=fixed["operation"], lookup=rest[1],
+                            line=lineno)
+            raise LowerError(
+                "line %d: `%s %s` accepts either no trailing words or "
+                "`by <ref>`, got %r" % (lineno, verb, obj, tuple(rest)))
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 
@@ -3132,7 +3331,38 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
             raise LowerError(
                 "line %d: `%s` needs the event to emit as its object "
                 "(e.g. `emit userCreated`)" % (lineno, verb))
-        return _node(kind, eid, event=_event_ref(obj, lineno), line=lineno)
+        if not rest:
+            return _node(kind, eid, event=_event_ref(obj, lineno), line=lineno)
+        # issue #178, RFC-0049: `with <ref>...` maps the emitted payload from
+        # workflow bindings instead of the raw input. Any other trailing
+        # words used to be silently dropped (`rest` was never inspected) —
+        # that silence is the bug this RFC closes, so it is now a LowerError.
+        if rest[0] != "with":
+            raise LowerError(
+                "line %d: `%s` accepts either no trailing words or "
+                "`with <ref>...`, got %r" % (lineno, verb, tuple(rest)))
+        arg_tokens = rest[1:]
+        if not arg_tokens:
+            raise LowerError(
+                "line %d: `with` needs at least one reference" % lineno)
+        from .condition import _is_reference_name
+        payload_map = []
+        seen_fields = {}
+        for tok in arg_tokens:
+            if not _is_reference_name(tok):
+                raise LowerError(
+                    "line %d: `with` argument must be camelCase or "
+                    "binding.field, got %r" % (lineno, tok))
+            field_name = tok.rpartition(".")[2] if "." in tok else tok
+            if field_name in seen_fields:
+                raise LowerError(
+                    "line %d: `with` maps field %r from both %r and %r -- "
+                    "each mapped field name must be unique"
+                    % (lineno, field_name, seen_fields[field_name], tok))
+            seen_fields[field_name] = tok
+            payload_map.append({"field": field_name, "ref": tok})
+        return _node(kind, eid, event=_event_ref(obj, lineno),
+                    payloadMap=payload_map, line=lineno)
 
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
 

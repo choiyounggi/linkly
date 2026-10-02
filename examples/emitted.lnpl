@@ -1,0 +1,40 @@
+# emitted.lnpl — RFC-0049's golden-adjacent example (issue #178)
+#
+# `emit ... with` in one workflow, using all three admitted reference
+# sources named by RFC-0049's Guide-level Explanation:
+#   `newOrder.id`         — a `create ... as` binding's declared field
+#   `input.customerId`    — the run's own input
+#   `orderResult.status`  — a `call ... as` network-result binding
+#     (unchecked at compile time; `FakeNetworkDriver`'s deterministic
+#     (200, {}) answer for an unstubbed target gives it a real value here)
+#
+# Login (the golden scenario proper) declares no event, so this file — not
+# Login — is where RFC-0049's `## Examples` points readers (RFC-0007 §6).
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        customerId Text
+
+event OrderPlaced
+
+service ShopService
+    policy
+        retry 0
+
+workflow Checkout
+    create order as newOrder
+    call OrdersApi as orderResult
+    emit orderPlaced with newOrder.id input.customerId orderResult.status
+    spec
+        given
+            valid order
+            input.customerId cust-1
+        when
+            checkout
+        expect
+            emitted OrderPlaced payload id exists
+            emitted OrderPlaced payload customerId exists
+            emitted OrderPlaced payload status exists

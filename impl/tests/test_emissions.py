@@ -17,7 +17,7 @@ import os
 import unittest
 
 from lnpl import cli
-from lnpl.interp import Interpreter
+from lnpl.interp import MASK, Interpreter
 from lnpl.lower import lower
 from lnpl.parser import parse
 
@@ -63,6 +63,52 @@ workflow PlaceOrder
     create order
     emit orderPlaced
     cache order
+"""
+
+# issue #178, RFC-0049: `emit ... with` maps the payload from a create-as
+# binding and the run's input instead of the raw masked input. `internalNote`
+# is a declared field never referenced by `with` -- R8 requires it does NOT
+# leak into the mapped payload the way it would into the plain-`emit` path.
+EMIT_WITH_MAP_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        customerId Text
+        internalNote Text
+
+event OrderPlaced
+
+service Orders
+    policy
+        timeout 5s
+
+workflow Checkout
+    create order as newOrder
+    emit orderPlaced with newOrder.id input.customerId
+"""
+
+# The create-as step sits behind a guard that is false whenever `customerId`
+# IS given -- so a payload that provides it skips `create`, leaving `newOrder`
+# unbound. The `emit` step itself is NOT inside the guard (RFC-0002's Guard
+# node holds exactly one guarded child), so it still runs.
+EMIT_WITH_MAP_GUARDED_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        customerId Text
+
+event OrderPlaced
+
+service Orders
+    policy
+        timeout 5s
+
+workflow CheckoutGuarded
+    when customerId missing
+    create order as newOrder
+    emit orderPlaced with newOrder.id
 """
 
 
@@ -129,6 +175,88 @@ class TestEmissionsRuns(unittest.TestCase):
 
         self.assertEqual("failed", result["status"])
         self.assertEqual(1, len(result["emissions"]))
+
+
+class TestEmitWithMappedPayload(unittest.TestCase):
+    """issue #178, RFC-0049: `emit ... with` builds the emitted payload from
+    the mapped refs instead of the raw masked input."""
+
+    def test_happy_path_carries_exactly_the_mapped_fields(self):
+        # R8: a create-as field and an input field, no other declared field
+        # (`internalNote`, never referenced) leaks through.
+        doc = compile_doc(EMIT_WITH_MAP_SRC)
+        payload = {"id": "o-1", "customerId": "cust-42",
+                  "internalNote": "do-not-emit"}
+
+        result = Interpreter(doc, repo_rows={}).run_workflow(
+            "wf.checkout", payload)
+
+        self.assertEqual("completed", result["status"])
+        emission = result["emissions"][0]
+        self.assertEqual(emission["payload"], {"id": "o-1", "customerId": "cust-42"})
+
+    def test_guard_skipped_binding_maps_to_null_not_a_run_error(self):
+        # D6: the static check only guarantees the reference names something
+        # real in the document, not that the step ran on this execution.
+        doc = compile_doc(EMIT_WITH_MAP_GUARDED_SRC)
+        payload = {"id": "o-1", "customerId": "cust-1"}
+
+        result = Interpreter(doc, repo_rows={}).run_workflow(
+            "wf.checkout.guarded", payload)
+
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(result["emissions"][0]["payload"], {"id": None})
+
+    def test_a_non_password_mapped_field_is_not_masked(self):
+        # D4 negative control, paired with a Password field in the SAME
+        # payload map: `emit ... with` cannot compile a Password ref
+        # (lower.py's own static rejection, test_lower.py's
+        # test_a_password_field_ref_is_refused), so this exercises interp.py's
+        # own defense-in-depth masking directly at the IR level -- the same
+        # layering `scripts/validate_ir.py --self-test`'s hand-built
+        # negatives already use to test one layer at a time.
+        doc = compile_doc("""capability postgres
+
+entity Account
+    field
+        id UUID
+        secret Password
+
+event AccountRegistered
+
+service Signup
+    policy
+        timeout 5s
+
+workflow Register
+    create account as newAccount
+    emit accountRegistered
+""")
+        emit_node = next(n for n in doc["nodes"] if n["kind"] == "EventEmit")
+        emit_node["payloadMap"] = [
+            {"field": "id", "ref": "newAccount.id"},
+            {"field": "secret", "ref": "newAccount.secret"},
+        ]
+        payload = {"id": "a-1", "secret": "s3cr3t"}
+
+        result = Interpreter(doc, repo_rows={}).run_workflow(
+            "wf.register", payload)
+
+        self.assertEqual("completed", result["status"])
+        emitted = result["emissions"][0]["payload"]
+        self.assertEqual(emitted["id"], "a-1")
+        self.assertEqual(emitted["secret"], MASK)
+
+    def test_plain_emit_still_carries_the_full_masked_input(self):
+        # R2 regression, same shape as the file's own pre-#178 test above.
+        doc = compile_doc(EMIT_SRC)
+        payload = {"id": "o-1", "status": "new"}
+
+        result = Interpreter(doc, repo_rows={}).run_workflow(
+            "wf.place.order", payload)
+
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(result["emissions"][0]["payload"], payload)
 
 
 class TestEmissionsByteIdenticalWhenAbsent(unittest.TestCase):

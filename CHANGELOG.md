@@ -9,6 +9,70 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Fixed
+- `capability http`'s `retry`/`breaker`/`path` clauses were parsed and
+  compiled but silently dropped before reaching `HttpNetworkDriver` — both
+  `lnpl run`/`lnpl serve` (`cli.py:_open_endpoints`) and
+  `build_app()`/`make_wsgi_app` (`wsgi.py:_resolve_network`) projected a
+  declared capability down to `{"method", "auth"}` before handing it to
+  the driver. A declared `retry` never retried; a declared `path` made
+  any `call ... with <ref>` fail with `"has path arguments but no path
+  declared"` (issue #176).
+- OpenAPI generation crashed (`KeyError`) on any workflow using `create
+  <Entity> as <alias>` together with `respond <alias>...` —
+  `_response_schema`'s `by_binding` map only ever held entities' own
+  default binding names, never an `as`-declared alias, so the RFC-0030
+  golden example itself could not compile to an OpenAPI document, and
+  `lnpl serve` (which calls the same generator at startup) could not bind
+  either. `_response_schema` now also resolves a `respond` reference
+  against the workflow's own `create ... as` result bindings, and raises a
+  clear `OpenApiError` instead of a bare `KeyError` for any reference
+  resolving to neither (issue #173).
+- `lnpl migrate`가 다개체(multi-entity) 모듈에서 `create`가 쓴 행을 조용히
+  건너뛰고 rc 0으로 "완료"를 보고하던 문제를 고쳤다 — `id` 필드를 선언하지
+  않은 entity의 행은 `create`가 자기 자신의 저장 키를 `id` 값으로 쓰는데,
+  migrate가 그 값으로 저장 키를 다시 계산하면 이중으로 접두되어 재조회가
+  실패했다. 이제 그 경우를 행 자신의 `id`로 재조회해 복구하고, 그래도
+  확인할 수 없는 행이나 후보가 있었는데 하나도 못 쓴 실행은 rc 2로
+  시끄럽게 실패한다 (issue #179).
+- In-workflow write-state self-conflicts (issue #174): the default seed
+  rule now excludes an entity whose first repository operation is
+  `create` (previously seeded if it was ever read anywhere in the
+  workflow, even after being created first); `persist()` now advances the
+  bound row's optimistic-lock version after a successful write, so a
+  second `set` on the same binding in one run no longer raises a phantom
+  write conflict.
+
+### Added
+- `emit`/`publish <Event> with <ref>...` maps the emitted event's payload
+  from workflow bindings (created-row fields, `input.*`, network-call
+  results) instead of always carrying the raw masked input; trailing
+  words after `emit <Event>` that are not a `with`-clause now raise a
+  compile error instead of being silently dropped (issue #178, RFC-0049).
+- Guard predicates `<ref> is-numeric` / `<ref> is-not-numeric` ask whether
+  a value reads as a number without failing, so a non-numeric external
+  response can route to a fallback branch instead of the comparison
+  `RunError`; unlike `exists`/`missing` they may be `and` terms, and
+  `lnpl vocab` now lists both predicate tables (issue #177, RFC-0050).
+- Money fields can be copied, added, subtracted, and multiplied by an
+  Integer in `set`, and compared Money-to-Money in guards under all six
+  comparators, evaluated exactly in minor units (previously a compile
+  refusal); Decimal, Money division and Money × Money stay refused, a
+  currency mismatch fails with `money-currency-mismatch`, `expect result`
+  now evaluates Money order comparisons, and mode B refuses a Money guard
+  as a recorded differential exemption instead of a false EQUIVALENT
+  (issue #172, RFC-0051).
+- `find`/`read`/`load`/`authenticate`/`update`/`delete <Entity> by <ref>`
+  addresses the row under the ref's value instead of the payload `id`, so
+  one workflow can create an order under its own id while finding and
+  decrementing stock under the product id (probe-v0.8 s1 F-3/F-6); a `set`
+  on a row read that way persists under the same key, a ref with no value
+  fails the step, a first read `by input.<field>` is seeded under that
+  field's value, and mode B refuses such a workflow as a recorded
+  differential exemption. Other trailing words on those verbs are now a
+  compile error instead of being silently dropped; `create` keeps
+  `as <name>` only (issue #175, RFC-0052).
+
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
 now reach the last two places they had not: `spec` blocks can seed and

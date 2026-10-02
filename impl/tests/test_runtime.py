@@ -844,5 +844,66 @@ class TestRunResultAdditions(unittest.TestCase):
                       "spec can assert on it; got %r" % result["failure_reason"])
 
 
+
+LOOKUP_SOURCE = """capability postgres
+
+entity Product
+    field
+        id UUID
+        sku Text
+        stock Integer
+
+service Shop
+    policy
+        retry 0
+
+workflow Restock
+    find product
+    %s product by input.sku
+"""
+
+
+class TestLookupKeyNeverFallsBackToThePayloadId(unittest.TestCase):
+    """issue #175 / RFC-0052 §3: a `by <ref>` step addresses the ref's value
+    and nothing else. The only seeded row sits under the payload-`id` key a
+    silent fallback would use; the lookup value names a key with no row. So
+    a `find` must fail on the missing row, and no verb may touch the
+    payload-keyed row. (Track A pinned the same property through an interim
+    refusal; this is its permanent form.)"""
+
+    PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "sku": "SKU-9",
+               "stock": 4}
+
+    def _run(self, verb):
+        doc = lower(parse(LOOKUP_SOURCE % verb), "shop").to_document()
+        key = row_key("entity.product", self.PAYLOAD)
+        rows = {"entity.product": {key: dict(self.PAYLOAD)}}
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, key, interp.run_workflow("wf.restock", dict(self.PAYLOAD))
+
+    def test_a_by_find_misses_instead_of_reading_the_payload_id_row(self):
+        interp, key, result = self._run("find")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "find product by input.sku")
+        self.assertIn("no row", result["failure_reason"])
+        self.assertNotIn(row_key("entity.product", {"id": "-"}),
+                         interp.repo.rows["entity.product"])
+
+    def test_no_by_verb_touches_the_payload_id_row(self):
+        for verb in ("find", "update", "delete"):
+            with self.subTest(verb=verb):
+                interp, key, _result = self._run(verb)
+                self.assertEqual(interp.repo.rows["entity.product"][key],
+                                 self.PAYLOAD)
+
+    def test_a_by_less_read_of_the_same_row_still_completes(self):
+        doc = lower(parse(LOOKUP_SOURCE.replace(
+            "    %s product by input.sku\n", "")), "shop").to_document()
+        key = row_key("entity.product", self.PAYLOAD)
+        interp = Interpreter(doc, repo_rows={"entity.product": {
+            key: dict(self.PAYLOAD)}})
+        result = interp.run_workflow("wf.restock", dict(self.PAYLOAD))
+        self.assertEqual(result["status"], "completed")
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,7 @@ from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
                           format_lines_from_records, to_records)
 from .drivers import (DriverError, TokenError, audience_for_path, open_cache,
                       open_network, open_repository, open_token_provider,
-                      _is_url_literal)
+                      _http_capabilities, _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
 from .lexer import LexError
@@ -1067,9 +1067,13 @@ def cmd_migrate(args):
     `E` that lacks it (expand semantics — an existing value is never
     overwritten), re-stamping `_schema_gen`. Prints
     `{"scanned", "updated", "skipped"}` as JSON; `--dry-run` counts without
-    writing. `--backend` is required and `fake` is rejected — the same
-    shape `cmd_db_check` already established for an operation meaningless
-    without a real store.
+    writing. When `scanned == 0` an explicit note also goes to stderr.
+    Returns 2 (via the `except MigrateError` below) when the request is
+    refused before writing anything, when a candidate row cannot be
+    confirmed migrated under any key, or when candidates existed but nothing
+    was written (issue #179). `--backend` is required and `fake` is rejected
+    — the same shape `cmd_db_check` already established for an operation
+    meaningless without a real store.
     """
     field_name, sep, raw_value = args.set.partition("=")
     if not sep:
@@ -1095,6 +1099,11 @@ def cmd_migrate(args):
             return 2
     finally:
         repository.close()
+    if result["scanned"] == 0:
+        # issue #179 D5: "nothing to migrate" must be visible on its own
+        # channel, not inferred from a JSON field. stdout and rc unchanged.
+        print("migrate: 0 rows scanned for entity %r -- nothing to migrate"
+              % args.entity, file=sys.stderr)
     sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
     return 0
 
@@ -1197,14 +1206,6 @@ def _network_targets(doc):
     return seen
 
 
-def _http_capabilities(doc):
-    """name -> {"method", "auth"} for every declared `capability http` node
-    (issue #101) — `method` is present only on those, so it doubles as the
-    filter for "is this Capability node an http one"."""
-    return {n["name"]: {"method": n["method"], "auth": n.get("auth")}
-            for n in doc["nodes"] if n["kind"] == "Capability" and "method" in n}
-
-
 def _open_endpoints(doc, endpoint_args, network_spec):
     """`--endpoint`/`LNPL_ENDPOINT_*` + declared `capability http` auth ->
     (endpoints, capabilities) for `HttpNetworkDriver`, or `_REJECTED`.
@@ -1260,7 +1261,9 @@ def _open_endpoints(doc, endpoint_args, network_spec):
                 headers["Authorization"] = "Bearer %s" % value
             else:
                 headers[auth["header"]] = value
-        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers}
+        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers,
+                               "retry": cap.get("retry"), "breaker": cap.get("breaker"),
+                               "path": cap.get("path")}
     return endpoints, resolved_caps
 
 

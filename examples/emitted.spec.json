@@ -1,0 +1,22 @@
+{
+  "spec_version": "0.1",
+  "module": "emitted",
+  "cases": [
+    {
+      "name": "Checkout spec",
+      "workflow": "wf.checkout",
+      "given": [
+        "valid order",
+        "input.customerId cust-1"
+      ],
+      "when": [
+        "checkout"
+      ],
+      "expect": [
+        "emitted OrderPlaced payload id exists",
+        "emitted OrderPlaced payload customerId exists",
+        "emitted OrderPlaced payload status exists"
+      ]
+    }
+  ]
+}

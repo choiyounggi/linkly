@@ -15,6 +15,7 @@ machine gunicorn is not installed on.
 
 import contextlib
 import io
+import json
 import os
 import unittest
 from importlib import metadata as importlib_metadata
@@ -25,6 +26,10 @@ from lnpl import wsgi
 from lnpl import diagnostics as diagnostics_module
 from lnpl.diagnostics import ExtensionDiagnosticsError
 from lnpl.drivers import HmacTokenProvider
+
+from tests.test_network_driver import _ServerTestCase
+from tests.test_network_resilience import _make_fail_n_handler
+from tests.test_wsgi_contract import call_wsgi
 
 EXT_GROUP = diagnostics_module.DIAGNOSTICS_ENTRY_POINT_GROUP
 
@@ -76,6 +81,23 @@ entity Order
 service Checkout
 workflow Pay
     call PaymentGateway as p
+"""
+
+# issue #176: retry/breaker/path all declared, to prove all three reach
+# HttpNetworkDriver through build_app()/make_wsgi_app the same way
+# test_cli_capability_http.py proves it for the CLI path.
+RETRY_CALL_SOURCE = """
+capability http PaymentGateway
+    method post
+    retry 2 backoff 1ms
+    breaker after 5 within 1m
+    path "/pay/{}"
+entity Order
+    field
+        id UUID
+service Checkout
+workflow Pay
+    call PaymentGateway with input.id as p
 """
 
 
@@ -301,6 +323,37 @@ class BuildAppBoundaryTest(_EnvIsolatedTest):
                 result.close()
         self.assertTrue(captured["status"].startswith("404"))
         self.assertIn(b"not-found", body)
+
+
+class RetryPassthroughWsgiTest(_ServerTestCase):
+    """issue #176: retry/breaker/path reach HttpNetworkDriver through
+    build_app()/make_wsgi_app, mirroring test_cli_capability_http.py's
+    CLI-side proof of the same fix."""
+
+    def test_a_declared_retry_recovers_after_two_failures_through_build_app(self):
+        handler = _make_fail_n_handler(fail_count=2, fail_status=500)
+        url = self.start(handler)
+        source = _write_tmp(self, RETRY_CALL_SOURCE)
+        app = wsgi.build_app(sources=[source],
+                             endpoints={"PaymentGateway": url})
+
+        body = json.dumps({"id": "11111111-1111-1111-1111-111111111111"}).encode("utf-8")
+        status, _headers, parsed = call_wsgi(app, "POST", "/checkout/pay",
+                                             body=body)
+
+        self.assertEqual(status, 200, parsed)
+        self.assertEqual(parsed["status"], "completed")
+        self.assertEqual(len(handler.calls), 3)
+
+    def test_a_declared_breaker_and_path_reach_the_built_apps_network_driver(self):
+        source = _write_tmp(self, RETRY_CALL_SOURCE, name="mod2.lnpl")
+        app = wsgi.build_app(sources=[source],
+                             endpoints={"PaymentGateway": "http://example.invalid/"})
+
+        cap = app.network._capabilities["PaymentGateway"]
+
+        self.assertEqual(cap["breaker"], {"threshold": 5, "window_ms": 60000})
+        self.assertEqual(cap["path"], "/pay/{}")
 
 
 if __name__ == "__main__":

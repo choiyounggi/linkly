@@ -6,13 +6,17 @@ must start empty, or a read-then-create workflow can never succeed under any
 seed — the defect issue #35 reports.
 """
 
+import os
+import shutil
+import tempfile
 import unittest
 
+from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import FakeRepository, Interpreter, RunError, sample_payload
 from lnpl.lower import lower
 from lnpl.parser import parse
-from lnpl.repo_policy import (apply_predicate, default_rows, repository_calls,
-                              row_key, seeded_entities)
+from lnpl.repo_policy import (apply_predicate, default_rows, lookup_key_source,
+                              repository_calls, row_key, seeded_entities)
 
 # Product is READ, Order is only CREATED — the two roles the seed must tell apart.
 CHECKOUT = """
@@ -52,12 +56,28 @@ workflow Checkout
 """
 
 
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 def doc(src, name="checkout"):
     return lower(parse(src), name).to_document()
 
 
 def payload_for(document):
     return sample_payload([n for n in document["nodes"] if n["kind"] == "Entity"])
+
+
+def _tmp_store_dir(test):
+    """A per-test sqlite directory under `.claude/tmp`, removed on teardown.
+
+    `.claude/tmp`, never `/tmp`/`$TMPDIR`: repo policy, enforced for `mkdtemp`
+    by `test_tmp_hygiene.py`. Mirrors `test_repo_state.py`'s `_tmp_workdir`.
+    """
+    base = os.path.join(REPO, ".claude", "tmp")
+    os.makedirs(base, exist_ok=True)
+    path = tempfile.mkdtemp(prefix="lnpl-t174-", dir=base)
+    test.addCleanup(shutil.rmtree, path, True)
+    return path
 
 
 class TestSeedRule(unittest.TestCase):
@@ -110,6 +130,100 @@ class TestDefaultRows(unittest.TestCase):
         rows = default_rows(d, "wf.checkout", payload)
         rows["entity.product"][row_key("entity.product", payload)]["stock"] = 999
         self.assertNotEqual(payload.get("stock"), 999)
+
+
+# issue #175 / RFC-0052 §4: the order's own id is the payload `id`; stock is
+# addressed by the product id instead.
+LOOKUP = """
+capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+entity Order
+    field
+        id Text
+        productId Text
+service Orders
+workflow Place
+%s    create order as placed
+"""
+LOOKUP_PAYLOAD = {"id": "O1", "productId": "P1", "onHand": 5}
+
+
+class TestLookupSeedKey(unittest.TestCase):
+    """RFC-0052 §4: `by` changes WHICH KEY a seeded entity's row lives under,
+    never WHICH entities seed."""
+
+    def _rows(self, body):
+        d = doc(LOOKUP % body, "place")
+        return d, default_rows(d, "wf.place", dict(LOOKUP_PAYLOAD))
+
+    def test_a_first_read_by_input_field_seeds_under_that_fields_value(self):
+        d, rows = self._rows("    find stock by input.productId\n")
+        self.assertEqual(rows, {"entity.stock": {
+            row_key("entity.stock", {"id": "P1"}): LOOKUP_PAYLOAD}})
+        self.assertEqual(lookup_key_source(d, "wf.place", "entity.stock"),
+                         "input.productId")
+
+    def test_only_the_first_read_decides_the_key(self):
+        _d, rows = self._rows("    find stock by input.productId\n"
+                              "    find stock\n")
+        self.assertEqual(list(rows["entity.stock"]), ["entity.stock#P1"])
+        _d, rows = self._rows("    find stock\n"
+                              "    find stock by input.productId\n")
+        self.assertEqual(list(rows["entity.stock"]), ["entity.stock#O1"])
+
+    def test_a_by_less_first_read_keeps_the_payload_id_key(self):
+        _d, rows = self._rows("    find stock\n")
+        self.assertEqual(list(rows["entity.stock"]),
+                         [row_key("entity.stock", LOOKUP_PAYLOAD)])
+
+    def test_bound_bare_and_caller_lookups_keep_the_payload_id_key(self):
+        """D10: only `input.<field>` is payload-derivable by the seed rule; a
+        bound ref (`placed.productId`), a bare ref and `caller.*` are not
+        specially seeded — negative controls."""
+        for ref in ("placed.productId", "productId", "caller.subject"):
+            with self.subTest(ref=ref):
+                d, rows = self._rows("    find stock by %s\n" % ref)
+                self.assertEqual(list(rows["entity.stock"]), ["entity.stock#O1"])
+                self.assertEqual(lookup_key_source(d, "wf.place", "entity.stock"),
+                                 ref)
+
+    def test_a_guarded_first_read_still_decides_the_key(self):
+        _d, rows = self._rows("    when onHand > 0\n"
+                              "        find stock by input.productId\n")
+        self.assertEqual(list(rows["entity.stock"]), ["entity.stock#P1"])
+
+    def test_seeded_entities_is_unchanged_by_by(self):
+        for body in ("    find stock by input.productId\n", "    find stock\n"):
+            with self.subTest(body=body):
+                d = doc(LOOKUP % body, "place")
+                self.assertEqual(seeded_entities(d, "wf.place"), {"entity.stock"})
+
+    def test_a_payload_without_the_lookup_field_seeds_no_row_for_that_entity(self):
+        """Coordinator ruling (t175b Task 10): no `entity#None` row and no
+        fallback to the payload-id key — the entity is simply not seeded;
+        every other seeded entity is seeded exactly as before."""
+        src = LOOKUP.replace("entity Order\n",
+                             "entity Product\n    field\n        id Text\n"
+                             "entity Order\n")
+        d = doc(src % "    find stock by input.productId\n    find product\n",
+                "place")
+        payload = {"id": "O1", "onHand": 5}
+        rows = default_rows(d, "wf.place", payload)
+        self.assertEqual(rows, {"entity.product": {
+            row_key("entity.product", payload): payload}})
+        self.assertEqual(seeded_entities(d, "wf.place"),
+                         {"entity.stock", "entity.product"})
+
+    def test_lookup_key_source_edges(self):
+        d = doc(LOOKUP % "    find stock by input.productId\n", "place")
+        # an entity never read, and a workflow id that does not exist
+        self.assertIsNone(lookup_key_source(d, "wf.place", "entity.order"))
+        self.assertIsNone(lookup_key_source(d, "wf.nope", "entity.stock"))
+        self.assertEqual(default_rows(d, "wf.nope", LOOKUP_PAYLOAD), {})
 
 
 class TestRowKey(unittest.TestCase):
@@ -211,17 +325,38 @@ class TestReadThenCreate(unittest.TestCase):
                       for c in step.children if c.kind == "RepositoryCall"]
         self.assertEqual([c.attrs["found"] for c in repo_spans], [True, True])
 
-    def test_reading_an_entity_makes_it_seeded_even_when_it_is_also_created(self):
-        # The flip side of the case above, and the rule's boundary: `read order`
-        # puts Order in the read set, so the default seed populates it and the
-        # create that precedes the read conflicts. Role, not declaration order.
+    def test_creating_an_entity_before_its_first_read_does_not_seed_it(self):
+        # Order-aware (issue #174): `create order` runs before any `read
+        # order`, so Order's FIRST operation is `create` -- it is excluded
+        # from the default seed, and the create inserts instead of colliding
+        # with a seed that was never placed. Still decidable from the
+        # document alone: mode B (`backend.py`) and `differential.py`
+        # inherit this rule because both call `seeded_entities` directly,
+        # with no separate edit needed there. (Previously named
+        # test_reading_an_entity_makes_it_seeded_even_when_it_is_also_created
+        # and asserted the opposite, pre-#174 behavior -- "Role, not
+        # declaration order" -- which issue #174 reports as the defect.)
         src = CHECKOUT.replace("    find product\n    create order\n",
                                "    create order\n    read order\n")
         d = doc(src)
-        self.assertEqual(seeded_entities(d, "wf.checkout"), {"entity.order"})
+        self.assertEqual(seeded_entities(d, "wf.checkout"), set())
         _interp, result, _payload = self._run(src)
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["failed_step"], "create order")
+        self.assertEqual(result["status"], "completed")
+
+    def test_creating_an_entity_before_its_first_read_completes_on_a_real_sqlite_store(self):
+        # DoD item 1's SQLite half of the same create-before-read case the
+        # method above proves on the Fake repository.
+        src = CHECKOUT.replace("    find product\n    create order\n",
+                               "    create order\n    read order\n")
+        d = doc(src)
+        payload = payload_for(d)
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        driver.seed(default_rows(d, "wf.checkout", payload))
+        interp = Interpreter(d, repo_rows={}, repository=driver)
+        result = interp.run_workflow("wf.checkout", payload)
+        self.assertEqual(result["status"], "completed")
 
     def test_the_seed_dict_handed_to_the_interpreter_is_not_mutated(self):
         d = doc(CHECKOUT)

@@ -646,6 +646,52 @@ def run_shop_src(src, given, expect):
     return run_manifest(extract(decls, "shop"), doc)
 
 
+LOOKUP_SPEC_SRC = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service StockService
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    spec
+        given
+            input.id O1
+            input.productId P1
+            stored stock onHand 7
+        when
+            restock
+        expect
+            completed
+            result stock.onHand == 7
+"""
+
+
+class TestLookupKeyGiven(unittest.TestCase):
+    """issue #175 / RFC-0052 §4: a spec case seeds through `default_rows`, so
+    a single-row `given` for an entity first read `by input.<field>` lands
+    under that field's value — the key the read addresses — even though the
+    case's own `id` is different. `stored` then overrides that row."""
+
+    def test_a_by_input_read_finds_the_given_row_and_expect_result_reads_it(self):
+        decls = parse(LOOKUP_SPEC_SRC)
+        doc = lower(decls, "stock").to_document()
+        passed, failed, lines = run_manifest(extract(decls, "stock"), doc)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)
+
+    def test_a_wrong_expectation_on_that_row_still_fails(self):
+        src = LOOKUP_SPEC_SRC.replace("result stock.onHand == 7",
+                                      "result stock.onHand == 8")
+        decls = parse(src)
+        doc = lower(decls, "stock").to_document()
+        passed, failed, lines = run_manifest(extract(decls, "stock"), doc)
+        self.assertEqual(failed, 1, lines)
+
+
 class TestNoOpStepFailsTheSpec(unittest.TestCase):
     """`effects complete` — every step that ran performed at least one Effect.
 
@@ -785,6 +831,35 @@ class TestNoteExcludedFromEffectsCount(unittest.TestCase):
         self.assertTrue(any("note " in l for l in lines), lines)
 
 
+# issue #178: emit ... with maps the payload from a create-as binding and the
+# run's input, instead of the raw masked input SHOP's plain `emit orderPlaced`
+# already covers (TestEventExpectation, unchanged).
+SHOP_WITH_MAPPED_EMIT = SHOP.replace(
+    "    create order\n    emit orderPlaced\n",
+    "    create order as newOrder\n"
+    "    emit orderPlaced with newOrder.id input.stock\n")
+
+
+class TestEmittedPayloadMapping(unittest.TestCase):
+    """issue #178: `emitted ... payload ... exists` against a
+    `with`-mapped payload — no spec.py code change, `_expect_emitted`
+    already reads `e["payload"].get(field)` generically."""
+
+    def test_mapped_fields_are_assertable(self):
+        passed, failed, lines = run_shop_src(
+            SHOP_WITH_MAPPED_EMIT, ["valid product"],
+            ["emitted OrderPlaced payload id exists",
+             "emitted OrderPlaced payload stock exists"])
+        self.assertEqual(failed, 0, lines)
+
+    def test_an_unmapped_field_is_missing(self):
+        # Boundary: SHOP's Order.total is never in this with-clause.
+        passed, failed, lines = run_shop_src(
+            SHOP_WITH_MAPPED_EMIT, ["valid product"],
+            ["emitted OrderPlaced payload total missing"])
+        self.assertEqual(failed, 0, lines)
+
+
 class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
     """`lnpl spec` reports compile diagnostics like `compile` and `run` do.
 
@@ -814,3 +889,66 @@ class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
                       "`lnpl spec` must report that a step derives no Effect; "
                       "got %r" % err.getvalue())
         self.assertIn("ponder", err.getvalue())
+
+
+def _f5_spec_source():
+    """The F-5 program (issue #177) with three spec cases appended —
+    derived from the shared fixture, not a copy of it."""
+    from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+    return F5_SOURCE + """    spec
+        given
+            call Fx returns 200 body.rate 1350
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-numeric
+
+    spec
+        given
+            call Fx returns 200 body.rate abc
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-numeric
+
+    spec
+        given
+            call Fx returns 200 body.rate abc
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-not-numeric
+"""
+
+
+class TestExpectResultWithNumericPredicate(unittest.TestCase):
+    """RFC-0050 / issue #177: `expect result <ref> is-numeric` runs through
+    the shared `_condition_holds` evaluator — no spec.py change."""
+
+    def setUp(self):
+        decls = parse(_f5_spec_source())
+        self.doc = lower(decls, "fx").to_document()
+        self.cases = extract(decls, "fx")["cases"]
+
+    def _run(self, index):
+        return run_manifest({"spec_version": "0.1", "module": "fx",
+                             "cases": [self.cases[index]]}, self.doc)
+
+    def test_a_numeric_rate_passes_the_expectation(self):
+        passed, failed, lines = self._run(0)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2)
+
+    def test_a_non_numeric_rate_fails_the_positive_expectation(self):
+        passed, failed, lines = self._run(1)
+        self.assertEqual(failed, 1, lines)
+        self.assertEqual(passed, 1, "`completed` still holds — no RunError")
+        self.assertIn("fxResult.rate is-numeric", "\n".join(lines))
+
+    def test_a_non_numeric_rate_passes_the_negative_expectation(self):
+        passed, failed, lines = self._run(2)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2)

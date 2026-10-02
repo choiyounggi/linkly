@@ -120,6 +120,38 @@ class BuildRoutesTest(unittest.TestCase):
         self.assertEqual({}, build_routes(doc))
 
 
+# issue #173: same RFC-0030 golden example as test_openapi.py's
+# CREATE_AS_SRC — `build_routes` (wsgi.py:553) calls the same `generate()`
+# that used to KeyError on a create-as alias, so `lnpl serve` could not
+# bind either.
+CREATE_AS_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Money
+        placedAt DateTime
+service Checkout
+    policy
+        timeout 5s
+workflow PlaceOrder
+    create order as newOrder
+    set newOrder.quantity to input.quantity
+    respond newOrder.id newOrder.quantity
+"""
+
+
+class CreateAsBuildRoutesTest(unittest.TestCase):
+    """issue #173: `create ... as` + `respond` must not crash `build_routes`."""
+
+    def test_create_as_route_matches_the_openapi_contract(self):
+        doc = compile_src(CREATE_AS_SRC, module="m")
+        routes = build_routes(doc)
+        self.assertIn("/checkout/place-order", routes)
+        self.assertEqual(set(routes), set(generate(doc)["paths"]))
+
+
 # A full, valid Link payload — every field explicit so a reader can tell why
 # the run completes from the values alone (clicks 0 is ClickCount's boundary:
 # `refine ClickCount of Integer / min 0` admits a brand-new link).
@@ -133,6 +165,18 @@ LINK_PAYLOAD = {
 }
 
 SHORTEN_PATH = "/shorten-service/shorten"
+
+
+LOOKUP_SERVE_SRC = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service OrderService
+workflow Restock
+    find stock by input.productId
+"""
 
 
 class ServerTestCase(unittest.TestCase):
@@ -326,6 +370,19 @@ class ServeSemanticsTest(ServerTestCase):
         self.assertEqual("completed", body["status"])
         skipped_steps = [s for rec in body["skipped"] for s in rec["steps"]]
         self.assertEqual(["update payment"], skipped_steps)
+
+    def test_a_by_input_read_finds_the_row_the_seed_rule_put_under_that_field(self):
+        """issue #175 / RFC-0052 §4: a served workflow seeds through
+        `default_rows`, so `find stock by input.productId` finds its row
+        under the product id although the request's own `id` is the order's.
+        Before the seed-key rule the row sat under `entity.stock#O1` and the
+        read missed (500)."""
+        port = self.start(compile_src(LOOKUP_SERVE_SRC, "orders"))
+        resp, body = self.post_json(port, "/order-service/restock",
+                                    {"id": "O1", "productId": "P1", "onHand": 5})
+        self.assertEqual(200, resp.status, body)
+        self.assertEqual("completed", body["status"])
+        self.assertEqual("P1", body["bindings"]["stock"]["productId"])
 
     def test_masking_holds_on_the_200_response_channel(self):
         # D7: the HTTP response is a NEW output channel — sweep it: raw canary

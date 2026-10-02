@@ -162,6 +162,228 @@ class TestVerbLexicon(unittest.TestCase):
         self.assertIn("needs the event to emit", str(ctx.exception))
 
 
+EMIT_WITH_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        customerId Text
+        total Integer derived
+
+entity Customer
+    field
+        id UUID
+        secret Password
+
+event OrderPlaced
+
+service Orders
+    policy
+        retry 0
+
+workflow Checkout
+    create order as newOrder
+    find customer
+    call OrdersApi as orderResult
+"""
+
+
+class TestEmitWithClause(unittest.TestCase):
+    """issue #178, RFC-0049: `emit <Event> with <ref>...` -> `payloadMap`."""
+
+    def test_bare_emit_stays_payloadmap_free(self):
+        # R2: byte-identical to the pre-#178 node — no `payloadMap` key.
+        doc = ir(EMIT_WITH_SRC + "    emit orderPlaced\n")
+        node = by_id(doc)["wf.checkout.step.4.emit"]
+        self.assertEqual(node["kind"], "EventEmit")
+        self.assertNotIn("payloadMap", node)
+
+    def test_with_clause_compiles_to_the_payload_map_shape(self):
+        # R1: create-as alias field + input.<field>, ordered, field = the
+        # ref's own trailing dot-segment.
+        doc = ir(EMIT_WITH_SRC +
+                 "    emit orderPlaced with newOrder.id input.customerId\n")
+        node = by_id(doc)["wf.checkout.step.4.emit"]
+        self.assertEqual(node["payloadMap"],
+                         [{"field": "id", "ref": "newOrder.id"},
+                          {"field": "customerId", "ref": "input.customerId"}])
+
+    def test_a_bare_ref_in_with_is_refused(self):
+        # R3: neither a bound row's field, a network-result binding, nor
+        # `input.<field>` -- the dot-check runs before any scope lookup.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with unknownRef\n")
+        self.assertIn("unknownRef", str(ctx.exception))
+
+    def test_a_network_result_ref_is_admitted_unchecked(self):
+        # R3: `call ... as <name>` has no declared shape to check against --
+        # `scope.resolve_field` returns None for it, same as a bare ref, but
+        # the dot-check above already told the two apart.
+        doc = ir(EMIT_WITH_SRC + "    emit orderPlaced with orderResult.status\n")
+        node = by_id(doc)["wf.checkout.step.4.emit"]
+        self.assertEqual(node["payloadMap"],
+                         [{"field": "status", "ref": "orderResult.status"}])
+
+    def test_a_password_field_ref_is_refused(self):
+        # R4: the masking chokepoint (issue #43), same rule `respond` uses.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with customer.secret\n")
+        msg = str(ctx.exception)
+        self.assertIn("customer.secret", msg)
+        self.assertIn("Password", msg)
+
+    def test_duplicate_mapped_field_names_are_refused(self):
+        # R5: `newOrder.id` and `customer.id` both map to trailing field `id`.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC +
+               "    emit orderPlaced with newOrder.id customer.id\n")
+        msg = str(ctx.exception)
+        self.assertIn("id", msg)
+        self.assertIn("newOrder.id", msg)
+        self.assertIn("customer.id", msg)
+
+    def test_non_with_trailing_words_are_now_refused(self):
+        # R6: previously silently dropped -- issue #178's root defect.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced foo bar\n")
+        self.assertIn("('foo', 'bar')", str(ctx.exception))
+
+    def test_with_and_no_refs_is_refused(self):
+        # R7: boundary -- zero refs after `with`.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with\n")
+        self.assertIn("with` needs at least one reference", str(ctx.exception))
+
+    def test_a_derived_field_ref_is_refused(self):
+        # R11: `total` is `derived` and never `set`/`format`-assigned.
+        with self.assertRaises(LowerError) as ctx:
+            ir(EMIT_WITH_SRC + "    emit orderPlaced with newOrder.total\n")
+        msg = str(ctx.exception)
+        self.assertIn("newOrder.total", msg)
+        self.assertIn("derived", msg)
+
+
+LOOKUP_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        productId Text
+        total Integer derived
+        secret Password
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+service Orders
+    policy
+        retry 0
+
+workflow Checkout
+%s"""
+
+
+class TestLookupKeyStaticCheck(unittest.TestCase):
+    """issue #175 / RFC-0052 §Static checks: which refs a `by <ref>` lookup
+    key may name. The G12.5 ⓒ gate is whole-workflow membership (order-blind,
+    coordinator ruling r1): a binding used before its read compiles and fails
+    at run time instead."""
+
+    def _lookup_of(self, body, step_text):
+        doc = ir(LOOKUP_SRC % body)
+        steps = {n["name"]: n for n in doc["nodes"] if n["kind"] == "WorkflowStep"}
+        nodes = by_id(doc)
+        call = nodes[steps[step_text]["children"][0]]
+        self.assertEqual(call["kind"], "RepositoryCall")
+        return call.get("lookup")
+
+    def test_a_binding_the_workflow_never_reads_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir(LOOKUP_SRC % "    find product by order.productId\n")
+        msg = str(ctx.exception)
+        self.assertIn("never reads it", msg)
+        self.assertIn("lookup key", msg)
+
+    def test_a_binding_read_later_in_the_workflow_is_admitted(self):
+        """Order-blind positive control: `find order` comes AFTER the
+        reference and the check still admits it (whole-workflow membership)."""
+        body = ("    find product by order.productId\n"
+                "    find order\n")
+        self.assertEqual(self._lookup_of(body, "find product by order.productId"),
+                         "order.productId")
+
+    def test_a_self_reference_is_admitted(self):
+        """`find order by order.productId` makes `order` a read entity by
+        itself, so the static gate is satisfied. At run time it is only
+        useful when an earlier step of the same run already bound `order`;
+        otherwise the ref resolves to nothing and the step fails with a named
+        RunError (RFC-0052 §Runtime, t175b) — never here."""
+        body = "    find order by order.productId\n"
+        self.assertEqual(self._lookup_of(body, "find order by order.productId"),
+                         "order.productId")
+
+    def test_a_create_alias_from_an_earlier_step_is_admitted(self):
+        body = ("    create order as placed\n"
+                "    find product by placed.productId\n")
+        self.assertEqual(self._lookup_of(body, "find product by placed.productId"),
+                         "placed.productId")
+
+    def test_a_derived_field_is_refused(self):
+        for body in ("    find order\n    find product by order.total\n",
+                     "    create order as placed\n"
+                     "    update product by placed.total\n"):
+            with self.subTest(body=body):
+                with self.assertRaises(LowerError) as ctx:
+                    ir(LOOKUP_SRC % body)
+                self.assertIn("`derived`", str(ctx.exception))
+
+    def test_a_password_field_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            ir(LOOKUP_SRC % "    find order\n    delete product by order.secret\n")
+        msg = str(ctx.exception)
+        self.assertIn("Password", msg)
+        self.assertIn("RFC-0052", msg)
+
+    def test_input_fields_are_admitted_even_when_declared_derived_or_password(self):
+        for ref in ("input.productId", "input.total", "input.secret"):
+            with self.subTest(ref=ref):
+                self.assertEqual(
+                    self._lookup_of("    find product by %s\n" % ref,
+                                    "find product by %s" % ref), ref)
+
+    def test_an_undeclared_input_field_is_refused(self):
+        with self.assertRaises(LowerError):
+            ir(LOOKUP_SRC % "    find product by input.nope\n")
+
+    def test_bare_caller_and_network_result_refs_are_admitted(self):
+        cases = [("    find product by productId\n", "find product by productId"),
+                 ("    find product by caller.subject\n",
+                  "find product by caller.subject"),
+                 ("    call OrdersApi as fetched\n"
+                  "    find product by fetched.id\n", "find product by fetched.id")]
+        for body, step in cases:
+            with self.subTest(step=step):
+                self.assertEqual(self._lookup_of(body, step), step.split(" by ")[1])
+
+    def test_a_lookup_nested_in_a_guard_or_parallel_block_is_checked_too(self):
+        """The post-pass walks into guard and block children, so a Password
+        key cannot slip through by sitting inside `when` or `parallel`."""
+        for body in ("    find order\n    when input.stock > 0\n"
+                     "        find product by order.secret\n",
+                     "    find order\n    parallel\n"
+                     "        find product by order.secret\n    merge\n"):
+            with self.subTest(body=body):
+                with self.assertRaises(LowerError) as ctx:
+                    ir(LOOKUP_SRC % body)
+                self.assertIn("Password", str(ctx.exception))
+
+    def test_an_unknown_caller_field_is_refused(self):
+        with self.assertRaises(LowerError):
+            ir(LOOKUP_SRC % "    find product by caller.email\n")
+
+
 class TestControlFlow(unittest.TestCase):
     """Guards and blocks: one Guard kind with a mode, not three kinds."""
 
@@ -1161,6 +1383,40 @@ class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
             self._lower("widget.name exists")
         self.assertIn("not a declared entity", str(caught.exception))
 
+    # ---- issue #177 / RFC-0050: the numeric-shape predicate -----------------
+    def test_a_numeric_predicate_on_a_declared_integer_field_lowers(self):
+        mod = self._lower("product.stock is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "product.stock is-numeric")
+
+    def test_a_numeric_predicate_on_a_declared_text_field_is_refused(self):
+        # Same `_dimension_of` rule a comparison or a presence check gets.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.name is-not-numeric")
+        self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+    def test_a_numeric_predicate_reference_is_checked_the_same_way(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("widget.stock is-numeric")
+        self.assertIn("not a declared entity", str(caught.exception))
+
+    def test_a_text_predicate_mixed_into_and_is_refused_not_crashed(self):
+        # The widened `And` must still reach the dimension check, and the
+        # `_comparisons` consumers must skip the predicate term cleanly.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.stock > 1 and product.name is-numeric")
+        self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+    def test_a_predicate_mixed_into_and_with_a_valid_comparison_lowers(self):
+        mod = self._lower("product.stock > 1 and product.stock is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "product.stock > 1 and product.stock is-numeric")
+
+    def test_a_bare_numeric_predicate_is_decided_at_runtime(self):
+        mod = self._lower("rate is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "rate is-numeric")
+
     # ---- boundary: the bare form must be untouched -------------------------
     def test_a_bare_reference_is_not_checked(self):
         # RFC-0012 G12.3: bare names are payload fields. They are NOT entity
@@ -1180,6 +1436,151 @@ class TestScopedGuardReferenceIsCheckedAtCompileTime(unittest.TestCase):
         source = SCOPED_SOURCE.replace("when %s", "repeat 2")
         mod = lower(parse(source), "shop")
         self.assertEqual(mod.get("wf.checkout.guard.1")["count"], 2)
+
+
+MONEY_PREDICATE_SOURCE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+        price Money
+        cost Money
+entity Order
+    field
+        id UUID
+service ShopService
+    policy
+        retry 0
+workflow Checkout
+    find product
+    when %s
+    create order
+"""
+
+
+class TestNumericPredicateRefusesMoney(unittest.TestCase):
+    """RFC-0051 §Compatibility: once Money is a dimension, `_dimension_of` no
+    longer refuses a Money field under the numeric-shape predicate (RFC-0050)
+    by itself — a structural check on the predicate's own field does."""
+
+    def _lower(self, condition):
+        return lower(parse(MONEY_PREDICATE_SOURCE % condition), "shop")
+
+    def test_a_money_field_under_either_predicate_is_refused(self):
+        for kind in ("is-numeric", "is-not-numeric"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(LowerError) as caught:
+                    self._lower("product.price %s" % kind)
+                message = str(caught.exception)
+                self.assertIn("product.price", message)
+                self.assertIn("declared type is Money", message)
+                self.assertIn("RFC-0050", message)
+                self.assertIn("RFC-0051", message)
+
+    def test_a_money_predicate_inside_and_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.stock > 1 and product.cost is-numeric")
+        self.assertIn("product.cost", str(caught.exception))
+        self.assertIn("RFC-0050", str(caught.exception))
+
+    def test_the_check_is_scoped_to_the_predicate_field(self):
+        # A Money comparison and an Integer predicate in one `and` both hold.
+        cond = "product.price > product.cost and product.stock is-numeric"
+        mod = self._lower(cond)
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"], cond)
+
+    def test_an_undeclared_reference_under_the_predicate_is_unaffected(self):
+        mod = self._lower("price is-numeric")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "price is-numeric")
+
+
+class TestPresenceRefusesMoney(unittest.TestCase):
+    """RFC-0051 §Compatibility: `exists`/`missing` on a declared Money field
+    stays refused — the Gate-1 subset opens Money comparison and arithmetic
+    only, not presence."""
+
+    def _lower(self, condition):
+        return lower(parse(MONEY_PREDICATE_SOURCE % condition), "shop")
+
+    def test_money_exists_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.price exists")
+        message = str(caught.exception)
+        self.assertIn("product.price", message)
+        self.assertIn("declared type is Money", message)
+        self.assertIn("RFC-0051", message)
+
+    def test_money_missing_is_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            self._lower("product.cost missing")
+        self.assertIn("product.cost", str(caught.exception))
+        self.assertIn("RFC-0051", str(caught.exception))
+
+    def test_integer_exists_is_still_admitted(self):
+        mod = self._lower("product.stock exists")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "product.stock exists")
+
+    def test_an_undeclared_reference_under_presence_is_unaffected(self):
+        mod = self._lower("price missing")
+        self.assertEqual(mod.get("wf.checkout.guard.1")["condition"],
+                         "price missing")
+
+
+NUMERIC_PREDICATE_SOURCE = """
+capability postgres
+entity Order
+    field
+        id UUID
+        amount Integer
+service OrderService
+    security
+        jwt
+    policy
+        timeout 5s
+workflow Convert
+    call Fx as fxResult
+    when %s
+    create order
+"""
+
+
+class TestNumericPredicateOnUndeclaredReferences(unittest.TestCase):
+    """Issue #177 / RFC-0050 static rule: a predicate on a reference the
+    document gives no type — a network result field, `caller.*`, a bare
+    payload field — lowers and is decided at runtime."""
+
+    def _lower(self, when_line):
+        return lower(parse(NUMERIC_PREDICATE_SOURCE % when_line), "fx")
+
+    def _guard(self, mod):
+        guards = [n for n in mod.to_document()["nodes"] if n["kind"] == "Guard"]
+        self.assertEqual(len(guards), 1)
+        return guards[0]
+
+    def test_a_network_result_field_lowers(self):
+        guard = self._guard(self._lower(
+            "fxResult.status == 200 and fxResult.rate is-numeric"))
+        self.assertEqual(guard["condition"],
+                         "fxResult.status == 200 and fxResult.rate is-numeric")
+
+    def test_a_caller_field_lowers(self):
+        guard = self._guard(self._lower("caller.role is-not-numeric"))
+        self.assertEqual(guard["condition"], "caller.role is-not-numeric")
+
+    def test_an_or_alternative_using_the_predicate_passes_the_guard_check(self):
+        guard = self._guard(self._lower(
+            "fxResult.status != 200\n    or fxResult.rate is-not-numeric"))
+        self.assertEqual(guard["condition"], "fxResult.status != 200")
+        self.assertEqual(guard["alternatives"], ["fxResult.rate is-not-numeric"])
+
+    def test_an_or_alternative_on_an_undeclared_binding_is_still_refused(self):
+        # The alternative goes through the same reference check.
+        with self.assertRaises(LowerError) as caught:
+            self._lower("fxResult.status != 200\n    or widget.rate is-numeric")
+        self.assertIn("not a declared entity", str(caught.exception))
 
 
 ASSIGN_SOURCE = """

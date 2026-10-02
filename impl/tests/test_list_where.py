@@ -118,6 +118,20 @@ class TestPredicateGrammar(unittest.TestCase):
             compile_doc(orders_source("    list order where status exists\n"))
         self.assertIn("comparisons only", str(ctx.exception))
 
+    def test_numeric_predicate_is_refused(self):
+        # Issue #177 / RFC-0050: the predicate has no pushdown form — it must
+        # be refused by name, never reach `term.left` (AttributeError).
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(orders_source("    list order where amount is-numeric\n"))
+        self.assertIn("comparisons only", str(ctx.exception))
+        self.assertIn("is-numeric", str(ctx.exception))
+
+    def test_numeric_predicate_inside_and_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(orders_source(
+                "    list order where amount > 100 and amount is-not-numeric\n"))
+        self.assertIn("comparisons only", str(ctx.exception))
+
     def test_left_side_must_be_a_bare_field_of_the_listed_entity(self):
         with self.assertRaises(LowerError) as ctx:
             compile_doc(orders_source(

@@ -90,4 +90,4 @@ repository create conflicts: entity.order already exists
 
 읽기가 실패하는 에러 경로를 계약하고 싶으면 `empty repository`를 쓴다 — 시드가 없으니 `find`/`load`가 행을 못 찾고 그 스텝이 실패한다.
 
-이 "엔티티당 행 하나" 불변식이 어디서 오는지는 `rfcs/0015-value-semantics.md` §Alternatives에 있다: 한 실행은 payload 하나를 가지므로 엔티티 E의 테이블에는 행이 최대 하나다.
+이 "키당 행 하나" 불변식이 어디서 오는지는 `rfcs/0015-value-semantics.md` §Alternatives에 있다: 한 실행은 payload 하나를 가지므로, 조회 키 없이 읽고 쓰는 엔티티 E의 테이블에는 행이 최대 하나다. 예외는 `by <ref>`(RFC-0052)다 — `find`/`update`/`delete <엔티티> by <ref>`는 payload의 id 대신 그 참조의 값을 키로 쓰므로, 한 실행이 엔티티마다 다른 행을 지목할 수 있다. 첫 읽기가 `by input.<필드>`인 엔티티는 그 필드 값의 키 아래 시드된다.

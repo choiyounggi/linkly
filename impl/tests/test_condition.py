@@ -3,7 +3,8 @@
 import unittest
 from lnpl.condition import (
     parse_condition, condition_to_string, references,
-    And, Arith, Lit, Presence, Comparison, Ref, ConditionError
+    And, Arith, Lit, NumericPredicate, Presence, Comparison, Ref,
+    ConditionError
 )
 
 
@@ -339,6 +340,145 @@ class TestValueExpressions(unittest.TestCase):
         text = "product.stock - input.quantity >= 0"
         self.assertEqual(parse_condition(condition_to_string(parse_condition(text))),
                          parse_condition(text))
+
+
+class TestNumericPredicate(unittest.TestCase):
+    """Issue #177 / RFC-0050: `<ref> is-numeric` / `<ref> is-not-numeric`.
+
+    Unlike `exists`/`missing`, the predicate may sit inside `and` — the F-5
+    live guard `status == 200 and rate is-numeric` is one condition.
+    """
+
+    # ---- normal ------------------------------------------------------------
+    def test_positive_form_parses_to_a_numeric_predicate(self):
+        c = parse_condition("fxResult.rate is-numeric")
+        self.assertEqual(c, NumericPredicate("fxResult.rate", "is-numeric"))
+
+    def test_negative_form_parses_to_a_numeric_predicate(self):
+        c = parse_condition("rate is-not-numeric")
+        self.assertEqual(c, NumericPredicate("rate", "is-not-numeric"))
+
+    def test_both_forms_round_trip_through_the_normalized_string(self):
+        for text in ("fxResult.rate is-numeric", "input.rate is-not-numeric"):
+            self.assertEqual(condition_to_string(parse_condition(text)), text)
+
+    def test_the_predicate_may_be_a_term_of_and(self):
+        c = parse_condition("fxResult.status == 200 and fxResult.rate is-numeric")
+        self.assertIsInstance(c, And)
+        self.assertEqual(c.terms[0],
+                         Comparison(Ref("fxResult.status"), "==", Lit(200)))
+        self.assertEqual(c.terms[1],
+                         NumericPredicate("fxResult.rate", "is-numeric"))
+        self.assertEqual(
+            condition_to_string(c),
+            "fxResult.status == 200 and fxResult.rate is-numeric")
+
+    def test_references_include_the_predicate_field_in_source_order(self):
+        c = parse_condition("a > 0 and b is-not-numeric and c < 9")
+        self.assertEqual(references(c), ("a", "b", "c"))
+        self.assertEqual(references(parse_condition("x.y is-numeric")),
+                         ("x.y",))
+
+    # ---- error -------------------------------------------------------------
+    def test_presence_is_still_refused_inside_and(self):
+        # The `and`-placement rule: only the numeric predicate joins `and`.
+        with self.assertRaises(ConditionError) as ctx:
+            parse_condition("fxResult.rate exists and fxResult.status == 200")
+        self.assertIn("cannot appear inside `and`", str(ctx.exception))
+
+    def test_predicate_words_are_not_reference_names(self):
+        for word in ("is-numeric", "is-not-numeric"):
+            with self.assertRaises(ConditionError):
+                parse_condition("%s exists" % word)
+            with self.assertRaises(ConditionError):
+                parse_condition("%s > 0" % word)
+
+    def test_predicate_needs_a_reference_on_its_left(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("3 is-numeric")
+        with self.assertRaises(ConditionError):
+            parse_condition("Rate is-numeric")
+
+    def test_invalid_kind_is_refused_by_the_node(self):
+        with self.assertRaises(ValueError):
+            NumericPredicate("rate", "is-number")
+
+    # ---- boundary ----------------------------------------------------------
+    def test_predicate_word_alone_is_refused(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("is-numeric")
+
+    def test_predicate_with_extra_tokens_is_refused(self):
+        with self.assertRaises(ConditionError):
+            parse_condition("rate is-numeric now")
+
+    def test_and_needs_at_least_two_terms_even_with_predicates(self):
+        with self.assertRaises(ValueError):
+            And((NumericPredicate("rate", "is-numeric"),))
+        self.assertIsInstance(
+            And((NumericPredicate("a", "is-numeric"),
+                 NumericPredicate("b", "is-not-numeric"))), And)
+
+
+class TestNumericPredicateTruthTable(unittest.TestCase):
+    """RFC-0050 §3: `is-numeric` holds exactly where a comparison would read
+    the value as a number; `is-not-numeric` is its complement for EVERY
+    input, `None` included. Neither ever raises."""
+
+    CASES = [
+        ("bool true", True, True),
+        ("bool false", False, True),
+        ("int", 1350, True),
+        ("int-parseable str", "1350", True),
+        ("negative int str", "-3", True),
+        ("zoned instant", "2026-09-28T10:00:00Z", True),
+        ("zoneless instant", "2026-09-28T10:00:00", False),
+        ("zoned but invalid date", "2026-13-40T10:00:00Z", False),
+        ("dict", {"a": 1}, False),
+        ("list", [1, 2], False),
+        ("plain str", "abc", False),
+        ("decimal str", "13.5", False),
+        ("empty str", "", False),
+    ]
+
+    def _holds(self, kind, payload, collector=None):
+        from lnpl.interp import _condition_holds
+        return _condition_holds("v %s" % kind, payload, {}, collector=collector)
+
+    def test_every_value_classifies_and_the_negative_is_the_complement(self):
+        for label, raw, numeric in self.CASES:
+            with self.subTest(label):
+                self.assertIs(self._holds("is-numeric", {"v": raw}), numeric)
+                self.assertIs(self._holds("is-not-numeric", {"v": raw}), not numeric)
+
+    def test_an_absent_reference_is_not_numeric(self):
+        self.assertIs(self._holds("is-numeric", {}), False)
+        self.assertIs(self._holds("is-not-numeric", {}), True)
+        self.assertIs(self._holds("is-numeric", {"v": None}), False)
+
+    def test_a_zoneless_instant_does_not_raise(self):
+        # A comparison on the same value is a RunError (RFC-0016); the
+        # predicate classifies it instead.
+        from lnpl.interp import RunError
+        with self.assertRaises(RunError):
+            self._holds("> 0", {"v": "2026-09-28T10:00:00"})
+        self.assertIs(self._holds("is-not-numeric", {"v": "2026-09-28T10:00:00"}), True)
+
+    def test_the_collector_gets_one_presence_shaped_entry(self):
+        collector = []
+        self._holds("is-not-numeric", {"v": "abc"}, collector)
+        self.assertEqual(collector, [{"ref": "v", "value": "abc",
+                                      "op": "is-not-numeric", "expected": None,
+                                      "holds": True}])
+
+    def test_an_and_collects_one_entry_per_term_in_source_order(self):
+        from lnpl.interp import _condition_holds
+        collector = []
+        holds = _condition_holds("s == 200 and v is-numeric",
+                                 {"s": 200, "v": "x"}, {}, collector=collector)
+        self.assertIs(holds, False)
+        self.assertEqual([e["op"] for e in collector], ["==", "is-numeric"])
+        self.assertEqual(collector[1]["holds"], False)
 
 
 class TestModeARefusesUnevaluableConditions(unittest.TestCase):

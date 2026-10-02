@@ -34,8 +34,8 @@ import uuid
 from importlib import metadata as importlib_metadata
 
 from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
-                      TokenError, _is_url_literal, audience_for_path,
-                      open_repository)
+                      TokenError, _http_capabilities, _is_url_literal,
+                      audience_for_path, open_repository)
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
 from .interp import (Interpreter, caller_view, mask_payload, open_clock,
@@ -2192,14 +2192,6 @@ def _network_targets(document):
     return seen
 
 
-def _http_capabilities(document):
-    """name -> {"method", "auth"} for every declared `capability http` node
-    (issue #101) — `method` is present only on those, so it doubles as the
-    filter for "is this Capability node an http one"."""
-    return {n["name"]: {"method": n["method"], "auth": n.get("auth")}
-            for n in document["nodes"] if n["kind"] == "Capability" and "method" in n}
-
-
 def _resolve_network(document, endpoints):
     """`endpoints` (an explicit {name: url} override) + the
     `LNPL_ENDPOINT_<NAME>` environment contract (issue #101, t101 — reused
@@ -2249,7 +2241,9 @@ def _resolve_network(document, endpoints):
                 headers["Authorization"] = "Bearer %s" % value
             else:
                 headers[auth["header"]] = value
-        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers}
+        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers,
+                               "retry": cap.get("retry"), "breaker": cap.get("breaker"),
+                               "path": cap.get("path")}
     return HttpNetworkDriver(endpoints=resolved_endpoints, capabilities=resolved_caps)
 
 
