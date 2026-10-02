@@ -298,6 +298,24 @@ workflow Audit
 """
 
 
+PREDICATE_READ_THEN_GUARD = """capability postgres
+
+entity Product
+    field
+        id UUID
+        rate Integer
+
+service CheckoutService
+    policy
+        timeout 5s
+
+workflow Checkout
+    find product
+    when product.rate is-numeric
+    create product
+"""
+
+
 class TestLookupKeyExemption(unittest.TestCase):
     """RFC-0052 §6 (issue #175): a workflow with a `by <ref>` repository call
     is a recorded mode B exemption, reported before the toolchain check —
@@ -511,6 +529,52 @@ class TestLookupKeyExemption(unittest.TestCase):
         with self.assertRaises(backend.BackendError) as emit_ctx:
             backend.emit_mlir(doc, wf)
         self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_build_refuses_the_numeric_predicate_before_any_toolchain_lookup(self):
+        from tests.test_backend import PREDICATE_WHEN, _predicate_doc
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate is-numeric")
+        workdir = self._workdir()
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir)
+        self.assertIn("RFC-0050", str(ctx.exception))
+
+    def test_build_and_emit_mlir_raise_identical_numeric_messages(self):
+        from tests.test_backend import PREDICATE_WHEN, _predicate_doc
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate is-numeric")
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as build_ctx:
+            backend.build(doc, wf, self._workdir())
+        with self.assertRaises(backend.BackendError) as emit_ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_an_unreachable_numeric_guard_after_an_unseeded_read_still_succeeds(self):
+        # Boundary (design.md D1/D2; issue #186's own counterexample): the
+        # is-numeric guard sits after an unguarded, unseeded `find` that
+        # fails and truncates `_lnpl_ops`'s stream before the guard step is
+        # ever appended to it -- `_render_std` never sees that step, so the
+        # pre-check (walking the SAME truncated stream) must not invent a
+        # refusal a naive whole-document scan would. Two assertions, BOTH
+        # required -- neither alone proves the fix:
+        #   (1) emit_mlir(doc, wf, seeded=frozenset()) still succeeds
+        #   (2) build() on the SAME input, tools hidden, does not newly
+        #       refuse with RFC-0050 -- it still reaches the (hidden)
+        #       toolchain lookup and fails with the ordinary tool-not-found
+        #       text instead
+        doc = lower(parse(PREDICATE_READ_THEN_GUARD), "checkout").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        self.assertTrue(backend.workflow_uses_numeric_predicate(doc, wf))
+        # Assertion 1: emit_mlir succeeds under the truncating seed.
+        text = backend.emit_mlir(doc, wf, seeded=frozenset())
+        self.assertIn("func.func", text)
+        # Assertion 2: build() on the same input does not newly refuse.
+        workdir = self._workdir()
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir, seeded=frozenset())
+        self.assertNotIn("RFC-0050", str(ctx.exception))
+        self.assertIn("mlir-opt", str(ctx.exception))
 
 
 class TestNormaliseSkips(unittest.TestCase):
