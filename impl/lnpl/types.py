@@ -55,7 +55,7 @@ SEMANTIC_TYPES = {
                                    "currency": {"type": "string", "minLength": 3,
                                                 "maxLength": 3}},
                     "required": ["amount", "currency"]},
-        "sample": {"amount": "0", "currency": "USD"},
+        "sample": {"amount": "1.00", "currency": "USD"},
         "check": None,
     },
     "Currency": {

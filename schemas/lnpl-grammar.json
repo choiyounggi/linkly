@@ -615,7 +615,7 @@
             "type": "object"
           },
           "sample": {
-            "amount": "0",
+            "amount": "1.00",
             "currency": "USD"
           }
         },

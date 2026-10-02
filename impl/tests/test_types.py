@@ -8,8 +8,9 @@ against re-drift from RFC-0001's fixed 18-type table.
 """
 
 import unittest
+from decimal import Decimal
 
-from lnpl import interp, openapi
+from lnpl import interp, money, openapi
 from lnpl.interp import RunError, check_semantic_type, refinement_index
 from lnpl.refinements import BASE_CATEGORY
 from lnpl.types import SEMANTIC_TYPES
@@ -120,6 +121,28 @@ class TestRefinementProjectionStaysInSync(unittest.TestCase):
         for name, spec in SEMANTIC_TYPES.items():
             index = {"Refined": {"base": name, "facets": {}}}
             check_semantic_type("Refined", spec["sample"], name, index)
+
+
+class TestMoneySamplePassesItsOwnCodec(unittest.TestCase):
+    """Issue #203: the Money sample must additionally pass the Money
+    codec, not just `check_semantic_type` -- `test_valid_values_pass`
+    above already proves the latter for all 18 and would not have
+    caught this."""
+
+    def test_every_type_sample_is_valid_and_the_money_sample_passes_its_codec(self):
+        for name, spec in SEMANTIC_TYPES.items():
+            check_semantic_type(name, spec["sample"], name)
+        money_sample = SEMANTIC_TYPES["Money"]["sample"]
+        money.encode_money(money_sample["amount"], money_sample["currency"])
+
+    def test_a_mis_scaled_money_amount_is_rejected_by_the_codec(self):
+        with self.assertRaises(money.MoneyEncodePrecisionError):
+            money.encode_money("1", "USD")
+
+    def test_the_money_sample_has_exactly_the_currencys_exponent_in_decimal_places(self):
+        money_sample = SEMANTIC_TYPES["Money"]["sample"]
+        places = -Decimal(money_sample["amount"]).as_tuple().exponent
+        self.assertEqual(places, money.exponent(money_sample["currency"]))
 
 
 if __name__ == "__main__":

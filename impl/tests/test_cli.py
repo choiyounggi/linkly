@@ -48,6 +48,43 @@ class TestSubcommandWiring(unittest.TestCase):
     def test_spec_run(self):
         self.assertEqual(run_cli(["spec", LOGIN, "--run"]), 0)
 
+    def test_the_issue_203_repro_passes_once_the_money_sample_is_fixed(self):
+        """Issue #203. `given input.quantity 2` is needed independently of
+        the Money sample: `spec`'s default payload only samples the first
+        declared entity plus `validate`d ones (issue #48)."""
+        source = (
+            "entity Product\n"
+            "    field\n"
+            "        id UUID\n"
+            "        price Money\n"
+            "entity Order\n"
+            "    field\n"
+            "        id UUID\n"
+            "        quantity Integer\n"
+            "        total Money derived\n"
+            "service ShopService\n"
+            "workflow PlaceOrder\n"
+            "    find product\n"
+            "    create order as o\n"
+            "    set o.total to product.price * input.quantity\n"
+            "    spec\n"
+            "        given\n"
+            "            valid product\n"
+            "            input.quantity 2\n"
+            "        when\n"
+            "            placeOrder\n"
+            "        expect\n"
+            "            completed\n"
+        )
+        os.makedirs(self.workdir, exist_ok=True)
+        path = os.path.join(self.workdir, "t203-repro.lnpl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = cli.main(["spec", path, "--run"])
+        self.assertEqual(rc, 0, buf.getvalue())
+
     def test_openapi(self):
         self.assertEqual(run_cli(["openapi", LOGIN]), 0)
 
