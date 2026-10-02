@@ -38,7 +38,7 @@ Workload. The service is the `linkhub.lnpl` used by the prior audit
 that is saved once per server before the load starts:
 
 ```
-{"id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","url":"https://example.com/t180a-load-probe","title":"t180a load probe fixture","owner":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","savedAt":"2026-01-01T00:00:00Z","visits":0}
+{"id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","url":"https://example.com/postgres-load-probe","title":"postgres load probe fixture","owner":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","savedAt":"2026-01-01T00:00:00Z","visits":0}
 ```
 
 Control (fake backend):
@@ -202,24 +202,25 @@ The six runs behind H1:
 | Patched 2 | no, pool of 24 | 0 | 9.45 ms | 2.67 ms | 4.32 ms | 1.62x |
 | Patched 3 | no, pool of 24 | 0 | 8.93 ms | 2.98 ms | 4.08 ms | 1.37x |
 
-How H1 was judged. The plan was to call a patched run healthy when its worst
-bucket mean stayed within 2 times its own first bucket. That rule was replaced
-by a coordinator ruling, because the patch lowered the baseline itself
-(7 ms to 2-3 ms) and a 2.4 ms wobble then reads as "2.05x". The rule used:
+How H1 was judged. The planned rule was to call a patched run healthy when
+its worst bucket mean stayed within 2 times its own first bucket. That ratio
+rule was replaced by a band rule, because the patch lowered the baseline
+latency itself (7 ms to 2-3 ms), which makes a ratio against the run's own
+first bucket misleading: a 2.4 ms wobble reads as "2.05x". The band rule:
 H1 is confirmed when every patched run has 0 errors and no bucket mean above
 2 times the median 0-10 s mean of the unpatched runs. That median is 7.30 ms,
 so the band is 14.60 ms. The literal ratio is in the last column.
 
-How H2 and H2' were judged. The plan's thresholds were "H2 confirmed if any
+How H2 and H2' were judged. The planned thresholds were "H2 confirmed if any
 sample shows 10 or more postgres backends" and "H2' confirmed if the OS-level
 connection count is at least 3 times the backend count". Both were
 mis-specified. A backend count measures separate connections, so a high count
 speaks against one shared connection, not for it. And
 `lsof -iTCP:15480 -sTCP:ESTABLISHED` counts each connection about twice on
 this host (the patched server held 25 backends and showed 48 lines in every
-sample), so the 3-times ratio could never be met. A coordinator ruling
-replaced them with the evidence in the table: 82 backends at the stall, and
-the `too many clients already` errors at `max_connections` 100.
+sample), so the 3-times ratio could never be met. The two verdicts rest on
+the evidence in the table instead: 82 backends at the stall, and the
+`too many clients already` errors at `max_connections` 100.
 
 Samples from the unpatched H2 run, one every 5 s (postgres backends / `lsof`
 lines): 17 samples between 1 / 0 and 2 / 3, and one sample of 82 / 90 at the
@@ -247,13 +248,14 @@ Location: lnpl_postgres/driver.py:109 (`psycopg.connect(dsn)` inside `PostgresRe
 
 Mechanism: `lnpl serve` starts one thread per request with no upper bound (`impl/lnpl/serve.py`, `ThreadingMixIn`), and by design each request opens its own backend connection (`docs/serving.md:334`; `docs/backends.md` leaves pooling to the driver and names `psycopg_pool.ConnectionPool`). With this driver that means one new postgres connection per request, about 4 ms when it is the only one. The cost is not constant: 90 connections opened at the same moment took 150-208 ms each. So when requests overlap for any reason, each new one makes connection setup slower for all of them, more requests arrive before the earlier ones finish, and the number of open connections runs away. At 150 rps this showed as a stall after tens of seconds of flat latency: 82 postgres backends at once in the sampled run, bucket means of 386-422 ms, single requests up to 5.9 s, and in two of three runs requests refused with `too many clients already` at `max_connections` 100. The stall then cleared by itself. With 24 drivers opened once and lent to one request at a time (the H1 patch) the same load ran three times with no stall and no error, worst bucket mean 4.08-4.73 ms. What first makes requests overlap was not identified, and postgres CPU was not measured in these runs.
 
-Proposed fix: `PostgresRepositoryDriver` should stop opening a connection per construction. It should hold a `psycopg_pool.ConnectionPool` opened once (`min_size`/`max_size` near cores x 2 of the database host, tuned by measurement) and borrow a connection through `pool.connection()` for each request's `begin()` .. `commit()`/`rollback()` span, giving it back in `close()`. This needs no change to the per-request `repository_factory()` call shape in `impl/lnpl/wsgi.py`, as long as the pool outlives the request; t180b decides whether that is a module-level pool keyed by DSN inside `lnpl-postgres`, or one driver-held pool cached where `lnpl serve` builds its factory. The pool must block or fail fast when it is empty, so the number of connections stays bounded however many request threads exist. The two DDL statements were the minor cost here (H1b refuted), so moving them out of `__init__` is optional; with a pool they would at least run once per pooled connection instead of once per request.
+Proposed fix: `PostgresRepositoryDriver` should stop opening a connection per construction. It should hold a `psycopg_pool.ConnectionPool` opened once (`min_size`/`max_size` near cores x 2 of the database host, tuned by measurement) and borrow a connection through `pool.connection()` for each request's `begin()` .. `commit()`/`rollback()` span, giving it back in `close()`. This needs no change to the per-request `repository_factory()` call shape in `impl/lnpl/wsgi.py`, as long as the pool outlives the request. The implementation in `lnpl-postgres` has to choose between a module-level pool keyed by DSN inside the driver, which needs no linkly change, and one driver-held pool cached where `lnpl serve` builds its factory (`impl/lnpl/cli.py:855`), which needs a linkly change as well. The pool must block or fail fast when it is empty, so the number of connections stays bounded however many request threads exist. The two DDL statements were the minor cost here (H1b refuted), so moving them out of `__init__` is optional; with a pool they would at least run once per pooled connection instead of once per request.
 
 ## Deployment guidance
 
-Set `--rate-limit 100` for a postgres-backed `lnpl serve` until t180b's
-pooling fix ships. `--rate-limit` answers `429` with `Retry-After` when the
-rate is exceeded, so overload fails fast instead of queueing (issue #148).
+Set `--rate-limit 100` for a postgres-backed `lnpl serve` until the
+`lnpl-postgres` driver ships connection pooling (proposed above; not
+scheduled). `--rate-limit` answers `429` with `Retry-After` when the rate is
+exceeded, so overload fails fast instead of queueing (issue #148).
 
 100 rps is the measured ceiling on the machine above: it was STABLE in both
 runs made at that rate (60 s and 90 s), and 150 rps stalled in all three
