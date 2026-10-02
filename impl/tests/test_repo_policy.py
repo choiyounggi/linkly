@@ -412,12 +412,15 @@ class TestKeyedStore(unittest.TestCase):
         self.assertEqual(list(seed["entity.product"]), ["entity.product#1"])
 
     def test_update_and_delete_report_an_affected_row(self):
-        # Unchanged by issue #35 — recorded so the non-goal is visible.
+        # `update` unchanged by issue #35 — recorded so the non-goal is visible.
         repo = FakeRepository()
         self.assertEqual(repo.execute("entity.product", "update", "entity.product#1"),
                          {"affected": 1})
+        # issue #183: `delete` now reports the TRUE affected count. This key
+        # was never created, so deleting it affects 0 rows, not 1
+        # unconditionally (the old behavior this test used to pin).
         self.assertEqual(repo.execute("entity.product", "delete", "entity.product#1"),
-                         {"affected": 1})
+                         {"affected": 0})
 
 
 class TestApplyPredicate(unittest.TestCase):

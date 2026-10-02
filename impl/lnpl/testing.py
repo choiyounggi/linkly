@@ -129,6 +129,19 @@ class RepositoryDriverTCK:
 
         self.assertIsNone(self.driver.execute("widget", "read", "w5"))
 
+    def test_deleting_an_absent_row_reports_affected_zero(self):
+        result = self.driver.execute("widget", "delete", "no-such-row")
+        self.assertEqual(result, {"affected": 0})
+
+    def test_deleting_one_row_leaves_other_rows_of_the_same_entity_untouched(self):
+        self.driver.execute("widget", "create", "w6")
+        self.driver.execute("widget", "create", "w7")
+
+        self.driver.execute("widget", "delete", "w6")
+
+        self.assertIsNone(self.driver.execute("widget", "read", "w6"))
+        self.assertIsNotNone(self.driver.execute("widget", "read", "w7"))
+
     # -- query -------------------------------------------------------------
 
     def test_query_of_an_untouched_entity_is_an_empty_list_not_none(self):
@@ -302,6 +315,28 @@ class RepositoryDriverTCK:
         self.assertIsNone(
             self.driver.execute("widget", "read", "w-tx-outbox"))
         self.assertEqual(self.driver.read_outbox("widget.created"), [])
+
+    def test_rollback_discards_a_delete_made_inside_the_transaction(self):
+        """issue #183: two assertions, each proving a different thing
+        (design.md D3/D4). The mid-transaction read, right after the
+        delete and before rollback, finding nothing is what makes this a
+        real regression test of the Fake's delete fix itself -- against
+        today's Fake (which never actually removes a row on delete),
+        THIS assertion fails. The post-rollback read finding the row
+        again is what `impl/tests/test_driver_contract.py`'s
+        `RollbackTCKDiscriminatesTest` class (Task 02 of this plan) proves
+        discriminating, with two new methods reusing this same case name
+        against `_NoOpRollbackDriver` (fails) and `SqliteRepositoryDriver`
+        (passes)."""
+        self.driver.seed({"widget": {"w-tx-delete": {"id": "w-tx-delete", "n": 1}}})
+        self.driver.begin()
+        self.driver.execute("widget", "delete", "w-tx-delete")
+
+        self.assertIsNone(self.driver.execute("widget", "read", "w-tx-delete"))
+
+        self.driver.rollback()
+
+        self.assertIsNotNone(self.driver.execute("widget", "read", "w-tx-delete"))
 
     def test_a_nested_begin_is_refused(self):
         self.driver.begin()

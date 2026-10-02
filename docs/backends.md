@@ -425,7 +425,8 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 
 `RepositoryDriverTCK`는 `unittest.TestCase`를 상속하지 않는 순수 믹스인이다
 — 구체 클래스가 `unittest.TestCase`와 다중 상속해야 한다. 검증 항목: 읽기·
-쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, 그리고 읽은 행이
+쓰기·삭제·부재 행 삭제의 `affected` 0(이슈 #183)·부재 행의 `None` 반환·
+중복 create의 `DriverError`, 그리고 읽은 행이
 `observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
 #92 — 이 속성이 없으면 이 케이스는 스킵된다).
 이슈 #182부터는 `observed_version`을 갖는 드라이버에 대해 한 실행 안에서

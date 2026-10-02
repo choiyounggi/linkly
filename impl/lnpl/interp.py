@@ -164,6 +164,9 @@ class FakeRepository:
                 conflict.failure_kind = "conflict"
                 raise conflict
             table[key] = {"id": key}
+        if operation == "delete":
+            existed = table.pop(key, None) is not None
+            return {"affected": 1 if existed else 0}
         return {"affected": 1}
 
     def query(self, entity_id, predicate=None, order=None, limit=None):

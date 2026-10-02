@@ -1140,6 +1140,18 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
                 # makes routine, not exceptional.
                 if node["entity"] not in seeded_now and node["entity"] not in created:
                     fail_at = index
+            elif kind == "RepositoryCall" and operation == "delete":
+                # issue #183: an unconditional delete really removes the
+                # row (FakeRepository.execute / SqliteRepositoryDriver.
+                # _touch), so neither the seed nor an earlier
+                # unconditional create still backs this entity
+                # afterward -- a later unconditional `read` must now
+                # statically fail the same way mode A's Fake does, and a
+                # later unconditional `create` must insert rather than
+                # conflict, the same way a real DELETE followed by
+                # INSERT does.
+                seeded_now.discard(node["entity"])
+                created.discard(node["entity"])
             elif kind == "RepositoryCall" and operation == "create":
                 if node["entity"] in seeded_now or node["entity"] in created:
                     fail_at = index

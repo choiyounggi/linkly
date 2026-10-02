@@ -56,6 +56,26 @@ workflow PlaceOrder
     emit orderPlaced
 """
 
+# issue #183: delete then read of the same row — the forcing input for
+# the repository-state asymmetry between the two backends (design.md
+# D7); both must now agree the read fails, since the Fake's delete
+# really removes the row.
+DELETE_THEN_READ = """capability postgres
+
+entity Widget
+    field
+        id UUID
+        n Integer
+
+service WidgetService
+    policy
+        timeout 5s
+
+workflow Remove
+    delete widget
+    read widget
+"""
+
 BACKENDS = ("fake", "sqlite")
 
 
@@ -186,6 +206,28 @@ class SqliteDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
         return driver
 
 
+class FakeDriverPassesDeleteTCKCasesTest(unittest.TestCase):
+    """Issue #183: `FakeRepository` cannot inherit the whole
+    `RepositoryDriverTCK` (it raises a bare `RunError`, never
+    `DriverError`, on a duplicate `create` and a nested `begin` — see
+    the module docstring above) — so each delete-related case is run
+    alone, via `_run_one_tck_case`, exactly as the rollback/conflict
+    cases above already do. None of these four touches the
+    `create`/`begin` paths that break the Fake's TCK membership."""
+
+    CASES = ("test_delete_removes_the_row",
+             "test_deleting_an_absent_row_reports_affected_zero",
+             "test_deleting_one_row_leaves_other_rows_of_the_same_entity_untouched",
+             "test_rollback_discards_a_delete_made_inside_the_transaction")
+
+    def test_the_fake_passes_every_delete_tck_case(self):
+        for case in self.CASES:
+            result = _run_one_tck_case(lambda: FakeRepository(), case)
+            self.assertEqual(result.testsRun, 1, case)
+            self.assertEqual(len(result.failures) + len(result.errors), 0,
+                             (case, result.failures, result.errors))
+
+
 class _NoOpRollbackDriver(SqliteRepositoryDriver):
     """Negative control (`testing/quality/harness-reverse-controls`) — this
     is a driver the rollback TCK case must NOT pass. `begin`/`commit` are
@@ -249,6 +291,7 @@ class RollbackTCKDiscriminatesTest(unittest.TestCase):
     """
 
     CASE = "test_rollback_discards_writes_made_inside_the_transaction"
+    DELETE_CASE = "test_rollback_discards_a_delete_made_inside_the_transaction"
 
     def test_the_case_fails_against_a_no_op_rollback_driver(self):
         box = tempfile.TemporaryDirectory()
@@ -289,6 +332,28 @@ class RollbackTCKDiscriminatesTest(unittest.TestCase):
 
         self.assertEqual(result.testsRun, 1)
         self.assertEqual(len(result.skipped), 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+    def test_the_delete_case_also_fails_against_a_no_op_rollback_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "noop-delete-store.db")
+
+        result = _run_one_tck_case(lambda: _NoOpRollbackDriver(path),
+                                    self.DELETE_CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 1)
+
+    def test_the_delete_case_also_passes_against_the_real_sqlite_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "sqlite-delete-store.db")
+
+        result = _run_one_tck_case(lambda: SqliteRepositoryDriver(path),
+                                    self.DELETE_CASE)
+
+        self.assertEqual(result.testsRun, 1)
         self.assertEqual(len(result.failures) + len(result.errors), 0)
 
 
@@ -525,6 +590,13 @@ class DriverSwapEquivalenceTest(ContractTestCase):
 
         self.assertEqual(fake, sqlite)
         self.assertTrue(fake["skipped"])
+
+    def test_a_delete_then_read_is_observationally_identical(self):
+        fake, sqlite = self.observe(DELETE_THEN_READ, {"id": "w-dtr", "n": 5})
+
+        self.assertEqual(fake, sqlite)
+        self.assertEqual(fake["status"], "failed")
+        self.assertEqual(fake["failed_step"], "read widget")
 
 
 class _FailingRepository(FakeRepository):

@@ -1034,9 +1034,10 @@ class SqliteRepositoryDriver(RepositoryDriver):
         return {"affected": 1}
 
     def _touch(self, entity_id, operation, key):
-        """`affected` is the true row count here, where the Fake answers 1
-        unconditionally. The difference never reaches an observable: the
-        interpreter reads only `row is not None` from a write's answer.
+        """`affected` is the true row count here -- as of issue #183, the
+        Fake reports it too. The difference never reaches an observable:
+        the interpreter reads only `row is not None` from a write's
+        answer.
         """
         statement = _DELETE_ROW if operation == "delete" else _UPDATE_ROW
         try:
