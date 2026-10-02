@@ -153,9 +153,18 @@ failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프
 
 ### 시드와 flush
 
-`seed()`는 **없을 때만 삽입**(`INSERT OR IGNORE`)한다. 그래야 `repo_policy`의 시드
-규칙(과 그 위에 선 모드 B의 정적 판정)이 영속 저장소에서도 그대로 성립하면서,
-앞선 실행이 쓴 행을 덮지 않는다.
+`seed()`는 **없을 때만 삽입**(`INSERT OR IGNORE`)한다 — 호출하는 쪽이 앞선
+실행이 쓴 행을 덮지 않는다는 뜻이다.
+
+**누가 `seed()`를 부르는가(이슈 #197).** `Interpreter.__init__`은 `self.repo`가
+`FakeRepository` 인스턴스일 때만 요청 payload로 `seed()`를 건다 — `fake`
+백엔드와 spec/diff 러너(둘 다 내부적으로 `FakeRepository`를 쓴다)가 대상이다.
+`sqlite:`나 `lnpl.drivers`로 등록된 영속 드라이버에는 `Interpreter`가 더 이상
+`seed()`를 걸지 않는다: 영속 저장소에서 읽기 동사(`find`/`load`/`read`/
+`authenticate`, bare 또는 `by <ref>`)가 행을 못 찾으면 그 스텝이 타입 있는
+`failure_kind` `not-found`로 실패하고, 요청 payload가 유령 행으로 저장되는
+일이 없다. 영속 드라이버에 데이터를 미리 깔아야 하면 — 테스트든 운영이든 —
+`seed()`를 직접 부르거나 `create` 워크플로를 쓴다.
 
 `persist()`는 RFC-0015의 `set`이 **바인딩된 행에 쓴 값**을 디스크로 내린다. fake는
 바인딩된 dict가 곧 저장된 행이라 no-op이지만, 실제 저장소에서 이 flush가 없으면

@@ -205,8 +205,11 @@ workflow <W>: lookup key '<ref>' has declared type <T>, whose base is Password -
   `id` 키다. 특히 **바인딩 참조 조회(`by order.productId`)는 기본 정책이 시드할 수 없다** —
   그 행은 실제 저장소, spec `given`, 또는 같은 워크플로의 앞선 `create`에서 와야 한다.
 
-`lnpl run`, 서빙된 워크플로, `empty repository` 없는 spec 케이스는 모두
-`default_rows`로 시드하므로 이 규칙을 그대로 물려받는다. spec의 인덱스 다중 행 `given`
+`fake` 백엔드로 돈 `lnpl run`/서빙된 워크플로, 그리고 `empty repository` 없는
+spec/diff 케이스는 모두 `default_rows`로 시드하므로 이 규칙을 그대로 물려받는다
+(이슈 #197 — 영속 백엔드(`sqlite:`, 또는 `lnpl.drivers`로 등록된 드라이버)에는
+이 시드가 걸리지 않는다: 첫 읽기가 행을 못 찾으면 그 스텝이 실패하고, 영속
+저장소에도 떠돌이 행이 남지 않는다). spec의 인덱스 다중 행 `given`
 (`row_key=str(i)`, RFC-0025 §8)은 `list`의 시드이며 `by`로 지목할 수 없다.
 
 ### 5. mode A/B 등가 — RFC-0016 §5 갱신 (치환 후 최종 텍스트)

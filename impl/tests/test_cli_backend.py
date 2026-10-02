@@ -19,7 +19,10 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from lnpl import backend
 from lnpl.cli import main
-from lnpl.drivers import HmacTokenProvider, audience_for_path
+from lnpl.drivers import HmacTokenProvider, SqliteRepositoryDriver, audience_for_path
+from lnpl.lower import lower
+from lnpl.parser import parse
+from lnpl.repo_policy import default_rows
 
 from tests.fixtures import GUARDED_LNPL, SHORTEN_LNPL, VALUE_INVENTORY
 
@@ -60,6 +63,18 @@ class CliTestCase(unittest.TestCase):
             rc = main(argv)
         return rc, out.getvalue(), err.getvalue()
 
+    def seed_product(self, db_path, payload):
+        """Store the Product row a run is about to read. A persistent store
+        is not seeded from the request payload (issue #197), so a test that
+        needs the row there puts it there."""
+        doc = lower(parse(VALUE_INVENTORY), "inventory").to_document()
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        driver = SqliteRepositoryDriver(db_path)
+        try:
+            driver.seed(default_rows(doc, target, payload))
+        finally:
+            driver.close()
+
     def set_env(self, name, value):
         previous = os.environ.get(name)
         os.environ[name] = value
@@ -91,6 +106,7 @@ class RunBackendTest(CliTestCase):
 
     def test_a_sqlite_run_completes_and_writes_its_store(self):
         payload = self.payload_file({"id": "p-1", "stock": 9, "quantity": 4})
+        self.seed_product(self.db, {"id": "p-1", "stock": 9, "quantity": 4})
 
         rc, out, _ = self.run_cli(["run", self.source, "--payload", payload,
                                    "--json", "--backend", "sqlite:" + self.db])
@@ -106,6 +122,7 @@ class RunBackendTest(CliTestCase):
         payload = self.payload_file({"id": "p-1", "stock": 9, "quantity": 4})
         argv = ["run", self.source, "--payload", payload, "--json",
                 "--backend", "sqlite:" + self.db]
+        self.seed_product(self.db, {"id": "p-1", "stock": 9, "quantity": 4})
         self.run_cli(argv)
 
         rc, out, _ = self.run_cli(argv)
@@ -204,6 +221,7 @@ class StoreLifetimeTest(CliTestCase):
     def test_the_store_is_released_after_a_completing_run(self):
         calls = self._recording_open([])
         payload = self.payload_file({"id": "p-1", "stock": 9, "quantity": 4})
+        self.seed_product(self.db, {"id": "p-1", "stock": 9, "quantity": 4})
 
         rc, _, _ = self.run_cli(["run", self.source, "--payload", payload,
                                  "--json", "--backend", "sqlite:" + self.db])

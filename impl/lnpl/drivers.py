@@ -152,9 +152,10 @@ class RepositoryDriver:
     def seed(self, rows):
         """Populate `{entity_id: {row_key: row}}`, INSERTING ONLY WHERE ABSENT.
 
-        Insert-if-absent is what lets the seed rule (`repo_policy`) stay true
-        for a persistent store: run N re-seeds the entities the workflow reads,
-        and a row run N-1 wrote is left exactly as it was found.
+        Insert-if-absent leaves a row an earlier run wrote exactly as it was
+        found. The interpreter calls this per run only on the Fake (issue
+        #197): a persistent store is seeded by whoever sets it up -- a test,
+        an operator -- and a read that finds no row there fails its step.
         """
         raise NotImplementedError
 

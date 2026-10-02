@@ -616,6 +616,8 @@ class MultiEntityCreateBackfillTest(unittest.TestCase):
         try:
             payload = {"id": "acct-1", "label": "hello"}
             rows = default_rows(self.doc, self.workflow_id, payload)
+            # issue #197: the run no longer seeds a persistent store.
+            repository.seed(rows)
             interp = Interpreter(self.doc, repo_rows=rows, repository=repository)
             result = interp.run_workflow(self.workflow_id, payload)
         finally:

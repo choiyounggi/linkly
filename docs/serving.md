@@ -71,6 +71,7 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M6 | 실행 실패 ∧ `failure_reason`이 `deadline`으로 시작 | 504 | `deadline-exceeded` |
 | M7 | 실행 실패 ∧ 실패 스텝의 효과에 `Validation` 포함 | 400 | `validation-failed` |
 | M8a | 실행 실패 ∧ 저장소 create가 기존 키와 충돌(`failure_kind == "conflict"`, 이슈 #113) | 409 | `conflict` |
+| M8b | 실행 실패 ∧ 영속 백엔드에서 읽기 동사가 행을 못 찾음(`failure_kind == "not-found"`, 이슈 #197) | 404 | `not-found` |
 | M8 | 실행 실패 (그 외 전부) | 500 | `workflow-failed` |
 | M9 | `status == completed` — 가드 거부 포함 | 200 | — |
 | M10 | GET 단건: 경로는 있으나 행이 없음(부재 또는 백엔드 미설정) | 404 | `not-found` |
@@ -91,6 +92,8 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   M7로 400이 되고, 없는 워크플로는 그대로 실행된다.
 - M6이 M7보다 먼저다: validate 스텝 직전에 데드라인이 소진된 실행은 타임아웃이지
   payload 거부가 아니다.
+- M8a/M8b는 M8보다 먼저다: 둘 다 같은 `RepositoryCall` 실패를 `failure_kind`로
+  유형별로 가른다(이슈 #113/#197) — 그 외의 모든 실패만 M8(500)로 떨어진다.
 
 에러 본문은 전 엔드포인트 단일 형태(RFC 9457 problem+json,
 `Content-Type: application/problem+json`): `title`/`status`/`code`/`detail` +
@@ -276,7 +279,7 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 | E4 | 같은 `id`로 이미 실행 중(#113과 같은 충돌 신호) | 409 | `idempotency-in-progress` |
 | E5 | 실행 완료 | 200 | — |
 | E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
-| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`, create 충돌) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
+| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`, create 충돌, 영속 백엔드 읽기 미스 `not-found`(이슈 #197)) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
 
 **멱등성 (D6)** — CloudEvents `id`가 멱등성 키다. `lnpl_idempotency`(이슈
 #113)를 **그대로** 재사용한다 — 두 번째 저장소를 만들지 않는다. 200과

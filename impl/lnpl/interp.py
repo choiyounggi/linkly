@@ -1472,11 +1472,14 @@ class Interpreter:
         if repository is None:
             self.repo = FakeRepository(repo_rows)
         else:
-            # The seed rule is the store's, not the Fake's: a real driver gets
-            # the same rows and inserts only what is absent, so a row an
-            # earlier run left behind survives this one's seeding.
+            # issue #197: only the Fake gets the per-run payload seed -- a
+            # persistent driver (sqlite, or any lnpl.drivers-registered
+            # driver) must not have the request payload inserted as a stored
+            # row by a read that never asked to write. A FakeRepository
+            # instance handed in explicitly is still seeded, as before.
             self.repo = repository
-            self.repo.seed(repo_rows or {})
+            if isinstance(self.repo, FakeRepository):
+                self.repo.seed(repo_rows or {})
         self.cache = cache if cache is not None else FakeCache(self.clock)
         # RFC-0027 §1: no stub table by default — every unstubbed target gets
         # the deterministic (200, {}) FakeNetworkDriver already answers.
@@ -2070,7 +2073,11 @@ class Interpreter:
             if effect["operation"] == "read" and row is None:
                 self.clock.advance(1)
                 child.end_ms = self.clock.now
-                raise RunError("repository read found no row for %s" % effect["entity"])
+                # issue #197: typed, so `serve` maps it by kind (404), never
+                # by this wording.
+                not_found = RunError("repository read found no row for %s" % effect["entity"])
+                not_found.failure_kind = "not-found"
+                raise not_found
             if effect["operation"] == "create":
                 # issue #97 / RFC-0012 Updates: payload seeding — same-named,
                 # non-derived fields copy into the row created above,
