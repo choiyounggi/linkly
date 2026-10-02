@@ -372,6 +372,30 @@ class TestAssignmentAndScope(unittest.TestCase):
         # and each of the two successful persists bumps it by 1.
         self.assertEqual(reread.observed_version, 2)
 
+    def test_set_update_set_update_on_one_found_row_all_persist_to_sqlite(self):
+        """Issue #182: `update`'s own `_version` bump must not phantom-
+        conflict a later `set` on the same bound row in the same run."""
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        doc = compile_doc(order_source(
+            "    find order\n    set order.quantity to 7\n    update order\n"
+            "    set order.quantity to 9\n    update order\n"
+        )).to_document()
+        payload = {"id": "o-1", "quantity": 3, "total": 12}
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        driver.seed(default_rows(doc, "wf.place", payload))
+
+        interp = Interpreter(doc, repo_rows={}, repository=driver)
+        result = interp.run_workflow("wf.place", payload)
+
+        self.assertEqual(result["status"], "completed", result.get("failure_reason"))
+        reread = driver.execute("entity.order", "read",
+                                row_key("entity.order", payload))
+        self.assertEqual(reread["quantity"], 9)
+        # Two persists + two updates, each bumping `_version` by 1 from
+        # the seeded 0.
+        self.assertEqual(reread.observed_version, 4)
+
     def test_respond_can_reference_a_create_as_binding(self):
         doc = compile_doc(order_source(
             "    create order as newOrder\n    respond newOrder.id newOrder.quantity\n"

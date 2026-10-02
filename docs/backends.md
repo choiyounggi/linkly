@@ -140,6 +140,13 @@ UPDATE lnpl_rows
 failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프로세스
 인메모리라 이 충돌이 존재할 수 없으므로 `persist()`가 그대로 no-op이다.
 
+`update`가 성공하면(영향받은 행이 1개 이상) 드라이버는 이 실행이 이미 읽어
+바인딩해 둔 같은 키의 행에도 그 UPDATE가 만든 `_version` 증가분을 그대로
+반영한다 — 그 결과 한 실행 안의 `set; update; set` 순서가 더 이상 자기
+자신과 충돌하지 않는다(이슈 #182). 다른 연결(다른 실행)이 그 사이에
+실제로 쓴 경우에는 지금과 똑같이 충돌한다 — 이 반영은 이 실행이 이미
+아는 값에서 1만큼만 전진하므로, 모르는 동시 쓰기를 절대 앞지르지 않는다.
+
 **충돌이 났을 때 누가 재시도하는가.** 한 `WorkflowStep`은 소스 한 줄이라
 (`lower.py`의 `_step`), `read`와 그 뒤의 `set`은 항상 서로 다른 스텝이다. 실패한
 `set` 스텝만 재시도하면 같은(다시 읽지 않은) 바인딩을 그대로 다시 쓰므로 절대
@@ -421,6 +428,10 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, 그리고 읽은 행이
 `observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
 #92 — 이 속성이 없으면 이 케이스는 스킵된다).
+이슈 #182부터는 `observed_version`을 갖는 드라이버에 대해 한 실행 안에서
+`set; update; set; update` 순서가 전부 성공하는지, 그리고 그 `update`
+전후로 다른 연결의 실제 쓰기가 끼어들어도 여전히 충돌이 나는지(두 순서
+모두)를 함께 검증한다.
 
 **`begin`/`commit`/`rollback`(이슈 #79, RFC-0032) — 이슈 #115로 파괴적 변경됨.**
 전에는 셋이 예외 없이 순서대로 호출 가능한지만 확인했고, 기본 계약이 no-op을

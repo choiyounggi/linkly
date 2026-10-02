@@ -213,6 +213,19 @@ class _InertOutboxDriver(SqliteRepositoryDriver):
         return []
 
 
+class _TouchLosesBoundVersionDriver(SqliteRepositoryDriver):
+    """Negative control (testing/quality/harness-reverse-controls) for
+    issue #182's TCK case: reproduces the pre-fix bug by never
+    remembering a bound row, so `_touch`'s `update` has nothing to
+    advance and a later `persist` on that bound row sees a phantom
+    conflict."""
+
+    def execute(self, entity_id, operation, key):
+        if operation == "read":
+            return self._read(entity_id, key)
+        return super().execute(entity_id, operation, key)
+
+
 def _run_one_tck_case(driver_factory, case_name):
     """Run exactly one `RepositoryDriverTCK` method, in isolation, against a
     driver built by `driver_factory`, and return the `unittest.TestResult`."""
@@ -277,6 +290,81 @@ class RollbackTCKDiscriminatesTest(unittest.TestCase):
         self.assertEqual(result.testsRun, 1)
         self.assertEqual(len(result.skipped), 1)
         self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+
+class SelfConflictAfterUpdateTCKDiscriminatesTest(unittest.TestCase):
+    """harness-reverse-controls: before trusting that the new TCK case
+    catches a driver that loses the bound row's version after `update`,
+    prove it actually does — run it against a driver known wrong
+    (negative control) and the real driver (positive control), and
+    require opposite verdicts. Issue #182."""
+
+    CASE = "test_set_update_set_update_on_one_read_row_all_persist"
+
+    def test_the_case_fails_against_a_driver_that_loses_the_bound_version(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "lossy-store.db")
+
+        result = _run_one_tck_case(
+            lambda: _TouchLosesBoundVersionDriver(path), self.CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 1)
+
+    def test_the_case_passes_against_the_real_sqlite_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "sqlite-store.db")
+
+        result = _run_one_tck_case(
+            lambda: SqliteRepositoryDriver(path), self.CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+
+class UpdateAffectingNoRowLeavesTheBoundVersionTest(unittest.TestCase):
+    """Issue #182's 0-rows boundary (review r1, F1): `_touch` advances a
+    bound row's `observed_version` only for a write that actually landed.
+    An `update` that matches no row wrote nothing, so advancing anyway
+    would let the next `persist` pass the version check against a version
+    this run never produced — masking another run's real change."""
+
+    def test_an_update_matching_no_row_does_not_advance_the_bound_version(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "zero-rows-store.db")
+        driver = SqliteRepositoryDriver(path)
+        self.addCleanup(driver.close)
+        other = SqliteRepositoryDriver(path)
+        self.addCleanup(other.close)
+        driver.seed({"widget": {"w-z1": {"id": "w-z1", "n": 0}}})
+        row = driver.execute("widget", "read", "w-z1")
+        self.assertEqual(row.observed_version, 0)
+
+        # Another run deletes the row; this run's `update` then matches
+        # nothing.
+        other.execute("widget", "delete", "w-z1")
+        answer = driver.execute("widget", "update", "w-z1")
+
+        self.assertEqual(answer, {"affected": 0})
+        self.assertEqual(row.observed_version, 0)
+
+        # The other run re-creates the row and writes it once, leaving the
+        # store at `_version` 1 — exactly where a wrongly advanced binding
+        # would sit. This run's persist must still conflict, and the other
+        # run's write must survive.
+        other.execute("widget", "create", "w-z1")
+        theirs = other.execute("widget", "read", "w-z1")
+        theirs["n"] = 5
+        other.persist("widget", "w-z1", theirs)
+
+        row["n"] = 1
+        with self.assertRaises(DriverError) as caught:
+            driver.persist("widget", "w-z1", row)
+        self.assertIn("conflict", str(caught.exception))
+        self.assertEqual(other.execute("widget", "read", "w-z1")["n"], 5)
 
 
 class SharedContractTest(ContractTestCase):

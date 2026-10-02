@@ -288,15 +288,19 @@ class TestF3F6Scenario(unittest.TestCase):
                          .observed_version, 4)
 
     def test_two_sets_in_one_run_both_persist_under_the_lookup_key_on_sqlite(self):
-        """t174's contract under the lookup key: the second persist sees the
-        first persist's own version bump, not a phantom write conflict.
+        """t174's contract under the lookup key: the second persist sees
+        the first persist's own version bump, not a phantom write
+        conflict.
 
-        (A `set` after an `update` of the same bound row still conflicts on
-        SQLite with or without `by` — `update` bumps `_version` without
-        advancing the bound row's `observed_version`; pre-existing, recorded
-        for a follow-up, coordinator ruling on #175 DoD 1.)"""
+        Issue #182 folded in: an `update` BETWEEN the two `set`s no
+        longer phantom-conflicts the second one either, with the lookup
+        key in play exactly as it is without one
+        (test_create_binding.py's
+        `test_set_update_set_update_on_one_found_row_all_persist_to_sqlite`
+        is the bare-key twin of this test)."""
         doc = compile_doc("    find stock by input.productId\n"
                           "    set stock.onHand to stock.onHand - input.qty\n"
+                          "    update stock by input.productId\n"
                           "    set stock.onHand to stock.onHand - input.qty\n"
                           "    update stock by input.productId\n")
         driver = SqliteRepositoryDriver(os.path.join(_tmp_store_dir(self), "s.db"))
@@ -308,7 +312,11 @@ class TestF3F6Scenario(unittest.TestCase):
         self.assertEqual(result["status"], "completed", result.get("failure_reason"))
         stock = driver.execute(STOCK, "read", "entity.stock#P1")
         self.assertEqual(stock["onHand"], 1)
-        self.assertEqual(stock.observed_version, 3)
+        # Two persists + two updates, each bumping `_version` by 1 from
+        # the seeded 0 (issue #182's fix: the extra `update` no longer
+        # costs an extra phantom conflict, only its own real version
+        # bump).
+        self.assertEqual(stock.observed_version, 4)
         # The order-id key was never written.
         self.assertIsNone(driver.execute(STOCK, "read", "entity.stock#O1"))
 

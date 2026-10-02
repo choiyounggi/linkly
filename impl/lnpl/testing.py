@@ -354,6 +354,81 @@ class RepositoryDriverTCK:
 
         self.assertEqual(self.driver.execute("widget", "read", "w-v2")["n"], 2)
 
+    def test_set_update_set_update_on_one_read_row_all_persist(self):
+        """Issue #182: `update` bumps `_version` without advancing the
+        bound row's `observed_version` on a driver that does not account
+        for it — this pins the fix. All four steps on ONE bound row, in
+        one run, must land."""
+        self.driver.seed({"widget": {"w-v4": {"id": "w-v4", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-v4")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        row["n"] = 1
+        self.driver.persist("widget", "w-v4", row)
+        self.driver.execute("widget", "update", "w-v4")
+        row["n"] = 2
+        self.driver.persist("widget", "w-v4", row)
+        self.driver.execute("widget", "update", "w-v4")
+
+        self.assertEqual(self.driver.execute("widget", "read", "w-v4")["n"], 2)
+
+    def test_a_write_from_another_run_after_this_runs_update_still_conflicts(self):
+        """Issue #182, scenario (a): this run's own `update` (and the
+        bookkeeping that advances its bound row's `observed_version`)
+        must not make a LATER, genuinely external write invisible. A
+        second, independent handle writes after this run's `update`;
+        this run's own `persist` on its original binding must still
+        raise."""
+        self.driver.seed({"widget": {"w-x1": {"id": "w-x1", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-x1")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        self.driver.execute("widget", "update", "w-x1")
+
+        second_driver = self.make_driver()
+        self.addCleanup(second_driver.close)
+        stolen = second_driver.execute("widget", "read", "w-x1")
+        stolen["n"] = 1
+        second_driver.persist("widget", "w-x1", stolen)
+
+        row["n"] = row["n"] + 1
+        with self.assertRaises(DriverError) as caught:
+            self.driver.persist("widget", "w-x1", row)
+        self.assertIn("conflict", str(caught.exception))
+
+    def test_a_write_from_another_run_before_this_runs_update_still_conflicts(self):
+        """Issue #182, scenario (b): a genuinely external write that
+        landed BEFORE this run's own `update` must still be caught when
+        this run later tries to `persist` its original binding —
+        `update`'s own version bump must never let this run's
+        bookkeeping advance PAST what the external write actually left
+        behind."""
+        self.driver.seed({"widget": {"w-x2": {"id": "w-x2", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-x2")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        second_driver = self.make_driver()
+        self.addCleanup(second_driver.close)
+        stolen = second_driver.execute("widget", "read", "w-x2")
+        stolen["n"] = 1
+        second_driver.persist("widget", "w-x2", stolen)
+
+        self.driver.execute("widget", "update", "w-x2")
+
+        row["n"] = row["n"] + 1
+        with self.assertRaises(DriverError) as caught:
+            self.driver.persist("widget", "w-x2", row)
+        self.assertIn("conflict", str(caught.exception))
+
 
 class CacheDriverTCK:
     """Mix into a `unittest.TestCase` subclass, override `make_cache()` and

@@ -430,8 +430,14 @@ _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, paylo
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
 # Every successful write bumps `_version`, whether or not this call checks it
 # against a prior read (`_touch`'s bare update never reads-then-mutates
-# through a binding, so it has no observed version to check — issue #92 scopes
-# the guard to `persist()`, the read-modify-write path that loses updates).
+# through a binding, so it has no observed version of its own to check —
+# issue #92 scopes the guard to `persist()`, the read-modify-write path that
+# loses updates). `_touch` still does NOT compare `_version` before writing —
+# but after a successful update (`cursor.rowcount > 0`) it advances
+# `observed_version` on whatever row this run already has bound for the same
+# key (`execute`'s `_bound_rows` bookkeeping), so the bump this statement just
+# made is not mistaken for a concurrent write by that bound row's next
+# `persist` (issue #182).
 _UPDATE_ROW = ("UPDATE lnpl_rows SET payload = ?, _version = _version + 1 "
               "WHERE entity_id = ? AND row_key = ?")
 # `persist()`'s conditional form: the write only lands if `_version` still
@@ -540,6 +546,10 @@ class _VersionedRow(dict):
     also WRITES it, advancing it in place after a successful versioned
     UPDATE so a second write through the same object is checked against the
     version that write left behind rather than the now-stale read (#174).
+    `_touch`'s `update` path (issue #182) advances it the same way after
+    its own successful write (`cursor.rowcount > 0`), for whichever row
+    `execute`'s `read` branch last handed out under that same
+    `(entity_id, key)` — the bookkeeping gap #174 left open.
     """
 
     def __init__(self, data, version):
@@ -576,6 +586,14 @@ class SqliteRepositoryDriver(RepositoryDriver):
         # because BEGIN is deferred to the first write (see `begin`).
         self._in_transaction = False
         self._sql_transaction_open = False
+        # issue #182: the exact _VersionedRow object execute()'s `read`
+        # branch last handed out for this (entity_id, key), so _touch's
+        # `update` can advance ITS observed_version too. Keyed per driver
+        # instance (one connection = one run's worth of bookkeeping),
+        # last read under a key wins -- the same last-write-wins rule
+        # the interpreter's own binding scope already uses (RFC-0012
+        # SS G12.2).
+        self._bound_rows = {}
         try:
             # issue #108 D4: a `parallel` block's steps run this driver from
             # worker threads. The default `check_same_thread=True` would
@@ -803,7 +821,16 @@ class SqliteRepositoryDriver(RepositoryDriver):
 
     def execute(self, entity_id, operation, key):
         if operation in READ_OPS:
-            return self._read(entity_id, key)
+            row = self._read(entity_id, key)
+            if operation == "read" and row is not None:
+                # issue #182: register the exact object handed out
+                # here -- never inside `_read` itself, which `_touch`
+                # also calls directly below for its own internal,
+                # throwaway read. That internal call must NOT overwrite
+                # this registration, or `_touch` would have nothing
+                # left of the caller's real binding to advance.
+                self._bound_rows[(entity_id, key)] = row
+            return row
         if operation == "create":
             return self._create(entity_id, key)
         if operation in ("update", "delete"):
@@ -872,6 +899,8 @@ class SqliteRepositoryDriver(RepositoryDriver):
             # caller still holds is now one version behind the store. Advance
             # it in place — a second `set` on the same binding within one run
             # would otherwise fail the version check as a phantom conflict.
+            # `_touch`'s `update` path does the same for its own write,
+            # against `_bound_rows` instead of a parameter (issue #182).
             row.observed_version = version + 1
             self._end_write()
         except sqlite3.Error as exc:
@@ -1026,6 +1055,22 @@ class SqliteRepositoryDriver(RepositoryDriver):
             self._end_write()
         except sqlite3.Error as exc:
             raise DriverError("cannot %s %s: %s" % (operation, entity_id, exc)) from exc
+        if operation == "update" and cursor.rowcount > 0:
+            # issue #182: this call's own UPDATE just bumped `_version`
+            # in the store. `current` above is a throwaway local -- it
+            # came from `_read` directly, never through `execute`'s
+            # "read" branch, so it was never registered in
+            # `_bound_rows` and is NOT what gets advanced here. What
+            # does is whatever row THIS run already has bound for the
+            # same key, if any: advance it in place so a later
+            # `persist` on it sees the version this call just left
+            # behind rather than the now-stale read that produced the
+            # binding. 0 rows affected (no row exists for this key)
+            # leaves any such bound row untouched -- nothing landed,
+            # so there is nothing to advance.
+            bound = self._bound_rows.get((entity_id, key))
+            if bound is not None:
+                bound.observed_version += 1
         return {"affected": cursor.rowcount if cursor.rowcount >= 0 else 0}
 
 
