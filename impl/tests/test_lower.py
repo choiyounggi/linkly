@@ -1808,5 +1808,285 @@ class TestAssignmentDiagnosticNamesTheStepItIsAbout(unittest.TestCase):
         self.assertNotIn("guard condition", message)
 
 
+
+# RFC-0055 Track B: `optional` fields in guards.
+OPTIONAL_GUARD_SOURCE = """
+capability postgres
+entity Customer
+    field
+        id UUID
+        name Text
+        nickname Text optional
+        score Integer optional
+        bonus Integer optional
+        total Integer
+        balance Money optional
+        price Money
+entity Order
+    field
+        id UUID
+service CustomerService
+    policy
+        retry 0
+workflow Greet
+    find customer
+%s
+"""
+
+OPTIONAL_CUSTOMER_ID = "0b6f1c2e-4444-4a2b-9c3d-000000000208"
+
+
+def optional_guard_module(body):
+    return lower(parse(OPTIONAL_GUARD_SOURCE % body), "crm")
+
+
+class TestPresenceOnOptionalFields(unittest.TestCase):
+    """RFC-0055 §6 3.2: `exists`/`missing` is open on an `optional` field of
+    any declared type; a non-optional Text/Money field is still refused."""
+
+    def test_presence_on_optional_text_field_compiles(self):
+        mod = optional_guard_module("    when customer.nickname exists\n    create order")
+        self.assertEqual(mod.get("wf.greet.guard.1")["condition"],
+                         "customer.nickname exists")
+
+    def test_missing_on_optional_text_field_compiles(self):
+        mod = optional_guard_module("    when customer.nickname missing\n    create order")
+        self.assertEqual(mod.get("wf.greet.guard.1")["condition"],
+                         "customer.nickname missing")
+
+    def test_presence_on_non_optional_text_field_still_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            optional_guard_module("    when customer.name exists\n    create order")
+        self.assertIn("customer.name", str(caught.exception))
+        self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+    def test_presence_on_optional_money_field_compiles(self):
+        mod = optional_guard_module("    when customer.balance exists\n    create order")
+        self.assertEqual(mod.get("wf.greet.guard.1")["condition"],
+                         "customer.balance exists")
+
+    def test_presence_on_non_optional_money_field_still_refused(self):
+        with self.assertRaises(LowerError) as caught:
+            optional_guard_module("    when customer.price exists\n    create order")
+        self.assertIn("declared type is Money", str(caught.exception))
+        self.assertIn("RFC-0051", str(caught.exception))
+
+    def test_comparison_on_optional_text_field_still_refused(self):
+        # Boundary: the exemption is for Presence only (§6 3.2).
+        with self.assertRaises(LowerError) as caught:
+            optional_guard_module(
+                "    when customer.nickname == input.nickname\n    create order")
+        self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+
+class TestPresenceOnOptionalFieldsAtRuntime(unittest.TestCase):
+    """The guard compiled above gates on the stored row's key."""
+
+    def run_greet(self, row):
+        from lnpl.interp import Interpreter
+        from lnpl.repo_policy import row_key
+        doc = optional_guard_module(
+            "    when customer.nickname exists\n    create order").to_document()
+        payload = {"id": OPTIONAL_CUSTOMER_ID}
+        rows = {"entity.customer": {row_key("entity.customer", payload): row}}
+        interp = Interpreter(doc, repo_rows=rows)
+        result = interp.run_workflow("wf.greet", payload)
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        return interp.repo.rows.get("entity.order", {})
+
+    def test_a_present_optional_text_field_opens_the_guard(self):
+        orders = self.run_greet({"id": OPTIONAL_CUSTOMER_ID, "name": "Ada",
+                                 "total": 1, "price": {"amount": "1.00", "currency": "USD"},
+                                 "nickname": "Countess"})
+        self.assertEqual(1, len(orders))
+
+    def test_an_absent_optional_text_field_closes_the_guard(self):
+        orders = self.run_greet({"id": OPTIONAL_CUSTOMER_ID, "name": "Ada",
+                                 "total": 1, "price": {"amount": "1.00", "currency": "USD"}})
+        self.assertEqual({}, orders)
+
+    def test_a_null_optional_text_field_closes_the_guard(self):
+        orders = self.run_greet({"id": OPTIONAL_CUSTOMER_ID, "name": "Ada",
+                                 "total": 1, "price": {"amount": "1.00", "currency": "USD"},
+                                 "nickname": None})
+        self.assertEqual({}, orders)
+
+
+INPUT_PRESENCE_SOURCE = """
+capability postgres
+%s
+service CrmService
+    policy
+        retry 0
+workflow Note
+    when input.note exists
+    create customer
+"""
+
+CUSTOMER_NOTE_OPTIONAL = "entity Customer\n    field\n        id UUID\n        note Text optional\n"
+CUSTOMER_NOTE_REQUIRED = "entity Customer\n    field\n        id UUID\n        note Text\n"
+ORDER_NOTE_REQUIRED = "entity Order\n    field\n        id UUID\n        note Text\n"
+ORDER_NOTE_OPTIONAL = "entity Order\n    field\n        id UUID\n        note Text optional\n"
+
+
+class TestInputPresenceAcrossEntities(unittest.TestCase):
+    """RFC-0055 §11 first rule / RFC-0015 §3 new row: `input.<field>
+    exists` needs every declaring entity to agree on `optional`."""
+
+    def lower_entities(self, *entities):
+        return lower(parse(INPUT_PRESENCE_SOURCE % "".join(entities)), "crm")
+
+    def assert_ambiguous(self, *entities):
+        with self.assertRaises(LowerError) as caught:
+            self.lower_entities(*entities)
+        message = str(caught.exception)
+        self.assertIn("Customer, Order", message)
+        self.assertIn("RFC-0055", message)
+        self.assertIn("input.note exists", message)
+
+    def test_input_field_presence_ambiguous_entities_refused(self):
+        self.assert_ambiguous(CUSTOMER_NOTE_OPTIONAL, ORDER_NOTE_REQUIRED)
+
+    def test_input_field_presence_ambiguous_entities_refused_other_order(self):
+        self.assert_ambiguous(ORDER_NOTE_REQUIRED, CUSTOMER_NOTE_OPTIONAL)
+
+    def test_input_field_presence_both_optional_compiles(self):
+        mod = self.lower_entities(CUSTOMER_NOTE_OPTIONAL, ORDER_NOTE_OPTIONAL)
+        self.assertEqual(mod.get("wf.note.guard.1")["condition"], "input.note exists")
+
+    def test_input_field_presence_single_entity_optional_compiles(self):
+        mod = self.lower_entities(CUSTOMER_NOTE_OPTIONAL)
+        self.assertEqual(mod.get("wf.note.guard.1")["condition"], "input.note exists")
+
+    def test_input_field_presence_single_entity_required_text_still_refused(self):
+        # Boundary: one declaring entity -> no ambiguity, the type rule decides.
+        with self.assertRaises(LowerError) as caught:
+            self.lower_entities(CUSTOMER_NOTE_REQUIRED)
+        self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+    def test_input_field_presence_namespaced_duplicate_entities_refused(self):
+        import shutil
+        import tempfile
+        from lnpl import cli
+        base = os.path.join(REPO_ROOT, ".claude", "tmp")
+        os.makedirs(base, exist_ok=True)
+        root = tempfile.mkdtemp(prefix="lnpl-t208b-", dir=base)
+        self.addCleanup(shutil.rmtree, root, True)
+        files = {
+            "billing/customer.lnpl": CUSTOMER_NOTE_OPTIONAL,
+            "shipping/customer.lnpl": CUSTOMER_NOTE_REQUIRED,
+            "billing/app.lnpl": ("service CrmService\n    policy\n        retry 0\n"
+                                 "workflow Note\n    when input.note exists\n"
+                                 "    create customer\n"),
+        }
+        for rel, text in files.items():
+            path = os.path.join(root, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        with self.assertRaises(Exception) as caught:
+            cli.compile_source([root])
+        message = str(caught.exception)
+        self.assertIn("billing.Customer", message)
+        self.assertIn("shipping.Customer", message)
+        self.assertIn("RFC-0055", message)
+
+
+ARITH_GUARD_SOURCE = OPTIONAL_GUARD_SOURCE
+ARITH_CODE = "optional-field-unguarded-arithmetic"
+SET_SCORE = "    set customer.total to customer.score + 1"
+
+
+def arith_warnings(body):
+    return list(optional_guard_module(body).diagnostics.by_code(ARITH_CODE))
+
+
+class TestOptionalUnguardedArithmetic(unittest.TestCase):
+    """RFC-0055 §8: `set`/guard arithmetic on an optional field is
+    protected only by the nearest enclosing `when <same field> exists`."""
+
+    def test_arithmetic_inside_the_exact_guard_no_warning(self):
+        self.assertEqual([], arith_warnings(
+            "    when customer.score exists\n" + SET_SCORE))
+
+    def test_arithmetic_inside_pipeline_under_the_guard_no_warning(self):
+        self.assertEqual([], arith_warnings(
+            "    when customer.score exists\n    pipeline\n" + SET_SCORE))
+
+    def test_arithmetic_inside_parallel_under_the_guard_no_warning(self):
+        self.assertEqual([], arith_warnings(
+            "    when customer.score exists\n    parallel\n" + SET_SCORE
+            + "\n    merge"))
+
+    def test_arithmetic_after_the_guard_ends_warns(self):
+        found = arith_warnings(
+            "    when customer.score exists\n    create order\n" + SET_SCORE)
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+        self.assertEqual("warning", found[0].severity)
+        self.assertEqual(23, found[0].line)
+        self.assertIn("when customer.score exists", found[0].message)
+        self.assertIn("RFC-0055", found[0].message)
+        self.assertIn("when <ref> exists", found[0].hint)
+
+    def test_arithmetic_with_no_guard_at_all_warns(self):
+        found = arith_warnings(SET_SCORE)
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+        self.assertEqual(21, found[0].line)
+
+    def test_arithmetic_under_or_alternative_warns(self):
+        found = arith_warnings(
+            "    when customer.score exists\n    or customer.total > 0\n" + SET_SCORE)
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+
+    def test_arithmetic_under_until_warns(self):
+        found = arith_warnings("    until customer.score exists\n" + SET_SCORE)
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+
+    def test_arithmetic_under_guard_on_different_field_warns(self):
+        found = arith_warnings("    when customer.bonus exists\n" + SET_SCORE)
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+
+    def test_arithmetic_under_missing_guard_warns(self):
+        # `missing` is the opposite of protection.
+        found = arith_warnings("    when customer.score missing\n" + SET_SCORE)
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+
+    def test_arithmetic_on_a_required_field_never_warns(self):
+        self.assertEqual([], arith_warnings(
+            "    set customer.total to customer.total + 1"))
+
+    def test_a_plain_read_without_arithmetic_does_not_warn(self):
+        # §8: the warning covers arithmetic only; a bare read stays a
+        # runtime RunError when the value is absent.
+        self.assertEqual([], arith_warnings("    set customer.total to customer.score"))
+
+    def test_guard_comparison_arithmetic_on_optional_field_warns(self):
+        found = arith_warnings("    when customer.score + 1 > 5\n    create order")
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+        self.assertEqual(21, found[0].line)
+
+    def test_guard_comparison_arithmetic_cannot_be_protected_by_an_outer_guard(self):
+        # Guards never nest: a guard line closes the open `pipeline`, so the
+        # second guard is top-level and its arithmetic still warns (RFC-0055 §8).
+        found = arith_warnings(
+            "    when customer.score exists\n    pipeline\n    create order\n"
+            "    when customer.score + 1 > 5\n    create order")
+        self.assertEqual(["customer.score"], [d.subject for d in found])
+        self.assertEqual(24, found[0].line)
+
+    def test_guard_comparison_arithmetic_on_a_required_field_no_warning(self):
+        self.assertEqual([], arith_warnings(
+            "    when customer.total + 1 > 5\n    create order"))
+
+    def test_guard_alternative_arithmetic_on_optional_field_warns(self):
+        found = arith_warnings(
+            "    when customer.total > 5\n    or customer.bonus * 2 > 5\n"
+            "    create order")
+        self.assertEqual(["customer.bonus"], [d.subject for d in found])
+
+    def test_guard_comparison_without_arithmetic_does_not_warn(self):
+        self.assertEqual([], arith_warnings("    when customer.score > 5\n    create order"))
+
+
 if __name__ == "__main__":
     unittest.main()

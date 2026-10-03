@@ -189,7 +189,8 @@ class RepositoryDriver:
         (compiler-validated, never raw text), `op` one of `<`/`<=`/`>`/
         `>=`/`==`/`!=`, `value` the already-resolved concrete value to bind.
         `order` is `(field, desc)` or `None`. `limit` is a positive `int` or
-        `None`.
+        `None`. Under `order`, a row lacking the field (or holding null)
+        comes last in both directions, in `row_key` order (RFC-0055 §9).
         """
         raise NotImplementedError
 
@@ -241,7 +242,8 @@ class RepositoryDriver:
     def query_sorted(self, entity_id, field):
         """Every row for `entity_id`, ordered by `field` ascending, `row_key`
         (`repo_policy.row_key`) the tiebreaker for equal values (issue #99,
-        D3/D7 — the `expose list` GET surface).
+        D3/D7 — the `expose list` GET surface). A row lacking `field` (or
+        holding null) comes last, in `row_key` order (RFC-0055 §9).
 
         Same empty-list-never-None contract as `query`. `field` names a
         top-level key of the JSON `payload` — never SQL text: the statement
@@ -412,8 +414,11 @@ _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
 # other varying value here (STATEMENT TEXT IS CONSTANT, module docstring).
 # `payload` carries no per-field column (D7: the existing schema is
 # unchanged), so the sort key is extracted from the JSON blob at read time.
+# RFC-0055 §9: the leading `IS NULL` column puts a row lacking the field
+# last; it is never reversed by `DESC`, so that holds in both directions.
 _SELECT_SORTED = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
-                  "ORDER BY json_extract(payload, ?), row_key")
+                  "ORDER BY (json_extract(payload, ?) IS NULL), "
+                  "json_extract(payload, ?), row_key")
 # issue #116, D5/D6: `list where`/`order by`/`limit` pushdown, assembled from
 # fixed literal fragments only — never a document-supplied field name or
 # value (STATEMENT TEXT IS CONSTANT, module docstring). A predicate term's
@@ -426,7 +431,8 @@ _SELECT_PREDICATE_OPS = {
 }
 _SELECT_PREDICATE_BASE = "SELECT payload FROM lnpl_rows WHERE entity_id = ?"
 _SELECT_PREDICATE_TERM = " AND json_extract(payload, ?) %s ?"
-_SELECT_PREDICATE_ORDER = " ORDER BY json_extract(payload, ?)%s, row_key"
+_SELECT_PREDICATE_ORDER = (" ORDER BY (json_extract(payload, ?) IS NULL), "
+                           "json_extract(payload, ?)%s, row_key")
 _SELECT_PREDICATE_ORDER_DEFAULT = " ORDER BY row_key"
 _SELECT_PREDICATE_LIMIT = " LIMIT ?"
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
@@ -828,7 +834,8 @@ class SqliteRepositoryDriver(RepositoryDriver):
             if order is not None:
                 field, desc = order
                 parts.append(_SELECT_PREDICATE_ORDER % (" DESC" if desc else ""))
-                params.append("$." + field)
+                params.append("$." + field)    # the IS NULL column
+                params.append("$." + field)    # the value column
             else:
                 parts.append(_SELECT_PREDICATE_ORDER_DEFAULT)
             if limit is not None:
@@ -844,7 +851,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
     def query_sorted(self, entity_id, field):
         try:
             found = self._conn.execute(
-                _SELECT_SORTED, (entity_id, "$." + field)).fetchall()
+                _SELECT_SORTED, (entity_id, "$." + field, "$." + field)).fetchall()
         except sqlite3.Error as exc:
             raise DriverError("cannot query %s sorted by %s: %s"
                               % (entity_id, field, exc)) from exc

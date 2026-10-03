@@ -244,7 +244,7 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**~4,217 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**~4,287 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
@@ -398,7 +398,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 4217 tests in 114.514s
+Ran 4287 tests in 137.827s
 OK
 ```
 

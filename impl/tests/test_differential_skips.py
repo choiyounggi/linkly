@@ -764,3 +764,159 @@ class TestRestoreSkips(unittest.TestCase):
             self.assertEqual(backend.restore_skips(doc, "wf.checkout",
                                                    {"1", "2", "3"},
                                                    payload=payload), [])
+
+
+
+# RFC-0055 §10: mode B refuses any guard — Presence or comparison — that reads
+# an `optional` field, in `build` and `diff` alike, before any toolchain use.
+OPTIONAL_MODE_B = """capability postgres
+%s
+entity Customer
+    field
+        id UUID
+        score Integer
+        nickname Text optional
+        bonus Integer optional
+
+entity Order
+    field
+        id UUID
+%s
+service CustomerService
+    policy
+        timeout 5s
+
+workflow Greet
+    read customer
+%s
+"""
+
+LEDGER = "\nentity Ledger\n    field\n        id UUID\n        bonus Integer\n"
+
+
+def _optional_doc(body, before="", after=""):
+    doc = lower(parse(OPTIONAL_MODE_B % (before, after, body)), "crm").to_document()
+    return doc, "wf.greet"
+
+
+class TestOptionalGuardExemption(unittest.TestCase):
+
+    _workdir = TestLookupKeyExemption._workdir
+    _forbid_tool = TestLookupKeyExemption._forbid_tool
+
+    def _no_toolchain(self):
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+
+    def _verify(self, doc, wf):
+        payload = {"id": "0b6f1c2e-5555-4a2b-9c3d-000000000208"}
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), self._workdir())
+
+    def _build_refusal(self, doc, wf):
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, self._workdir(), seeded=frozenset())
+        return str(ctx.exception)
+
+    def _diff_refusal(self, doc, wf):
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        msg = str(ctx.exception)
+        self.assertNotIn("toolchain unavailable", msg)
+        return msg
+
+    def test_build_refuses_presence_on_optional_field(self):
+        doc, wf = _optional_doc("    when customer.nickname exists\n    create order")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("customer.nickname exists", msg)
+        self.assertIn("`optional`", msg)
+        self.assertIn("RFC-0055", msg)
+        self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
+
+    def test_build_refuses_comparison_on_optional_field(self):
+        doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("customer.bonus > 5", msg)
+        self.assertIn("RFC-0055", msg)
+
+    def test_emit_mlir_refuses_too(self):
+        doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertIn("RFC-0055", str(ctx.exception))
+
+    def test_build_refuses_presence_on_optional_create_as_alias(self):
+        doc, wf = _optional_doc(
+            "    create customer as fresh\n    when fresh.bonus exists\n"
+            "    create order")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("fresh.bonus exists", msg)
+        self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
+
+    def test_build_refuses_an_optional_field_only_in_an_or_alternative(self):
+        doc, wf = _optional_doc(
+            "    when customer.score > 1\n    or customer.bonus > 1\n    create order")
+        self.assertIn("customer.bonus > 1", self._build_refusal(doc, wf))
+
+    def test_build_still_builds_guard_on_non_optional_sibling_field(self):
+        doc, wf = _optional_doc("    when customer.score > 5\n    create order")
+        self.assertFalse(backend.workflow_uses_optional_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_diff_refuses_presence_on_optional_field_without_toolchain(self):
+        doc, wf = _optional_doc("    when customer.nickname exists\n    create order")
+        msg = self._diff_refusal(doc, wf)
+        self.assertIn("`optional`", msg)
+        self.assertIn("RFC-0055", msg)
+
+    def test_diff_refuses_comparison_on_optional_field_without_toolchain(self):
+        doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
+        self.assertIn("RFC-0055", self._diff_refusal(doc, wf))
+
+    def test_mixed_entity_comparison_input_field_refused_both_orders(self):
+        # `Ledger.bonus` is required, `Customer.bonus` optional: the ANY rule
+        # refuses whichever entity is declared last.
+        for before, after in ((LEDGER, ""), ("", LEDGER)):
+            with self.subTest(ledger_first=bool(before)):
+                doc, wf = _optional_doc("    when input.bonus > 5\n    create order",
+                                        before=before, after=after)
+                self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
+                self.assertIn("RFC-0055", self._build_refusal(doc, wf))
+                self.assertIn("RFC-0055", self._diff_refusal(doc, wf))
+
+    def test_build_with_no_optional_guard_still_builds(self):
+        doc, wf = _optional_doc("    create order")
+        self.assertFalse(backend.workflow_uses_optional_guard(doc, wf))
+        self.assertIn("func.func", backend.emit_mlir(doc, wf))
+
+    def test_diff_with_no_optional_guard_still_diffs(self):
+        # Without a toolchain the ordinary toolchain message comes back —
+        # the exemption is scoped to optional guards.
+        doc, wf = _optional_doc("    when customer.score > 5\n    create order")
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def test_an_unknown_workflow_is_a_backend_error(self):
+        doc, _ = _optional_doc("    create order")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_optional_guard(doc, "wf.nope")
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "crm.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(OPTIONAL_MODE_B % ("", "", "    when customer.nickname exists\n"
+                                                "    create order"))
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.greet"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0055", text)
+                self.assertNotIn("EQUIVALENT", text)

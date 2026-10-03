@@ -126,6 +126,82 @@ class CursorAndPaginateTest(unittest.TestCase):
         self.assertEqual(200, _parse_limit("200"))
 
 
+# RFC-0055 §9: keyset pagination over present-then-absent order.
+PAGE_ENTITY = "entity.order"
+PAGE_ROWS = {PAGE_ENTITY: {
+    "entity.order#a": {"id": "a", "n": 3},
+    "entity.order#b": {"id": "b"},
+    "entity.order#c": {"id": "c", "n": 1},
+    "entity.order#d": {"id": "d", "n": None},
+    "entity.order#e": {"id": "e", "n": 2},
+}}
+
+
+def walk_pages(repo, limit):
+    """Every page `paginate` yields over `repo.query_sorted`, following the
+    wire cursor (encode -> decode) exactly as `_get_list` does."""
+    rows = repo.query_sorted(PAGE_ENTITY, "n")
+    pages, after = [], None
+    while True:
+        page, token = paginate(rows, "n", PAGE_ENTITY, after=after, limit=limit)
+        pages.append([r["id"] for r in page])
+        if token is None:
+            return pages
+        after = decode_cursor(token)
+
+
+class PaginateMissingFieldTest(unittest.TestCase):
+
+    def sqlite_repo(self):
+        import os
+        import shutil
+        import tempfile
+        from lnpl.drivers import SqliteRepositoryDriver
+        base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), ".claude", "tmp")
+        os.makedirs(base, exist_ok=True)
+        root = tempfile.mkdtemp(prefix="lnpl-t208b-", dir=base)
+        self.addCleanup(shutil.rmtree, root, True)
+        driver = SqliteRepositoryDriver(os.path.join(root, "s.db"))
+        self.addCleanup(driver.close)
+        driver.seed(PAGE_ROWS)
+        return driver
+
+    def test_pagination_walks_every_page_with_absent_rows_last(self):
+        self.assertEqual([["c"], ["e"], ["a"], ["b"], ["d"]],
+                         walk_pages(FakeRepository(PAGE_ROWS), limit=1))
+
+    def test_pagination_walks_every_page_on_sqlite_too(self):
+        self.assertEqual([["c"], ["e"], ["a"], ["b"], ["d"]],
+                         walk_pages(self.sqlite_repo(), limit=1))
+
+    def test_pagination_limit_smaller_than_present_count(self):
+        self.assertEqual([["c", "e"], ["a", "b"], ["d"]],
+                         walk_pages(FakeRepository(PAGE_ROWS), limit=2))
+
+    def test_cursor_issued_inside_absent_segment_compares_safely(self):
+        rows = FakeRepository(PAGE_ROWS).query_sorted(PAGE_ENTITY, "n")
+        page, _ = paginate(rows, "n", PAGE_ENTITY,
+                           after=(None, "entity.order#b"), limit=50)
+        self.assertEqual(["d"], [r["id"] for r in page])
+
+    def test_cursor_on_a_present_value_skips_no_absent_row(self):
+        rows = FakeRepository(PAGE_ROWS).query_sorted(PAGE_ENTITY, "n")
+        page, _ = paginate(rows, "n", PAGE_ENTITY,
+                           after=(3, "entity.order#a"), limit=50)
+        self.assertEqual(["b", "d"], [r["id"] for r in page])
+
+    def test_forged_cross_type_cursor_still_raises_cursor_error(self):
+        rows = FakeRepository(PAGE_ROWS).query_sorted(PAGE_ENTITY, "n")
+        with self.assertRaises(CursorError):
+            paginate(rows, "n", PAGE_ENTITY, after=("not-a-number", "e#z"), limit=50)
+
+    def test_forged_cursor_with_a_non_text_key_raises_cursor_error(self):
+        rows = FakeRepository(PAGE_ROWS).query_sorted(PAGE_ENTITY, "n")
+        with self.assertRaises(CursorError):
+            paginate(rows, "n", PAGE_ENTITY, after=(None, 5), limit=50)
+
+
 class GetSingleTest(ServerTestCase):
     def setUp(self):
         self.repo = FakeRepository()
