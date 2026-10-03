@@ -184,7 +184,7 @@ lnpl config check <source...> [--profile NAME] [--config PATH]
 
 ```
 lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
-           --secret-env LNPL_JWT_SECRET [--ttl 15m]
+           --secret-env LNPL_JWT_SECRET [--ttl 15m] [--role <r>]
 ```
 
 | 플래그 | 뜻 |
@@ -194,6 +194,7 @@ lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
 | `--secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**(시크릿 자체가 아니다) |
 | `--jwt-issuer` | 토큰에 실을 `iss` 클레임(이슈 #119b). 안 주면 `"lnpl"` — `serve --jwt-issuer`로 검증할 값과 맞춰야 한다 |
 | `--ttl` | 액세스 토큰 수명 (기본 `15m`) |
+| `--role` | 토큰에 실을 `role` 클레임(이슈 #202). 생략하면 클레임 집합은 이전과 동일. 내장 `hmac` 전용, 자기 주장(self-asserted) 값이다. `--path`의 서비스가 `security role <r>`을 선언했는데 비어 있거나 다르면 발급 시 stderr 경고(발급은 그래도 된다 — 403 경로를 시험할 수 있어야 한다) |
 
 토큰은 stdout 한 줄로 나온다. `aud`는 경로의 서비스 슬러그에서 유도되므로
 발급과 검증이 같은 함수를 읽는다 — 이웃 서비스용 토큰은 통하지 않는다.

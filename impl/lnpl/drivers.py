@@ -310,6 +310,9 @@ class CacheDriver:
         raise NotImplementedError
 
 
+ROLE_CLAIM = "role"
+
+
 class TokenProvider:
     """The `security jwt` capability's adapter contract.
 
@@ -1104,7 +1107,7 @@ class HmacTokenProvider(TokenProvider):
 
     # -- contract ----------------------------------------------------------
 
-    def issue(self, subject, audience, ttl_ms=None):
+    def issue(self, subject, audience, ttl_ms=None, role=None):
         now = int(time.time())
         # `is not None`, not `or`: ttl_ms=0 is a legitimate request for an
         # already-expiring token, and `or` would silently hand back the
@@ -1114,6 +1117,8 @@ class HmacTokenProvider(TokenProvider):
         claims = {"iss": self._issuer, "aud": audience, "sub": subject,
                   "jti": uuid.uuid4().hex, "iat": now, "nbf": now,
                   "exp": now + ttl_s}
+        if role is not None:
+            claims[ROLE_CLAIM] = role
         signing_input = "%s.%s" % (
             _b64u_encode(json.dumps(header, sort_keys=True).encode("utf-8")),
             _b64u_encode(json.dumps(claims, sort_keys=True).encode("utf-8")))

@@ -23,9 +23,11 @@ import hmac
 import io
 import json
 import os
+import shutil
+import tempfile
 import time
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 
 from lnpl import cli
 from lnpl.drivers import HmacTokenProvider
@@ -43,6 +45,8 @@ LOGIN_LNPL = os.path.join(REPO_ROOT, "examples", "login.lnpl")
 SECRET = b"0123456789abcdef0123456789abcdef"          # exactly 32 bytes
 AUDIENCE = "order-service"
 PATH = "/order-service/approve-order"
+CLAUDE_TMP = os.path.join(REPO_ROOT, ".claude", "tmp")
+SECRET_ENV = "LNPL_I202_TEST_JWT_SECRET"
 ORDER_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
 
 ROLE_GATED_SRC = """capability postgres
@@ -82,6 +86,13 @@ workflow ApproveOrder
     set order.approvals to order.approvals + 1
 """
 
+ROLE_GATED_ESC_SRC = ROLE_GATED_SRC.replace("role admin", "role a\x1bb")
+ROLE_GATED_ZWSP_SRC = ROLE_GATED_SRC.replace("role admin", "role a\u200bb")
+ROLE_GATED_ESC_PATH_SRC = ROLE_GATED_SRC.replace("OrderService", "Order\x1bService")
+ROLE_GATED_ZWSP_PATH_SRC = ROLE_GATED_SRC.replace("OrderService", "Order\u200bService")
+ROLE_GATED_ESC_PATH = "/order\x1b-service/approve-order"
+ROLE_GATED_ZWSP_PATH = "/order\u200b-service/approve-order"
+
 
 def compile_doc(source, module="m119role"):
     return lower(parse(source), module).to_document()
@@ -93,9 +104,9 @@ def _b64u(raw):
 
 def forge(role=None, **overrides):
     """A genuinely-signed HS256 token (same shape `test_token_provider.py`
-    forges), with an optional `role` claim — `HmacTokenProvider.issue` mints
-    only its own fixed claim set, so a role-bearing token has to be built by
-    hand against the same signing key."""
+    forges), with an optional `role` claim, built by hand against the same
+    signing key so the verify side is exercised independently of
+    `HmacTokenProvider.issue(role=...)` (issue #202)."""
     now = int(time.time())
     header = {"alg": "HS256", "typ": "JWT"}
     claims = {"iss": "lnpl", "aud": AUDIENCE, "sub": "u1", "jti": "j-1",
@@ -482,6 +493,112 @@ class ScheduleTriggerRoleGateTest(unittest.TestCase):
         status, _, body = post_schedule(app, forge(role=None, aud="-"))
         self.assertEqual(status, 200)
         self.assertEqual(body["status"], "completed")
+
+
+
+class CliMintedTokenAcceptedTest(unittest.TestCase):
+    """Issue #202 — the DoD's own accept/reject matrix, minted by the
+    real CLI, verified by the real WSGI app."""
+
+    def setUp(self):
+        self._prev_secret = os.environ.get(SECRET_ENV)
+        os.environ[SECRET_ENV] = SECRET.decode()
+        self.addCleanup(self._restore_secret)
+        self.app = make_app()
+
+    def _restore_secret(self):
+        if self._prev_secret is None:
+            os.environ.pop(SECRET_ENV, None)
+        else:
+            os.environ[SECRET_ENV] = self._prev_secret
+
+    def mint_via_cli(self, source_text, *extra_args):
+        """Mint through the real CLI (`cli.main`), never `forge()` — the
+        mandatory discriminator between 'the constant matches' and 'the
+        system actually mints and verifies'. Returns (rc, stdout_stripped,
+        stderr)."""
+        os.makedirs(CLAUDE_TMP, exist_ok=True)
+        workdir = tempfile.mkdtemp(prefix="lnpl-i202-", dir=CLAUDE_TMP)
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        src_path = os.path.join(workdir, "svc.lnpl")
+        with open(src_path, "w", encoding="utf-8") as fh:
+            fh.write(source_text)
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["token", src_path, "--path", PATH, "--subject", "u1",
+                "--secret-env", SECRET_ENV] + list(extra_args)
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(argv)
+        return rc, out.getvalue().strip(), err.getvalue()
+
+    def test_normal_a_cli_minted_matching_role_is_accepted(self):
+        rc, token, err = self.mint_via_cli(ROLE_GATED_SRC, "--role", "admin")
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertNotIn("\n", token)
+        self.assertTrue(token)
+        status, _, body = post(self.app, token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "completed")
+
+    def test_error_a_cli_minted_token_without_role_is_rejected_and_warned(self):
+        rc, token, err = self.mint_via_cli(ROLE_GATED_SRC)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            err,
+            "warning: the service at %r requires role %r; this token "
+            "carries no role, so the request will be refused with 403\n"
+            % (PATH, "admin"))
+        status, _, _ = post(self.app, token)
+        self.assertEqual(status, 403)
+
+    def test_error_a_cli_minted_token_with_a_different_role_is_rejected(self):
+        rc, token, err = self.mint_via_cli(ROLE_GATED_SRC, "--role", "ops")
+        self.assertEqual(
+            err,
+            "warning: the service at %r requires role %r; this token "
+            "carries role %r, so the request will be refused with 403\n"
+            % (PATH, "admin", "ops"))
+        status, _, _ = post(self.app, token)
+        self.assertEqual(status, 403)
+
+    def test_boundary_role_flag_on_a_service_without_security_role_is_unaffected(self):
+        app2 = make_app(NO_ROLE_SRC)
+        rc, token, err = self.mint_via_cli(NO_ROLE_SRC, "--role", "x")
+        self.assertEqual(err, "")
+        status, _, _ = post(app2, token)
+        self.assertEqual(status, 200)
+
+    def test_error_a_unicode_lookalike_role_is_rejected_at_verify(self):
+        rc, token, err = self.mint_via_cli(ROLE_GATED_SRC, "--role", "\u0430dmin")
+        self.assertEqual(rc, 0)
+        status, _, _ = post(self.app, token)
+        self.assertEqual(status, 403)
+
+    def test_normal_the_secret_never_reaches_stdout_or_stderr_through_the_cli_mint_chain(self):
+        rc, token, err = self.mint_via_cli(ROLE_GATED_SRC, "--role", "admin")
+        self.assertNotIn(SECRET.decode(), token)
+        self.assertNotIn(SECRET.decode(), err)
+
+    def test_error_a_case_different_role_is_rejected_and_warned(self):
+        rc, token, err = self.mint_via_cli(ROLE_GATED_SRC, "--role", "Admin")
+        self.assertEqual(
+            err,
+            "warning: the service at %r requires role %r; this token "
+            "carries role %r, so the request will be refused with 403\n"
+            % (PATH, "admin", "Admin"))
+        status, _, _ = post(self.app, token)
+        self.assertEqual(status, 403)
+
+    def test_normal_a_declared_role_containing_control_or_zero_width_characters_still_mints_and_verifies(self):
+        for source, declared in ((ROLE_GATED_ESC_SRC, "a\x1bb"),
+                                 (ROLE_GATED_ZWSP_SRC, "a\u200bb")):
+            with self.subTest(declared=repr(declared)):
+                app = make_app(source)
+                rc, token, err = self.mint_via_cli(source, "--role", declared)
+                self.assertEqual(rc, 0)
+                self.assertNotIn(declared, err)
+                status, _, _ = post(app, token)
+                self.assertEqual(status, 200)
 
 
 if __name__ == "__main__":

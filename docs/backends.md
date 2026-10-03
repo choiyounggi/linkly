@@ -48,7 +48,7 @@ class TokenProvider:         # security jwt
 lnpl run   <src>.lnpl --backend sqlite:./store.db
 lnpl serve <src>.lnpl --backend sqlite:./store.db --jwt-secret-env LNPL_JWT_SECRET
 lnpl token <src>.lnpl --path /shop/checkout --subject alice \
-                      --secret-env LNPL_JWT_SECRET [--ttl 15m]
+                      --secret-env LNPL_JWT_SECRET [--ttl 15m] [--role <r>]
 ```
 
 | 값 | 뜻 |
@@ -244,7 +244,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | 키 | ≥32바이트(256비트). 환경변수에서 런타임에 읽는다 |
 | 검증 순서 | 3조각 → **alg allowlist** → 서명(`hmac.compare_digest`) → `typ` → `iss` → `aud` → `nbf`/`exp` |
 | leeway | 60초 (RFC 7519가 승인하는 상한은 "몇 분") |
-| 클레임 | `iss`/`aud`/`sub`/`jti`/`iat`/`nbf`/`exp`. payload는 암호문이 아니라 base64이므로 PII를 넣지 않는다 |
+| 클레임 | `iss`/`aud`/`sub`/`jti`/`iat`/`nbf`/`exp`, 그리고 `--role`을 주면 `role`(이슈 #202, 자기 주장). payload는 암호문이 아니라 base64이므로 PII를 넣지 않는다 |
 | 수명 | 기본 15분 |
 
 `alg`는 **서버 측 allowlist**로 판정한다. 토큰이 자기 알고리즘을 고르게 두는 것이

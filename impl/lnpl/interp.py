@@ -26,7 +26,7 @@ from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from .condition import PAYLOAD_NAMESPACE, guard_condition_text, parse_value
 from .diagnostics import Diagnostics
 from .drivers import (ConflictError, DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
-                      FakeNetworkDriver)
+                      FakeNetworkDriver, ROLE_CLAIM)
 from .refinements import BASE_CATEGORY
 from .repo_policy import apply_predicate, binding_name, row_key
 from .tracecontext import format_traceparent, new_span_id
@@ -625,8 +625,8 @@ def caller_view(claims):
     if claims is None:
         return None
     subject = claims.get("sub")
-    if "role" in claims:
-        raw_role = claims["role"]
+    if ROLE_CLAIM in claims:
+        raw_role = claims[ROLE_CLAIM]
         role = raw_role if isinstance(raw_role, str) else None
     else:
         roles = claims.get("roles")
