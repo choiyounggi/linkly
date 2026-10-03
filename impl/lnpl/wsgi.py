@@ -433,9 +433,21 @@ def decode_cursor(token):
     return data["v"], data["k"]
 
 
+def _sort_key(value, key):
+    """RFC-0055 §9: the comparison key matching `query_sorted`'s present-
+    then-absent order — `(0, value, key)` for a present value, `(1, key)`
+    for an absent one. The tuples differ in length, which is safe: the first
+    element decides whenever it differs, so a later position is reached only
+    between two keys of the same kind."""
+    if value is None:
+        return (1, key)
+    return (0, value, key)
+
+
 def paginate(rows, field, entity_id, after, limit):
     """`rows` already ordered by `(field, row_key)` ascending (the exact
-    contract `RepositoryDriver.query_sorted` promises) -> `(page, next)`.
+    contract `RepositoryDriver.query_sorted` promises, absent values last —
+    RFC-0055 §9) -> `(page, next)`.
 
     `after` is a decoded `(value, row_key)` pair, or `None` for the first
     page. Raises `CursorError` when `after`'s value cannot be compared
@@ -444,8 +456,9 @@ def paginate(rows, field, entity_id, after, limit):
     """
     if after is not None:
         try:
+            after_key = _sort_key(after[0], after[1])
             rows = [r for r in rows
-                   if (r.get(field), row_key(entity_id, r)) > after]
+                    if _sort_key(r.get(field), row_key(entity_id, r)) > after_key]
         except TypeError as exc:
             raise CursorError(
                 "cursor does not match this field's type") from exc

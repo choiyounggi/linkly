@@ -193,8 +193,12 @@ class FakeRepository:
         same `(field value, row_key)` pair, so the two backends agree).
         """
         table = self.rows.get(entity_id, {})
-        return [row for _key, row in
-               sorted(table.items(), key=lambda kv: (kv[1].get(field), kv[0]))]
+        # RFC-0055 §9: a row lacking the field sorts last, in row_key order.
+        items = sorted(table.items(), key=lambda kv: kv[0])
+        present = [kv for kv in items if kv[1].get(field) is not None]
+        missing = [kv for kv in items if kv[1].get(field) is None]
+        present = sorted(present, key=lambda kv: (kv[1].get(field), kv[0]))
+        return [row for _key, row in present + missing]
 
     # -- RepositoryDriver contract (drivers.py) ----------------------------
     # This class is the contract's reference implementation, so the three
@@ -1076,7 +1080,8 @@ def _eval_money_arith(value, left, right, condition):
     return minor, currency
 
 
-def eval_aggregate(agg, expression, rowsets, agg_field_type=None):
+def eval_aggregate(agg, expression, rowsets, agg_field_type=None,
+                   field_optional=False):
     """A parsed `Aggregate` -> int/str/dict (RFC-0025 §5, RFC-0045 §3-§5,
     RFC-0047 §Reference-level Specification/3).
 
@@ -1129,7 +1134,13 @@ def eval_aggregate(agg, expression, rowsets, agg_field_type=None):
     field = agg.ref.field
     values = []
     for row in rows:
-        if not isinstance(row, dict) or field not in row:
+        absent = not isinstance(row, dict) or field not in row or (
+            field_optional and row.get(field) is None)
+        if absent:
+            # RFC-0055 §9: an `optional` field's absence (or null) is skipped,
+            # the way SQL's SUM/AVG skip NULL; a required field still fails.
+            if field_optional:
+                continue
             raise RunError(
                 "aggregate %r: a row in the %r RowSet has no %r field"
                 % (expression, binding, field))
@@ -1958,8 +1969,17 @@ class Interpreter:
                 # before RFC-0047 — `.get()` yields `None` in all three
                 # cases, which `eval_aggregate` treats as "no Money-zero
                 # special case, fall back to the RFC-0045 behavior."
+                # RFC-0055 §9: a RowSet is always bound under its entity's
+                # default binding name (`list` has no `as`), so this finds it.
+                agg_binding = rhs.ref.namespace or rhs.ref.name
+                agg_entity_id = self._entity_id_for_binding(agg_binding)
+                agg_entity = self.nodes.get(agg_entity_id) if agg_entity_id else None
+                field_optional = bool(agg_entity and any(
+                    f["name"] == rhs.ref.field and f.get("optional")
+                    for f in agg_entity.get("fields", [])))
                 value = eval_aggregate(rhs, effect["expression"], rowsets,
-                                       agg_field_type=effect.get("agg_field_type"))
+                                       agg_field_type=effect.get("agg_field_type"),
+                                       field_optional=field_optional)
             elif isinstance(rhs, FormatCall):
                 value = eval_format(rhs, payload, bindings, self.caller)
             else:

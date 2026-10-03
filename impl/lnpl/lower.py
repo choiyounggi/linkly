@@ -1516,6 +1516,8 @@ def lower(decls, module_name):
                            mod.diagnostics, d.name)
         _check_guard_scoped_binding_reads(ctx.emitted, top_ids, d.name,
                                           mod.diagnostics)
+        _check_optional_unguarded_arithmetic(ctx.emitted, top_ids, registry,
+                                             d.name, mod.diagnostics)
         _check_parallel_write_conflict(ctx.emitted, registry, d.name)
         _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
                                      d.name, mod.diagnostics)
@@ -2109,6 +2111,86 @@ def _check_event_consume_cycles(event_consumes, emits_by_workflow, diagnostics):
                 frames.append([nxt, sorted(graph.get(nxt, ())), 0])
 
 
+def _check_optional_unguarded_arithmetic(emitted, top_ids, registry,
+                                         workflow_name, diagnostics):
+    """`optional-field-unguarded-arithmetic` (warning) -- RFC-0055 §8.
+
+    An `Arith` operand of a `set` expression, or of a guard comparison
+    (condition or `or` alternative), that reads an `optional` field of a
+    bound entity is PROTECTED only when the nearest enclosing guard (one
+    level deep, the convention every other `_guard_owner_map` consumer
+    uses) has `mode == "when"`, no `alternatives`, and a condition that is
+    exactly `<binding>.<field> exists` on the SAME field. `until`/`repeat`,
+    an `or` alternative, `missing`, or a guard on a different field all
+    leave it unprotected. A bare read with no arithmetic is out of scope:
+    it stays a runtime `RunError` when the value is absent.
+    """
+    from .condition import (Arith, ConditionError, Presence, Ref,
+                            parse_condition, parse_value_or_aggregate)
+    from .repo_policy import binding_name
+
+    by_id = {node["id"]: node for node in emitted}
+    owner = _guard_owner_map(top_ids or [], by_id)
+    fields_by_binding = {binding_name(ent): {f["name"]: f for f in ent["fields"]}
+                         for ent in registry.values()}
+
+    def arith_refs(value):
+        if isinstance(value, Arith):
+            for side in (value.left, value.right):
+                if isinstance(side, Ref) and side.namespace is not None:
+                    yield side
+
+    def is_optional(ref):
+        field = fields_by_binding.get(ref.namespace, {}).get(ref.field)
+        return bool(field and field.get("optional"))
+
+    def protected(node_id, ref):
+        guard = owner.get(node_id)
+        if (guard is None or guard.get("mode") != "when"
+                or guard.get("alternatives")):
+            return False
+        try:
+            cond = parse_condition(guard.get("condition") or "")
+        except ConditionError:
+            return False
+        return (isinstance(cond, Presence) and cond.kind == "exists"
+                and cond.field == ref.name)
+
+    def report(node, refs):
+        seen = set()
+        for ref in refs:
+            if ref.name in seen or not is_optional(ref) or protected(node["id"], ref):
+                continue
+            seen.add(ref.name)
+            diagnostics.add(
+                code="optional-field-unguarded-arithmetic",
+                where=workflow_name, subject=ref.name, line=node.get("line"),
+                message="arithmetic reads %s, which is `optional`, with no "
+                        "`when %s exists` guard protecting this step "
+                        "(RFC-0055)" % (ref.name, ref.name))
+
+    for node in emitted:
+        if node["kind"] == "Assignment":
+            try:
+                rhs = parse_value_or_aggregate(node.get("expression"))
+            except ConditionError:
+                continue
+            report(node, list(arith_refs(rhs)))
+        elif node["kind"] == "Guard":
+            refs = []
+            for text in [node.get("condition")] + list(node.get("alternatives") or []):
+                if not text:
+                    continue
+                try:
+                    cond = parse_condition(text)
+                except ConditionError:
+                    continue
+                for term in _comparisons(cond):
+                    refs.extend(arith_refs(term.left))
+                    refs.extend(arith_refs(term.right))
+            report(node, refs)
+
+
 def _guard_owner_map(top_ids, by_id):
     """node id -> the `Guard` node that owns it, or `None` at the top level.
 
@@ -2380,7 +2462,8 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                        and node.get("operation") == "create"
                        and node.get("result")}
     scope = _Scope(workflow_name, by_binding, read_entities, declared_fields,
-                   base_of or {}, network_bindings, create_bindings)
+                   base_of or {}, network_bindings, create_bindings,
+                   registry=registry)
     by_id = {node["id"]: node for node in emitted}
     owner = _guard_owner_map(top_ids or [], by_id)
     # issue #204: (binding, field) -> set of guard-scope keys a `set`/`format`
@@ -2862,9 +2945,11 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
         return                            # the parser already refused it
     if cond is None:
         return
+    from .condition import Presence
+    _check_input_presence_consistency(cond, scope, text, workflow_name)
 
     for name in references(cond):
-        scope.check_reference(name, text)
+        scope.check_reference(name, text, presence=isinstance(cond, Presence))
         # RFC-0015: mode B receives every condition field as an i64 parameter
         # fixed at entry, so a guard reading a value an earlier step assigned
         # would compare the pre-assignment number there and the current one
@@ -2900,13 +2985,43 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
                 % (workflow_name, text, pred.field))
 
     for pres in _presences(cond):
-        if scope.check_reference(pres.field, text) == "money":
+        if scope.check_reference(pres.field, text, presence=True) == "money":
             raise LowerError(
                 "workflow %s: guard condition %r checks %r for "
                 "existence, but its declared type is Money — Money has no "
                 "exists/missing check either (RFC-0051 section "
                 "Compatibility)"
                 % (workflow_name, text, pres.field))
+
+
+def _check_input_presence_consistency(cond, scope, text, workflow_name):
+    """RFC-0055: `input.<field> exists`/`missing` is ambiguous when more
+    than one entity declares `<field>` and they disagree on `optional` --
+    the flat `declared_fields` dict (last-entity-wins) would otherwise
+    silently pick one entity's rule depending on declaration order.
+    Enumerates `scope.registry.values()` (keyed by namespace-qualified id),
+    NOT `scope.by_binding.values()` (keyed by bare binding name, which
+    collapses two RFC-0033-namespaced entities sharing a bare name into
+    one)."""
+    from .condition import PAYLOAD_NAMESPACE, Presence
+    if not isinstance(cond, Presence):
+        return
+    binding, _, field = cond.field.partition(".")
+    if binding != PAYLOAD_NAMESPACE or scope.registry is None:
+        return
+    declaring = [ent for ent in scope.registry.values()
+                 if any(f["name"] == field for f in ent["fields"])]
+    if len(declaring) < 2:
+        return
+    if not all(any(f["name"] == field and f.get("optional")
+                   for f in ent["fields"]) for ent in declaring):
+        raise LowerError(
+            "workflow %s: %r is ambiguous — declared by %s, and not every "
+            "one of them marks %r `optional` (RFC-0055: `input.<field> "
+            "exists`/`missing` needs every declaring entity to agree)"
+            % (workflow_name, text,
+               ", ".join(sorted(_qualified_name(e["decl"].namespace, e["name"])
+                                for e in declaring)), field))
 
 
 def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
@@ -3060,7 +3175,8 @@ class _Scope:
     """
 
     def __init__(self, workflow_name, by_binding, read_entities, declared_fields,
-                 base_of, network_bindings=frozenset(), create_bindings=None):
+                 base_of, network_bindings=frozenset(), create_bindings=None,
+                 registry=None):
         self.workflow_name = workflow_name
         self.by_binding = by_binding
         self.read_entities = read_entities
@@ -3078,9 +3194,12 @@ class _Scope:
         # name.
         self.create_bindings = create_bindings or {}
         self.base_of = base_of
+        # RFC-0055: every declared entity keyed by its namespace-qualified
+        # id, for `input.<field> exists`'s cross-entity agreement check.
+        self.registry = registry
 
     def check_reference(self, name, text, subject=GUARD_SUBJECT,
-                        is_target=False, allow_money=False):
+                        is_target=False, allow_money=False, presence=False):
         """One `Reference`, judged against the document.
 
         Returns the operand's DIMENSION (`"instant"`, `"scalar"`, or
@@ -3093,11 +3212,16 @@ class _Scope:
         target only. Since RFC-0051 Money is a dimension for every caller;
         the flag now only selects the RFC-0045 wording of the refusal the
         remaining types get.
+
+        `presence` (RFC-0055): set for the field of an `exists`/`missing`
+        term. An `optional` field then gets `"presence-any"` whatever its
+        declared type — a Presence check reads only whether the key is there.
         """
         field_node = self.resolve_field(name, text, subject, is_target)
         if field_node is None:
             return None
-        return self._dimension_of(field_node, name, text, allow_money=allow_money)
+        return self._dimension_of(field_node, name, text, allow_money=allow_money,
+                                  presence=presence)
 
     def resolve_field(self, name, text, subject=GUARD_SUBJECT,
                       is_target=False):
@@ -3212,7 +3336,8 @@ class _Scope:
                 % (self.workflow_name, subject, text, entity["id"], field))
         return fields[field]
 
-    def _dimension_of(self, field_node, name, text, allow_money=False):
+    def _dimension_of(self, field_node, name, text, allow_money=False,
+                      presence=False):
         """The operand's dimension, or a refusal (RFC-0015 §D6, RFC-0016).
 
         t2 F-4 is the reason this is a compile error and not a runtime one: a
@@ -3235,6 +3360,8 @@ class _Scope:
         """
         declared = field_node.get("type")
         base = self.base_of.get(declared, declared)
+        if presence and field_node.get("optional"):
+            return "presence-any"
         if base == "Integer":
             return "scalar"
         if base == "DateTime":

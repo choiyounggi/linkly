@@ -659,13 +659,68 @@ def workflow_uses_lookup(document, workflow_id):
     return _lookup_offender(document, workflow_id) is not None
 
 
-def _refuse_money_or_lookup(document, workflow_id):
-    """RFC-0051/0052 §Mode B: refuse, by name, a Money-guard or lookup-key
-    workflow — called by `build()` immediately before `verify_lnpl_module()`
-    reaches any toolchain lookup, and by `emit_mlir()` for direct callers.
-    Single source of both messages: reuses `_money_guard_offender` and
-    `_lookup_offender` verbatim, in the same Money-then-Lookup order
-    `emit_mlir()` already used, so the two call sites cannot drift apart.
+def _optional_guard_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when`/`until` guard (condition
+    or alternative) of `workflow_id` that references a field declared
+    `optional` -- Presence or comparison alike (RFC-0055 §Mode B), or None.
+    No dimension carve-out applies: mode A reads an unresolved reference as
+    false, while mode B's value encoding gives an absent field the i64 `0`,
+    which can satisfy a comparison mode A fails. A `create ... as <alias>`
+    binding resolves to its entity the way `_money_declared_fields` does;
+    `input.<field>` counts as optional when ANY declaring entity marks it so
+    (declaration-order independent). Raises `BackendError` for an unknown
+    workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    entities = [n for n in document["nodes"] if n["kind"] == "Entity"]
+    by_binding = {binding_name(e): e for e in entities}
+    for node in document["nodes"]:
+        if (node["kind"] == "RepositoryCall" and node.get("operation") == "create"
+                and node.get("result")):
+            ent = nodes.get(node["entity"])
+            if ent is not None:
+                by_binding[node["result"]] = ent
+
+    def field_optional(ref):
+        binding, _, field = ref.partition(".")
+        if binding == "input":
+            return any(f["name"] == field and f.get("optional")
+                       for e in entities for f in e["fields"])
+        ent = by_binding.get(binding)
+        return bool(ent) and any(f["name"] == field and f.get("optional")
+                                 for f in ent["fields"])
+
+    for step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                parsed = _parsed(text)
+                if parsed is not None and any(
+                        field_optional(name) for name in references(parsed)):
+                    return step["name"], text
+    return None
+
+
+def workflow_uses_optional_guard(document, workflow_id):
+    """RFC-0055 §Mode B: does any `when`/`until` guard of `workflow_id` --
+    condition or `or` alternative, Presence or comparison -- read a field
+    declared `optional`?
+
+    Mode B refuses such a workflow (`emit_mlir`, `build`);
+    `differential.verify` asks this right after the lookup check so the
+    recorded exemption does not depend on a toolchain. Raises
+    `BackendError` for an unknown workflow.
+    """
+    return _optional_guard_offender(document, workflow_id) is not None
+
+
+def _refuse_unsupported_guards(document, workflow_id):
+    """RFC-0051/0052/0055 §Mode B: refuse, by name, a Money-guard, lookup-key
+    or optional-field-guard workflow — called by `build()` immediately before
+    `verify_lnpl_module()` reaches any toolchain lookup, and by `emit_mlir()`
+    for direct callers. Single source of the three messages: reuses
+    `_money_guard_offender`, `_lookup_offender` and `_optional_guard_offender`
+    verbatim, in the same Money-then-Lookup-then-Optional order
+    `differential.verify` asks them, so `build` and `diff` cannot drift apart.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here — its refusal in `_render_std` depends on `_lnpl_ops`'s
     seed/payload-truncated ops stream, which a document-level check here
@@ -685,6 +740,13 @@ def _refuse_money_or_lookup(document, workflow_id):
             "step %s: %s uses a lookup key (by %s), which the single-key "
             "seed projection cannot model (RFC-0052 §Mode B) — run it in "
             "mode A" % (step_name, entity_id, lookup_ref))
+    optional_offender = _optional_guard_offender(document, workflow_id)
+    if optional_offender is not None:
+        step_name, guard_text = optional_offender
+        raise BackendError(
+            "step %s: guard %r reads an `optional` field, which mode B has "
+            "no compiled evaluator for (RFC-0055 §Mode B, recorded "
+            "exemption) — run it in mode A" % (step_name, guard_text))
 
 
 def encode_condition_value(value):
@@ -1504,7 +1566,7 @@ def emit_mlir(document, workflow_id, seeded=None, payload=None):
     RFC-0051 §6: a guard comparing a declared Money field is refused before
     any MLIR is rendered — Money's currency cannot ride an i64 parameter.
     """
-    _refuse_money_or_lookup(document, workflow_id)
+    _refuse_unsupported_guards(document, workflow_id)
     return _render_std(*_lnpl_ops(document, workflow_id, seeded, payload))
 
 
@@ -1595,7 +1657,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
     lnpl_text = emit_lnpl_mlir(document, workflow_id, seeded, payload)
     with open(lnpl_path, "w", encoding="utf-8") as fh:
         fh.write(lnpl_text)
-    _refuse_money_or_lookup(document, workflow_id)
+    _refuse_unsupported_guards(document, workflow_id)
     verify_lnpl_module(lnpl_text, path=lnpl_path)
 
     with open(mlir_path, "w", encoding="utf-8") as fh:

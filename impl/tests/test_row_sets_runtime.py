@@ -549,5 +549,114 @@ class TestDateTimeMinMaxEvaluation(unittest.TestCase):
         self.assertIn("min-max-of-empty-rowset", result["failure_reason"])
 
 
+
+# RFC-0055 §9: aggregates skip a row lacking (or null on) an `optional`
+# field; `count` still counts every row.
+OPTIONAL_AGG = AGG_SOURCE.replace("        clicks Integer\n",
+                                  "        clicks Integer optional\n")
+OPTIONAL_MONEY = MONEY_SOURCE.replace("        amount Money\n",
+                                      "        amount Money optional\n")
+
+
+def only(source, *steps):
+    """`source` with its four aggregate `set` lines replaced by `steps`."""
+    lines = [line for line in source.split("\n")
+             if not line.startswith("    set report.")]
+    at = lines.index("    update report")
+    return "\n".join(lines[:at] + ["    " + s for s in steps] + lines[at:])
+
+
+def link_rows(*clicks):
+    """One Link row per value; `...` means the key is absent."""
+    rows = {}
+    for i, value in enumerate(clicks):
+        lid = "00000000-0000-4000-8000-%012d" % (i + 1)
+        row = {"id": lid}
+        if value is not ...:
+            row["clicks"] = value
+        rows[row_key("entity.link", {"id": lid})] = row
+    return rows
+
+
+class TestOptionalFieldAggregates(unittest.TestCase):
+
+    def run_one(self, source, rows, table="entity.link", wf="wf.summarize.clicks"):
+        result, interp = run_doc(source, wf, rows, table)
+        return result, interp
+
+    def test_sum_skips_rows_missing_the_optional_field(self):
+        result, interp = self.run_one(
+            only(OPTIONAL_AGG, "set report.totalClicks to sum link.clicks"),
+            link_rows(3, ..., 4))
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        self.assertEqual(7, report_row(interp)["totalClicks"])
+
+    def test_sum_skips_rows_with_null_optional_field(self):
+        result, interp = self.run_one(
+            only(OPTIONAL_AGG, "set report.totalClicks to sum link.clicks"),
+            link_rows(3, None, 4))
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        self.assertEqual(7, report_row(interp)["totalClicks"])
+
+    def test_avg_min_max_skip_absent_rows(self):
+        result, interp = self.run_one(
+            only(OPTIONAL_AGG, "set report.avgClicks to avg link.clicks",
+                 "set report.minClicks to min link.clicks",
+                 "set report.maxClicks to max link.clicks"),
+            link_rows(2, ..., 6, None))
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        row = report_row(interp)
+        self.assertEqual((4, 2, 6), (row["avgClicks"], row["minClicks"], row["maxClicks"]))
+
+    def test_sum_all_absent_optional_integer_returns_plain_zero(self):
+        result, interp = self.run_one(
+            only(OPTIONAL_AGG, "set report.totalClicks to sum link.clicks"),
+            link_rows(..., None))
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        self.assertEqual(0, report_row(interp)["totalClicks"])
+
+    def test_sum_all_absent_optional_money_returns_money_zero(self):
+        pid = "00000000-0000-4000-8000-000000000001"
+        rows = {row_key("entity.payment", {"id": pid}): {"id": pid}}
+        result, interp = self.run_one(
+            only(OPTIONAL_MONEY, "set report.totalAmount to sum payment.amount"),
+            rows, table="entity.payment", wf="wf.summarize.payments")
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        self.assertEqual({"amount": "0", "currency": None},
+                         report_row(interp)["totalAmount"])
+
+    def test_count_counts_every_row_regardless_of_optional_absence(self):
+        result, interp = self.run_one(
+            only(OPTIONAL_AGG, "set report.totalClicks to count link"),
+            link_rows(3, ..., None))
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        self.assertEqual(3, report_row(interp)["totalClicks"])
+
+    def test_avg_all_absent_optional_raises_existing_empty_rowset_error(self):
+        result, _ = self.run_one(
+            only(OPTIONAL_AGG, "set report.avgClicks to avg link.clicks"),
+            link_rows(..., None))
+        self.assertEqual("failed", result["status"])
+        self.assertIn("avg-of-empty-rowset", result["failure_reason"])
+
+    def test_min_max_all_absent_optional_raises_existing_empty_rowset_error(self):
+        for func in ("min", "max"):
+            with self.subTest(func=func):
+                result, _ = self.run_one(
+                    only(OPTIONAL_AGG, "set report.%sClicks to %s link.clicks"
+                         % (func, func)),
+                    link_rows(...))
+                self.assertEqual("failed", result["status"])
+                self.assertIn("min-max-of-empty-rowset", result["failure_reason"])
+
+    def test_sum_still_raises_for_a_missing_required_field(self):
+        # Regression: only an `optional` field's absence is skipped.
+        result, _ = self.run_one(
+            only(AGG_SOURCE, "set report.totalClicks to sum link.clicks"),
+            link_rows(3, ...))
+        self.assertEqual("failed", result["status"])
+        self.assertIn("has no 'clicks' field", result["failure_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

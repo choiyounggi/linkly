@@ -108,5 +108,71 @@ class QuerySortedErrorTest(unittest.TestCase):
             os.unlink(path)
 
 
+
+# RFC-0055 §9: rows lacking the sort field (or holding null) sort last.
+MISSING_ROWS = {
+    ENTITY: {
+        "entity.order#a": {"id": "a", "placedAt": "2026-01-03T00:00:00Z"},
+        "entity.order#b": {"id": "b"},
+        "entity.order#c": {"id": "c", "placedAt": "2026-01-01T00:00:00Z"},
+        "entity.order#d": {"id": "d", "placedAt": None},
+    }
+}
+
+
+def _store_dir(test):
+    """A per-test sqlite directory under `.claude/tmp`, removed on teardown."""
+    import shutil
+    base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), ".claude", "tmp")
+    os.makedirs(base, exist_ok=True)
+    path = tempfile.mkdtemp(prefix="lnpl-t208b-", dir=base)
+    test.addCleanup(shutil.rmtree, path, True)
+    return path
+
+
+class QuerySortedMissingFieldTest(unittest.TestCase):
+
+    def sqlite(self, rows=MISSING_ROWS):
+        driver = SqliteRepositoryDriver(os.path.join(_store_dir(self), "s.db"))
+        self.addCleanup(driver.close)
+        driver.seed(rows)
+        return driver
+
+    def test_fake_query_sorted_missing_field_sorts_last(self):
+        ids = [r["id"] for r in FakeRepository(MISSING_ROWS).query_sorted(ENTITY, "placedAt")]
+        self.assertEqual(["c", "a", "b", "d"], ids)
+
+    def test_sqlite_query_sorted_missing_field_sorts_last(self):
+        ids = [r["id"] for r in self.sqlite().query_sorted(ENTITY, "placedAt")]
+        self.assertEqual(["c", "a", "b", "d"], ids)
+
+    def test_sqlite_query_order_missing_field_sorts_last_desc(self):
+        ids = [r["id"] for r in self.sqlite().query(ENTITY, order=("placedAt", True))]
+        self.assertEqual(["a", "c", "b", "d"], ids)
+
+    def test_sqlite_query_order_missing_field_sorts_last_asc(self):
+        ids = [r["id"] for r in self.sqlite().query(ENTITY, order=("placedAt", False))]
+        self.assertEqual(["c", "a", "b", "d"], ids)
+
+    def test_fake_and_sqlite_agree_on_order_with_missing_rows(self):
+        fake = FakeRepository(MISSING_ROWS)
+        driver = self.sqlite()
+        for desc in (False, True):
+            with self.subTest(desc=desc):
+                self.assertEqual(
+                    [r["id"] for r in fake.query(ENTITY, order=("placedAt", desc))],
+                    [r["id"] for r in driver.query(ENTITY, order=("placedAt", desc))])
+        self.assertEqual([r["id"] for r in fake.query_sorted(ENTITY, "placedAt")],
+                         [r["id"] for r in driver.query_sorted(ENTITY, "placedAt")])
+
+    def test_sqlite_predicate_with_order_still_filters(self):
+        # Regression: the doubled order parameter does not shift the
+        # predicate's own bound parameters.
+        ids = [r["id"] for r in self.sqlite().query(
+            ENTITY, predicate=[("id", "!=", "a")], order=("placedAt", True), limit=2)]
+        self.assertEqual(["c", "b"], ids)
+
+
 if __name__ == "__main__":
     unittest.main()

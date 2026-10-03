@@ -287,6 +287,12 @@ RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level S
   읽는데, 그 스텝을 소유한 가장 가까운 가드가 같은 필드의 `when <ref> exists`(대안 없는
   `when` 모드)가 아닐 때. 메시지는 줄 번호와 고칠 방법(그 스텝 앞에 `when <ref>
   exists`를 둔다)을 댄다.
+- **가드 조건 자신의 산술은 보호받을 수 없다.** 가드는 스텝 하나나 블록 하나만
+  소유하고, 가드 줄은 열린 `pipeline`을 닫으며, `exists`는 `and`와 결합하지 않는다.
+  그래서 가드 조건(또는 `or` 대안)의 산술이 `optional` 필드를 읽으면 언제나 경고다.
+  고치려면 그 자리에 `optional`이 아닌 필드를 쓴다. 해석되지 않는 참조를 담은 비교는
+  런타임에 거짓으로 평가되어(`skipped[].evaluations[].holds`가 `false`) 가드가
+  건너뛰어질 뿐 실행이 실패하지는 않는다.
 - **값만 읽는 경우는 경고 대상이 아니다.** `set x to customer.nickname`이나 `format ...
   with customer.nickname`처럼 산술 없이 값을 읽는 스텝이 없는 `optional` 필드를 만나면,
   이 RFC 전과 똑같이 그 스텝이 `RunError`로 실패한다("a reference ... resolves to
