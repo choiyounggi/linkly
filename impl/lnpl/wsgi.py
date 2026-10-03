@@ -38,13 +38,16 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
                       audience_for_path, open_repository)
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
-from .interp import (Interpreter, caller_view, mask_payload, open_clock,
-                     refinement_index, strip_schema_gen)
+from .condition import PAYLOAD_NAMESPACE
+from .interp import (CALLER_NAMESPACE, Interpreter, RunError, _resolve_lookup_key,
+                     caller_view, mask_payload, open_clock, refinement_index,
+                     strip_schema_gen)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
 from .parser import ParseError
-from .repo_policy import default_rows, event_emissions, repository_calls, row_key
+from .repo_policy import (default_rows, event_emissions, lookup_key_source,
+                          repository_calls, row_key)
 from .tracecontext import new_span_id, new_trace_id, parse_traceparent
 
 # M4: refuse to buffer more than this before reading a byte. The Fake-backend
@@ -828,6 +831,7 @@ _TITLES = {
     "idempotency-in-progress": "a request with this Idempotency-Key is already running",
     "precondition-failed": "the If-Match version no longer matches the stored row",
     "precondition-invalid": "the If-Match header value is not a recognized ETag",
+    "precondition-unsupported": "this workflow's first read cannot be evaluated against If-Match before it runs",
     "body-too-large": "request body too large",
     "body-unreadable": "request body is not a JSON object",
     "deadline-exceeded": "workflow deadline exceeded",
@@ -1816,10 +1820,10 @@ class LnplWsgiApp:
                 repository.close()
 
     def _check_if_match(self, doc, workflow_id, payload, repository, if_match,
-                        correlation_id):
+                        correlation_id, claims=None):
         """`None` when the request may proceed; otherwise `(status, body)`
         for the 400/412 response to send instead of running the workflow
-        (issue #113, D13).
+        (issue #113, D13; issue #199 widens this for RFC-0052 `by <ref>`).
 
         Conditions against the FIRST entity the workflow reads
         (`repo_policy.repository_calls`, declared order) -- the workflow
@@ -1829,6 +1833,26 @@ class LnplWsgiApp:
         `observed_version` (D12's same opt-in), has nothing to condition
         on -- skipped, not enforced, matching D12's "no version, no ETag"
         the other direction.
+
+        issue #199: the key is derived through `repo_policy.lookup_key_source`
+        + `interp._resolve_lookup_key` -- the SAME two functions the
+        interpreter's own first-`RepositoryCall` execution calls (never a
+        second key formula). Three outcomes beyond the version check:
+          - no `by` at all (`lookup_key_source` returns `None`) -- today's
+            formula, unchanged, `RunError` categorically impossible here.
+          - `by <ref>` names a binding or network-result alias (anything
+            whose namespace is not `input`/`caller`) -- rejected STATICALLY
+            from the IR, before any read attempt: 400 `precondition-unsupported`.
+          - `by <ref>` is a safe shape (bare name, `input.<field>`,
+            `caller.<claim>`) but its value is absent from THIS request --
+            `_resolve_lookup_key` raises `RunError`, caught here: 400
+            `precondition-unsupported`. (Different from `DriverError` below,
+            which still defers -- a store fault is the workflow's OWN read to
+            report; an unresolvable precondition is this check's own answer
+            and must never be silently skipped or left to crash the request.)
+        A resolved key whose row is absent is itself a false precondition
+        (RFC 9110 §13.1.1, AIP-134): 412, not a skip -- it takes precedence
+        over the 404 the workflow's own read would otherwise produce.
         """
         claimed_version = _parse_if_match(if_match)
         if claimed_version is None:
@@ -1842,14 +1866,34 @@ class LnplWsgiApp:
         if not reads:
             return None
         entity_id = reads[0]
+        lookup_ref = lookup_key_source(doc, workflow_id, entity_id)
+        if lookup_ref is not None and "." in lookup_ref:
+            binding = lookup_ref.partition(".")[0]
+            if binding not in (PAYLOAD_NAMESPACE, CALLER_NAMESPACE):
+                return 400, problem(400, "precondition-unsupported",
+                                    "this workflow's first read uses a key "
+                                    "computed during the run, so If-Match "
+                                    "cannot be evaluated",
+                                    correlation_id=correlation_id)
+        caller = caller_view(claims)
         try:
-            row = repository.execute(entity_id, "read",
-                                     row_key(entity_id, payload))
+            key = _resolve_lookup_key(entity_id, lookup_ref, payload, {}, caller)
+        except RunError:
+            return 400, problem(400, "precondition-unsupported",
+                                "the lookup key %s is absent from the "
+                                "request, so If-Match cannot be evaluated"
+                                % lookup_ref, correlation_id=correlation_id)
+        try:
+            row = repository.execute(entity_id, "read", key)
         except DriverError:
             # Let the workflow's own read surface this the normal way
             # (M8/M14) instead of a second, earlier translation of it.
             return None
-        observed = getattr(row, "observed_version", None) if row is not None else None
+        if row is None:
+            return 412, problem(412, "precondition-failed",
+                                "the row this request's If-Match names "
+                                "does not exist", correlation_id=correlation_id)
+        observed = getattr(row, "observed_version", None)
         if observed is None:
             return None
         if observed != claimed_version:
@@ -1887,7 +1931,8 @@ class LnplWsgiApp:
             # run the workflow below and finalize its outcome before returning.
         if if_match is not None:
             precondition = self._check_if_match(doc, workflow_id, payload,
-                                                repository, if_match, correlation_id)
+                                                repository, if_match, correlation_id,
+                                                claims=claims)
             if precondition is not None:
                 precondition_status, precondition_body = precondition
                 if claim:
