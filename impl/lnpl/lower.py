@@ -2360,6 +2360,14 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     scope = _Scope(workflow_name, by_binding, read_entities, declared_fields,
                    base_of or {}, network_bindings, create_bindings)
     by_id = {node["id"]: node for node in emitted}
+    owner = _guard_owner_map(top_ids or [], by_id)
+    # issue #204: (binding, field) -> set of guard-scope keys a `set`/`format`
+    # on that field has been seen at so far in this walk. Populated forward,
+    # inside the SAME source-order DFS the `assigned`/`listed` sets below
+    # already use -- that is what makes "precedes" free, with no line-number
+    # arithmetic (line numbers lie about execution order inside a guard; see
+    # the comment above `assigned` just below).
+    derived_assigned = {}
 
     # Source order, not emission order: `_WfContext._guard` emits its guarded step
     # BEFORE the Guard that owns it, so a flat pass over `emitted` would see an
@@ -2406,8 +2414,11 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         continue
                     if child["kind"] == "EventEmit":
                         if child.get("payloadMap"):
-                            _check_emit_payload(child["payloadMap"], scope,
-                                                workflow_name, base_of or {})
+                            _check_emit_payload(
+                                child["payloadMap"], scope, workflow_name,
+                                base_of or {}, derived_assigned,
+                                _guard_key(owner.get(child["id"])),
+                                child.get("line"))
                         continue
                     if child["kind"] != "Assignment":
                         continue
@@ -2481,6 +2492,10 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                     % (workflow_name, text, _describe(rhs),
                                        rhs_dim, child["target"], target_dim))
                     assigned.add(child["target"])
+                    _a_binding, _, _a_field = child["target"].partition(".")
+                    derived_assigned.setdefault(
+                        (_a_binding, _a_field), set()).add(
+                        _guard_key(owner.get(child["id"])))
             else:
                 visit(node.get("children") or [], guarded=guarded)
 
@@ -2717,7 +2732,8 @@ def _check_lookup(lookup_ref, scope, workflow_name, base_of):
             % (workflow_name, lookup_ref, declared))
 
 
-def _check_emit_payload(payload_map, scope, workflow_name, base_of):
+def _check_emit_payload(payload_map, scope, workflow_name, base_of,
+                        derived_assigned, guard_key, emit_line):
     """issue #178, R3/R11: `emit ... with`'s own reference rule.
 
     Mirrors `_check_respond`'s two-check split (field must resolve, field
@@ -2730,6 +2746,15 @@ def _check_emit_payload(payload_map, scope, workflow_name, base_of):
     create payload and is only ever populated by an explicit
     `set`/`format` step, so its value is not reliably present to map into
     an emitted payload).
+
+    issue #204: that refusal is now CONDITIONAL. A `set`/`format` on the
+    same `<binding>.<field>` that precedes this `emit` in the same guard
+    scope (`_guard_owner_map`/`_guard_key`, the machinery #98/#198 already
+    built) makes the value reliably present after all, so the reference is
+    admitted. `derived_assigned` (built by the caller's forward walk) holds
+    every such assignment seen so far, keyed by `(binding, field)` -> the
+    set of guard-scope keys it was seen in; `guard_key`/`emit_line` are this
+    `emit`'s own scope and source line.
     """
     for entry in payload_map:
         ref = entry["ref"]
@@ -2746,12 +2771,19 @@ def _check_emit_payload(payload_map, scope, workflow_name, base_of):
         if field is None:
             continue  # network-result binding -- no declared shape, admitted
         if field.get("derived"):
+            binding = ref.partition(".")[0]
+            if guard_key in derived_assigned.get((binding, field_name), ()):
+                continue  # issue #204: a set/format fills it in this scope
+            where_str = ("line %d" % emit_line) if emit_line else workflow_name
             raise LowerError(
                 "workflow %s: %s names field %r, which is `derived` "
-                "(server-computed, RFC-0030 §3) -- a with-clause must "
-                "map a value this workflow itself provided or "
-                "explicitly computed (`set`/`format`), not a field only "
-                "the server may fill" % (workflow_name, text, field_name))
+                "(server-computed, RFC-0030 §3) -- no `set`/`format` on "
+                "%s.%s precedes this `emit` (%s) in the same guard scope "
+                "-- a with-clause may map a `derived` field only after "
+                "this workflow's own `set`/`format` fills it, in the "
+                "scope this `emit` runs in"
+                % (workflow_name, text, field_name, binding, field_name,
+                   where_str))
         declared = field.get("type")
         base = base_of.get(declared, declared)
         if base == "Password":

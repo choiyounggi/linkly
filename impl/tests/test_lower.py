@@ -188,6 +188,31 @@ workflow Checkout
 """
 
 
+# issue #204: a dedicated fixture (not EMIT_WITH_SRC) because these cases
+# need a derived field whose value is computable from an Integer input
+# (EMIT_WITH_SRC's own fields are UUID/Text/Password, none Integer) and a
+# second derived field whose base IS Text (`format` only ever writes a
+# Text-family target, RFC-0016) so the `format`-fills-it case (R7) has a
+# field it is legal to write.
+DERIVED_EMIT_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Integer derived
+        label Text derived
+
+event OrderPlaced
+
+service ShopService
+    policy
+        retry 0
+
+workflow PlaceOrder
+"""
+
+
 class TestEmitWithClause(unittest.TestCase):
     """issue #178, RFC-0049: `emit <Event> with <ref>...` -> `payloadMap`."""
 
@@ -261,6 +286,116 @@ class TestEmitWithClause(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("newOrder.total", msg)
         self.assertIn("derived", msg)
+
+    def test_a_preceding_unguarded_set_admits_the_derived_ref(self):
+        # R1: `set` on the same binding+field, unguarded (both unguarded is
+        # "the same scope" by definition), strictly before the `emit`.
+        doc = ir(DERIVED_EMIT_SRC +
+                 "    create order as o\n"
+                 "    set o.total to input.quantity * 2\n"
+                 "    emit orderPlaced with o.id o.total\n")
+        node = by_id(doc)["wf.place.order.step.3.emit"]
+        self.assertEqual(node["payloadMap"],
+                         [{"field": "id", "ref": "o.id"},
+                          {"field": "total", "ref": "o.total"}])
+
+    def test_the_refusal_names_the_missing_assignment_and_the_emit_line(self):
+        # R2's message half: DERIVED_EMIT_SRC is 16 lines, `create` is line
+        # 17, so the `emit` the message must point at is line 18.
+        with self.assertRaises(LowerError) as ctx:
+            ir(DERIVED_EMIT_SRC +
+               "    create order as o\n"
+               "    emit orderPlaced with o.total\n")
+        msg = str(ctx.exception)
+        self.assertIn("no `set`/`format` on o.total precedes this `emit` "
+                      "(line 18)", msg)
+        self.assertIn("derived", msg)
+
+    def test_assigned_in_a_guard_emitted_outside_it_is_refused(self):
+        # R3: the guard wraps exactly the `set` (RFC-0002: one item), so the
+        # `emit` right after it is unguarded -- a different scope.
+        with self.assertRaises(LowerError) as ctx:
+            ir(DERIVED_EMIT_SRC +
+               "    create order as o\n"
+               "    when input.quantity > 0\n"
+               "    set o.total to input.quantity * 2\n"
+               "    emit orderPlaced with o.total\n")
+        msg = str(ctx.exception)
+        self.assertIn("o.total", msg)
+        self.assertIn("derived", msg)
+        self.assertIn("same guard scope", msg)
+
+    def test_assigned_and_emitted_in_one_parallel_block_is_admitted(self):
+        # R4: same guard scope via "put creator and reader in one block
+        # under the guard" (references/grammar.md's own remedy, reused by
+        # #198's ORPHAN_HINT).
+        doc = ir(DERIVED_EMIT_SRC +
+                 "    create order as o\n"
+                 "    when input.quantity > 0\n"
+                 "    parallel\n"
+                 "        set o.total to input.quantity * 2\n"
+                 "        emit orderPlaced with o.total\n"
+                 "    merge\n")
+        node = by_id(doc)["wf.place.order.step.3.emit"]
+        self.assertEqual(node["payloadMap"], [{"field": "total", "ref": "o.total"}])
+
+    def test_assigned_and_emitted_under_the_repeated_guard_line_is_admitted(self):
+        # R4b: same guard scope via "repeat the guard line" -- a second,
+        # physically distinct Guard node with the same mode+condition counts
+        # as the same scope (`_guard_key`'s own contract).
+        doc = ir(DERIVED_EMIT_SRC +
+                 "    create order as o\n"
+                 "    when input.quantity > 0\n"
+                 "    set o.total to input.quantity * 2\n"
+                 "    when input.quantity > 0\n"
+                 "    emit orderPlaced with o.total\n")
+        node = by_id(doc)["wf.place.order.step.3.emit"]
+        self.assertEqual(node["payloadMap"], [{"field": "total", "ref": "o.total"}])
+
+    def test_assigned_after_the_emit_is_refused(self):
+        # R5: textual order, even unguarded (same scope is not enough).
+        with self.assertRaises(LowerError) as ctx:
+            ir(DERIVED_EMIT_SRC +
+               "    create order as o\n"
+               "    emit orderPlaced with o.total\n"
+               "    set o.total to input.quantity * 2\n")
+        self.assertIn("no `set`/`format` on o.total precedes",
+                      str(ctx.exception))
+
+    def test_assigned_on_a_different_binding_is_refused(self):
+        # R6: `o2.total` does not satisfy a reference to `o.total`, even
+        # though both bindings are the same entity.
+        with self.assertRaises(LowerError) as ctx:
+            ir(DERIVED_EMIT_SRC +
+               "    create order as o\n"
+               "    create order as o2\n"
+               "    set o2.total to input.quantity * 2\n"
+               "    emit orderPlaced with o.total\n")
+        self.assertIn("no `set`/`format` on o.total precedes",
+                      str(ctx.exception))
+
+    def test_a_preceding_format_admits_the_derived_ref(self):
+        # R7: `format` counts exactly like `set` -- uses `label` (Text-family,
+        # since `format` never writes an Integer target, RFC-0016).
+        doc = ir(DERIVED_EMIT_SRC +
+                 "    create order as o\n"
+                 "    format o.label from \"{}\" with o.quantity\n"
+                 "    emit orderPlaced with o.label\n")
+        node = by_id(doc)["wf.place.order.step.3.emit"]
+        self.assertEqual(node["payloadMap"], [{"field": "label", "ref": "o.label"}])
+
+    def test_an_unguarded_assignment_emitted_under_a_guard_is_refused(self):
+        # D5: the mirror image of R3 -- an unconditionally-assigned derived
+        # field does NOT get #198's "unconditional creation is always bound"
+        # exemption; the brief's literal "same guard scope" wording governs.
+        with self.assertRaises(LowerError) as ctx:
+            ir(DERIVED_EMIT_SRC +
+               "    create order as o\n"
+               "    set o.total to input.quantity * 2\n"
+               "    when input.quantity > 0\n"
+               "    emit orderPlaced with o.total\n")
+        self.assertIn("no `set`/`format` on o.total precedes",
+                      str(ctx.exception))
 
 
 LOOKUP_SRC = """capability postgres

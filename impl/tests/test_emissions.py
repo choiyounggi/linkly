@@ -14,9 +14,11 @@ import contextlib
 import io
 import json
 import os
+import tempfile
 import unittest
 
 from lnpl import cli
+from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import MASK, Interpreter
 from lnpl.lower import lower
 from lnpl.parser import parse
@@ -112,6 +114,29 @@ workflow CheckoutGuarded
 """
 
 
+# issue #204: `total` is `derived` (the client cannot send it) and the
+# workflow fills it with `set` before the `emit` -- the issue's own source.
+EMIT_DERIVED_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Integer derived
+
+event OrderPlaced
+
+service ShopService
+    policy
+        retry 0
+
+workflow PlaceOrder
+    create order as o
+    set o.total to input.quantity * 2
+    emit orderPlaced with o.id o.total
+"""
+
+
 def compile_doc(source, module="m"):
     return lower(parse(source), module).to_document()
 
@@ -194,6 +219,52 @@ class TestEmitWithMappedPayload(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         emission = result["emissions"][0]
         self.assertEqual(emission["payload"], {"id": "o-1", "customerId": "cust-42"})
+
+    def test_a_set_filled_derived_field_carries_its_computed_value(self):
+        # issue #204, R1's runtime half: the `set` mutates the SAME dict
+        # object the binding holds (interp.py's Assignment branch), and
+        # `resolve_reference` reads that dict live at emit time.
+        doc = compile_doc(EMIT_DERIVED_SRC)
+
+        result = Interpreter(doc, repo_rows={}).run_workflow(
+            "wf.place.order", {"id": "o-1", "quantity": 21})
+
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(result["emissions"][0]["payload"],
+                         {"id": "o-1", "total": 42})
+
+    def test_a_zero_quantity_still_carries_the_computed_zero_total(self):
+        # boundary: a computed 0 is a value, not an absent field -- the
+        # payload must carry `total: 0`, not drop it or map it to null.
+        doc = compile_doc(EMIT_DERIVED_SRC)
+
+        result = Interpreter(doc, repo_rows={}).run_workflow(
+            "wf.place.order", {"id": "o-1", "quantity": 0})
+
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(result["emissions"][0]["payload"],
+                         {"id": "o-1", "total": 0})
+
+    def test_the_sqlite_outbox_row_carries_the_computed_derived_value(self):
+        # issue #204's completion criterion names the outbox payload: the
+        # persisted `lnpl_outbox` row, read back through the driver, holds
+        # the same computed `total` the in-memory emission does.
+        doc = compile_doc(EMIT_DERIVED_SRC)
+        # A file in a per-test directory, the same way
+        # `test_driver_contract.ContractTestCase` isolates its sqlite stores.
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        driver = SqliteRepositoryDriver(os.path.join(box.name, "store.db"))
+        self.addCleanup(driver.close)
+
+        result = Interpreter(doc, repo_rows={}, repository=driver).run_workflow(
+            "wf.place.order", {"id": "o-1", "quantity": 21})
+
+        self.assertEqual("completed", result["status"])
+        rows = driver.drain_outbox()
+        self.assertEqual(1, len(rows))
+        self.assertEqual("event.order.placed", rows[0]["event"])
+        self.assertEqual(rows[0]["payload"], {"id": "o-1", "total": 42})
 
     def test_guard_skipped_binding_maps_to_null_not_a_run_error(self):
         # D6: the static check only guarantees the reference names something

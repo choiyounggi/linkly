@@ -43,8 +43,8 @@ payload의 한 필드가 된다. 필드 이름은 참조 자신의 마지막 dot
 
 참조는 셋 중 하나여야 한다:
 
-1. `create ... as`/read 바인딩된 행의, `derived`가 아닌 선언된 필드
-   (`newOrder.id`)
+1. `create ... as`/read 바인딩된 행의 선언된 필드 (`newOrder.id`) — `derived`
+   필드는 아래 거부 목록의 조건(앞선 `set`/`format`)을 충족할 때만
 2. `input.<field>` — 이 실행의 입력값
 3. `call ... as <name>`으로 바인딩된 네트워크 호출 결과 (`orderResult.status`)
    — 선언된 형태가 없으므로 무검사로 허용된다(`note`의 `_note_values`가 같은
@@ -53,9 +53,11 @@ payload의 한 필드가 된다. 필드 이름은 참조 자신의 마지막 dot
 다음은 컴파일 거부다:
 
 - **맨 이름** (`with unknownRef`) — 위 세 형태 중 어느 것과도 구분되지 않는다
-- **`derived` 필드** (`with newOrder.total`, `total`이 `derived`) — 서버 계산
-  전용이라 `create` payload로 시드되지 않는다(RFC-0030 §3); `set`/`format`이
-  명시적으로 채우지 않는 한 값이 신뢰성 있게 존재한다는 보장이 없다
+- **`derived` 필드, 선행하는 `set`/`format`이 없을 때** (`with newOrder.total`,
+  `total`이 `derived`) — 서버 계산 전용이라 `create` payload로 시드되지 않는다
+  (RFC-0030 §3); 이 `emit`과 같은 가드 스코프에서 그 필드를 채우는 `set`/
+  `format`이 이 `emit`보다 앞에 있으면 값의 존재가 보장되므로 허용되고(issue
+  #204), 없으면 거부된다
 - **Password 계열 필드** (`with customer.secret`) — 마스킹 chokepoint(issue
   #43)를 `emit`으로 우회하는 경로를 막는다. `respond`가 이미 같은 규칙을 쓴다
 - **같은 매핑 필드명을 두 번 쓰는 것** (`with newOrder.id otherRow.id` — 둘 다
@@ -107,7 +109,8 @@ StepLine ::= 'emit' | 'publish' Reference ('with' Reference+)? EOL
 
 ### 3. 정적 검사 규칙
 
-새 함수 `_check_emit_payload(payload_map, scope, workflow_name, base_of)`가
+새 함수 `_check_emit_payload(payload_map, scope, workflow_name, base_of,
+derived_assigned, guard_key, emit_line)`가
 `_check_scoped_conditions`의 기존 `Response`/`_check_respond` 호출 자리 옆에
 `EventEmit` 형제 분기로 추가된다. 각 `{"field", "ref"}` 항목마다:
 
@@ -118,8 +121,13 @@ StepLine ::= 'emit' | 'publish' Reference ('with' Reference+)? EOL
 2. 아니면 `scope.resolve_field(ref, ...)`를 호출한다. `None`이 돌아오면
    네트워크 결과 바인딩(`call ... as <name>`)이라는 뜻이고, 무검사로
    허용한다 — 선언된 형태가 없다.
-3. 필드 딕셔너리가 돌아오면: `field.get("derived")`이면 `LowerError`(issue
-   #95의 `derived` 플래그). 아니면 선언된 타입의 base가 `Password`이면
+3. 필드 딕셔너리가 돌아오면: `field.get("derived")`이면, 같은
+   `<binding>.<field>`를 채우는 `set`/`format`이 이 `emit`과 같은 가드
+   스코프("같은 가드 조건 반복", 같은 `parallel`/`pipeline` 블록, 또는 둘 다
+   무가드 — `_guard_owner_map`/`_guard_key`, issue #98/#198이 이미 쓰는
+   판정)에서 이 `emit`보다 앞서 있는지 본다 — 있으면 허용한다(issue #204),
+   없으면 `LowerError`(이 `emit` 앞에 그 필드를 채우는 `set`/`format`이 없다고
+   줄 번호와 함께 말한다). 아니면 선언된 타입의 base가 `Password`이면
    `LowerError`(`_check_respond`와 같은 규칙, issue #43).
 4. 중복 매핑 필드명은 문법 시점(`_derive_effect`, 스코프가 필요 없는 순수
    텍스트 검사)에 먼저 거부된다 — 같은 `with` 절 안에서 트레일링 세그먼트가
