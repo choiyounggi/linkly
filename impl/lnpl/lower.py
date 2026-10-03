@@ -1228,26 +1228,48 @@ def lower(decls, module_name):
     registry = {}
     for decl in by_kind["entity"]:
         fields = []
+        MODIFIER_WORDS = ("derived", "optional")  # RFC-0055
         for line in decl.clauses.get("field", []):
-            if len(line.tokens) not in (2, 3):
+            if len(line.tokens) < 2 or len(line.tokens) > 4:
                 raise LowerError(
-                    "line %d: field must be `<name> <Type>` or `<name> <Type> "
-                    "derived`" % line.lineno)
-            if len(line.tokens) == 3 and line.tokens[2] != "derived":
+                    "line %d: field must be `<name> <Type>`, `<name> <Type> "
+                    "derived`, `<name> <Type> optional`, or both modifiers "
+                    "together — got %d tokens"
+                    % (line.lineno, len(line.tokens)))
+            modifiers = line.tokens[2:]
+            unknown = [m for m in modifiers if m not in MODIFIER_WORDS]
+            if unknown:
                 raise LowerError(
-                    "line %d: unknown field modifier %r — `derived` is the "
-                    "only one (issue #95)" % (line.lineno, line.tokens[2]))
+                    "line %d: unknown field modifier %r — valid modifiers are "
+                    "%s (issue #95, RFC-0055)"
+                    % (line.lineno, unknown[0], ", ".join(MODIFIER_WORDS)))
+            if len(modifiers) != len(set(modifiers)):
+                raise LowerError(
+                    "line %d: field modifier %r repeated — write each modifier "
+                    "once" % (line.lineno, modifiers[0]))
+            if "derived" in modifiers and "optional" in modifiers:
+                raise LowerError(
+                    "line %d: field cannot be both `derived` and `optional` — "
+                    "a server-computed field's input-optionality is meaningless "
+                    "(RFC-0055)" % line.lineno)
             if not WORD_RE.match(line.tokens[0]):
                 raise LowerError(
                     "line %d: field name %r must be a lowercase word — "
                     "`<name> <Type>` where <name> starts with a lowercase "
                     "letter followed by letters or digits only (%s)"
                     % (line.lineno, line.tokens[0], WORD_RE.pattern))
+            if line.tokens[0] == "id" and "optional" in modifiers:
+                raise LowerError(
+                    "line %d: field 'id' cannot be `optional` — the row key "
+                    "falls back to a shared '-' sentinel when id is absent "
+                    "(RFC-0055)" % line.lineno)
             field = {"name": line.tokens[0],
                     "type": _resolve_type(line.tokens[1], refined_names,
                                           used_presets, line.lineno)}
-            if len(line.tokens) == 3:
+            if "derived" in modifiers:
                 field["derived"] = True
+            if "optional" in modifiers:
+                field["optional"] = True
             fields.append(field)
         if not fields:
             raise LowerError("entity %s declares no fields" % decl.name)

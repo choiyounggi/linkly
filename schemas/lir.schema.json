@@ -171,6 +171,9 @@
           },
           "required": {
             "type": "boolean"
+          },
+          "optional": {
+            "type": "boolean"
           }
         },
         "required": [

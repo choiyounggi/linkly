@@ -116,6 +116,10 @@
       {
         "code": "guard-scoped-binding-escape",
         "severity": "warning"
+      },
+      {
+        "code": "optional-field-unguarded-arithmetic",
+        "severity": "warning"
       }
     ],
     "enforcement": [

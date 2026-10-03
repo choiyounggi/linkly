@@ -22,6 +22,7 @@ from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import MASK, Interpreter
 from lnpl.lower import lower
 from lnpl.parser import parse
+from lnpl.repo_policy import row_key
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GUARDED_LNPL = os.path.join(REPO, "examples", "guarded.lnpl")
@@ -347,6 +348,107 @@ class TestEmissionsByteIdenticalWhenAbsent(unittest.TestCase):
         self.assertEqual(0, rc)
         self.assertEqual("completed", doc["result"]["status"])
         self.assertNotIn("emissions", doc["result"])
+
+
+def optional_emit_src(steps, extra_entity=""):
+    """RFC-0055 fixture: `note` is optional on Order."""
+    return """capability postgres
+
+entity Order
+    field
+        id UUID
+        customerId Text
+        note Text optional
+%s
+event OrderPlaced
+
+service Orders
+    policy
+        timeout 5s
+
+workflow Checkout
+%s""" % (extra_entity, steps)
+
+
+ORDER_ID = "0b6f1c2e-2222-4a2b-9c3d-000000000208"
+
+
+class TestEmitWithOptionalField(unittest.TestCase):
+    """RFC-0055: `emit ... with` omits an absent or null `optional` ref
+    instead of inventing `"note": null`."""
+
+    def emitted(self, steps, payload, extra_entity="", repo_rows=None):
+        doc = compile_doc(optional_emit_src(steps, extra_entity))
+        result = Interpreter(doc, repo_rows=repo_rows or {}).run_workflow(
+            "wf.checkout", payload)
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        return result["emissions"][0]["payload"]
+
+    def test_emit_with_omits_absent_optional_ref(self):
+        payload = self.emitted(
+            "    create order as newOrder\n"
+            "    emit orderPlaced with newOrder.id input.note\n",
+            {"id": ORDER_ID, "customerId": "c-1"})
+        self.assertEqual({"id": ORDER_ID}, payload)
+
+    def test_emit_with_omits_null_optional_ref(self):
+        payload = self.emitted(
+            "    create order as newOrder\n"
+            "    emit orderPlaced with newOrder.id input.note\n",
+            {"id": ORDER_ID, "customerId": "c-1", "note": None})
+        self.assertEqual({"id": ORDER_ID}, payload)
+
+    def test_emit_with_optional_create_as_alias_ref_omitted(self):
+        payload = self.emitted(
+            "    create order as newOrder\n"
+            "    emit orderPlaced with newOrder.id newOrder.note\n",
+            {"id": ORDER_ID, "customerId": "c-1"})
+        self.assertEqual({"id": ORDER_ID}, payload)
+
+    def test_emit_with_omits_an_absent_optional_ref_of_a_read_binding(self):
+        payload = self.emitted(
+            "    find order\n"
+            "    emit orderPlaced with order.id order.note\n",
+            {"id": ORDER_ID, "customerId": "c-1"},
+            repo_rows={"entity.order": {
+                row_key("entity.order", {"id": ORDER_ID}):
+                    {"id": ORDER_ID, "customerId": "c-1"}}})
+        self.assertEqual({"id": ORDER_ID}, payload)
+
+    def test_emit_with_present_optional_ref_is_carried(self):
+        payload = self.emitted(
+            "    create order as newOrder\n"
+            "    emit orderPlaced with newOrder.id newOrder.note\n",
+            {"id": ORDER_ID, "customerId": "c-1", "note": "gift"})
+        self.assertEqual({"id": ORDER_ID, "note": "gift"}, payload)
+
+    def test_emit_with_mixed_optionality_input_field_assigns_null(self):
+        # `Invoice.note` is required (declared last): under the AND rule
+        # `input.note` is NOT uniformly optional, so it is treated as
+        # required — the event payload gets "note": null, assigned, not
+        # omitted (unchanged pre-RFC-0055 behaviour).
+        payload = self.emitted(
+            "    create order as newOrder\n"
+            "    emit orderPlaced with newOrder.id input.note\n",
+            {"id": ORDER_ID, "customerId": "c-1"},
+            extra_entity="\nentity Invoice\n    field\n        id UUID\n"
+                         "        note Text\n")
+        self.assertEqual({"id": ORDER_ID, "note": None}, payload)
+
+    def test_plain_emit_drops_a_null_optional_field(self):
+        # Plain `emit` forwards the masked input; `run_workflow`'s boundary
+        # normalization already removed the optional null.
+        payload = self.emitted(
+            "    create order\n    emit orderPlaced\n",
+            {"id": ORDER_ID, "customerId": "c-1", "note": None})
+        self.assertEqual({"id": ORDER_ID, "customerId": "c-1"}, payload)
+
+    def test_plain_emit_keeps_a_null_required_field(self):
+        # Regression: only an optional field's null is normalized away.
+        payload = self.emitted(
+            "    create order\n    emit orderPlaced\n",
+            {"id": ORDER_ID, "customerId": None})
+        self.assertEqual({"id": ORDER_ID, "customerId": None}, payload)
 
 
 class TestEmissionsCliJson(unittest.TestCase):

@@ -451,7 +451,8 @@ cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다
 `respond-field-missing`(저장된 행에 누락된 필드를 채우면 사라진다 —
 이슈 #198, 데이터를 고치는 쪽이라는 점은 `stored-row-shape-mismatch`와
 같다), `guard-scoped-binding-escape`(리더를 가드 스코프 안으로 옮기거나
-가드 줄을 반복하면 사라진다 — 이슈 #198)), `info`는 고쳐도 사라지지 않는
+가드 줄을 반복하면 사라진다 — 이슈 #198),
+`optional-field-unguarded-arithmetic`(가드 안으로 옮기면 사라진다 — RFC-0055)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`, `predicate-not-pushed-down`(`list where`/`order by`/`limit`이
