@@ -21,6 +21,7 @@ from lnpl import __version__                                    # noqa: E402
 from lnpl.cost_model import cost_model_document                  # noqa: E402
 from lnpl.grammar import grammar_json_document, render_gbnf      # noqa: E402
 from lnpl.lower import KIND_PREFIX, KIND_WORD, derive_id, split_pascal  # noqa: E402
+from lnpl.provenance import _current_vocabulary_digest           # noqa: E402
 from lnpl.spec import EXPECTATIONS, GIVEN_FORMS                  # noqa: E402
 from lnpl.vocab import vocabulary_document                       # noqa: E402
 
@@ -54,9 +55,13 @@ BANNER = ("<!-- 생성물 — 손으로 고치지 마라. 정본은 %s이고, "
           "고치면 impl/tests/test_plugin_references.py가 실패한다. -->\n")
 
 
-def _doc(title, body, canon=SOURCE_CANON):
-    return "%s\n# %s\n\n> lnpl %s 기준.\n\n%s" % (BANNER % canon, title,
-                                                 __version__, body)
+def _doc(title, body, canon=SOURCE_CANON, digest=None):
+    # `digest` (issue #205): the vocabulary generation the page was rendered
+    # from, so a stale reference names itself even when the version is equal.
+    header = "> lnpl %s 기준." % __version__
+    if digest is not None:
+        header = "> lnpl %s 기준 (vocab %s)." % (__version__, digest)
+    return "%s\n# %s\n\n%s\n\n%s" % (BANNER % canon, title, header, body)
 
 
 def render_grammar():
@@ -252,7 +257,8 @@ def render_verbs():
                  "있는지는 [spec.md](spec.md)의 \"저장소 시드와 `create` 충돌\"에 "
                  "있다. `set`의 대상이 될 수 있는 바인딩을 어떤 동사가 만드는지는 "
                  "[grammar.md](grammar.md)의 \"할당(`set`)의 대상\"에 있다.\n")
-    return _doc("동사 어휘 (VERB_LEXICON)", "\n".join(lines))
+    digest = _current_vocabulary_digest().split(":", 1)[1][:12]
+    return _doc("동사 어휘 (VERB_LEXICON)", "\n".join(lines), digest=digest)
 
 
 def render_declarations():

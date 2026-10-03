@@ -21,6 +21,7 @@ missing module proves the load-failure path for real.
 import contextlib
 import io
 import json
+import os
 import unittest
 from importlib import metadata as importlib_metadata
 from unittest import mock
@@ -93,7 +94,8 @@ class TestCliCapabilities(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(err, "")
         doc = json.loads(out)
-        self.assertEqual(set(doc.keys()), {"lnpl_version", "slots"})
+        self.assertEqual(set(doc.keys()), {"lnpl_version", "slots",
+                                           "vocabulary_digest", "package_path"})
         self.assertEqual(set(doc["slots"]), CONTRACT_SLOTS)
 
     def test_bare_and_json_forms_print_the_identical_document(self):
@@ -111,6 +113,36 @@ class TestCliCapabilities(unittest.TestCase):
             _rc, out, _err = _main(["capabilities", "--json"])
             expected = capabilities_document()
         self.assertEqual(json.loads(out), expected)
+
+    def test_package_path_is_the_real_lnpl_directory(self):
+        # issue #205: an MCP server and a CLI loaded from two checkouts must be
+        # told apart by where the package actually came from.
+        import lnpl.capabilities as _caps_mod
+        doc = capabilities_document()
+        self.assertEqual(doc["package_path"],
+                         os.path.dirname(os.path.abspath(_caps_mod.__file__)))
+        self.assertTrue(os.path.isfile(os.path.join(doc["package_path"], "__init__.py")))
+
+    def test_two_different_vocabularies_report_different_digests(self):
+        # issue #205 DoD 1: equal version string, different vocabulary ->
+        # different capabilities output. Patch the table, never a literal digest.
+        from lnpl import lower
+        extended = dict(lower.VERB_LEXICON)
+        extended["__test_probe__"] = ("read", {})
+        plain = capabilities_document()
+        with mock.patch("lnpl.vocab.VERB_LEXICON", extended):
+            patched = capabilities_document()
+        self.assertEqual(plain["lnpl_version"], patched["lnpl_version"])
+        self.assertTrue(plain["vocabulary_digest"].startswith("sha256:"))
+        self.assertTrue(patched["vocabulary_digest"].startswith("sha256:"))
+        self.assertNotEqual(plain["vocabulary_digest"], patched["vocabulary_digest"])
+
+    def test_the_digest_is_the_one_lir_provenance_carries(self):
+        # One digest, not a second computation: the value equals what a
+        # compiled `.lir.json` records in provenance.vocabulary_digest.
+        from lnpl import provenance
+        self.assertEqual(capabilities_document()["vocabulary_digest"],
+                         provenance.build()["vocabulary_digest"])
 
     def test_a_registered_entry_point_with_a_resolvable_distribution_reports_its_version(self):
         versioned = entry_point_with_version(GROUP_OF_SLOT["cache"], "versioned",

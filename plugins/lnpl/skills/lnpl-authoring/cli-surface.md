@@ -394,6 +394,10 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 `version`(그 entry-point를 소유한 배포판의 버전, 배포판을 확인할 수 없으면
 `null`)도 함께 실린다(`name`/`loadable`에 대한 additive 확장) — 어느 패키지가
 그 항목을 등록했고 몇 버전인지, `capabilities` 한 번 호출로 알 수 있다.
+문서 최상위에는 `vocabulary_digest`(현재 어휘의 sha256 digest)와
+`package_path`(로드된 `lnpl` 패키지의 파일시스템 경로)도 함께 실린다
+(`lnpl_version`/`slots`에 대한 additive 확장, issue #205) -- 어휘가
+다른 두 컴파일러를 버전 문자열이 같아도 구분하는 용도다.
 정본 함수는 `impl/lnpl/capabilities.py`의 `capabilities_document()`
 이고, `lnpl_capabilities` MCP 툴이 같은 함수를 공유한다. `lnpl-doctor` 스킬
 과는 별개다 — doctor는 CLI 설치·버전 같은 로컬 환경 건강을 보고, `capabilities`

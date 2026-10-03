@@ -70,6 +70,21 @@ else
 fi
 rm -rf "$PROBE_DIR" 2>/dev/null
 
+# MCP 서버와 CLI가 같은 어휘를 보는지 — 버전 숫자가 같아도 다른 체크아웃일 수
+# 있다(issue #205). 런처가 마지막 기동 때 남긴 상태 파일과 비교한다. 파일이나
+# jq가 없으면 비교할 것이 없으므로 아무 말도 하지 않는다.
+STATE_FILE="${LNPL_MCP_STATE:-$HOME/.claude/lnpl-plugin/mcp-last-start.json}"
+if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
+  MCP_DIGEST=$(jq -r '.vocabulary_digest // empty' "$STATE_FILE" 2>/dev/null)
+  CLI_DIGEST=$(lnpl capabilities --json 2>/dev/null | jq -r '.vocabulary_digest // empty')
+  if [ -n "$MCP_DIGEST" ] && [ -n "$CLI_DIGEST" ] && [ "$MCP_DIGEST" != "$CLI_DIGEST" ]; then
+    echo ""
+    echo "어휘 불일치: CLI digest ${CLI_DIGEST}, 마지막 MCP 기동 digest ${MCP_DIGEST} (${STATE_FILE})."
+    echo "MCP 서버가 다른 체크아웃을 보고 있을 수 있다 — LNPL_IMPL을 확인하라."
+    PROBLEMS=1
+  fi
+fi
+
 echo ""
 if [ "$PROBLEMS" -eq 0 ]; then
   echo "이상 없음."

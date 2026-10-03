@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CLAUDE_TMP = os.path.join(REPO, ".claude", "tmp")
@@ -203,6 +204,38 @@ class GeneratorTest(unittest.TestCase):
             with open(os.path.join(REFS, name), encoding="utf-8") as fh:
                 head = fh.readline()
             self.assertIn("생성물", head, "%s에 경고 배너가 없다" % name)
+
+    def test_verbs_header_carries_the_vocabulary_digest(self):
+        # issue #205: the reference names the vocabulary generation it was
+        # rendered from; only verbs.md carries it (plan D9).
+        gen = load_gen()
+        from lnpl import provenance
+        verbs = gen.render_verbs()
+        match = re.search(r"^> lnpl .+ 기준 \(vocab ([0-9a-f]{12})\)\.$", verbs, re.M)
+        self.assertIsNotNone(match, verbs[:400])
+        self.assertEqual(match.group(1),
+                         provenance._current_vocabulary_digest().split(":", 1)[1][:12])
+        types = gen.render_types()
+        self.assertRegex(types, r"(?m)^> lnpl \S+ 기준\.$")
+        self.assertNotIn("(vocab ", types)
+
+    def test_the_header_digest_changes_when_the_vocabulary_changes(self):
+        from lnpl import lower
+        gen = load_gen()
+        token = r"\(vocab ([0-9a-f]{12})\)"
+        plain = re.search(token, gen.render_verbs()).group(1)
+        extended = dict(lower.VERB_LEXICON)
+        extended["__test_probe__"] = ("read", {})
+        with mock.patch("lnpl.vocab.VERB_LEXICON", extended):
+            patched = re.search(token, gen.render_verbs()).group(1)
+        self.assertNotEqual(plain, patched)
+
+    def test_doc_without_a_digest_keeps_the_old_header_byte_for_byte(self):
+        # boundary: every renderer that passes no digest is unchanged
+        gen = load_gen()
+        self.assertEqual(gen._doc("T", "body"),
+                         "%s\n# T\n\n> lnpl %s 기준.\n\nbody"
+                         % (gen.BANNER % gen.SOURCE_CANON, gen.__version__))
 
     def test_every_verb_in_the_lexicon_reaches_the_document(self):
         from lnpl.lower import VERB_LEXICON

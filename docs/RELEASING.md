@@ -24,6 +24,15 @@ CHANGELOG, 릴리스 노트 본문)와, 자동화가 실패했을 때의 로컬 
    바꾼다(0.x이므로 [docs/compatibility.md](compatibility.md)의 breaking
    여부와 무관하게 minor 자리를 올려 왔다 — 지금까지의 실제 이력).
 
+   릴리스 태그를 push한 직후, `main`의 버전을 다음 릴리스를 가리키는
+   `X.Y.(Z+1).dev0`로 올려 두는 것을 권장한다(예: `v0.8.0` 태그 뒤
+   `0.9.0.dev0`) -- 태그와 태그 사이의 모든 빌드가 직전 릴리스와 같은
+   버전 문자열을 내는 것을 막는다(issue #205). `.dev0` 접미사가 붙어도
+   네 지점(`pyproject.toml`/`impl/lnpl/__init__.py`/`plugins/*/plugin.json`/
+   `marketplace.json`) 모두 같은 한 문자열이면 되므로 `scripts/
+   check_version_sync.py`는 그대로 통과한다. 이 절차 자체는 현재 범위
+   밖이다 -- 이번 태스크는 권장 문구만 남긴다.
+
 3. **`CHANGELOG.md`를 갱신한다.** `## [Unreleased]`의 내용을 새
    `## [x.y.z] — <발행일>` 절로 옮기고(제목·날짜는 5단계에서 만들 GitHub
    Release와 맞춘다), 각 항목이 어느 이슈/PR을 닫는지 남긴다. breaking
