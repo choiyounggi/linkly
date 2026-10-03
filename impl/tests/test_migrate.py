@@ -748,3 +748,70 @@ class UnresolvableRowWithoutAnIdTest(MigrateTestCase):
         # The whole batch rolled back -- the healthy row was not committed.
         self.assertNotIn("status", self.raw_row(ACCOUNT_1))
         self.assertNotIn(SCHEMA_GEN_KEY, self.raw_row(ACCOUNT_1))
+
+
+OPTIONAL_SOURCE = SOURCE.replace("        status Text\n",
+                                 "        status Text\n        nickname Text optional\n")
+
+
+class OptionalFieldBackfillTest(MigrateTestCase):
+    """RFC-0055: an `optional` field is an ordinary `--set` target (deliberate
+    choice — "may be absent" is request-side tolerance, backfilling stored
+    rows is a separate operator decision). The store lives under
+    `.claude/tmp`, never the system temp directory."""
+
+    def setUp(self):
+        import shutil
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        base = os.path.join(repo_root, ".claude", "tmp")
+        os.makedirs(base, exist_ok=True)
+        self.dir = tempfile.mkdtemp(prefix="lnpl-t208-", dir=base)
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.source = os.path.join(self.dir, "account.lnpl")
+        with open(self.source, "w", encoding="utf-8") as fh:
+            fh.write(OPTIONAL_SOURCE)
+        self.db = os.path.join(self.dir, "store.db")
+        self.doc = cli.compile_source([self.source])
+        self.entity_node = next(n for n in self.doc["nodes"]
+                                if n["kind"] == "Entity")
+        self.entity_id = self.entity_node["id"]
+
+    def test_migrate_set_backfills_an_optional_field(self):
+        self.seed({"id": ACCOUNT_1, "label": "a"}, {"id": ACCOUNT_2, "label": "b"},
+                  {"id": ACCOUNT_3, "label": "c", "nickname": "Keep"})
+
+        rc, out, err = self.migrate("--set", "nickname=Guest")
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual({"scanned": 3, "updated": 2, "skipped": 1}, json.loads(out))
+        self.assertEqual("Guest", self.raw_row(ACCOUNT_1)["nickname"])
+        self.assertEqual("Guest", self.raw_row(ACCOUNT_2)["nickname"])
+        self.assertEqual("Keep", self.raw_row(ACCOUNT_3)["nickname"])
+
+    def test_the_restamp_is_the_same_as_without_optional(self):
+        # `_schema_gen` ignores `optional`, so the stamp equals the one the
+        # same entity would get with `nickname Text` (required).
+        self.seed({"id": ACCOUNT_1, "label": "a"})
+
+        rc, _out, err = self.migrate("--set", "nickname=Guest")
+
+        self.assertEqual(0, rc, err)
+        required_twin = dict(self.entity_node, fields=[
+            {k: v for k, v in f.items() if k != "optional"}
+            for f in self.entity_node["fields"]])
+        self.assertEqual(schema_generation(required_twin),
+                         self.raw_row(ACCOUNT_1)[SCHEMA_GEN_KEY])
+
+    def test_a_wrong_typed_value_for_an_optional_integer_is_refused(self):
+        source = OPTIONAL_SOURCE.replace("nickname Text optional",
+                                         "nickname Integer optional")
+        with open(self.source, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        self.seed({"id": ACCOUNT_1, "label": "a"})
+
+        rc, _out, err = self.migrate("--set", "nickname=notanumber")
+
+        self.assertNotEqual(0, rc)
+        self.assertIn("nickname", err)
+        self.assertNotIn("nickname", self.raw_row(ACCOUNT_1))

@@ -404,6 +404,68 @@ class TestRespondOmitsAMissingField(ServerTestCase):
                          body["response"])
 
 
+OPTIONAL_RESPOND_SRC = RESPOND_SRC.replace("status Text", "status Text optional")
+
+CREATE_AS_OPTIONAL_SRC = OPTIONAL_RESPOND_SRC.replace(
+    "    find order\n    " + RESPOND_STEP,
+    "    create order as newOrder\n"
+    "    respond newOrder.id newOrder.status newOrder.total")
+
+
+class TestRespondOmitsAnOptionalField(unittest.TestCase):
+    """RFC-0055: an absent or null `optional` field is simply omitted from
+    the response — it is the declared shape, so no `respond-field-missing`."""
+
+    def _run(self, source, row):
+        doc = compile_doc(source)
+        payload = {"id": RUN_ID}
+        rows = {"entity.order": {row_key("entity.order", payload): row}}
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, interp.run_workflow("wf.show.order", payload)
+
+    def test_respond_omits_absent_optional_field_no_diagnostic(self):
+        interp, result = self._run(OPTIONAL_RESPOND_SRC,
+                                   {"id": RUN_ID, "total": 100, "secret": "s"})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual({"order": {"id": RUN_ID, "total": 100}},
+                         result["response"])
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
+
+    def test_respond_omits_null_optional_field_no_diagnostic(self):
+        interp, result = self._run(
+            OPTIONAL_RESPOND_SRC,
+            {"id": RUN_ID, "status": None, "total": 100, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID, "total": 100}},
+                         result["response"])
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
+
+    def test_respond_keeps_a_present_optional_field(self):
+        _interp, result = self._run(
+            OPTIONAL_RESPOND_SRC,
+            {"id": RUN_ID, "status": "new", "total": 100, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID, "status": "new", "total": 100}},
+                         result["response"])
+
+    def test_respond_absent_non_optional_field_still_warns(self):
+        # Regression: `total` is required, so its absence is still reported.
+        interp, result = self._run(OPTIONAL_RESPOND_SRC,
+                                   {"id": RUN_ID, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID}}, result["response"])
+        self.assertEqual(["order.total"],
+                         [d.subject for d in interp.diagnostics.by_code(FIELD_MISSING)])
+
+    def test_respond_omits_an_optional_field_of_a_create_as_alias(self):
+        # The alias is not an entity's default binding name, so the entity is
+        # found through the created row's own `entity_id`.
+        doc = compile_doc(CREATE_AS_OPTIONAL_SRC)
+        interp = Interpreter(doc, repo_rows={})
+        result = interp.run_workflow("wf.show.order", {"id": RUN_ID, "total": 7})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual({"newOrder": {"id": RUN_ID, "total": 7}},
+                         result["response"])
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
+
+
 class TestRespondOpenApi(unittest.TestCase):
     """Issue #96's completion criterion 3: the 200 schema is derived from
     `respond`, grouped by binding, and absent when no `respond` exists."""

@@ -1496,6 +1496,16 @@ class Interpreter:
         # two modes disagree about a signal the contract says must match.
         self.diagnostics = Diagnostics()
 
+    def _resolve_entity_for_binding(self, binding, bindings):
+        """Entity node behind `binding` — a `create ... as <alias>` row (via
+        its own `entity_id` attribute) or a default-named read binding (via
+        `_entity_id_for_binding`) — or None. `bindings` must be the PRE-mask
+        local dict (a masked copy has lost `.entity_id`)."""
+        entity_id = getattr(bindings.get(binding), "entity_id", None)
+        if entity_id is None:
+            entity_id = self._entity_id_for_binding(binding)
+        return self.nodes.get(entity_id) if entity_id else None
+
     def _entity_id_for_binding(self, binding):
         """The Entity a bound name came from, or None.
 
@@ -1610,6 +1620,30 @@ class Interpreter:
         return masked
 
     # ---- execution ---------------------------------------------------------
+    def _normalize_optional_nulls(self, payload):
+        """RFC-0055: JSON `null` for a field that EVERY entity declaring that
+        name marks `optional` means absent — dropped once here so validate,
+        `create` and plain `emit` all inherit it. AND across the declaring
+        entities, so the result never depends on declaration order. A name
+        that only some entities mark `optional` keeps its `null`; `create`
+        re-checks per entity for that case.
+        """
+        if not payload:
+            return payload
+        per_name = {}
+        for n in self.doc["nodes"]:
+            if n["kind"] == "Entity":
+                for f in n.get("fields", []):
+                    per_name.setdefault(f["name"], []).append(
+                        bool(f.get("optional")))
+        optional_names = {name for name, flags in per_name.items()
+                          if all(flags)}
+        if not any(k in optional_names and v is None
+                   for k, v in payload.items()):
+            return payload
+        return {k: v for k, v in payload.items()
+                if not (k in optional_names and v is None)}
+
     def run_workflow(self, workflow_id, payload=None):
         wf = self.nodes.get(workflow_id)
         if wf is None or wf["kind"] != "Workflow":
@@ -1617,6 +1651,7 @@ class Interpreter:
         service = self._service_for(workflow_id)
         con = self._constraints(service)
         payload = payload or {}
+        payload = self._normalize_optional_nulls(payload)
 
         root = Span(wf["name"], "Workflow", self.clock.now)
         self.trace.root = root
@@ -1815,12 +1850,18 @@ class Interpreter:
                     # already explains why (RFC-0014 keeps a guard rejection
                     # `completed`), so omit rather than raise.
                     continue
-                if field not in row:
+                entity = self._resolve_entity_for_binding(binding, bindings)
+                optional = bool(entity and any(
+                    f["name"] == field and f.get("optional")
+                    for f in entity.get("fields", [])))
+                if field not in row or (optional and row[field] is None):
                     # issue #198: the bound row exists but this field is
                     # absent from it (the response-ref twin of
                     # `stored-row-shape-mismatch`, #85) — omit it and say so
                     # once per ref, however often `respond` repeats it.
-                    if ref not in reported:
+                    # RFC-0055: an `optional` field's absence (or stored
+                    # null) is its declared shape — omitted, not reported.
+                    if not optional and ref not in reported:
                         reported.add(ref)
                         self.diagnostics.add(
                             code="respond-field-missing",
@@ -2115,7 +2156,11 @@ class Interpreter:
                         if field.get("derived"):
                             continue
                         fname = field["name"]
-                        if fname in payload:
+                        # RFC-0055: an optional field's null is not stored —
+                        # per entity, for a name only this entity marks
+                        # optional (`_normalize_optional_nulls` is AND-wide).
+                        if fname in payload and not (
+                                field.get("optional") and payload[fname] is None):
                             seeded[fname] = payload[fname]
                 if len(seeded) > 1:
                     # issue #147 D2/D3: `FakeRepository` is skipped (see the
@@ -2272,6 +2317,17 @@ class Interpreter:
                     raw = resolve_reference(ref, payload, bindings, self.caller)
                     binding, _, _ref_field = ref.partition(".")
                     if binding == PAYLOAD_NAMESPACE:
+                        # RFC-0055: `input.<field>` is optional only when
+                        # EVERY entity declaring that name marks it so —
+                        # the same AND rule `_normalize_optional_nulls` uses.
+                        declaring = [f for n in self.doc["nodes"]
+                                     if n["kind"] == "Entity"
+                                     for f in n.get("fields", [])
+                                     if f["name"] == _ref_field]
+                        optional = bool(declaring) and all(
+                            f.get("optional") for f in declaring)
+                        if raw is None and optional:
+                            continue
                         masked = mask_payload({field: raw}, self._entity_node())
                     else:
                         # A `create ... as <name>` row's entity id rides on
@@ -2280,13 +2336,17 @@ class Interpreter:
                         # default binding name `_entity_id_for_binding`
                         # resolves) — checked first so a create-as bound
                         # Password field masks the same as a read-bound one.
-                        entity_id = getattr(bindings.get(binding), "entity_id", None)
-                        if entity_id is None:
-                            entity_id = self._entity_id_for_binding(binding)
-                        if entity_id is None:
+                        entity = self._resolve_entity_for_binding(binding, bindings)
+                        optional = bool(entity and any(
+                            f["name"] == _ref_field and f.get("optional")
+                            for f in entity.get("fields", [])))
+                        if raw is None and optional:
+                            # RFC-0055: omitted, never an invented null.
+                            continue
+                        if entity is None:
                             masked = {field: raw}
                         else:
-                            entity_view = self._entity_view(self.nodes[entity_id])
+                            entity_view = self._entity_view(entity)
                             masked = mask_payload({field: raw}, entity_view)
                     built_payload[field] = masked[field]
             else:
@@ -2549,6 +2609,11 @@ def validate_effect(nodes, effect, payload, refinements):
     of this check and rejected outright if the payload supplies it anyway — it
     is server-computed, so the client sending one is mass-assignment, not a
     completed form.
+
+    An `optional` field (RFC-0055) may be absent or JSON `null`; a present
+    non-null value is still type-checked. Null-aware here, not only at
+    `run_workflow`'s boundary, because mode B's `_validation_fails` calls this
+    function without ever running a workflow.
     """
     rule = effect.get("rule")
     if rule == "semantic-types":
@@ -2567,12 +2632,24 @@ def validate_effect(nodes, effect, payload, refinements):
                         "field %r is derived (server-computed) and must not "
                         "be supplied in the payload" % field["name"])
                 continue
+            if field.get("optional") and (field["name"] not in payload
+                                          or payload[field["name"]] is None):
+                # RFC-0055: absent or JSON null both mean "not supplied".
+                continue
             if field["name"] not in payload:
                 raise RunError("missing required field %r" % field["name"])
             check_semantic_type(field["type"], payload[field["name"]],
                                 field["name"], refinements)
     else:
-        field_name = effect["target"].rsplit(".", 1)[-1]
+        entity_id, _, field_name = effect["target"].rpartition(".")
+        target_entity = nodes.get(entity_id)
+        field = None
+        if target_entity is not None:
+            field = next((f for f in target_entity.get("fields", [])
+                         if f["name"] == field_name), None)
+        if field is not None and field.get("optional") and (
+                field_name not in payload or payload[field_name] is None):
+            return
         if field_name not in payload:
             raise RunError("missing required field %r" % field_name)
         check_semantic_type(rule, payload[field_name], field_name, refinements)
@@ -2714,7 +2791,12 @@ def row_shape_mismatches(entity_node, row, refinements):
         if field.get("derived"):
             continue
         name = field["name"]
-        if name not in row:
+        optional = field.get("optional")
+        # RFC-0055: an `optional` field's missing key or stored null is the
+        # normal shape; a present value of the wrong type still reports.
+        if name not in row or (optional and row[name] is None):
+            if optional:
+                continue
             mismatches.append({"field": name, "expected_type": field["type"],
                                "kind": "missing"})
             continue

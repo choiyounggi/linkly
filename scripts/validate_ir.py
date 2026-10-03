@@ -516,6 +516,34 @@ def subscribe_negatives():
     ]
 
 
+OPTIONAL_FIELD_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "customers",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.customer",
+            "name": "Customer",
+            "fields": [
+                {"name": "id", "type": "UUID"},
+                {"name": "nickname", "type": "Text", "optional": True},
+            ],
+        },
+    ],
+}
+
+
+def optional_negatives():
+    """RFC-0055 — `optional` is a single boolean field, same shape
+    `subscribe_negatives()` uses for `Event.subscribe`."""
+    n1 = copy.deepcopy(OPTIONAL_FIELD_FIXTURE)
+    n1["nodes"][0]["fields"][1]["optional"] = "yes"  # type 불일치 — boolean 아님
+
+    return [
+        ("fields[].optional is not a boolean: 'yes'", n1),
+    ]
+
+
 CONSUME_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "orders",
@@ -833,6 +861,8 @@ def self_test():
          SUBSCRIBE_EVENT_FIXTURE),
         ("CONSUME_EVENT_FIXTURE (issue #118 Event.consume)",
          CONSUME_EVENT_FIXTURE),
+        ("OPTIONAL_FIELD_FIXTURE (RFC-0055 optional field)",
+         OPTIONAL_FIELD_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -873,7 +903,7 @@ def self_test():
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
       + respond_negatives() + create_negatives() + expose_negatives() \
       + capability_http_negatives() + subscribe_negatives() \
-      + consume_negatives() + lookup_negatives()
+      + consume_negatives() + lookup_negatives() + optional_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

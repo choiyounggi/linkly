@@ -62,6 +62,7 @@ CODES = (
     "predicate-not-pushed-down",    # issue #164  list where ran against a driver that does not declare supports_predicate
     "respond-field-missing",        # issue #198  `respond` names a field absent from the bound row
     "guard-scoped-binding-escape",  # issue #198  `respond`/`set`/`format`/`emit ... with` reads a `create .../call .../request ... as` binding outside the guard that creates it
+    "optional-field-unguarded-arithmetic",  # RFC-0055  set/guard arithmetic reads an `optional` field with no Presence (`exists`) guard owning the step
 )
 
 # code -> grade (#52). One question decides every row:
@@ -154,6 +155,9 @@ SEVERITY_OF = {
     # issue #198: moving the reader under the guard that creates the binding
     # removes this — same test as `guard-orphaned-steps`.
     "guard-scoped-binding-escape": "warning",
+    # RFC-0055: adding a `when <ref> exists` guard (or moving the read
+    # under one) removes this — same test as `unknown-verb`.
+    "optional-field-unguarded-arithmetic": "warning",
 }
 
 
@@ -183,6 +187,7 @@ HINTS = {
     "predicate-not-pushed-down": "No program edit removes this — the deployed repository driver does not declare supports_predicate; the core over-fetches then filters locally. See docs/cost-model.md's list_where_no_pushdown row for the resulting complexity, or configure a driver with supports_predicate = True if lower transfer volume matters.",
     "respond-field-missing": "Backfill the stored row (add the missing field) or stop respond-ing it — `lnpl migrate` can backfill a missing field across existing rows, the same path `stored-row-shape-mismatch` names.",
     "guard-scoped-binding-escape": "Repeat the guard line before this step, or wrap both in a `parallel` block.",
+    "optional-field-unguarded-arithmetic": "Add `when <ref> exists` immediately before this step (or move it inside that guard's block) before using it in arithmetic — or use a different field that is not `optional`.",
 }
 
 

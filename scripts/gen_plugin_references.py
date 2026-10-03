@@ -710,6 +710,10 @@ RFC_ROUTES = {
     "0052": ("find/update/delete가 payload의 id가 아닌 다른 키로 행을 지목하게 하고 "
              "싶다(`by <ref>`) — 어떤 참조가 키가 될 수 있고, 값이 없으면 무슨 일이 "
              "나며, create는 왜 여전히 as만 받고 모드 B는 왜 거부하는지", ()),
+    "0055": ("entity 필드를 선택(optional)으로 선언하고 싶다 — payload가 그 "
+             "필드를 보내지 않거나 null을 보내도 validate가 거부하지 않고, "
+             "저장된 행과 OpenAPI·db check·migrate·Presence 가드가 그 부재를 "
+             "어떻게 다루는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

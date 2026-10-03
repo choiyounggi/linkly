@@ -366,20 +366,28 @@ def _entity_schema(entity, refined):
         if tname in refined:
             # 3.1 honours keywords beside a `$ref`, but the IR states nothing
             # about the field beyond its type, so the reference stands alone.
-            props[field["name"]] = {"$ref": "#/components/schemas/%s" % tname}
+            prop = {"$ref": "#/components/schemas/%s" % tname}
         elif tname not in TYPE_SCHEMA:
             raise OpenApiError("no OpenAPI mapping for semantic type %r "
                                "(field %s.%s)" % (tname, entity["name"], field["name"]))
         else:
-            props[field["name"]] = dict(TYPE_SCHEMA[tname])
+            prop = dict(TYPE_SCHEMA[tname])
+        if field.get("optional"):
+            # RFC-0055: an absent OR explicit-null value is accepted. `Json`'s
+            # schema is `{}` (no "type"), which already admits null.
+            if "$ref" in prop:
+                prop = {"oneOf": [prop, {"type": "null"}]}
+            elif isinstance(prop.get("type"), str):
+                prop = dict(prop, type=[prop["type"], "null"])
+        props[field["name"]] = prop
         if field.get("derived"):
             # issue #95: server-computed — never required of a request, and
             # marked the way `Password`/`writeOnly` already marks the mirror
             # case, so request and response keep sharing this one schema
             # ($ref) rather than splitting into two.
-            props[field["name"]]["readOnly"] = True
+            prop["readOnly"] = True
             continue
-        if field.get("required", True):
+        if not field.get("optional"):
             required.append(field["name"])
     schema = {"type": "object", "properties": props, "additionalProperties": False}
     if required:
@@ -482,7 +490,7 @@ def _response_schema(steps, nodes, entities, refined):
                     and effect.get("operation") == "create"
                     and effect.get("result")):
                 create_bindings[effect["result"]] = nodes[effect["entity"]]
-    grouped, order = {}, []
+    grouped, order, required_by_binding = {}, [], {}
     for ref in refs:
         binding, _, field_name = ref.partition(".")
         entity = by_binding.get(binding) or create_bindings.get(binding)
@@ -502,13 +510,21 @@ def _response_schema(steps, nodes, entities, refined):
             field_schema["readOnly"] = True
         if binding not in grouped:
             grouped[binding] = {}
+            required_by_binding[binding] = []
             order.append(binding)
         grouped[binding][field_name] = field_schema
+        # RFC-0055: `respond` omits an absent optional field rather than
+        # sending null, so it is not required — and not nullable either.
+        if not field.get("optional") and field_name not in required_by_binding[binding]:
+            required_by_binding[binding].append(field_name)
 
-    properties = {binding: {"type": "object", "properties": grouped[binding],
-                            "required": list(grouped[binding]),
-                            "additionalProperties": False}
-                 for binding in order}
+    properties = {}
+    for binding in order:
+        schema = {"type": "object", "properties": grouped[binding]}
+        if required_by_binding[binding]:
+            schema["required"] = required_by_binding[binding]
+        schema["additionalProperties"] = False
+        properties[binding] = schema
     return {"type": "object", "properties": properties, "required": order,
            "additionalProperties": False}
 
