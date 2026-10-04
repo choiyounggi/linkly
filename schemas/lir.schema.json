@@ -90,6 +90,9 @@
             "$ref": "#/$defs/nodeResponse"
           },
           {
+            "$ref": "#/$defs/nodeRejection"
+          },
+          {
             "$ref": "#/$defs/nodeNetworkCall"
           },
           {
@@ -848,6 +851,35 @@
       ],
       "additionalProperties": false
     },
+    "nodeRejection": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Rejection"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "code"
+      ],
+      "additionalProperties": false
+    },
     "nodeGuard": {
       "allOf": [
         {
@@ -887,6 +919,15 @@
                 "type": "string"
               },
               "minItems": 1
+            },
+            "textEqualityOperands": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             },
             "children": {
               "$ref": "#/$defs/nodeIdArray"

@@ -721,6 +721,10 @@
         "attrs": {},
         "effect": "EventEmit"
       },
+      "fail": {
+        "attrs": {},
+        "effect": "Rejection"
+      },
       "find": {
         "attrs": {
           "operation": "read"

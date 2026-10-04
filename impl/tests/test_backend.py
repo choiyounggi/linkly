@@ -382,6 +382,157 @@ workflow W
             backend.workflow_uses_money_guard(doc, "wf.nope")
 
 
+TEXT_GUARD = """capability postgres
+
+refine OrderStatus of Text
+    enum pending paid cancelled
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        status OrderStatus
+        expected OrderStatus
+
+entity Audit
+    field
+        id UUID
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Cancel
+    %s
+    create audit
+"""
+
+
+class TestModeBRefusesATextGuard(unittest.TestCase):
+    """RFC-0056 §Mode B: a Text-family value has no i64 encoding, so a guard
+    comparing one is refused by name, after the Money, lookup and optional
+    checks."""
+
+    def _refusal(self, body):
+        doc, wf = _predicate_doc(TEXT_GUARD % body)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        return str(ctx.exception)
+
+    def test_build_refuses_text_equality_citing_rfc_0056(self):
+        msg = self._refusal("read order\n    when order.status == input.expected")
+        self.assertIn("create audit", msg)
+        self.assertIn("order.status == input.expected", msg)
+        self.assertIn("Text-family", msg)
+        self.assertIn("RFC-0056", msg)
+
+    def test_build_refuses_a_bare_literal_text_guard(self):
+        self.assertIn("RFC-0056", self._refusal(
+            "read order\n    when order.status != cancelled"))
+
+    def test_build_refuses_text_equality_on_a_create_as_alias(self):
+        msg = self._refusal("create order as fresh\n    when fresh.status == paid")
+        self.assertIn("fresh.status == paid", msg)
+        doc, wf = _predicate_doc(TEXT_GUARD % (
+            "create order as fresh\n    when fresh.status == paid"))
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_build_refuses_a_text_term_only_in_an_or_alternative(self):
+        msg = self._refusal(
+            "read order\n    when order.stock > 0\n    or order.status == paid")
+        self.assertIn("order.status == paid", msg)
+
+    def test_build_still_builds_a_non_text_guard_on_an_entity_that_also_has_a_text_field(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % "read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_text_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_input_text_field_resolves_to_the_last_declaring_entity(self):
+        # Boundary: `input.code` is Integer when the Integer entity is last.
+        two = """capability postgres
+
+entity %s
+    field
+        id UUID
+        code %s
+
+entity %s
+    field
+        id UUID
+        code %s
+
+service S
+    policy
+        timeout 5s
+
+workflow W
+    %s
+    create %s
+"""
+        doc, wf = _predicate_doc(two % ("Label", "Text", "Counter", "Integer",
+                                        "when input.code > 0", "counter"))
+        self.assertFalse(backend.workflow_uses_text_guard(doc, wf))
+        doc, wf = _predicate_doc(two % ("Counter", "Integer", "Label", "Text",
+                                        "when input.code == input.code",
+                                        "label"))
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_a_money_guard_is_refused_before_a_text_guard(self):
+        source = MONEY_GUARD.replace(
+            "        lineTotal Money\n",
+            "        lineTotal Money\n        note Text\n") % (
+            "when order.note == x and order.total > order.threshold")
+        doc, wf = _predicate_doc(source)
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+        self.assertNotIn("RFC-0056", str(ctx.exception))
+
+    def test_workflow_uses_text_guard_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(TEXT_GUARD % "read order\n    when order.stock > 0")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_text_guard(doc, "wf.nope")
+
+
+class TestModeBRefusesFail(unittest.TestCase):
+    """RFC-0058 §Mode B: a declared business rejection has no compiled
+    evaluator, so a workflow reaching `fail` is refused by name, after every
+    guard exemption (Money, lookup, optional, Text)."""
+
+    FAIL_BODY = "read order\n    when order.stock < 1\n    fail out-of-stock"
+
+    def test_emit_mlir_refuses_fail_citing_rfc_0058(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        msg = str(ctx.exception)
+        self.assertIn("fail out-of-stock", msg)
+        self.assertIn("RFC-0058", msg)
+        self.assertIn("mode A", msg)
+
+    def test_workflow_uses_fail_detects_only_a_fail_step(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        doc, wf = _predicate_doc(TEXT_GUARD % "read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_fail(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_a_text_guard_is_refused_before_fail(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % (
+            "read order\n    when order.status == paid\n    fail already-paid"))
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertIn("RFC-0056", str(ctx.exception))
+        self.assertNotIn("RFC-0058", str(ctx.exception))
+
+    def test_workflow_uses_fail_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_fail(doc, "wf.nope")
+
+
 @NEEDS_TOOLS
 class TestNativeBuild(unittest.TestCase):
     def setUp(self):

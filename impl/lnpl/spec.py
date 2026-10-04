@@ -170,7 +170,8 @@ def _expect_result(phrase, result, _interp):
     try:
         ok = _condition_holds(text, result.get("payload", {}),
                               result.get("bindings", {}),
-                              money_fields=_money_field_predicate(_interp.doc))
+                              money_fields=_money_field_predicate(_interp.doc),
+                              text_fields=_text_field_predicate(_interp.doc))
     except (ConditionError, RunError) as exc:
         raise SpecError("unsupported result expectation %r: %s" % (phrase, exc))
     return ok, "%s -> %s" % (text, ok)
@@ -186,6 +187,26 @@ def _money_field_predicate(document):
     resolution via `interp.refinement_index`, matching `_typed_value`'s own
     `base == "Money"` pattern (D3(1)).
     """
+    return _field_base_predicate(document, ("Money",), bare=True)
+
+
+# RFC-0056: the bases lowering opens to guard equality (lower.py's
+# TEXT_EQUALITY_EXCLUDED_BASES taken out of BASE_CATEGORY "text").
+_TEXT_EQUALITY_BASES = ("UUID", "Email", "Phone", "Currency", "Html",
+                        "Markdown", "Text")
+
+
+def _text_field_predicate(document):
+    """`ref spelling -> bool` for `_condition_holds`'s `text_fields` param
+    (RFC-0056). Same resolution as `_money_field_predicate`, except that a
+    BARE name is never Text here: whether a bare operand is a literal is
+    decided by pairing it with a qualified Text field in the same term."""
+    return _field_base_predicate(document, _TEXT_EQUALITY_BASES, bare=False)
+
+
+def _field_base_predicate(document, bases, bare):
+    """`ref -> bool`: does `ref` name a field whose base is in `bases`? A bare
+    ref answers from the input-namespace union only when `bare` is true."""
     entities = [n for n in document.get("nodes", []) if n["kind"] == "Entity"]
     refinements = refinement_index(document)
 
@@ -203,13 +224,13 @@ def _money_field_predicate(document):
     def predicate(ref):
         head, sep, tail = ref.partition(".")
         if not sep:
-            return union_type.get(ref) == "Money"
+            return bare and union_type.get(ref) in bases
         entity = by_name.get(head) or by_binding.get(head)
         if entity is None:
-            return union_type.get(tail) == "Money"
+            return union_type.get(tail) in bases
         field = next((f for f in entity.get("fields", []) if f["name"] == tail),
                      None)
-        return field is not None and base_of(field["type"]) == "Money"
+        return field is not None and base_of(field["type"]) in bases
 
     return predicate
 

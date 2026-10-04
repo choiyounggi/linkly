@@ -157,6 +157,19 @@ class TestIdRequiredServing(unittest.TestCase):
         from lnpl.wsgi import _TITLES
         self.assertIn("id", _TITLES["id-required"])
 
+    def test_fail_cannot_reuse_the_id_required_code(self):
+        # RFC-0058: an author's `fail <code>` may not collide with a code the
+        # server already sends, and RFC-0057 added `id-required`.
+        from lnpl.lower import LowerError
+        src = AUDIT_SRC.replace(
+            "    create auditentry as a\n",
+            "    when input.action missing\n    fail id-required\n"
+            "    create auditentry as a\n")
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(src)
+        self.assertIn("reserved problem code", str(ctx.exception))
+        self.assertIn("id-required", str(ctx.exception))
+
 
 
 # The issue's module with both markers (RFC-0057 §1).
@@ -523,7 +536,14 @@ class TestBareOperand(unittest.TestCase):
         self.lower_fails("stamp.at to now", "'now'", "derived clock")
 
     def test_uuid_suggests_derived_generated(self):
-        self.lower_fails("stamp.id to uuid", "'uuid'", "derived generated")
+        self.lower_fails("stamp.n to uuid", "'uuid'", "derived generated")
+
+    def test_a_target_set_cannot_write_is_refused_for_that_first(self):
+        # A UUID field is not `set`-able at all (RFC-0016 dimensions); that
+        # refusal names the real problem, so it comes before this one.
+        message = self.lower_fails("stamp.id to uuid",
+                                   "neither Integer nor DateTime")
+        self.assertNotIn("derived generated", message)
 
     def test_an_arithmetic_operand_is_checked_too(self):
         self.lower_fails("stamp.n to stamp.n + bogusname", "'bogusname'")

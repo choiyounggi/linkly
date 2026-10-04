@@ -28,7 +28,7 @@ from .condition import (PAYLOAD_NAMESPACE, decode_instant,
                         guard_condition_text, parse_value)
 from .diagnostics import Diagnostics
 from .drivers import (ConflictError, DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
-                      FakeNetworkDriver, ROLE_CLAIM)
+                      FakeNetworkDriver, ROLE_CLAIM, WriteConflictError)
 from .lower import FILL_SOURCES
 from .refinements import BASE_CATEGORY
 from .repo_policy import apply_predicate, binding_name, row_key
@@ -425,6 +425,14 @@ class _ParallelGroup:
         self.step_ids = step_ids
 
 
+def _text_ops(node, index):
+    """The operand names lowering recorded for the Text-equality terms of the
+    guard text at `index` in (condition,) + alternatives (RFC-0056), or None
+    when the guard records none — read from the IR, never re-derived."""
+    ops = node.get("textEqualityOperands")
+    return frozenset(ops[index]) if ops else None
+
+
 def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
     """Yield the WorkflowStep ids to execute, applying Guard/Concurrency/Pipeline.
 
@@ -457,7 +465,8 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                 alternatives = node.get("alternatives")
                 if not alternatives:
                     if not _condition_holds(node.get("condition"), payload, bindings,
-                                            caller=interp.caller):
+                                            caller=interp.caller,
+                                            text_equality_operands=_text_ops(node, 0)):
                         # Issue #83: a second, pure re-evaluation just to collect the
                         # per-term values (RFC-0014 D3-D4 addendum). Kept OUT of the
                         # line above on purpose: that line is a mutation_check.py
@@ -466,7 +475,8 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                         # identical.
                         raw_evals = []
                         _condition_holds(node.get("condition"), payload, bindings,
-                                         collector=raw_evals, caller=interp.caller)
+                                         collector=raw_evals, caller=interp.caller,
+                                         text_equality_operands=_text_ops(node, 0))
                         result["skipped"].append(_skip_record(
                             nodes, node,
                             evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
@@ -481,11 +491,12 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                     texts = [node.get("condition")] + list(alternatives)
                     raw_evals = []
                     holds_per_text = []
-                    for text in texts:
+                    for i, text in enumerate(texts):
                         term_evals = []
                         holds_per_text.append(_condition_holds(
                             text, payload, bindings, collector=term_evals,
-                            caller=interp.caller))
+                            caller=interp.caller,
+                            text_equality_operands=_text_ops(node, i)))
                         raw_evals.extend(term_evals)
                     if not any(holds_per_text):
                         result["skipped"].append(_skip_record(
@@ -517,7 +528,8 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                 rounds = 0
                 deadline = None if con["timeout_ms"] is None else interp.clock.now + con["timeout_ms"]
                 while not _condition_holds(node.get("condition"), payload, bindings,
-                                           caller=interp.caller):
+                                           caller=interp.caller,
+                                           text_equality_operands=_text_ops(node, 0)):
                     # Check both boundaries before iteration
                     if deadline is not None and interp.clock.now >= deadline:
                         interp.trace.log("WARN", "until loop hit deadline",
@@ -542,7 +554,8 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                     # evaluations does not change what already decided rounds==0.
                     raw_evals = []
                     _condition_holds(node.get("condition"), payload, bindings,
-                                     collector=raw_evals, caller=interp.caller)
+                                     collector=raw_evals, caller=interp.caller,
+                                     text_equality_operands=_text_ops(node, 0))
                     result["skipped"].append(_skip_record(
                         nodes, node, rounds=0,
                         evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
@@ -752,7 +765,8 @@ def _resolve_predicate_value(value, payload, bindings, caller=None):
 
 
 def _condition_holds(condition, payload, bindings, collector=None, caller=None,
-                      money_fields=None):
+                      money_fields=None, text_equality_operands=None,
+                      text_fields=None):
     """Mode A condition evaluation: Presence + Comparison.
 
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
@@ -785,6 +799,17 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
     would otherwise raise `ConditionError` on the literal token. Every other
     shape (a non-money ref, a non-money-literal-shaped value, no `money_fields`
     at all) falls through unchanged to the existing path.
+
+    `text_equality_operands` (RFC-0056, optional, default `None`): the
+    operand names a guard's Text-equality terms carry, as lowering recorded
+    them (`textEqualityOperands` on the Guard node). A `==`/`!=` term naming
+    one compares text, not numbers — see `_comparison_holds`.
+
+    `text_fields` (RFC-0056, optional, default `None`): a predicate
+    `ref -> bool` naming Text-family fields — only `spec._expect_result`
+    passes one, since a `result` text has no Guard node to read a recorded
+    decision from. A `==`/`!=` term with a QUALIFIED operand it confirms
+    compares text the same way.
     """
     if condition is None:
         return True
@@ -837,7 +862,9 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
         return holds
 
     if isinstance(cond, Comparison):
-        return _comparison_holds(cond, condition, payload, bindings, collector, caller)
+        return _comparison_holds(cond, condition, payload, bindings, collector, caller,
+                                 text_equality_operands=text_equality_operands,
+                                 text_fields=text_fields)
 
     if isinstance(cond, NumericPredicate):
         return _numeric_predicate_holds(cond, payload, bindings, collector, caller)
@@ -852,8 +879,10 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
                 results.append(_numeric_predicate_holds(term, payload, bindings,
                                                         collector, caller))
             else:
-                results.append(_comparison_holds(term, condition, payload,
-                                                 bindings, collector, caller))
+                results.append(_comparison_holds(
+                    term, condition, payload, bindings, collector, caller,
+                    text_equality_operands=text_equality_operands,
+                    text_fields=text_fields))
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
@@ -905,7 +934,8 @@ def _is_numeric_shaped(raw):
     return False
 
 
-def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, caller=None):
+def _comparison_holds(cmp_node, condition, payload, bindings, collector=None,
+                      caller=None, text_equality_operands=None, text_fields=None):
     """One `Comparison` against this scope. Unresolved reference -> False.
 
     `collector` (issue #83): see `_condition_holds`. `ref` is the left
@@ -913,7 +943,17 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, ca
     dotted name), and `value`/`expected` are the left/right operands as
     evaluated here, unmasked (`_masked_evaluation` in `_flatten_items` masks a
     sensitive one before it reaches a skip record).
+
+    RFC-0056: a `==`/`!=` term with an operand named in
+    `text_equality_operands` compares text — a bare name is its own literal
+    text, a qualified name resolves via `resolve_reference` — and never
+    reaches `eval_value`'s number/instant coercion. Without a recorded set,
+    `text_fields` decides the same pairing from a qualified operand.
     """
+    if cmp_node.op in ("==", "!=") and _is_text_term(
+            cmp_node, text_equality_operands, text_fields):
+        return _text_comparison_holds(cmp_node, condition, payload, bindings,
+                                      collector, caller)
     left = eval_value(cmp_node.left, condition, payload, bindings, caller)
     right = eval_value(cmp_node.right, condition, payload, bindings, caller)
     op = cmp_node.op
@@ -960,6 +1000,50 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None, ca
             "expected": (_decode_money(*right) if isinstance(right, tuple)
                          else right),
             "holds": holds})
+    return holds
+
+
+def _is_text_term(cmp_node, text_equality_operands, text_fields):
+    """RFC-0056: is this `==`/`!=` term a Text equality? From the guard's
+    recorded operand names when given; otherwise from `text_fields`, which
+    only a QUALIFIED operand can satisfy — a bare name is never Text on its
+    own, only by being paired with one."""
+    from .condition import Ref
+    operands = (cmp_node.left, cmp_node.right)
+    if text_equality_operands:
+        return any(isinstance(o, Ref) and o.name in text_equality_operands
+                   for o in operands)
+    if text_fields is not None:
+        return any(isinstance(o, Ref) and o.namespace is not None
+                   and text_fields(o.name) for o in operands)
+    return False
+
+
+def _text_comparison_holds(cmp_node, condition, payload, bindings, collector,
+                           caller):
+    """RFC-0056: one Text-equality term. Unresolved operand -> False, the
+    same rule a numeric comparison follows."""
+    from .condition import Ref
+
+    def text_of(operand):
+        if not isinstance(operand, Ref):
+            # Lowering refuses this in a guard; only a spec `result` gets here.
+            raise RunError("%r compares a Text-family field with %s, which "
+                           "is not text (RFC-0056)"
+                           % (condition, _value_text(operand)))
+        if operand.namespace is None:
+            return operand.name           # a bare name here is a literal
+        return resolve_reference(operand.name, payload, bindings, caller)
+
+    left = text_of(cmp_node.left)
+    right = text_of(cmp_node.right)
+    if left is None or right is None:
+        holds = False
+    else:
+        holds = (left == right) if cmp_node.op == "==" else (left != right)
+    if collector is not None:
+        collector.append({"ref": _value_text(cmp_node.left), "value": left,
+                          "op": cmp_node.op, "expected": right, "holds": holds})
     return holds
 
 
@@ -1821,7 +1905,7 @@ class Interpreter:
                     # #113/#128 forbid repeating it). Two carriers, one per
                     # raise site: `__cause__` is the original `DriverError` a
                     # real driver's `raise RunError(...) from exc` chained
-                    # (currently only ever a `ConflictError`); `failure_kind`
+                    # (a `ConflictError` or a `WriteConflictError`); `failure_kind`
                     # is the attribute a bare `RunError` carries when raised
                     # directly — `FakeRepository`'s create-conflict (D2) and
                     # `_run_step`'s deadline-exhausted raise (issue #128) both
@@ -1829,6 +1913,8 @@ class Interpreter:
                     # feature does not know about.
                     if isinstance(last_error.__cause__, ConflictError):
                         result["failure_kind"] = "conflict"
+                    elif isinstance(last_error.__cause__, WriteConflictError):
+                        result["failure_kind"] = "write-conflict"
                     else:
                         kind = getattr(last_error, "failure_kind", None)
                         if kind is not None:
@@ -2470,6 +2556,16 @@ class Interpreter:
             # `bindings` still holds THIS step's values, not a later step's
             # overwrite), which is why nothing runs here.
             pass
+        elif kind == "Rejection":
+            # RFC-0058: the author's declared business rejection. The code is
+            # the reason, and `failure_kind` rides the exception the same way
+            # `not_found.failure_kind` does above, so `run_workflow` types the
+            # failure without reading its wording. Rollback needs no code
+            # here: RFC-0032's boundary already discards a failed run.
+            child.attrs["code"] = effect["code"]
+            rejected = RunError(effect["code"])
+            rejected.failure_kind = "rejected"
+            raise rejected
         else:
             raise RunError("Phase 1 interpreter does not execute %s" % kind)
 
@@ -2503,6 +2599,9 @@ class Interpreter:
             if eff["kind"] in ("RepositoryCall", "CacheAccess") and key not in IDEMPOTENT_OPS:
                 return False
             if eff["kind"] in ("NetworkCall", "EventEmit"):
+                return False
+            # RFC-0058: a reached `fail` rejects identically on every attempt.
+            if eff["kind"] == "Rejection":
                 return False
         return True
 
@@ -2653,6 +2752,8 @@ class Interpreter:
             result["failure_reason"] = str(failed_error)
             if isinstance(failed_error.__cause__, ConflictError):
                 result["failure_kind"] = "conflict"
+            elif isinstance(failed_error.__cause__, WriteConflictError):
+                result["failure_kind"] = "write-conflict"
             else:
                 kind = getattr(failed_error, "failure_kind", None)
                 if kind is not None:

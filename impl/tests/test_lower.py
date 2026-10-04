@@ -1871,12 +1871,23 @@ class TestPresenceOnOptionalFields(unittest.TestCase):
         self.assertIn("declared type is Money", str(caught.exception))
         self.assertIn("RFC-0051", str(caught.exception))
 
-    def test_comparison_on_optional_text_field_still_refused(self):
-        # Boundary: the exemption is for Presence only (§6 3.2).
+    def test_comparison_on_optional_text_field_ordering_still_refused(self):
+        # Boundary: the Presence exemption (RFC-0055 §6 3.2) and the equality
+        # exemption (RFC-0056) are both independent of `optional` — ordering
+        # comparison on a Text-family field stays refused either way.
         with self.assertRaises(LowerError) as caught:
             optional_guard_module(
-                "    when customer.nickname == input.nickname\n    create order")
+                "    when customer.nickname > input.nickname\n    create order")
         self.assertIn("neither Integer nor DateTime", str(caught.exception))
+
+    def test_comparison_on_optional_text_field_equality_now_compiles(self):
+        # RFC-0056: equality is independent of `optional`.
+        mod = optional_guard_module(
+            "    when customer.nickname == input.nickname\n    create order")
+        guard = mod.get("wf.greet.guard.1")
+        self.assertEqual("customer.nickname == input.nickname", guard["condition"])
+        self.assertEqual([["customer.nickname", "input.nickname"]],
+                         guard["textEqualityOperands"])
 
 
 class TestPresenceOnOptionalFieldsAtRuntime(unittest.TestCase):
@@ -2086,6 +2097,368 @@ class TestOptionalUnguardedArithmetic(unittest.TestCase):
 
     def test_guard_comparison_without_arithmetic_does_not_warn(self):
         self.assertEqual([], arith_warnings("    when customer.score > 5\n    create order"))
+
+
+TEXT_GUARD_SOURCE = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+        expected OrderStatus
+        note Text
+        ownerId UUID
+        secret Password
+        ratio Decimal
+        rush Boolean
+        stock Integer
+service OrderService
+    policy
+        retry 0
+workflow CancelOrder
+    find order
+%s
+"""
+
+
+def text_guard_module(body):
+    return lower(parse(TEXT_GUARD_SOURCE % body), "shop")
+
+
+def text_guard(condition):
+    return text_guard_module(
+        "    when %s\n    update order" % condition).get("wf.cancel.order.guard.1")
+
+
+def text_guard_refusal(test, condition):
+    with test.assertRaises(LowerError) as caught:
+        text_guard(condition)
+    return str(caught.exception)
+
+
+class TestTextEqualityGuards(unittest.TestCase):
+    """RFC-0056: a guard compares a Text-family field with `==`/`!=`."""
+
+    def test_guard_equality_on_text_field_compiles(self):
+        guard = text_guard("order.note == input.note")
+        self.assertEqual("order.note == input.note", guard["condition"])
+        self.assertEqual([["input.note", "order.note"]],
+                         guard["textEqualityOperands"])
+
+    def test_guard_equality_on_enum_field_against_input_compiles(self):
+        # The issue's CancelOrder guard, with `expected` declared so
+        # `input.expected` names a field (RFC-0012 checks input names).
+        guard = text_guard("order.status == input.expected")
+        self.assertEqual([["input.expected", "order.status"]],
+                         guard["textEqualityOperands"])
+
+    def test_the_issues_literal_source_now_fails_only_on_the_input_name(self):
+        # Issue #207's CancelOrder verbatim: `expected` is declared nowhere, so
+        # RFC-0012's input-name check refuses it — no longer the type rule.
+        source = ("refine OrderStatus of Text\n    enum pending paid cancelled\n\n"
+                  "entity Order\n    field\n        id UUID\n"
+                  "        status OrderStatus\n\nservice OrderService\n\n"
+                  "workflow CancelOrder\n    find order\n"
+                  "    when order.status == input.expected\n    update order\n")
+        with self.assertRaises(LowerError) as caught:
+            lower(parse(source), "g2")
+        message = str(caught.exception)
+        self.assertIn("names input field 'expected', which no entity declares",
+                      message)
+        self.assertNotIn("neither Integer nor DateTime", message)
+
+    def test_guard_equality_on_enum_text_field_compiles(self):
+        guard = text_guard("order.status == paid")
+        self.assertEqual([["order.status", "paid"]], guard["textEqualityOperands"])
+
+    def test_guard_inequality_on_text_field_compiles(self):
+        guard = text_guard("order.status != cancelled")
+        self.assertEqual([["cancelled", "order.status"]],
+                         guard["textEqualityOperands"])
+
+    def test_text_equality_mirrored_operand_order(self):
+        self.assertEqual(text_guard("order.status == paid")["textEqualityOperands"],
+                         text_guard("paid == order.status")["textEqualityOperands"])
+
+    def test_plain_text_field_accepts_any_bare_literal(self):
+        guard = text_guard("order.note == anything")
+        self.assertEqual([["anything", "order.note"]], guard["textEqualityOperands"])
+
+    def test_guard_ordering_on_text_field_still_refused(self):
+        for op in ("<", "<=", ">", ">="):
+            message = text_guard_refusal(self, "order.status %s paid" % op)
+            self.assertIn("neither Integer nor DateTime", message, op)
+
+    def test_guard_equality_on_password_field_still_refused_citing_masking(self):
+        message = text_guard_refusal(self, "order.secret == hunter")
+        self.assertIn("order.secret", message)
+        self.assertIn("RFC-0001", message)
+        self.assertIn("mask", message)
+        self.assertNotIn("RFC-0056", message)
+
+    def test_guard_equality_on_decimal_field_still_refused(self):
+        message = text_guard_refusal(self, "order.ratio == input.ratio")
+        self.assertIn("neither Integer nor DateTime", message)
+
+    def test_guard_equality_on_boolean_field_still_refused(self):
+        message = text_guard_refusal(self, "order.rush == input.rush")
+        self.assertIn("neither Integer nor DateTime", message)
+
+    def test_enum_literal_not_a_member_is_refused_with_a_suggestion(self):
+        message = text_guard_refusal(self, "order.status == paidd")
+        self.assertIn("'paidd'", message)
+        self.assertIn("pending, paid, cancelled", message)
+        self.assertIn("did you mean 'paid'?", message)
+
+    def test_enum_literal_with_no_close_match_lists_the_members(self):
+        # `shipped` is close to no member (difflib cutoff 0.6), so there is
+        # no did-you-mean, but the refusal still names what may be written.
+        message = text_guard_refusal(self, "order.status == shipped")
+        self.assertIn("'shipped'", message)
+        self.assertIn("OrderStatus", message)
+        self.assertIn("pending, paid, cancelled", message)
+        self.assertNotIn("did you mean", message)
+
+    def test_enum_literal_on_the_left_is_checked_too(self):
+        message = text_guard_refusal(self, "shipped != order.status")
+        self.assertIn("'shipped'", message)
+
+    def test_two_text_family_fields_of_different_bases_refused(self):
+        message = text_guard_refusal(self, "order.status == order.ownerId")
+        self.assertIn("same declared type", message)
+        self.assertIn("OrderStatus", message)
+        self.assertIn("UUID", message)
+
+    def test_text_field_against_a_number_literal_is_refused(self):
+        message = text_guard_refusal(self, "order.status == 5")
+        self.assertIn("like with like", message)
+
+    def test_arithmetic_on_either_side_of_a_text_equality_is_refused(self):
+        message = text_guard_refusal(self, "order.status == order.stock + 1")
+        self.assertIn("arithmetic", message)
+        self.assertIn("RFC-0056", message)
+        # A Text field inside the arithmetic hits the plain dimension refusal.
+        message = text_guard_refusal(self, "order.note + 1 == paid")
+        self.assertIn("neither Integer nor DateTime", message)
+
+    def test_two_bare_integer_names_in_equality_unaffected_by_rfc_0056(self):
+        guard = text_guard("stock == available")
+        self.assertEqual("stock == available", guard["condition"])
+        self.assertNotIn("textEqualityOperands", guard)
+
+    def test_a_bare_name_on_the_left_of_an_unrelated_comparison_is_unaffected(self):
+        guard = text_guard("available == order.stock")
+        self.assertNotIn("textEqualityOperands", guard)
+
+    def test_an_integer_guard_ir_carries_no_new_key(self):
+        guard = text_guard("order.stock > 0")
+        self.assertEqual({"kind", "id", "mode", "condition", "children", "line"},
+                         set(guard) - {"meta"})
+
+    def test_and_chain_records_only_the_text_term(self):
+        guard = text_guard("order.status == pending and order.stock > 0")
+        self.assertEqual([["order.status", "pending"]],
+                         guard["textEqualityOperands"])
+
+    def test_alternatives_record_one_entry_per_text(self):
+        guard = text_guard_module(
+            "    when order.stock > 100\n    or order.status == pending\n"
+            "    update order").get("wf.cancel.order.guard.1")
+        self.assertEqual([[], ["order.status", "pending"]],
+                         guard["textEqualityOperands"])
+
+    def test_list_where_text_equality_is_unaffected_by_rfc_0056(self):
+        mod = text_guard_module("    list order where status == input.expected")
+        calls = [n for n in mod.nodes() if n.get("operation") == "query"]
+        self.assertEqual(
+            [{"field": "status", "op": "==", "value": "input.expected"}],
+            calls[0]["predicate"])
+        self.assertFalse(any("textEqualityOperands" in n for n in mod.nodes()))
+
+
+class TestSetOnATextFieldNamesFormat(unittest.TestCase):
+    """Issue #207 item 6: `set` cannot write Text, and the refusal says how."""
+
+    def refusal(self, step):
+        with self.assertRaises(LowerError) as caught:
+            text_guard_module("    %s\n    update order" % step)
+        return str(caught.exception)
+
+    def test_set_text_field_to_bare_literal_names_format(self):
+        message = self.refusal("set order.status to paid")
+        self.assertIn("a Text field (declared type OrderStatus)", message)
+        self.assertIn("format order.status from", message)
+
+    def test_set_text_field_to_quoted_literal_names_format(self):
+        message = self.refusal('set order.status to "paid"')
+        self.assertIn("a Text field (declared type OrderStatus)", message)
+        self.assertIn("format order.status from", message)
+
+    def test_set_plain_text_field_to_a_reference_names_format(self):
+        message = self.refusal("set order.note to input.note")
+        self.assertIn("format order.note from", message)
+
+    def test_set_uuid_field_to_bare_literal_still_gets_the_generic_message(self):
+        # `format` cannot write UUID either, so no hint here.
+        message = self.refusal("set order.ownerId to abc")
+        self.assertIn("neither Integer nor DateTime", message)
+        self.assertNotIn("format", message)
+
+    def test_set_uuid_field_to_quoted_literal_keeps_the_parse_error(self):
+        message = self.refusal('set order.ownerId to "abc"')
+        self.assertNotIn("format", message)
+
+    def test_set_integer_field_unaffected(self):
+        mod = text_guard_module(
+            "    set order.stock to order.stock + 1\n    update order")
+        steps = [n for n in mod.nodes() if n["kind"] == "Assignment"]
+        self.assertEqual("order.stock", steps[0]["target"])
+
+
+# RFC-0058: the issue #206 `Reserve` program, with the business rejection
+# written where the author means it.
+FAIL_MODULE = """
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+%s
+    create order
+"""
+
+GUARDED_FAIL = "    when product.stock < input.quantity\n    fail %s"
+
+
+def fail_ir(body):
+    return ir(FAIL_MODULE % body)
+
+
+class TestFailVerbLowering(unittest.TestCase):
+    """RFC-0058: `fail <kebab-code>` lowers to a WorkflowStep with exactly one
+    `Rejection` child carrying the code; every malformed code, and a `fail`
+    no guard owns, is a compile error naming the rule."""
+
+    def _rejections(self, doc):
+        return [n for n in doc["nodes"] if n["kind"] == "Rejection"]
+
+    def test_guarded_fail_lowers_to_one_rejection_with_the_code(self):
+        doc = fail_ir(GUARDED_FAIL % "out-of-stock")
+        nodes = by_id(doc)
+        [rejection] = self._rejections(doc)
+        self.assertEqual("out-of-stock", rejection["code"])
+        self.assertEqual({"kind", "id", "code", "line"}, set(rejection))
+        step = nodes[rejection["id"].rsplit(".", 1)[0]]
+        self.assertEqual("WorkflowStep", step["kind"])
+        self.assertEqual("fail out-of-stock", step["name"])
+        self.assertEqual([rejection["id"]], step["children"])
+        self.assertTrue(rejection["id"].endswith(".reject"))
+
+    def test_the_lowered_document_validates_against_the_ir_schema(self):
+        import jsonschema
+        with open(os.path.join(REPO_ROOT, "schemas", "lir.schema.json"),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        jsonschema.validate(fail_ir(GUARDED_FAIL % "out-of-stock"), schema)
+
+    def test_a_rejection_without_a_code_violates_the_ir_schema(self):
+        import jsonschema
+        with open(os.path.join(REPO_ROOT, "schemas", "lir.schema.json"),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        doc = fail_ir(GUARDED_FAIL % "out-of-stock")
+        self._rejections(doc)[0].pop("code")
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(doc, schema)
+
+    def test_a_single_character_code_is_kebab_case(self):
+        [rejection] = self._rejections(fail_ir(GUARDED_FAIL % "x"))
+        self.assertEqual("x", rejection["code"])
+
+    def test_a_non_kebab_code_is_refused(self):
+        for code in ("OutOfStock", "out_of_stock", "-out", "out-", "out--of",
+                     "out-of-stock!"):
+            with self.subTest(code=code):
+                with self.assertRaises(LowerError) as ctx:
+                    fail_ir(GUARDED_FAIL % code)
+                self.assertIn("kebab-case", str(ctx.exception))
+                self.assertIn(code, str(ctx.exception))
+
+    def test_a_bare_fail_without_a_code_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    when product.stock < input.quantity\n    fail")
+        self.assertIn("needs a kebab-case code", str(ctx.exception))
+
+    def test_trailing_words_after_the_code_are_refused(self):
+        # Same rule `create order because reasons` already follows: words the
+        # compiler would not act on are an error, never a silent no-op.
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir(GUARDED_FAIL % "out-of-stock because empty")
+        self.assertIn("one code", str(ctx.exception))
+        self.assertIn("because", str(ctx.exception))
+
+    def test_every_reserved_problem_code_is_refused(self):
+        from lnpl.lexer import RESERVED_PROBLEM_CODES
+        for code in RESERVED_PROBLEM_CODES:
+            with self.subTest(code=code):
+                with self.assertRaises(LowerError) as ctx:
+                    fail_ir(GUARDED_FAIL % code)
+                self.assertIn("reserved problem code", str(ctx.exception))
+
+    def test_an_unguarded_fail_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    fail out-of-stock")
+        msg = str(ctx.exception)
+        self.assertIn("not guarded", msg)
+        self.assertIn("Reserve", msg)
+        self.assertIn("RFC-0058", msg)
+
+    def test_a_fail_under_repeat_is_refused(self):
+        # `repeat N` runs its body at least once, so it cannot be false: the
+        # `fail` would end every run failed, same as no guard at all.
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    repeat 2\n    fail out-of-stock")
+        self.assertIn("not guarded", str(ctx.exception))
+
+    def test_a_fail_under_until_is_guarded(self):
+        # `until` can run zero rounds (RFC-0014 example 2), so it can skip.
+        doc = fail_ir("    until product.stock < input.quantity\n"
+                      "    fail out-of-stock")
+        self.assertEqual(["out-of-stock"],
+                         [n["code"] for n in self._rejections(doc)])
+
+    def test_a_fail_inside_a_guarded_block_is_guarded(self):
+        doc = fail_ir("    when product.stock < input.quantity\n"
+                      "    parallel\n"
+                      "        note \"rejecting\"\n"
+                      "        fail out-of-stock\n"
+                      "    merge")
+        self.assertEqual(["out-of-stock"],
+                         [n["code"] for n in self._rejections(doc)])
+
+    def test_a_fail_inside_an_unguarded_block_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    parallel\n"
+                    "        fail out-of-stock\n"
+                    "    merge")
+        self.assertIn("not guarded", str(ctx.exception))
+
+    def test_fail_is_no_longer_an_unknown_verb(self):
+        doc = lower(parse(FAIL_MODULE % (GUARDED_FAIL % "out-of-stock")), "t")
+        self.assertEqual([], list(doc.diagnostics.by_code("unknown-verb")))
+
+    def test_a_workflow_without_fail_lowers_with_no_rejection(self):
+        doc = fail_ir("    when product.stock < input.quantity\n"
+                      "    note \"short\"")
+        self.assertEqual([], self._rejections(doc))
 
 
 if __name__ == "__main__":

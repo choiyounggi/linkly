@@ -17,15 +17,21 @@ present, zero series — not an empty body).
 """
 
 import io
+import json
+import os
 import re
+import tempfile
 import unittest
 
-from lnpl.drivers import HmacTokenProvider
+from lnpl.drivers import HmacTokenProvider, SqliteRepositoryDriver
+from lnpl.repo_policy import default_rows
 from lnpl.interp import RunError, Trace
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.wsgi import MetricsRegistry, make_wsgi_app
 
+from tests.test_conflict_409 import BUMP_STEP, WRITE_CONFLICT_SRC
+from tests.test_driver_concurrency import _OnceStolenDriver
 from tests.test_wsgi_contract import call_wsgi
 
 # `validate input` rejects a payload missing required fields (RFC-0001) —
@@ -201,6 +207,34 @@ class NormalTest(unittest.TestCase):
                                  ("kind", "validation-failed")}))
         self.assertEqual(1.0, series[failure_key])
 
+
+    def test_normal_a_write_conflict_sets_kind_write_conflict(self):
+        """Issue #201: the version conflict carries its own closed `kind`
+        value, not the M8 catch-all `workflow-failed`."""
+        doc = _doc(WRITE_CONFLICT_SRC)
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "store.db")
+        payload = {"id": "w-metrics-1", "value": 0}
+        seeder = SqliteRepositoryDriver(path)
+        seeder.seed(default_rows(doc, target, payload))
+        seeder.close()
+
+        app = make_wsgi_app(doc, repository_factory=lambda: _OnceStolenDriver(path),
+                            metrics=True)
+        status, _h, _b = call_wsgi(app, "POST", "/widget-service/bump",
+                                   body=json.dumps(payload).encode("utf-8"))
+
+        _status, _headers, raw = _raw_get(app, "/-/metrics")
+        series = parse_prometheus_text(raw.decode("utf-8"))
+        labels = {("service", "WidgetService"), ("workflow", "Bump"),
+                  ("step", BUMP_STEP)}
+        self.assertEqual(409, status)
+        self.assertEqual(1.0, series[("lnpl_step_failures_total",
+                                      frozenset(labels | {("kind", "write-conflict")}))])
+        self.assertNotIn(("lnpl_step_failures_total",
+                          frozenset(labels | {("kind", "workflow-failed")})), series)
 
 class ErrorTest(unittest.TestCase):
 

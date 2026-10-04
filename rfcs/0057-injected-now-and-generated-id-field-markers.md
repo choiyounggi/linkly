@@ -223,7 +223,9 @@ RFC-0007 §2.2 규칙 4에 따라 RFC-0030 §4 전체를 아래로 치환한다.
 필드다(RFC-0012 §G12.1) — 선언된 이름은 지금처럼 허용된다. 이름이 `now`/`time`/
 `timestamp`이면 `derived clock`을, `uuid`/`guid`/`generated`이면 `derived generated`를
 제안한다. `format`의 인자, 가드 조건(RFC-0016 §3의 기존 허용), 집계(`count`/`sum`)의
-참조는 바뀌지 않는다.
+참조는 바뀌지 않는다. 이 검사는 대상 필드의 타입 검사 **뒤에** 돈다 — `set`이 쓸 수
+없는 대상(Text 필드는 RFC-0056의 "`format`을 쓰라" 거부, UUID 필드는 차원 거부)은 그
+거부가 먼저 나온다.
 
 이 규칙 때문에 바뀐 기존 테스트(의도된 변경): `test_value_semantics`의 미선언 맨이름
 `amount`를 쓰던 경계 테스트는 선언된 `stock`으로, Money 런타임 거부를 맨이름으로 재던

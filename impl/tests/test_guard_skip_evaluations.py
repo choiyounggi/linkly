@@ -141,6 +141,44 @@ class TestEvaluationsOnAComparisonGuard(unittest.TestCase):
         self.assertEqual(result["skipped"], [])
 
 
+    def test_skipped_evaluations_show_the_compared_text_values(self):
+        # RFC-0056: a Text equality's skip names both compared strings.
+        doc = _doc(TEXT_SRC % "    when order.status == paid", "shop")
+        _interp, result = _run_doc(doc, TEXT_PAYLOAD, workflow="wf.cancel.order",
+                                   entities=("entity.order",))
+        self.assertEqual(result["skipped"][0]["evaluations"],
+                         [{"ref": "order.status", "value": "pending", "op": "==",
+                           "expected": "paid", "holds": False}])
+
+    def test_skipped_evaluations_show_both_resolved_references(self):
+        doc = _doc(TEXT_SRC % "    when order.status != input.status", "shop")
+        _interp, result = _run_doc(doc, TEXT_PAYLOAD, workflow="wf.cancel.order",
+                                   entities=("entity.order",))
+        self.assertEqual(result["skipped"][0]["evaluations"],
+                         [{"ref": "order.status", "value": "pending", "op": "!=",
+                           "expected": "pending", "holds": False}])
+
+
+TEXT_SRC = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+service OrderService
+    policy
+        retry 0
+workflow CancelOrder
+    find order
+%s
+    update order
+"""
+
+TEXT_PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "status": "pending"}
+
+
 class TestEvaluationsAreMaskedLikeAnyOtherChannel(unittest.TestCase):
     """D3: a `ref` naming a sensitive entity field gets its `value` masked the
     same way `mask_payload` masks a bound row — reusing that chokepoint, not a
@@ -186,6 +224,19 @@ class TestEvaluationsAreMaskedLikeAnyOtherChannel(unittest.TestCase):
                            "holds": False}])
 
 
+    def test_text_equality_evaluation_has_no_password_masking_artifact(self):
+        # RFC-0056 D2: a Password field never reaches this path (refused at
+        # compile time), so a Text equality's entry is the plain shape every
+        # other comparison has, with nothing masked.
+        doc = _doc(TEXT_SRC % "    when order.status == cancelled", "shop")
+        _interp, result = _run_doc(doc, TEXT_PAYLOAD, workflow="wf.cancel.order",
+                                   entities=("entity.order",))
+        entry = result["skipped"][0]["evaluations"][0]
+        self.assertEqual({"ref", "value", "op", "expected", "holds"}, set(entry))
+        self.assertNotIn("***", repr(entry))
+        self.assertEqual("pending", entry["value"])
+
+
 class TestEvaluationsOnAnAndCondition(unittest.TestCase):
     """RFC-0015 `and`: `_condition_holds` threads `collector` through its own
     per-term loop, a second code path from the single-Comparison branch."""
@@ -226,6 +277,59 @@ class TestEvaluationsAreExcludedFromTheDifferentialProjection(unittest.TestCase)
         self.assertEqual(_normalise_skips(result["skipped"]),
                          [{"mode": "when", "condition": "stock > 0",
                            "step": "create order", "rounds": None}])
+
+
+# RFC-0058: issue #206's `Reserve`, with the rejection declared. A `fail`
+# step is a WorkflowStep like any other, so a false guard skips it the way
+# RFC-0014 already skips everything else.
+RESERVE_SRC = """
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+"""
+
+RESERVE_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3306"
+
+
+class TestAFalseGuardSkipsAFailStep(unittest.TestCase):
+
+    def _reserve(self, stock, quantity):
+        payload = {"id": RESERVE_ID, "quantity": quantity}
+        return _run(RESERVE_SRC, payload, workflow="wf.reserve",
+                    entities=("entity.product",),
+                    shaped={"entity.product": {"id": RESERVE_ID,
+                                               "stock": stock}})
+
+    def test_a_false_guard_skips_a_fail_step_exactly_like_any_other(self):
+        _interp, result = self._reserve(stock=5, quantity=1)
+        self.assertEqual("completed", result["status"])
+        self.assertNotIn("failure_kind", result)
+        self.assertEqual(1, len(result["skipped"]))
+        self.assertEqual(["fail out-of-stock"], result["skipped"][0]["steps"])
+        self.assertEqual(["find product", "create order"],
+                         [s["step"] for s in result["steps"]])
+
+    def test_the_boundary_equal_stock_still_skips(self):
+        # `<` is strict: stock == quantity is enough stock.
+        _interp, result = self._reserve(stock=2, quantity=2)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(["fail out-of-stock"], result["skipped"][0]["steps"])
+
+    def test_a_true_guard_reaches_the_fail_step_and_skips_nothing(self):
+        _interp, result = self._reserve(stock=1, quantity=5)
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("rejected", result["failure_kind"])
+        self.assertEqual([], result["skipped"])
 
 
 if __name__ == "__main__":

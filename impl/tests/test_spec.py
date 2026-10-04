@@ -453,6 +453,69 @@ class TestErrorExpectation(unittest.TestCase):
             run_shop(["valid product"], ["error wobbled"])
 
 
+# RFC-0058 / issue #206: the issue's own spec, with `fail out-of-stock`
+# declared. `expect failed` + `error reason` contract it with no new syntax.
+RESERVE_SPEC_SRC = """entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+    spec
+        given
+%s
+        when
+            reserve
+        expect
+%s
+"""
+
+
+def run_reserve(given, expect):
+    return run_shop_src(RESERVE_SPEC_SRC, given, expect)
+
+
+class TestDeclaredRejectionIsContractable(unittest.TestCase):
+
+    def test_the_issue_spec_passes(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"],
+            ["failed", "error reason out-of-stock",
+             "error step fail out-of-stock"])
+        # one count per expectation line
+        self.assertEqual((3, 0), (passed, failed), lines)
+
+    def test_expecting_completed_on_a_rejection_fails(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"], ["completed"])
+        self.assertEqual((0, 1), (passed, failed), lines)
+
+    def test_a_different_code_does_not_match(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"],
+            ["failed", "error reason over-limit"])
+        self.assertEqual((1, 1), (passed, failed), lines)
+
+    def test_enough_stock_completes_and_no_reason_exists(self):
+        # Boundary: stock == quantity skips the `fail`; asserting a reason on a
+        # run that did not fail must fail, never match vacuously.
+        passed, failed, lines = run_reserve(
+            ["stored product stock 5", "input.quantity 5"], ["completed"])
+        self.assertEqual((1, 0), (passed, failed), lines)
+        passed, failed, lines = run_reserve(
+            ["stored product stock 5", "input.quantity 5"],
+            ["error reason out-of-stock"])
+        self.assertEqual((0, 1), (passed, failed), lines)
+
+
 class TestEffectsExpectation(unittest.TestCase):
     """`effects <N>` — the total observable effect count.
 
@@ -952,6 +1015,94 @@ class TestExpectResultWithNumericPredicate(unittest.TestCase):
         passed, failed, lines = self._run(2)
         self.assertEqual(failed, 0, lines)
         self.assertEqual(passed, 2)
+
+
+CANCEL_SPEC = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+        qty Integer
+        cap Integer
+service OrderService
+    policy
+        retry 0
+workflow CancelOrder
+    find order
+    when order.status != cancelled
+    format order.status from "cancelled"
+    update order
+    spec
+        given
+%s
+        when
+            cancel order
+        expect
+%s
+"""
+
+
+def run_cancel(given, expect):
+    src = CANCEL_SPEC % ("\n".join("            " + g for g in given),
+                         "\n".join("            " + e for e in expect))
+    decls = parse(src)
+    return run_manifest(extract(decls, "shop"), lower(decls, "shop").to_document())
+
+
+class TestResultTextEquality(unittest.TestCase):
+    """RFC-0056: `result <ref> ==/!= <value>` compares a Text-family field —
+    a bare name paired with it is a literal, as in a guard."""
+
+    def test_spec_result_text_equality_passes(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status pending"],
+            ["completed", "result order.status == cancelled",
+             "result order.status != pending"])
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 3, lines)
+
+    def test_spec_result_text_equality_fails(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status pending"],
+            ["result order.status == pending"])
+        self.assertEqual(failed, 1, lines)
+        text = "\n".join(lines)
+        self.assertIn("order.status == pending", text)
+        self.assertNotIn("non-numeric", text)
+
+    def test_the_guard_skip_leaves_the_status_and_the_spec_sees_it(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status paid"],
+            ["result order.status == cancelled"])
+        self.assertEqual(failed, 0, lines)
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status cancelled"],
+            ["result order.status == cancelled"])
+        self.assertEqual(failed, 0, lines)
+
+    def test_spec_result_bare_name_pairing_matches_guard_semantics(self):
+        # Two bare Integer payload names stay a numeric comparison.
+        passed, failed, lines = run_cancel(
+            ["valid order", "qty 3", "cap 3"], ["result qty == cap"])
+        self.assertEqual(failed, 0, lines)
+        passed, failed, lines = run_cancel(
+            ["valid order", "qty 3", "cap 4"], ["result qty == cap"])
+        self.assertEqual(failed, 1, lines)
+
+    def test_an_absent_text_field_is_false(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status pending"],
+            ["result order.nosuch == cancelled"])
+        self.assertEqual(failed, 1, lines)
+
+    def test_a_text_field_against_a_number_is_refused(self):
+        with self.assertRaises(SpecError) as caught:
+            run_cancel(["valid order", "stored order status pending"],
+                       ["result order.status == 5"])
+        self.assertIn("Text-family", str(caught.exception))
 
 
 # RFC-0057 §9: `spec` pins the run's fill-source values with `given run.*`.

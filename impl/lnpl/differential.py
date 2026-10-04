@@ -393,7 +393,9 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     declared Money field is the same kind of exemption (RFC-0051 §Mode B), and
     so is one whose repository call carries a `by <ref>` lookup key (RFC-0052
     §Mode B), one whose guard reads an `optional` field (RFC-0055 §Mode B),
-    and one that creates a fill-source entity (RFC-0057 §Mode B).
+    one whose guard compares a Text-family field (RFC-0056 §Mode B), one that
+    creates a fill-source entity (RFC-0057 §Mode B), and, last, one that
+    reaches a `fail` step (RFC-0058 §Mode B).
     """
     if backend.workflow_uses_numeric_predicate(document, workflow_id):
         raise DifferentialError(
@@ -418,6 +420,12 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "comparison) — mode B has no compiled evaluator for it "
             "(RFC-0055 §Mode B, recorded exemption); differential "
             "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_text_guard(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r compares a Text-family field in a guard — mode B "
+            "has no compiled evaluator for it (RFC-0056 §Mode B, recorded "
+            "exemption); differential comparison is not attempted"
+            % workflow_id)
     if backend.workflow_uses_fill_source_create(document, workflow_id):
         raise DifferentialError(
             "workflow %r creates a row of entity %s, which fills a `derived "
@@ -426,6 +434,11 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "differential comparison is not attempted"
             % (workflow_id,
                backend._fill_source_create_offender(document, workflow_id)[1]))
+    if backend.workflow_uses_fail(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses `fail` — mode B has no compiled evaluator for "
+            "it (RFC-0058 §Mode B, recorded exemption); differential "
+            "comparison is not attempted" % workflow_id)
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "
