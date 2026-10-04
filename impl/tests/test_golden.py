@@ -45,7 +45,8 @@ from tests.fixtures import (CHECKOUT_LIR, CHECKOUT_LNPL, CHECKOUT_OPENAPI,
                             LINKHUB_LIR, LINKHUB_LNPL, LINKHUB_OPENAPI,
                             LINKHUB_SPEC, LOGIN_OPENAPI, LOGIN_SPEC,
                             SHORTEN_LIR, SHORTEN_LNPL, SHORTEN_OPENAPI,
-                            SHORTEN_SPEC)
+                            SHORTEN_SPEC, STAGED_LIR, STAGED_LNPL,
+                            STAGED_OPENAPI, STAGED_SPEC)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(REPO, "examples", "login.lnpl")
@@ -324,6 +325,28 @@ class TestLinkhubGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase
     SRC = LINKHUB_LNPL
     SPEC = LINKHUB_SPEC
     OPENAPI = LINKHUB_OPENAPI
+
+
+class TestStagedGoldenPair(GoldenPairContract, unittest.TestCase):
+    """The multi-stage conditional-flow exemplar (issue #211, RFC-0060).
+
+    No `refine`/`service`, so the first entity leads; the declared
+    `capability http PaymentGateway` closes the order after postgres.
+    """
+
+    SRC = STAGED_LNPL
+    GOLDEN_IR = STAGED_LIR
+    FIRST_NODE_ID = "entity.product"
+    LAST_NODE_IDS = ["wf.place.order.guard.2", "cap.postgres",
+                     "cap.payment.gateway"]
+    REGEN_CMD = ("python3 -m lnpl compile examples/staged.lnpl "
+                 "-o examples/staged.lir.json")
+
+
+class TestStagedGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = STAGED_LNPL
+    SPEC = STAGED_SPEC
+    OPENAPI = STAGED_OPENAPI
 
 
 class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):

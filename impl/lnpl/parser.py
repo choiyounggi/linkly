@@ -90,9 +90,11 @@ def _append_workflow_item(decl, line):
             raise ParseError("line %d: `pipeline` takes at most one name" % line.lineno)
         if head == "parallel" and len(line.tokens) > 1:
             raise ParseError("line %d: `parallel` takes no name" % line.lineno)
+        _check_pipeline_layout(decl, line)
         decl.extra.pop("_open_block", None)      # an open pipeline ends here
         block = {"type": head, "lineno": line.lineno, "steps": [],
-                 "name": line.tokens[1] if len(line.tokens) > 1 else None}
+                 "name": line.tokens[1] if len(line.tokens) > 1 else None,
+                 "indent": line.indent}
         _attach(decl, {"item": "block", "block": block}, line)
         decl.extra["_open_block"] = block
         return
@@ -114,6 +116,7 @@ def _append_workflow_item(decl, line):
         if open_block is not None and open_block["type"] == "parallel":
             raise ParseError("line %d: a guard cannot appear inside a `parallel` block "
                              "(close it with `merge` first)" % line.lineno)
+        _check_pipeline_layout(decl, line)
         decl.extra.pop("_open_block", None)      # an open pipeline ends here
         pending = decl.extra.get("_pending_guard")
         if pending is not None:
@@ -184,6 +187,37 @@ def _check_guard_layout(decl, line):
         "guard own that, or dedent this line to the guard's own column "
         "(RFC-0002 §Block structure)"
         % (line.lineno, visual["mode"], visual["lineno"]))
+
+
+def _check_pipeline_layout(decl, line):
+    """Reject a control keyword indented as if inside the open `pipeline` it
+    actually closes (RFC-0060, issue #211 (3)).
+
+    A `pipeline` closes at the next keyword, never by indentation (RFC-0002
+    §Block structure), so a keyword written deeper than the pipeline's own line
+    looks nested but runs outside it. The two repairs differ by path: a guard
+    (`when`/`until`/`repeat`) can be re-homed by wrapping the following steps in
+    a new `pipeline`; a block opener (`pipeline`/`parallel`) is already a block,
+    so it is offered the dedent only.
+    """
+    open_block = decl.extra.get("_open_block")
+    if open_block is None or open_block["type"] != "pipeline":
+        return
+    if line.indent <= open_block["indent"]:
+        return
+    label = ("`pipeline %s`" % open_block["name"] if open_block["name"]
+             else "the `pipeline` opened on line %d" % open_block["lineno"])
+    if line.head in ("when", "until", "repeat"):
+        fix = ("Dedent it to the pipeline's own column, or wrap the following "
+               "steps in a new `pipeline` block so a guard can own that instead")
+    else:
+        fix = ("Dedent it to the pipeline's own column if you meant a new "
+               "sibling block here, not one nested inside it")
+    raise ParseError(
+        "line %d: this `%s` is indented as if it were inside %s, but a "
+        "`pipeline` closes at the next keyword, not by indentation — so it "
+        "runs outside the pipeline. %s (RFC-0060, RFC-0002 §Block structure)"
+        % (line.lineno, line.head, label, fix))
 
 
 def _attach(decl, item, line):

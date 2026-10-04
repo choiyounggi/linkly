@@ -1,0 +1,86 @@
+# staged.lnpl — the canonical multi-stage conditional flow (issue #211 proposal
+# item 2): guarded `pipeline` blocks chained one after another, where a later
+# guard reads a binding only the earlier pipeline creates.
+#
+# Flow: if there is enough stock, create the order and call the payment
+# gateway inside `pipeline place` (a guard owns exactly one item, so the
+# pipeline is what lets it own both steps). If the payment call answered 200,
+# confirm the order inside `pipeline confirm`.
+#
+# Layout: the steps under each `pipeline` are indented for the reader only —
+# a `pipeline` closes at the next keyword, never by indentation. The second
+# `when` is therefore written at the SAME column as `pipeline place`, which is
+# where it actually sits. Indenting it to the step column would say "inside"
+# while the compiler closes the pipeline there, so RFC-0060 rejects that.
+#
+# If the FIRST guard is false, `pipeline place` is skipped and `pay` is never
+# bound. The second guard's `pay.status == 200` then compares an unbound
+# reference, which is false (RFC-0012 §G12.4) — no special case: the confirm
+# step is skipped too.
+#
+# `entity Order` is create-only before `create order as o` (nothing reads it
+# first), the same shape `examples/checkout.lnpl` uses for its guarded create.
+
+capability postgres
+
+capability http PaymentGateway
+    method post
+
+entity Product
+    field
+        id UUID
+        name Text
+        stock Integer
+        price Money
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Money
+        status Text
+        placedAt DateTime
+
+workflow PlaceOrder
+    find product
+    when product.stock >= input.quantity
+    pipeline place
+        create order as o
+        call PaymentGateway as pay
+    when pay.status == 200
+    pipeline confirm
+        format o.status from "confirmed"
+        update order
+    spec
+        given
+            stored product stock 10
+            input.quantity 1
+        when
+            placeOrder
+        expect
+            completed
+            effects complete
+            rows Order 1
+            result o.status == confirmed
+    spec
+        given
+            stored product stock 0
+            input.quantity 5
+        when
+            placeOrder
+        expect
+            completed
+            effects complete
+            rows Order 0
+    spec
+        given
+            stored product stock 10
+            input.quantity 1
+            call PaymentGateway returns 402
+        when
+            placeOrder
+        expect
+            completed
+            effects complete
+            rows Order 1
+            result o.status missing

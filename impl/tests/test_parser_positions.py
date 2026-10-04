@@ -243,6 +243,88 @@ class TestGuardLayout(unittest.TestCase):
         self.assertEqual([i["item"] for i in items], ["guard", "step"])
 
 
+class TestPipelineGuardLayout(unittest.TestCase):
+    """RFC-0060 (issue #211 (3)): a `pipeline` closes at the next control
+    keyword, never by indentation — so a keyword written deeper than the open
+    pipeline's own line looks nested but runs outside it.
+
+    The two repairs differ by path, so each path's message is asserted on that
+    path only: a guard can be re-homed in a new `pipeline`; a block opener is
+    already a block and is only offered the dedent.
+    """
+
+    PIPELINE = "    pipeline place\n        validate order\n"
+
+    def test_a_guard_indented_into_an_open_pipeline_is_rejected(self):
+        for guard in ("when order.qty > 0", "until order.qty > 0", "repeat 3"):
+            with self.subTest(guard=guard):
+                with self.assertRaises(ParseError) as ctx:
+                    parse(workflow(self.PIPELINE
+                                   + "        notify order\n"
+                                   + "        %s\n" % guard
+                                   + "            notify order\n"))
+                message = str(ctx.exception)
+                self.assertIn("line 17", message)          # the guard line
+                self.assertIn("`%s`" % guard.split()[0], message)
+                self.assertIn("pipeline place", message)
+                self.assertIn("Dedent it to the pipeline's own column", message)
+                self.assertIn("wrap the following steps in a new `pipeline`",
+                              message)
+
+    def test_a_nested_block_opener_indented_into_an_open_pipeline_is_rejected(self):
+        for opener in ("pipeline inner\n            notify order\n",
+                       "parallel\n            notify order\n        merge\n"):
+            with self.subTest(opener=opener.split("\n")[0]):
+                with self.assertRaises(ParseError) as ctx:
+                    parse(workflow(self.PIPELINE + "        " + opener))
+                message = str(ctx.exception)
+                self.assertIn("line 16", message)          # the opener line
+                self.assertIn("pipeline place", message)
+                self.assertIn("meant a new sibling block", message)
+                self.assertNotIn("wrap the following steps", message)
+
+    # ---- non-breaking ----
+
+    def test_each_implicitly_closing_keyword_still_compiles_at_the_pipelines_own_column(self):
+        for keyword, tail in (("when order.qty > 0", "        notify order\n"),
+                              ("until order.qty > 0", "        notify order\n"),
+                              ("repeat 3", "        notify order\n"),
+                              ("pipeline second", "        notify order\n"),
+                              ("parallel", "        notify order\n    merge\n")):
+            with self.subTest(keyword=keyword):
+                decls = parse(workflow(self.PIPELINE + "    %s\n" % keyword + tail))
+                items = only_workflow(decls).items
+                # a sibling of `pipeline place`, not swallowed into its steps
+                self.assertEqual(len(items), 2)
+                self.assertEqual(items[0]["item"], "block")
+                self.assertEqual(len(items[0]["block"]["steps"]), 1)
+
+    def test_a_flat_layout_pipeline_is_untouched(self):
+        """Layout carries no signal when nothing is indented — stay out of it."""
+        decls = parse(HEAD + "\nworkflow Restock\npipeline place\nvalidate order\n"
+                      "when order.qty > 0\nnotify order\n")
+        items = only_workflow(decls).items
+        self.assertEqual([i["item"] for i in items], ["block", "guard"])
+
+    # ---- boundaries ----
+
+    def test_a_keyword_deeper_than_an_unnamed_pipeline_names_its_line(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    pipeline\n"
+                           "        validate order\n"
+                           "        when order.qty > 0\n"
+                           "            notify order\n"))
+        message = str(ctx.exception)
+        self.assertIn("the `pipeline` opened on line 14", message)
+        self.assertNotIn("pipeline None", message)
+
+    def test_one_column_deeper_is_already_deeper(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow(self.PIPELINE + "     when order.qty > 0\n"
+                                           "        notify order\n"))
+        self.assertIn("pipeline place", str(ctx.exception))
+
+
 SPEC_BLOCK = ("    spec\n"
               "        given\n"
               "            valid order\n"
