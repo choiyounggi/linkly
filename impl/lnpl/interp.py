@@ -21,12 +21,15 @@ import hashlib
 import json
 import threading
 import time
+import uuid
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 
-from .condition import PAYLOAD_NAMESPACE, guard_condition_text, parse_value
+from .condition import (PAYLOAD_NAMESPACE, decode_instant,
+                        guard_condition_text, parse_value)
 from .diagnostics import Diagnostics
 from .drivers import (ConflictError, DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
                       FakeNetworkDriver, ROLE_CLAIM, WriteConflictError)
+from .lower import FILL_SOURCES
 from .refinements import BASE_CATEGORY
 from .repo_policy import apply_predicate, binding_name, row_key
 from .tracecontext import format_traceparent, new_span_id
@@ -1739,10 +1742,46 @@ class Interpreter:
         return {k: v for k, v in payload.items()
                 if not (k in optional_names and v is None)}
 
-    def run_workflow(self, workflow_id, payload=None):
+    def _decide_run_context(self, run_context):
+        """RFC-0057 §3: the run's fill-source values, decided ONCE at run
+        start — before validate, seed or any create. A caller (`spec`) pins
+        either value through `run_context`; an unpinned one is decided here:
+        a fresh UUIDv4 for `generated`, this run's Clock reading for `clock`
+        (the virtual binding's `now`, or the wall clock for `RealClock`,
+        whose own `now` is monotonic, not epoch-anchored).
+        """
+        pinned = dict(run_context or {})
+        unknown = sorted(set(pinned) - set(FILL_SOURCES))
+        if unknown:
+            raise RunError("run context names %s — the fill sources are %s "
+                           "(RFC-0057)" % (", ".join(map(repr, unknown)),
+                                           ", ".join(FILL_SOURCES)))
+        for name, value in pinned.items():
+            if not isinstance(value, str) or not value:
+                raise RunError("run context %r must be a non-empty string, "
+                               "got %r (RFC-0057)" % (name, value))
+        if "generated" not in pinned:
+            pinned["generated"] = str(uuid.uuid4())
+        if "clock" not in pinned:
+            ms = (int(time.time() * 1000) if isinstance(self.clock, RealClock)
+                  else self.clock.now)
+            pinned["clock"] = decode_instant(ms)
+        return pinned
+
+    def _fill_values(self, entity_node):
+        """`{field: value}` for `entity_node`'s fill-source fields, from this
+        run's context — applied only at a create of THAT entity, never
+        written into the shared payload (RFC-0057 §4)."""
+        if entity_node is None:
+            return {}
+        return {f["name"]: self._run_context[f["fill_source"]]
+                for f in entity_node.get("fields", []) if f.get("fill_source")}
+
+    def run_workflow(self, workflow_id, payload=None, run_context=None):
         wf = self.nodes.get(workflow_id)
         if wf is None or wf["kind"] != "Workflow":
             raise RunError("no such workflow: %r" % workflow_id)
+        self._run_context = self._decide_run_context(run_context)
         service = self._service_for(workflow_id)
         con = self._constraints(service)
         payload = payload or {}
@@ -2193,10 +2232,28 @@ class Interpreter:
             # becomes a RunError with its message and cause intact, so a real
             # backend's failure is an ordinary failed run — the same status and
             # the same rc a Fake failure produces — instead of a traceback.
-            # issue #175 / RFC-0052 §3: resolved outside the `try` — an
-            # unresolved lookup is the step's own RunError, not a driver fault.
-            key = _resolve_lookup_key(effect["entity"], effect.get("lookup"),
-                                      payload, bindings, self.caller)
+            fills = {}
+            if effect["operation"] == "create":
+                fills = self._fill_values(self.nodes.get(effect["entity"]))
+                if "id" not in fills and payload.get("id") is None:
+                    # RFC-0057 §6 (issue #209): no payload id would key the
+                    # row under the shared `<entity>#-` sentinel, so every
+                    # second create conflicts. Refused before any write.
+                    missing = RunError(
+                        "repository create of %s needs an id: the payload has "
+                        "no `id` and the entity's id is not `derived generated` "
+                        "(RFC-0057)" % effect["entity"])
+                    missing.failure_kind = "id-required"
+                    raise missing
+            if "id" in fills:
+                # RFC-0057 §4: a `derived generated` id keys the row.
+                key = row_key(effect["entity"], {"id": fills["id"]})
+            else:
+                # issue #175 / RFC-0052 §3: resolved outside the `try` — an
+                # unresolved lookup is the step's own RunError, not a driver
+                # fault.
+                key = _resolve_lookup_key(effect["entity"], effect.get("lookup"),
+                                          payload, bindings, self.caller)
             try:
                 row = self.repo.execute(effect["entity"], effect["operation"], key)
             except DriverError as exc:
@@ -2254,21 +2311,32 @@ class Interpreter:
                 # additionally binds the seeded row into `bindings` so a
                 # later `set`/`format`/`respond` can address it, the same
                 # scope a `read` binding gets (RFC-0027 §2 notation reused).
-                created_key = row_key(effect["entity"], payload)
+                created_key = key
                 entity_node = self.nodes.get(effect["entity"])
-                seeded = {"id": created_key}
+                # RFC-0057 §4: both drivers' skeleton row holds the row-key
+                # string under `id`; a declared `id` is overwritten with the
+                # value the row is keyed by, so a UUID field never stores a
+                # key string. An entity declaring no `id` keeps the skeleton
+                # value, as before.
+                declares_id = entity_node is not None and any(
+                    f["name"] == "id" for f in entity_node.get("fields", []))
+                seeded = ({"id": fills.get("id", payload.get("id"))}
+                          if declares_id else {"id": created_key})
                 if entity_node is not None:
                     for field in entity_node.get("fields", []):
+                        fname = field["name"]
+                        if field.get("fill_source"):
+                            seeded[fname] = fills[fname]
+                            continue
                         if field.get("derived"):
                             continue
-                        fname = field["name"]
                         # RFC-0055: an optional field's null is not stored —
                         # per entity, for a name only this entity marks
                         # optional (`_normalize_optional_nulls` is AND-wide).
                         if fname in payload and not (
                                 field.get("optional") and payload[fname] is None):
                             seeded[fname] = payload[fname]
-                if len(seeded) > 1:
+                if declares_id or len(seeded) > 1:
                     # issue #147 D2/D3: `FakeRepository` is skipped (see the
                     # Assignment branch above for why); `seeded` is mutated
                     # in place and reverted in `finally` — it is what

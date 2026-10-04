@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 4,449여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 4,502여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 56편 — 46편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048·RFC-0049·RFC-0050·RFC-0051·RFC-0052·RFC-0055·RFC-0056·RFC-0058은 `Draft`.** RFC-0007은
+**RFC 57편 — 46편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048·RFC-0049·RFC-0050·RFC-0051·RFC-0052·RFC-0055·RFC-0056·RFC-0057·RFC-0058은 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -271,9 +271,10 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0052 조회 키 절 `by <ref>`](rfcs/0052-lookup-key-clause.md) | 한 실행의 모든 엔티티 행이 payload의 `id` 하나 아래 살아서, `find product` + `create order`로 같은 상품의 두 주문을 만들면 충돌했고(`entity.order already exists`) `Stock.onHand`를 상품 id로 찾아 줄일 수 없었다(probe-v0.8 s1 F-3/F-6). `find`/`read`/`load`/`authenticate`/`update`/`delete`에 선택 절 `by <ref>`를 더한다: 그 참조의 실행 시점 값이 행 키가 되고(`find stock by input.productId`), 그렇게 읽은 행의 `set`은 그 키로 저장되며, 값이 없는 참조는 `-` 키로 떨어지지 않고 스텝을 실패시킨다. 맨 이름·`input.<field>`·`caller.*`·네트워크 결과·바인딩의 non-`derived`/non-Password 필드를 허용하고, 그 동사들의 다른 trailing 단어는 이제 컴파일 에러다(이전엔 조용히 버려졌다); `create`는 `as <name>`만 받는다. 첫 읽기가 `by input.<field>`인 엔티티는 그 값의 키로 시드되고, 모드 B는 `by` 워크플로를 기록된 차동 예외로 거부한다. Draft. *RFC-0002 §Full grammar(+RFC-0049), RFC-0012 §G12.2/§G12.5/§G12.6, RFC-0016 §5(+RFC-0051) 갱신* |
 | [0055 `optional` 필드 수식어](rfcs/0055-optional-field-modifier.md) | 선언한 엔티티 필드가 전부 필수라, 필드 하나를 추가하면 그 필드를 아직 보내지 않는 클라이언트의 요청이 전부 400이 됐다(issue #208, AIP-180). 두 번째 필드 수식어 `<name> <Type> optional`을 더한다(`optional derived` 동시 사용·수식어 반복·`id ... optional`은 컴파일 에러). 없거나 JSON `null`인 optional 필드는 `validate`를 통과하고(값이 있으면 여전히 타입 검사), 저장되지 않으며(기본값을 지어내지 않는다), OpenAPI `required`에서 빠지고(요청 타입은 nullable), `db check`/`stored-row-shape-mismatch`의 불일치가 아니며, `respond`/`emit ... with`에서 `null`로 보내지 않고 뺀다; `lnpl migrate --set`은 그대로 채우고 `_schema_gen`은 이 표시를 무시한다. optional 필드에는 타입과 무관하게 `exists`/`missing`을 열고 `optional-field-unguarded-arithmetic`(warning)을 등록하며, 모드 B는 optional 필드를 읽는 가드를 거부한다. 기본값은 범위 밖이다. Draft. *RFC-0001 §노드 카탈로그/Entity, RFC-0016 §3(+RFC-0038, +RFC-0051), RFC-0015 §3(+RFC-0051) 갱신* |
 | [0056 가드의 Text·enum 등가 비교](rfcs/0056-text-equality-guards.md) | 가드가 상태 문자열로 갈라질 수 없었다 — `when order.status == input.expected`가 "neither Integer nor DateTime"으로 거부되어, `CancelOrder`가 이미 취소된 주문을 다시 취소해도 막을 수 없었고 spec이 상태를 단언할 수 없었다(issue #207). RFC-0038의 `list where` 등가를 `when`/`until` 가드와 `or` 대안으로 넓힌다: Text류 필드(base가 UUID·Email·Phone·Currency·Html·Markdown·Text, enum refinement 포함)를 같은 base의 참조나 맨이름 리터럴과 `==`/`!=`로 비교한다. 맨이름은 그런 필드와 짝지어질 때만 리터럴이고(그 밖에서는 여전히 payload 필드), 컴파일러가 그 판정을 Guard의 `textEqualityOperands`에 적는다. 상대가 enum refinement면 리터럴은 멤버여야 한다(거부 문면이 멤버를 대고, 가까운 오타면 did-you-mean을 붙인다). Text의 순서 비교, 어느 쪽이든 산술, Password 필드(RFC-0001 마스킹)는 거부로 남는다. `spec`의 `result <ref> ==/!= <값>`도 같이 평가되고, Text 필드에 대한 `set` 거부 문면이 `format`을 안내한다. 모드 B는 Money·조회 키·optional 검사 다음에 이런 워크플로를 기록된 차동 예외로 거부한다. Draft. *RFC-0016 §3(+RFC-0038, +RFC-0051, +RFC-0055), RFC-0038 §3, RFC-0015 §3(+RFC-0051, +RFC-0055), RFC-0001 §노드 카탈로그/Guard(+RFC-0028) 갱신* |
+| [0057 실행이 채우는 필드 — `derived generated`와 `derived clock`](rfcs/0057-injected-now-and-generated-id-field-markers.md) | 서버가 행 id도 현재 시각도 만들 수 없어서, payload `id` 없는 `create`는 모든 행을 `<entity>#-`에 몰아 두 번째부터 영원히 409였고 `UUID` 필드에 행 키 문자열이 저장됐다(issue #209). RFC-0016 Open Question 6에 답해 `derived` 필드에 채움 원천 표식 둘을 더한다: `derived generated`(UUID 기본형, 실행당 UUIDv4)와 `derived clock`(DateTime 기본형, RFC-0029 Clock의 실행 시작 시각). 값은 실행마다 한 번 정해져 표식 엔티티의 `create`에만 들어가고 입력 payload에는 쓰지 않으며, 생성된 `id`가 행 키가 된다. payload `id`도 생성 id도 없는 `create`는 이제 쓰기 전에 `id-required`(400)로 실패한다(코퍼스 스윕 결과 `-`에 기대는 곳 0건); `set` 값의 미선언 맨이름은 표식을 제안하는 컴파일 에러다; `spec`은 `given run.generated`/`run.clock`으로 값을 고정하고, 모드 B는 표식 엔티티 생성을 거부한다. Draft. *RFC-0030 §4 갱신* |
 | [0058 `fail` — 저자가 선언하는 업무 거절](rfcs/0058-fail-business-rejection.md) | 워크플로가 업무 규칙으로 실패할 방법이 없었다 — 재고 부족·한도 초과 검사는 스텝을 스킵할 뿐 실행은 `completed`(HTTP 200)로 끝나서, 클라이언트가 `skipped[]`를 파싱해 거절인지 판정해야 했고 `spec`으로 계약할 수도 없었다(issue #206, RFC-0014 미결 1). 동사 하나 `fail <kebab-code>`를 가드 아래에 쓴다: 가드가 거짓이면 지금처럼 스킵, 참이면 실행이 `failed`로 끝나고 `failure_kind`는 `rejected`, `failure_reason`은 그 코드이며, 그 실행의 쓰기는 롤백되고(RFC-0032) 재시도하지 않는다. 코드는 컴파일 시점 kebab-case 리터럴이다 — 코드 누락·형식 위반·뒤따르는 낱말, 서버 problem `code`(`not-found`, `write-conflict` …)와 같은 코드, `when`/`until` 가드가 소유하지 않는 `fail`(`repeat N`은 본문을 언제나 실행한다)은 컴파일 에러다. `lnpl serve`는 422 problem+json에 저자의 코드를 `code`로 싣고(모든 코드에 422, `failure_kind`로 판정), `consume by`는 E7(422 `event-rejected`, 재시도 없음), OpenAPI는 operation의 `422`에 코드 목록을 싣고, `spec`은 `expect failed` + `error reason <code>`로 계약한다. 모드 B는 Money·lookup·optional·Text 검사 다음에 그 워크플로를 기록된 면제로 거부한다. `fail` 없는 워크플로는 바이트 동일하다. Draft. *Updates RFC-0001 §노드 카탈로그 (Effect, WorkflowStep), RFC-0003 §Execution Model (+RFC-0032), RFC-0014 §Open Questions/1* |
 
-46편이 `Accepted`, 9편(`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`, `0056`, `0058`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+46편이 `Accepted`, 10편(`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`, `0056`, `0057`, `0058`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -330,7 +331,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 4449 tests in 115.470s
+Ran 4502 tests in 129.387s
 OK
 ```
 

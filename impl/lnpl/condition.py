@@ -455,6 +455,26 @@ def encode_instant(raw, where) -> int:
     return total
 
 
+def decode_instant(ms) -> str:
+    """UTC epoch-milliseconds -> RFC 3339 `YYYY-MM-DDTHH:MM:SS.mmmZ`, the
+    inverse of `encode_instant` for an in-range value (RFC-0057 §3, the
+    `derived clock` fill). Always zoned `Z`, always millisecond precision.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if isinstance(ms, bool) or not isinstance(ms, int):
+        raise ConditionError("instant is not integer milliseconds: %r" % (ms,))
+    try:
+        moment = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
+            milliseconds=ms)
+    except OverflowError:
+        raise ConditionError(
+            "instant %d ms is outside the RFC 3339 year range 0001-9999" % ms)
+    return "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ" % (
+        moment.year, moment.month, moment.day, moment.hour, moment.minute,
+        moment.second, moment.microsecond // 1000)
+
+
 def parse_value(text: Optional[str]) -> Value:
     """A `Value` on its own — the assignment's right-hand side, re-read from the IR.
 

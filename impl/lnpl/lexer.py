@@ -117,7 +117,7 @@ RESERVED_PROBLEM_CODES = (
     "auth-invalid", "auth-missing", "body-too-large", "body-unreadable",
     "cloudevents-invalid", "conflict", "cursor-invalid",
     "deadline-exceeded", "event-rejected", "event-retry-later",
-    "forbidden", "idempotency-in-progress", "limit-invalid",
+    "forbidden", "id-required", "idempotency-in-progress", "limit-invalid",
     "method-not-allowed", "not-found", "not-ready", "precondition-failed",
     "precondition-invalid", "precondition-unsupported", "rate-limited",
     "read-failed", "shutting-down", "validation-failed",

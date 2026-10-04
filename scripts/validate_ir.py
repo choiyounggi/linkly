@@ -544,6 +544,63 @@ def optional_negatives():
     ]
 
 
+DERIVED_FIELD_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "orders",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.order",
+            "name": "Order",
+            "fields": [
+                {"name": "id", "type": "UUID"},
+                {"name": "total", "type": "Integer", "derived": True},
+            ],
+        },
+    ],
+}
+
+
+FILL_SOURCE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "audit",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.audit.entry",
+            "name": "AuditEntry",
+            "fields": [
+                {"name": "id", "type": "UUID", "derived": True,
+                 "fill_source": "generated"},
+                {"name": "at", "type": "DateTime", "derived": True,
+                 "fill_source": "clock"},
+                {"name": "action", "type": "Text"},
+            ],
+        },
+    ],
+}
+
+
+def fill_source_negatives():
+    """issue #95 `derived` (admitted at last) and RFC-0057 `fill_source`, a
+    closed enum. Which base a marker needs is a compiler check (the field's
+    `type` may be a refinement name), not a schema one."""
+    n1 = copy.deepcopy(DERIVED_FIELD_FIXTURE)
+    n1["nodes"][0]["fields"][1]["derived"] = "yes"  # boolean 아님
+
+    n2 = copy.deepcopy(FILL_SOURCE_FIXTURE)
+    n2["nodes"][0]["fields"][0]["fill_source"] = "uuid4"  # enum 밖
+
+    n3 = copy.deepcopy(FILL_SOURCE_FIXTURE)
+    n3["nodes"][0]["fields"][1]["fill_source"] = 1  # 문자열 아님
+
+    return [
+        ("fields[].derived is not a boolean: 'yes'", n1),
+        ("fields[].fill_source outside the closed set: 'uuid4'", n2),
+        ("fields[].fill_source is not a string: 1", n3),
+    ]
+
+
 CONSUME_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "orders",
@@ -863,6 +920,10 @@ def self_test():
          CONSUME_EVENT_FIXTURE),
         ("OPTIONAL_FIELD_FIXTURE (RFC-0055 optional field)",
          OPTIONAL_FIELD_FIXTURE),
+        ("DERIVED_FIELD_FIXTURE (issue #95 derived field)",
+         DERIVED_FIELD_FIXTURE),
+        ("FILL_SOURCE_FIXTURE (RFC-0057 fill_source markers)",
+         FILL_SOURCE_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -903,7 +964,8 @@ def self_test():
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
       + respond_negatives() + create_negatives() + expose_negatives() \
       + capability_http_negatives() + subscribe_negatives() \
-      + consume_negatives() + lookup_negatives() + optional_negatives()
+      + consume_negatives() + lookup_negatives() + optional_negatives() \
+      + fill_source_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

@@ -759,6 +759,33 @@ def workflow_uses_text_guard(document, workflow_id):
     return _text_guard_offender(document, workflow_id) is not None
 
 
+def _fill_source_create_offender(document, workflow_id):
+    """`(step_name, entity_id)` of the first `create` of `workflow_id` (guarded
+    or not) whose entity declares a `derived generated`/`derived clock` field
+    (RFC-0057 §8), or None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is None or effect["kind"] != "RepositoryCall"
+                    or effect.get("operation") != "create"):
+                continue
+            entity = nodes.get(effect["entity"])
+            if entity is not None and any(
+                    f.get("fill_source") for f in entity.get("fields", [])):
+                return step["name"], effect["entity"]
+    return None
+
+
+def workflow_uses_fill_source_create(document, workflow_id):
+    """RFC-0057 §8: does `workflow_id` create a row of an entity with a
+    fill-source field? Mode B has no channel for the run's id/instant, so it
+    refuses (`emit_mlir`, `build`); `differential.verify` asks this after the
+    Text-guard check and before the `fail` check, so the exemption needs no
+    toolchain. Raises `BackendError` for an unknown workflow."""
+    return _fill_source_create_offender(document, workflow_id) is not None
+
+
 def _fail_offender(document, workflow_id):
     """`(step_name, code)` of the first reachable `fail` step (a `Rejection`
     child, RFC-0058) of `workflow_id`, or None. Raises `BackendError` for an
@@ -793,8 +820,9 @@ def _refuse_unsupported_guards(document, workflow_id):
     messages: reuses `_money_guard_offender`, `_lookup_offender`,
     `_optional_guard_offender` and `_text_guard_offender` verbatim, in the same
     Money-then-Lookup-then-Optional-then-Text order `differential.verify` asks
-    them, so `build` and `diff` cannot drift apart. A `fail` step (RFC-0058,
-    `_fail_offender`) is refused last, in the same position in both.
+    them, so `build` and `diff` cannot drift apart. A fill-source create
+    (RFC-0057, `_fill_source_create_offender`) is refused next and a `fail`
+    step (RFC-0058, `_fail_offender`) last, in the same positions in both.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here — its refusal in `_render_std` depends on `_lnpl_ops`'s
     seed/payload-truncated ops stream, which a document-level check here
@@ -828,6 +856,14 @@ def _refuse_unsupported_guards(document, workflow_id):
             "step %s: guard %r compares a Text-family field, which mode B has "
             "no compiled evaluator for (RFC-0056 §Mode B, recorded exemption) "
             "— run it in mode A" % (step_name, guard_text))
+    fill_offender = _fill_source_create_offender(document, workflow_id)
+    if fill_offender is not None:
+        step_name, entity_id = fill_offender
+        raise BackendError(
+            "step %s: create %s fills a `derived generated`/`derived clock` "
+            "field from the run, which mode B has no channel for (RFC-0057 "
+            "§Mode B, recorded exemption) — run it in mode A"
+            % (step_name, entity_id))
     fail_offender = _fail_offender(document, workflow_id)
     if fail_offender is not None:
         step_name, code = fail_offender
@@ -1245,7 +1281,10 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
                 if node["entity"] not in seeded_now and node["entity"] not in created:
                     fail_at = index
             elif kind == "RepositoryCall" and operation == "create":
-                if node["entity"] in seeded_now or node["entity"] in created:
+                # RFC-0057 §6: mode A refuses an id-less create (id-required)
+                # before the write; a fill-source create never reaches here.
+                if (payload.get("id") is None or node["entity"] in seeded_now
+                        or node["entity"] in created):
                     fail_at = index
                 else:
                     created.add(node["entity"])

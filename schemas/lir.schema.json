@@ -177,6 +177,16 @@
           },
           "optional": {
             "type": "boolean"
+          },
+          "derived": {
+            "type": "boolean"
+          },
+          "fill_source": {
+            "type": "string",
+            "enum": [
+              "generated",
+              "clock"
+            ]
           }
         },
         "required": [

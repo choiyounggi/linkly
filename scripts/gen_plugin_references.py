@@ -730,6 +730,10 @@ RFC_ROUTES = {
     "0056": ("가드(when/until)에서 Text·enum 필드를 ==/!=로 비교하고 싶다 — "
              "맨이름이 리터럴인지 참조인지 어떻게 갈리는지, enum이면 멤버 검사가 "
              "어떻게 되는지, 모드 B가 왜 그 워크플로를 거부하는지", ()),
+    "0057": ("서버가 행 id나 생성 시각을 채우게 하고 싶다 — `derived generated`/"
+             "`derived clock` 표식, 실행 문맥 값이 create에만 들어가는 규칙, "
+             "id 없는 create의 `id-required`, spec의 `given run.*` 고정, 모드 B "
+             "거부", ()),
     "0058": ("업무 규칙 위반으로 실행을 실패시키고 싶다(`fail <code>`) — 가드 "
              "아래에만 쓸 수 있는 이유, 코드 규칙과 예약 코드, serve 422·consume "
              "E7·OpenAPI·spec이 그 거절을 어떻게 다루고 모드 B는 왜 거부하는지", ()),
