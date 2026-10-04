@@ -737,6 +737,9 @@ RFC_ROUTES = {
     "0058": ("업무 규칙 위반으로 실행을 실패시키고 싶다(`fail <code>`) — 가드 "
              "아래에만 쓸 수 있는 이유, 코드 규칙과 예약 코드, serve 422·consume "
              "E7·OpenAPI·spec이 그 거절을 어떻게 다루고 모드 B는 왜 거부하는지", ()),
+    "0059": ("call/request가 보내는 본문을 고르고 싶다(`send <ref>...`) — "
+             "send·with·as의 고정 순서, emit … with와 같은 참조 규칙, 절이 "
+             "없을 때 본문이 입력 전체인 이유와 모드 B가 그대로 지원하는 이유", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

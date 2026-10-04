@@ -244,7 +244,7 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**~4,502 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**~4,542 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
@@ -267,7 +267,7 @@ trace-side counterpart is [lnpl-otel](https://github.com/choiyounggi/lnpl-otel) 
 otel-collector in its own Testcontainers CI
 ([issue #144](https://github.com/choiyounggi/linkly/issues/144)).
 
-**57 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`, RFC-0048 `Draft`, RFC-0049 `Draft`, RFC-0050 `Draft`, RFC-0051 `Draft`, RFC-0052 `Draft`, RFC-0055 `Draft`, RFC-0056 `Draft`, RFC-0057 `Draft`, RFC-0058 `Draft`.** RFC-0007 was formally
+**58 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`, RFC-0048 `Draft`, RFC-0049 `Draft`, RFC-0050 `Draft`, RFC-0051 `Draft`, RFC-0052 `Draft`, RFC-0055 `Draft`, RFC-0056 `Draft`, RFC-0057 `Draft`, RFC-0058 `Draft`, RFC-0059 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -340,8 +340,9 @@ suite is defined against.
 | [0056 Text and enum equality in guards](rfcs/0056-text-equality-guards.md) | A guard could not branch on a status string — `when order.status == input.expected` was refused as "neither Integer nor DateTime", so `CancelOrder` could cancel an already-cancelled order and a spec could not assert a status (issue #207). Extends RFC-0038's `list where` equality to `when`/`until` guards and their `or` alternatives: `==`/`!=` on a Text-family field (base UUID, Email, Phone, Currency, Html, Markdown or Text, enum refinements included) against a reference of the same base or a bare-name literal. A bare name is a literal only when paired with such a field (elsewhere it is still a payload field); the compiler records that decision on the Guard as `textEqualityOperands`, and against an enum refinement the literal must be a member (the refusal lists the members and adds a did-you-mean for a close typo). Ordering on Text, arithmetic on either side, and Password fields (RFC-0001 masking) stay refused. `spec` `result <ref> ==/!= <value>` evaluates the same way; the `set` refusal on a Text field now names `format`. Mode B refuses such a workflow as a recorded differential exemption, after the Money, lookup and optional checks. Draft. *Updates RFC-0016 §3 (+RFC-0038, +RFC-0051, +RFC-0055), RFC-0038 §3, RFC-0015 §3 (+RFC-0051, +RFC-0055), RFC-0001 §노드 카탈로그/Guard (+RFC-0028)* |
 | [0057 Run-filled fields: `derived generated` and `derived clock`](rfcs/0057-injected-now-and-generated-id-field-markers.md) | The server could make neither a row id nor the current time, so a `create` without a payload `id` put every row under `<entity>#-` — the second create was a 409 forever, and a `UUID` field stored the row-key string (issue #209). Resolves RFC-0016 Open Question 6 with two fill-source markers on a `derived` field: `derived generated` (UUID base, a UUIDv4 per run) and `derived clock` (DateTime base, the run's start instant from the RFC-0029 Clock). Values are decided once per run and applied only at a `create` of the marked entity — never written into the input payload; a generated `id` keys the row. A `create` with no payload `id` and no generated id now fails `id-required` (400) before writing (a corpus sweep found nothing relying on `-`); an undeclared bare name in a `set` value is a compile error with a marker suggestion; `spec` pins values with `given run.generated`/`run.clock`; mode B refuses a fill-source create. Draft. *Updates RFC-0030 §4* |
 | [0058 `fail` — declared business rejection](rfcs/0058-fail-business-rejection.md) | A workflow had no way to fail on a business rule: an out-of-stock or over-limit check skipped its step and the run still ended `completed` (HTTP 200), so a client had to parse `skipped[]` to tell a rejection apart and `spec` could not contract it (issue #206; RFC-0014 Open Question 1). Adds one verb, `fail <kebab-code>`, written under a guard: a false guard skips it as before, a true one ends the run `failed` with `failure_kind` `rejected` and the code as `failure_reason`, rolls the run's writes back (RFC-0032) and is never retried. The code is a compile-time kebab-case literal; a missing, malformed or extra-word code, one equal to a server problem `code` (`not-found`, `write-conflict`, ...), and a `fail` no `when`/`until` guard owns (`repeat N` always runs its body) are compile errors. `lnpl serve` answers 422 problem+json whose `code` is the author's code (422 for every code, typed by `failure_kind`); `consume by` classifies it as E7 (422 `event-rejected`, no retry); OpenAPI lists the codes under the operation's `422`; `spec` contracts it with `expect failed` + `error reason <code>`. Mode B refuses such a workflow as a recorded differential exemption, after the Money, lookup, optional and Text checks. Workflows without `fail` are byte-identical. Draft. *Updates RFC-0001 §노드 카탈로그 (Effect, WorkflowStep), RFC-0003 §Execution Model (+RFC-0032), RFC-0014 §Open Questions/1* |
+| [0059 `call ... send` — outbound body mapping](rfcs/0059-body-mapping-clause.md) | An outbound `call`/`request` always sent the whole run input as its body: a value the workflow computed (`set o.total to ...`) could not be sent, fields the peer never asked for leaked out, and `with` already meant path substitution (issue #200). Adds a `send <ref>...` clause, combinable with `with` (path) and `as` (result binding) only in the fixed order `send`, `with`, `as` — any other order is a compile error. The body is exactly the listed fields, each named by its reference's last segment, built and masked by the same code as `emit ... with` (RFC-0049); the reference rules are RFC-0049's, reused: bare names, unknown bindings, Password-family fields, duplicate field names and a `derived` field with no preceding `set`/`format` are compile errors, while a run-filled field (RFC-0057) is accepted — for `emit ... with` too. `guard-scoped-binding-escape` covers `send`. With no `send` the body is byte-identical (the whole input, unmasked — which still carries a Password-family input field in clear text; measured and left to a separate issue). No `spec` body assertion and no new diagnostic. Mode B supports it unchanged. Draft. *Updates RFC-0027 §Reference-level Specification/2* |
 
-Forty-six are `Accepted`, ten (`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`, `0056`, `0057`, `0058`) are `Draft`; 0000 is superseded by 0007, which was itself formally
+Forty-six are `Accepted`, eleven (`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`, `0056`, `0057`, `0058`, `0059`) are `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -401,7 +402,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 4502 tests in 129.387s
+Ran 4542 tests in 120.818s
 OK
 ```
 
