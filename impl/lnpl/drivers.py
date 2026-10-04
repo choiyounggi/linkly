@@ -124,6 +124,14 @@ class ConflictError(DriverError):
     non-idempotent effect only reproduces the same conflict."""
 
 
+class WriteConflictError(DriverError):
+    """An optimistic-version write collided with a write that landed first.
+
+    Unlike `ConflictError` (a duplicate `create`, never resolved by retrying
+    the same call), this one IS retryable: a caller that re-reads and
+    re-runs the whole workflow can succeed (issue #92, #201)."""
+
+
 # --------------------------------------------------------------------------
 # The contracts
 # --------------------------------------------------------------------------
@@ -869,7 +877,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
                 # becomes a `RunError` and the run is decided failed.
                 if not self._in_transaction:
                     self._conn.rollback()
-                raise DriverError(
+                raise WriteConflictError(
                     "write conflict: row changed since read (%s %s)"
                     % (entity_id, key))
             # Issue #174: the UPDATE above bumped `_version`, so the row this

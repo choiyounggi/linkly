@@ -26,7 +26,7 @@ from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from .condition import PAYLOAD_NAMESPACE, guard_condition_text, parse_value
 from .diagnostics import Diagnostics
 from .drivers import (ConflictError, DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
-                      FakeNetworkDriver, ROLE_CLAIM)
+                      FakeNetworkDriver, ROLE_CLAIM, WriteConflictError)
 from .refinements import BASE_CATEGORY
 from .repo_policy import apply_predicate, binding_name, row_key
 from .tracecontext import format_traceparent, new_span_id
@@ -1771,7 +1771,7 @@ class Interpreter:
                     # #113/#128 forbid repeating it). Two carriers, one per
                     # raise site: `__cause__` is the original `DriverError` a
                     # real driver's `raise RunError(...) from exc` chained
-                    # (currently only ever a `ConflictError`); `failure_kind`
+                    # (a `ConflictError` or a `WriteConflictError`); `failure_kind`
                     # is the attribute a bare `RunError` carries when raised
                     # directly — `FakeRepository`'s create-conflict (D2) and
                     # `_run_step`'s deadline-exhausted raise (issue #128) both
@@ -1779,6 +1779,8 @@ class Interpreter:
                     # feature does not know about.
                     if isinstance(last_error.__cause__, ConflictError):
                         result["failure_kind"] = "conflict"
+                    elif isinstance(last_error.__cause__, WriteConflictError):
+                        result["failure_kind"] = "write-conflict"
                     else:
                         kind = getattr(last_error, "failure_kind", None)
                         if kind is not None:
@@ -2565,6 +2567,8 @@ class Interpreter:
             result["failure_reason"] = str(failed_error)
             if isinstance(failed_error.__cause__, ConflictError):
                 result["failure_kind"] = "conflict"
+            elif isinstance(failed_error.__cause__, WriteConflictError):
+                result["failure_kind"] = "write-conflict"
             else:
                 kind = getattr(failed_error, "failure_kind", None)
                 if kind is not None:
