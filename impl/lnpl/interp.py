@@ -1594,6 +1594,55 @@ class Interpreter:
         # two modes disagree about a signal the contract says must match.
         self.diagnostics = Diagnostics()
 
+    def _assemble_mapped_payload(self, payload_map, payload, bindings):
+        """issue #178/#200: the per-field body for `emit ... with`'s
+        `payloadMap` (RFC-0049 §4) and `call/request ... send`'s `bodyMap`
+        (RFC-0059 §4) -- each ref resolved through the one resolver and
+        masked through the one chokepoint. Each caller keeps its own
+        no-clause default: `emit` masks the whole input, a call sends it
+        as-is (RFC-0059 §5).
+        """
+        built_payload = {}
+        for entry in payload_map:
+            field = entry["field"]
+            ref = entry["ref"]
+            raw = resolve_reference(ref, payload, bindings, self.caller)
+            binding, _, _ref_field = ref.partition(".")
+            if binding == PAYLOAD_NAMESPACE:
+                # RFC-0055: `input.<field>` is optional only when
+                # EVERY entity declaring that name marks it so —
+                # the same AND rule `_normalize_optional_nulls` uses.
+                declaring = [f for n in self.doc["nodes"]
+                             if n["kind"] == "Entity"
+                             for f in n.get("fields", [])
+                             if f["name"] == _ref_field]
+                optional = bool(declaring) and all(
+                    f.get("optional") for f in declaring)
+                if raw is None and optional:
+                    continue
+                masked = mask_payload({field: raw}, self._entity_node())
+            else:
+                # A `create ... as <name>` row's entity id rides on
+                # the row itself (`_CreatedRow`, since its binding
+                # name is the author's own choice, not the entity's
+                # default binding name `_entity_id_for_binding`
+                # resolves) — checked first so a create-as bound
+                # Password field masks the same as a read-bound one.
+                entity = self._resolve_entity_for_binding(binding, bindings)
+                optional = bool(entity and any(
+                    f["name"] == _ref_field and f.get("optional")
+                    for f in entity.get("fields", [])))
+                if raw is None and optional:
+                    # RFC-0055: omitted, never an invented null.
+                    continue
+                if entity is None:
+                    masked = {field: raw}
+                else:
+                    entity_view = self._entity_view(entity)
+                    masked = mask_payload({field: raw}, entity_view)
+            built_payload[field] = masked[field]
+        return built_payload
+
     def _resolve_entity_for_binding(self, binding, bindings):
         """Entity node behind `binding` — a `create ... as <alias>` row (via
         its own `entity_id` attribute) or a default-named read binding (via
@@ -2427,6 +2476,14 @@ class Interpreter:
                             "NetworkCall %r: `with` reference %r resolved to "
                             "nothing" % (effect["id"], ref))
                     path_args.append(value)
+            # RFC-0059 §4: `send` builds the body from the mapped refs; with
+            # no `send` the body is the run input, unmasked, as before.
+            body_map = effect.get("bodyMap")
+            if body_map:
+                request_body = self._assemble_mapped_payload(
+                    body_map, payload, bindings)
+            else:
+                request_body = payload
             # issue #108 D4: the ONE point in a locked step where the lock
             # is dropped — the whole reason a `parallel` block is faster is
             # that N of these can be in flight while their threads hold no
@@ -2438,8 +2495,8 @@ class Interpreter:
                 lock.release()
             try:
                 status, body, _headers = self.network.call(
-                    effect["target"], payload, remaining_ms, trace_headers,
-                    path_args=path_args)
+                    effect["target"], request_body, remaining_ms,
+                    trace_headers, path_args=path_args)
             except DriverError as exc:
                 if effect.get("result"):
                     # RFC-0027 §3, D3: a bound call's transport failure is a
@@ -2484,45 +2541,8 @@ class Interpreter:
             # for the whole dict.
             payload_map = effect.get("payloadMap")
             if payload_map:
-                built_payload = {}
-                for entry in payload_map:
-                    field = entry["field"]
-                    ref = entry["ref"]
-                    raw = resolve_reference(ref, payload, bindings, self.caller)
-                    binding, _, _ref_field = ref.partition(".")
-                    if binding == PAYLOAD_NAMESPACE:
-                        # RFC-0055: `input.<field>` is optional only when
-                        # EVERY entity declaring that name marks it so —
-                        # the same AND rule `_normalize_optional_nulls` uses.
-                        declaring = [f for n in self.doc["nodes"]
-                                     if n["kind"] == "Entity"
-                                     for f in n.get("fields", [])
-                                     if f["name"] == _ref_field]
-                        optional = bool(declaring) and all(
-                            f.get("optional") for f in declaring)
-                        if raw is None and optional:
-                            continue
-                        masked = mask_payload({field: raw}, self._entity_node())
-                    else:
-                        # A `create ... as <name>` row's entity id rides on
-                        # the row itself (`_CreatedRow`, since its binding
-                        # name is the author's own choice, not the entity's
-                        # default binding name `_entity_id_for_binding`
-                        # resolves) — checked first so a create-as bound
-                        # Password field masks the same as a read-bound one.
-                        entity = self._resolve_entity_for_binding(binding, bindings)
-                        optional = bool(entity and any(
-                            f["name"] == _ref_field and f.get("optional")
-                            for f in entity.get("fields", [])))
-                        if raw is None and optional:
-                            # RFC-0055: omitted, never an invented null.
-                            continue
-                        if entity is None:
-                            masked = {field: raw}
-                        else:
-                            entity_view = self._entity_view(entity)
-                            masked = mask_payload({field: raw}, entity_view)
-                    built_payload[field] = masked[field]
+                built_payload = self._assemble_mapped_payload(
+                    payload_map, payload, bindings)
             else:
                 built_payload = mask_payload(payload, self._entity_node())
             emission = {"emission_id": "%s#%d" % (effect["id"], len(self.outbox) + 1),

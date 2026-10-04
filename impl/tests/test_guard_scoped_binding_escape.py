@@ -169,6 +169,16 @@ class TestEveryReaderKindFires(unittest.TestCase):
         self.assertIn("`emit orderCreated ... with`", d.message)
         self.assertNotIn("respond", d.message)
 
+    def test_call_send_reading_a_create_binding(self):
+        d = self._one("create order as o", "call PaymentGateway send o.id")
+        self.assertEqual("o", d.subject)
+        self.assertIn("`call PaymentGateway ... send`", d.message)
+        self.assertNotIn("respond", d.message)
+
+    def test_request_send_is_named_by_its_own_verb(self):
+        d = self._one("create order as o", "request PaymentGateway send o.id")
+        self.assertIn("`request PaymentGateway ... send`", d.message)
+
     def test_publish_with_is_named_by_its_own_verb(self):
         d = self._one("create order as o", "publish orderCreated with o.id")
         self.assertIn("`publish orderCreated ... with`", d.message)
@@ -243,7 +253,8 @@ class TestReadersInsideTheScopeStaySilent(unittest.TestCase):
                 ("create order as o",
                  'format product.label from "{}" with o.id'),
                 ("create order as o", "emit orderCreated with o.id"),
-                ("call PaymentGateway as p", "set product.stock to p.amount")):
+                ("call PaymentGateway as p", "set product.stock to p.amount"),
+                ("create order as o", "call PaymentGateway send o.id")):
             with self.subTest(reader=reader):
                 self.assertEqual([], diagnose(source(
                     GUARD, creator, GUARD, reader)))

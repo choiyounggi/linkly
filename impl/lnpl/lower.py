@@ -2048,6 +2048,11 @@ def _check_guard_scoped_binding_reads(emitted, top_ids, workflow_name,
             # both derive an EventEmit), not the lowered event id.
             words = step_of[node["id"]]["name"].split()
             rendering = "`%s ... with`" % " ".join(words[:2])
+        elif node["kind"] == "NetworkCall":
+            # RFC-0059 §7: `call/request ... send` reads its references.
+            refs = [entry["ref"] for entry in node.get("bodyMap") or []]
+            words = step_of[node["id"]]["name"].split()
+            rendering = "`%s ... send`" % " ".join(words[:2])
         else:
             continue
         if not refs:
@@ -2585,11 +2590,20 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         continue
                     if child["kind"] == "EventEmit":
                         if child.get("payloadMap"):
-                            _check_emit_payload(
+                            _check_payload_map(
                                 child["payloadMap"], scope, workflow_name,
                                 base_of or {}, derived_assigned,
                                 _guard_key(owner.get(child["id"])),
-                                child.get("line"))
+                                child.get("line"), "emit with")
+                        continue
+                    if child["kind"] == "NetworkCall":
+                        # RFC-0059 §3: `send`'s references, same rule.
+                        if child.get("bodyMap"):
+                            _check_payload_map(
+                                child["bodyMap"], scope, workflow_name,
+                                base_of or {}, derived_assigned,
+                                _guard_key(owner.get(child["id"])),
+                                child.get("line"), "call/request send")
                         continue
                     if child["kind"] != "Assignment":
                         continue
@@ -2916,9 +2930,12 @@ def _check_lookup(lookup_ref, scope, workflow_name, base_of):
             % (workflow_name, lookup_ref, declared))
 
 
-def _check_emit_payload(payload_map, scope, workflow_name, base_of,
-                        derived_assigned, guard_key, emit_line):
-    """issue #178, R3/R11: `emit ... with`'s own reference rule.
+def _check_payload_map(payload_map, scope, workflow_name, base_of,
+                       derived_assigned, guard_key, line, verb_label):
+    """issue #178/#200, R3/R11: the reference rule shared by `emit ... with`
+    (RFC-0049) and `call/request ... send` (RFC-0059). `verb_label` is the
+    phrase messages render ("emit with" / "call/request send"): its first
+    word is the verb, its last the clause keyword.
 
     Mirrors `_check_respond`'s two-check split (field must resolve, field
     must not be Password) with two differences: (1) a network-result
@@ -2929,21 +2946,25 @@ def _check_emit_payload(payload_map, scope, workflow_name, base_of,
     (RFC-0030 §3 / issue #95 -- a derived field is never seeded from the
     create payload and is only ever populated by an explicit
     `set`/`format` step, so its value is not reliably present to map into
-    an emitted payload).
+    an outbound payload) -- unless it is a fill-source field (RFC-0057
+    `field["fill_source"]`), which `create` always fills and no
+    `set`/`format` ever does, so the guard-scope rule below never applies.
 
-    issue #204: that refusal is now CONDITIONAL. A `set`/`format` on the
-    same `<binding>.<field>` that precedes this `emit` in the same guard
-    scope (`_guard_owner_map`/`_guard_key`, the machinery #98/#198 already
-    built) makes the value reliably present after all, so the reference is
-    admitted. `derived_assigned` (built by the caller's forward walk) holds
-    every such assignment seen so far, keyed by `(binding, field)` -> the
-    set of guard-scope keys it was seen in; `guard_key`/`emit_line` are this
-    `emit`'s own scope and source line.
+    issue #204: the plain-`derived` refusal is CONDITIONAL. A
+    `set`/`format` on the same `<binding>.<field>` that precedes this
+    reader in the same guard scope (`_guard_owner_map`/`_guard_key`, the
+    machinery #98/#198 already built) makes the value reliably present
+    after all, so the reference is admitted. `derived_assigned` (built by
+    the caller's forward walk) holds every such assignment seen so far,
+    keyed by `(binding, field)` -> the set of guard-scope keys it was seen
+    in; `guard_key`/`line` are this reader's own scope and source line.
     """
+    verb_word = verb_label.split()[0]
+    clause_word = verb_label.split()[-1]
     for entry in payload_map:
         ref = entry["ref"]
         field_name = entry["field"]
-        text = "emit with %s" % ref
+        text = "%s %s" % (verb_label, ref)
         if "." not in ref:
             raise LowerError(
                 "workflow %s: %s names %r, which must be a bound row's "
@@ -2955,29 +2976,31 @@ def _check_emit_payload(payload_map, scope, workflow_name, base_of,
         if field is None:
             continue  # network-result binding -- no declared shape, admitted
         if field.get("derived"):
+            if field.get("fill_source"):
+                continue  # RFC-0057: filled by the run at create
             binding = ref.partition(".")[0]
             if guard_key in derived_assigned.get((binding, field_name), ()):
                 continue  # issue #204: a set/format fills it in this scope
-            where_str = ("line %d" % emit_line) if emit_line else workflow_name
+            where_str = ("line %d" % line) if line else workflow_name
             raise LowerError(
                 "workflow %s: %s names field %r, which is `derived` "
                 "(server-computed, RFC-0030 §3) -- no `set`/`format` on "
-                "%s.%s precedes this `emit` (%s) in the same guard scope "
-                "-- a with-clause may map a `derived` field only after "
+                "%s.%s precedes this `%s` (%s) in the same guard scope "
+                "-- a %s-clause may map a `derived` field only after "
                 "this workflow's own `set`/`format` fills it, in the "
-                "scope this `emit` runs in"
+                "scope this `%s` runs in"
                 % (workflow_name, text, field_name, binding, field_name,
-                   where_str))
+                   verb_word, where_str, clause_word, verb_word))
         declared = field.get("type")
         base = base_of.get(declared, declared)
         if base == "Password":
             raise LowerError(
                 "workflow %s: %s has declared type %s, whose base is "
-                "Password -- emit must not surface a Password field in "
-                "an emitted event payload (issue #43's masking "
+                "Password -- %s must not surface a Password field in "
+                "an outbound payload (issue #43's masking "
                 "chokepoint: a masked field's value must never leave "
                 "through an unmasked one)"
-                % (workflow_name, text, declared))
+                % (workflow_name, text, declared, verb_word))
 
 
 def _check_literal_zero_divisor(value, where):
@@ -3592,6 +3615,33 @@ class _Scope:
             % (self.workflow_name, text, name, declared))
 
 
+def _build_payload_map(arg_tokens, lineno, clause_label):
+    """The `{field, ref}` list shared by `emit ... with` (RFC-0049) and
+    `call/request ... send` (RFC-0059): reference shape and duplicate mapped
+    field names only. The scope rules are `_check_payload_map`'s."""
+    from .condition import _is_reference_name
+    if not arg_tokens:
+        raise LowerError(
+            "line %d: `%s` needs at least one reference" % (lineno, clause_label))
+    payload_map = []
+    seen_fields = {}
+    for tok in arg_tokens:
+        if not _is_reference_name(tok):
+            raise LowerError(
+                "line %d: `%s` argument must be camelCase or "
+                "binding.field, got %r" % (lineno, clause_label, tok))
+        field_name = tok.rpartition(".")[2] if "." in tok else tok
+        if field_name in seen_fields:
+            raise LowerError(
+                "line %d: `%s` maps field %r from both %r and %r -- "
+                "each mapped field name must be unique"
+                % (lineno, clause_label, field_name, seen_fields[field_name],
+                   tok))
+        seen_fields[field_name] = tok
+        payload_map.append({"field": field_name, "ref": tok})
+    return payload_map
+
+
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                    diagnostics=None, step_text=None, http_caps=None,
                    verb_sink=None, base_of=None, namespace=None):
@@ -3721,18 +3771,45 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                 message="%r has no `capability http` declaration — it runs "
                         "with method POST and no auth" % target,
                 line=lineno)
-        # issue #109, D6: an optional leading `with <ref>...` clause,
-        # substituted into the target capability's declared `path` template
-        # at run time (`condition.parse_format`'s `{}`-count convention
-        # reused here, not its runtime substitution — that one does not
-        # escape, and a URL path must, `drivers.py`'s job).
+        # RFC-0059 §1: up to three trailing clauses, each optional, in the
+        # fixed order `send <ref>...` (body map), `with <ref>...` (path,
+        # issue #109), `as <name>` (result binding, RFC-0027 §2). The tail
+        # is cut into segments at the marker words; a marker of equal or
+        # lower rank than the one before it is out of order.
+        ranks = {"send": 0, "with": 1, "as": 2}
         tail = list(rest)
-        path_args = None
-        if tail and tail[0] == "with":
-            j = 1
-            while j < len(tail) and tail[j] != "as":
+        segments = {"send": None, "with": None, "as": None}
+        last_rank = -1
+        i = 0
+        while i < len(tail):
+            word = tail[i]
+            if word not in ranks:
+                raise LowerError(
+                    "line %d: call/request accepts trailing clauses "
+                    "'send <ref>...', 'with <ref>...', 'as <name>' in that "
+                    "order, got %r" % (lineno, tuple(tail)))
+            if ranks[word] <= last_rank:
+                raise LowerError(
+                    "line %d: call/request's clauses must appear in the "
+                    "fixed order send, with (path), as -- %r cannot follow "
+                    "a clause of equal or later rank" % (lineno, word))
+            last_rank = ranks[word]
+            j = i + 1
+            while j < len(tail) and tail[j] not in ranks:
                 j += 1
-            arg_tokens = tail[1:j]
+            segments[word] = tail[i + 1:j]
+            i = j
+        body_map = None
+        if segments["send"] is not None:
+            body_map = _build_payload_map(segments["send"], lineno, "send")
+        # issue #109, D6: the `with <ref>...` clause, substituted into the
+        # target capability's declared `path` template at run time
+        # (`condition.parse_format`'s `{}`-count convention reused here, not
+        # its runtime substitution — that one does not escape, and a URL
+        # path must, `drivers.py`'s job).
+        path_args = None
+        if segments["with"] is not None:
+            arg_tokens = segments["with"]
             if not arg_tokens:
                 raise LowerError(
                     "line %d: `with` needs at least one reference" % lineno)
@@ -3743,7 +3820,6 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                         "line %d: `with` argument must be camelCase or "
                         "binding.field, got %r" % (lineno, tok))
             path_args = list(arg_tokens)
-            tail = tail[j:]
         template = cap.get("path") if cap else None
         placeholders = template.count("{}") if template else 0
         given = len(path_args) if path_args is not None else 0
@@ -3756,44 +3832,47 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                 "line %d: capability http %s's `path` %r has %d `{}` "
                 "placeholder(s) but `with` gives %d argument(s)"
                 % (lineno, target, template, placeholders, given))
-        if not tail:
+        if segments["as"] is None:
             # RFC-0027 §3: the unbound, backward-compatible form — no
             # `result` field, byte-identical to the pre-RFC-0027 no-op.
             node = _node(kind, eid, target=target, line=lineno)
             if path_args is not None:
                 node["path_args"] = path_args
+            if body_map is not None:
+                node["bodyMap"] = body_map
             return node
-        if len(tail) == 2 and tail[0] == "as":
-            name = tail[1]
-            # RFC-0027 §2, check 1: `<name>.status` must be a valid
-            # `Reference` (RFC-0012 §G12.1), which requires camelCase — the
-            # same shape `condition._is_camel_name` already enforces for
-            # every other binding name.
-            if not re.match(r"^[a-z][a-zA-Z0-9]*$", name):
+        if len(segments["as"]) != 1:
+            raise LowerError(
+                "line %d: `as` needs exactly one name ('as <name>'), got %r"
+                % (lineno, tuple(segments["as"])))
+        name = segments["as"][0]
+        # RFC-0027 §2, check 1: `<name>.status` must be a valid
+        # `Reference` (RFC-0012 §G12.1), which requires camelCase — the
+        # same shape `condition._is_camel_name` already enforces for
+        # every other binding name.
+        if not re.match(r"^[a-z][a-zA-Z0-9]*$", name):
+            raise LowerError(
+                "line %d: `as %s` is not a valid binding name — it must "
+                "be camelCase, like every other binding name "
+                "(RFC-0012 §G12.1)" % (lineno, name))
+        # RFC-0027 §2, check 2: a network result binding and an entity's
+        # single-row binding share the same grammar position
+        # (`<binding>.<field>`), so their names cannot collide — unlike
+        # RowSet bindings (RFC-0025 §5), which are disambiguated by the
+        # `Aggregate` production's distinct first token instead.
+        for ent in registry.values():
+            if name == binding_name(ent):
                 raise LowerError(
-                    "line %d: `as %s` is not a valid binding name — it must "
-                    "be camelCase, like every other binding name "
-                    "(RFC-0012 §G12.1)" % (lineno, name))
-            # RFC-0027 §2, check 2: a network result binding and an entity's
-            # single-row binding share the same grammar position
-            # (`<binding>.<field>`), so their names cannot collide — unlike
-            # RowSet bindings (RFC-0025 §5), which are disambiguated by the
-            # `Aggregate` production's distinct first token instead.
-            for ent in registry.values():
-                if name == binding_name(ent):
-                    raise LowerError(
-                        "line %d: `as %s` collides with entity %s's "
-                        "single-row binding name — a network result "
-                        "binding cannot share a name with it "
-                        "(RFC-0027 §2)" % (lineno, name, ent["name"]))
-            node = _node(kind, eid, target=target, result=name, line=lineno)
-            if path_args is not None:
-                node["path_args"] = path_args
-            return node
-        raise LowerError(
-            "line %d: call/request accepts either no trailing words, "
-            "'with <ref>...', 'as <name>', or both, got %r"
-            % (lineno, tuple(rest)))
+                    "line %d: `as %s` collides with entity %s's "
+                    "single-row binding name — a network result "
+                    "binding cannot share a name with it "
+                    "(RFC-0027 §2)" % (lineno, name, ent["name"]))
+        node = _node(kind, eid, target=target, result=name, line=lineno)
+        if path_args is not None:
+            node["path_args"] = path_args
+        if body_map is not None:
+            node["bodyMap"] = body_map
+        return node
 
     if kind == "Authorization":
         return _node(kind, eid, requirement=obj or "unspecified", line=lineno)
@@ -3815,26 +3894,7 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
             raise LowerError(
                 "line %d: `%s` accepts either no trailing words or "
                 "`with <ref>...`, got %r" % (lineno, verb, tuple(rest)))
-        arg_tokens = rest[1:]
-        if not arg_tokens:
-            raise LowerError(
-                "line %d: `with` needs at least one reference" % lineno)
-        from .condition import _is_reference_name
-        payload_map = []
-        seen_fields = {}
-        for tok in arg_tokens:
-            if not _is_reference_name(tok):
-                raise LowerError(
-                    "line %d: `with` argument must be camelCase or "
-                    "binding.field, got %r" % (lineno, tok))
-            field_name = tok.rpartition(".")[2] if "." in tok else tok
-            if field_name in seen_fields:
-                raise LowerError(
-                    "line %d: `with` maps field %r from both %r and %r -- "
-                    "each mapped field name must be unique"
-                    % (lineno, field_name, seen_fields[field_name], tok))
-            seen_fields[field_name] = tok
-            payload_map.append({"field": field_name, "ref": tok})
+        payload_map = _build_payload_map(rest[1:], lineno, "with")
         return _node(kind, eid, event=_event_ref(obj, lineno),
                     payloadMap=payload_map, line=lineno)
 

@@ -95,10 +95,12 @@ class _RecordingNetworkDriver(FakeNetworkDriver):
     def __init__(self, stubs=None):
         super().__init__(stubs)
         self.seen_timeouts = []
+        self.seen = []
 
     def call(self, target, payload, timeout_ms, trace_headers=None,
              path_args=None):
         self.seen_timeouts.append(timeout_ms)
+        self.seen.append(payload)
         return super().call(target, payload, timeout_ms, trace_headers,
                             path_args)
 
@@ -281,6 +283,32 @@ class TimeoutBudgetWiringTest(unittest.TestCase):
         interp.run_workflow(target, {})
 
         self.assertEqual(driver.seen_timeouts, [DEFAULT_NETWORK_TIMEOUT_MS])
+
+
+class NoClauseBodyIsByteIdenticalTest(unittest.TestCase):
+    """RFC-0059 §5: characterization, not a regression -- with no `send`
+    clause the driver receives the whole run input, unchanged and
+    unmasked, exactly as before RFC-0059 existed."""
+
+    def test_a_call_with_no_send_clause_passes_the_whole_input_unmodified(self):
+        doc = compile_doc(BOUND_SOURCE)
+        target = workflow_id(doc)
+        payload = {"id": "o-1", "extra": "untouched", "nested": {"k": [1, 2]}}
+        rec = _RecordingNetworkDriver()
+        interp = Interpreter(doc, repo_rows=default_rows(doc, target, payload),
+                             network=rec)
+        result = interp.run_workflow(target, payload)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual([payload], rec.seen)
+        # the very dict the run was given -- no copy, no masking pass
+        self.assertIs(payload, rec.seen[0])
+
+    def test_an_unbound_call_with_an_empty_input_sends_an_empty_body(self):
+        doc = compile_doc(FIRST_STEP_SOURCE)
+        rec = _RecordingNetworkDriver()
+        Interpreter(doc, repo_rows={}, network=rec).run_workflow(
+            workflow_id(doc), {})
+        self.assertEqual([{}], rec.seen)
 
 
 if __name__ == "__main__":

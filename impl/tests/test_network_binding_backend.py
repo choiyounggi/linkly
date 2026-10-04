@@ -143,5 +143,82 @@ workflow Ping
         self.assertTrue(ok, "\n".join(report))
 
 
+# RFC-0059 §6: `send` adds nothing for mode B to refuse or diverge on.
+SEND_CLAUSE_SRC = """capability postgres
+
+capability http PaymentGateway
+    method post
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Integer
+        failureCode Integer
+
+service Checkout
+    policy
+        timeout 5s
+
+workflow ChargeCard
+    find order
+    set order.total to input.total
+    call PaymentGateway send order.id order.total as paymentResult
+    set order.failureCode to paymentResult.status
+    update order
+"""
+
+
+class SendClauseModeEquivalenceTest(unittest.TestCase):
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(
+            prefix="lnpl-network-send-diff-", dir=os.path.join(REPO, ".claude", "tmp"))
+        # registered before anything that can raise, so a failing setUp
+        # (no tearDown) still removes the directory
+        import shutil
+        self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
+        self.doc = compile_doc(SEND_CLAUSE_SRC)
+        self.target = next(n["id"] for n in self.doc["nodes"]
+                           if n["kind"] == "Workflow")
+        self.payload = {"id": "o-1", "total": 500}
+        self.rows = {"entity.order": {row_key("entity.order", self.payload):
+                                      {"id": "o-1", "stock": 1, "total": 500,
+                                       "failureCode": 0}}}
+
+    def test_the_fixture_really_carries_a_body_map(self):
+        call = next(n for n in self.doc["nodes"] if n["kind"] == "NetworkCall")
+        self.assertEqual([{"field": "id", "ref": "order.id"},
+                          {"field": "total", "ref": "order.total"}],
+                         call["bodyMap"])
+
+    @NEEDS_TOOLS
+    def test_build_does_not_raise_for_a_send_clause_workflow(self):
+        out = backend.build(self.doc, self.target, self.workdir)
+        self.assertTrue(out)
+
+    @NEEDS_TOOLS
+    def test_differential_verify_agrees_for_a_send_clause_workflow(self):
+        ok, report = differential.verify(
+            self.doc, self.target, self.payload, self.rows, self.workdir,
+            network=FakeNetworkDriver({"PaymentGateway": (200, {})}))
+        self.assertTrue(ok, "\n".join(report))
+
+    def test_build_and_diff_refuse_a_send_workflow_by_the_existing_chain(self):
+        # A `fail` beside the `send` is refused for `fail` (RFC-0058) by
+        # both commands, before any toolchain use -- `send` adds no link.
+        doc = compile_doc(SEND_CLAUSE_SRC.replace(
+            "    update order\n",
+            "    update order\n    when order.stock < 1\n    fail out-of-stock\n"))
+        with self.assertRaises(backend.BackendError) as built:
+            backend.build(doc, self.target, self.workdir)
+        with self.assertRaises(differential.DifferentialError) as diffed:
+            differential.verify(doc, self.target, self.payload, self.rows,
+                                self.workdir)
+        for msg in (str(built.exception), str(diffed.exception)):
+            self.assertIn("RFC-0058", msg)
+            self.assertNotIn("RFC-0059", msg)
+
+
 if __name__ == "__main__":
     unittest.main()
