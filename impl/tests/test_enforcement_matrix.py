@@ -391,6 +391,14 @@ class TestVerbCrossReference(unittest.TestCase):
             self.assertNotIn(verb, VERB_LEXICON,
                              "%r joined VERB_LEXICON; §A now lies" % verb)
 
+    def test_the_respond_row_names_the_rfc_0061_terms(self):
+        # RFC-0061 widened `respond`'s object; the row must keep saying so.
+        row = next(line for line in section(self.markdown, HEADING_A).splitlines()
+                   if line.startswith("| respond |"))
+        for phrase in ("`<name> as <func> <ref>`", "`respond list <binding>`",
+                       "`limit`", "RFC-0061", "모드 B"):
+            self.assertIn(phrase, row)
+
     def test_the_policy_is_stated_in_both_polarities(self):
         # "not a compile error" and "a diagnostic is always emitted" are two
         # claims; a document keeping only the first would read as permission to

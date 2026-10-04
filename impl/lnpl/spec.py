@@ -171,7 +171,8 @@ def _expect_result(phrase, result, _interp):
         ok = _condition_holds(text, result.get("payload", {}),
                               result.get("bindings", {}),
                               money_fields=_money_field_predicate(_interp.doc),
-                              text_fields=_text_field_predicate(_interp.doc))
+                              text_fields=_text_field_predicate(_interp.doc),
+                              response=result.get("response", {}))
     except (ConditionError, RunError) as exc:
         raise SpecError("unsupported result expectation %r: %s" % (phrase, exc))
     return ok, "%s -> %s" % (text, ok)
@@ -187,7 +188,14 @@ def _money_field_predicate(document):
     resolution via `interp.refinement_index`, matching `_typed_value`'s own
     `base == "Money"` pattern (D3(1)).
     """
-    return _field_base_predicate(document, ("Money",), bare=True)
+    fields = _field_base_predicate(document, ("Money",), bare=True)
+    # RFC-0061 §6: a Money-typed `respond` term (`revenue as sum o.total`)
+    # is asserted by its bare name the same way.
+    terms = {term["name"] for node in document.get("nodes", [])
+             if node["kind"] == "Response"
+             for term in node.get("aggTerms") or []
+             if term.get("agg_field_type") == "Money"}
+    return lambda ref: fields(ref) or ref in terms
 
 
 # RFC-0056: the bases lowering opens to guard equality (lower.py's

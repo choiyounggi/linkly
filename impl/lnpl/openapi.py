@@ -466,15 +466,21 @@ def _response_schema(steps, nodes, entities, refined):
     must agree, or the OpenAPI contract would describe a body the server
     never sends. Returns None when the workflow declares no `respond`, so a
     document without one generates byte-identical output (D4).
+
+    RFC-0061 §5: a named aggregate term is one more flat property, typed by
+    its `agg_field_type` (RFC-0047; `count` has none and is an Integer); a
+    list term is the whole body, `expose list`'s `items`/`next` envelope
+    with `next` always null.
     """
-    refs = None
+    response = None
     for step in steps:
         for child_id in step.get("children", []):
             effect = nodes[child_id]
             if effect["kind"] == "Response":
-                refs = effect["refs"]
-    if refs is None:
+                response = effect
+    if response is None:
         return None
+    refs = response.get("refs") or []
 
     by_binding = {binding_name(e): e for e in entities}
     # issue #173 / RFC-0030 §2: a `create ... as <alias>` binding has no
@@ -490,6 +496,22 @@ def _response_schema(steps, nodes, entities, refined):
                     and effect.get("operation") == "create"
                     and effect.get("result")):
                 create_bindings[effect["result"]] = nodes[effect["entity"]]
+    list_term = response.get("listTerm")
+    if list_term is not None:
+        entity = by_binding.get(list_term["binding"])
+        if entity is None:
+            raise OpenApiError(
+                "respond list references unknown binding %r (not an "
+                "entity's RowSet)" % list_term["binding"])
+        return {"type": "object",
+                "properties": {
+                    "items": {"type": "array",
+                              "items": {"$ref": "#/components/schemas/%s"
+                                        % _schema_name(entity)}},
+                    "next": {"type": "null"},
+                },
+                "required": ["items", "next"],
+                "additionalProperties": False}
     grouped, order, required_by_binding = {}, [], {}
     for ref in refs:
         binding, _, field_name = ref.partition(".")
@@ -525,6 +547,10 @@ def _response_schema(steps, nodes, entities, refined):
             schema["required"] = required_by_binding[binding]
         schema["additionalProperties"] = False
         properties[binding] = schema
+    for term in response.get("aggTerms") or []:
+        tname = term.get("agg_field_type") or "Integer"
+        properties[term["name"]] = dict(TYPE_SCHEMA[tname])
+        order.append(term["name"])
     return {"type": "object", "properties": properties, "required": order,
            "additionalProperties": False}
 

@@ -95,16 +95,19 @@ MUTATIONS = [
     # failure this task exists to prevent — so a test must notice.
     # issue #169 재고정: money_fields 키워드 인자가 추가된 현재 시그니처로.
     # 2026-10-04 재고정: RFC-0056(issue #207)이 text_fields 인자를 더했다.
+    # 2026-10-04 재고정: RFC-0061(issue #210)이 response 인자를 더했다.
     ("spec: evaluate `result` against an empty scope instead of the run's bindings",
      "lnpl/spec.py",
      '        ok = _condition_holds(text, result.get("payload", {}),\n'
      '                              result.get("bindings", {}),\n'
      '                              money_fields=_money_field_predicate(_interp.doc),\n'
-     '                              text_fields=_text_field_predicate(_interp.doc))',
+     '                              text_fields=_text_field_predicate(_interp.doc),\n'
+     '                              response=result.get("response", {}))',
      '        ok = _condition_holds(text, result.get("payload", {}),\n'
      '                              {},\n'
      '                              money_fields=_money_field_predicate(_interp.doc),\n'
-     '                              text_fields=_text_field_predicate(_interp.doc))'),
+     '                              text_fields=_text_field_predicate(_interp.doc),\n'
+     '                              response=result.get("response", {}))'),
     ("Guard: run `repeat` once instead of `count` times",
      "lnpl/interp.py",
      'for _ in range(int(node["count"])):',

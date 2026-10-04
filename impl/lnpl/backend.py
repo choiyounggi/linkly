@@ -812,6 +812,34 @@ def workflow_uses_fail(document, workflow_id):
     return _fail_offender(document, workflow_id) is not None
 
 
+def _respond_term_offender(document, workflow_id):
+    """`(step_name, "aggregate"|"list")` of the first reachable `respond`
+    carrying a named aggregate term or a list term (RFC-0061), or None.
+    Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if effect is None or effect["kind"] != "Response":
+                continue
+            if effect.get("aggTerms"):
+                return step["name"], "aggregate"
+            if effect.get("listTerm"):
+                return step["name"], "list"
+    return None
+
+
+def workflow_uses_respond_aggregate_or_list(document, workflow_id):
+    """RFC-0061 §Mode B: does `workflow_id` answer a named aggregate term or a
+    list term? A RowSet, and an aggregate computed from it, are none of the
+    four observation classes mode B compares (RFC-0045 §7's reasoning), so
+    mode B refuses such a workflow — asked last, after `fail`, by both
+    `_refuse_unsupported_guards` and `differential.verify`. Raises
+    `BackendError` for an unknown workflow.
+    """
+    return _respond_term_offender(document, workflow_id) is not None
+
+
 def _refuse_unsupported_guards(document, workflow_id):
     """RFC-0051/0052/0055/0056 §Mode B: refuse, by name, a Money-guard,
     lookup-key, optional-field-guard or Text-guard workflow — called by
@@ -822,7 +850,9 @@ def _refuse_unsupported_guards(document, workflow_id):
     Money-then-Lookup-then-Optional-then-Text order `differential.verify` asks
     them, so `build` and `diff` cannot drift apart. A fill-source create
     (RFC-0057, `_fill_source_create_offender`) is refused next and a `fail`
-    step (RFC-0058, `_fail_offender`) last, in the same positions in both.
+    step (RFC-0058, `_fail_offender`) after it, and a `respond` aggregate or
+    list term (RFC-0061, `_respond_term_offender`) last, in the same
+    positions in both.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here — its refusal in `_render_std` depends on `_lnpl_ops`'s
     seed/payload-truncated ops stream, which a document-level check here
@@ -870,6 +900,13 @@ def _refuse_unsupported_guards(document, workflow_id):
         raise BackendError(
             "step %s: `fail %s` has no compiled evaluator (RFC-0058 §Mode B, "
             "recorded exemption) — run it in mode A" % (step_name, code))
+    respond_offender = _respond_term_offender(document, workflow_id)
+    if respond_offender is not None:
+        step_name, term_kind = respond_offender
+        raise BackendError(
+            "step %s: `respond` %s term has no compiled evaluator (RFC-0061 "
+            "§Mode B, recorded exemption) — run it in mode A"
+            % (step_name, term_kind))
 
 
 def encode_condition_value(value):
