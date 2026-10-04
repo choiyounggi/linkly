@@ -244,7 +244,7 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**~4,321 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**~4,395 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
@@ -267,7 +267,7 @@ trace-side counterpart is [lnpl-otel](https://github.com/choiyounggi/lnpl-otel) 
 otel-collector in its own Testcontainers CI
 ([issue #144](https://github.com/choiyounggi/linkly/issues/144)).
 
-**54 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`, RFC-0048 `Draft`, RFC-0049 `Draft`, RFC-0050 `Draft`, RFC-0051 `Draft`, RFC-0052 `Draft`, RFC-0055 `Draft`.** RFC-0007 was formally
+**55 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`, RFC-0048 `Draft`, RFC-0049 `Draft`, RFC-0050 `Draft`, RFC-0051 `Draft`, RFC-0052 `Draft`, RFC-0055 `Draft`, RFC-0056 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -337,8 +337,9 @@ suite is defined against.
 | [0051 Money arithmetic in `set` and guards](rfcs/0051-money-arithmetic-in-set-and-guards.md) | Money could only be aggregated, so `set line.lineTotal to line.unitPrice * line.qty` and `set report.net to report.gross - report.fees` (even the plain copy `set report.net to input.net`) were compile refusals and the computation left the language (probe-v0.8 s1 F-1, s3 F-1). Makes `money` a dimension beside `scalar`/`instant`: copy, Money ± Money, Money × Integer (either order, a literal included) and Money-vs-Money comparison under all six comparators; Money × Money, any division, Money ± a number and Money-vs-number stay refused naming RFC-0051, as does a `set` whose target and value differ in dimension; Decimal stays refused (RFC-0044 OQ 3); `exists`/`missing` and `is-numeric` on Money are refused. Specifies mode A evaluation in exact minor units (different currencies fail the step with `money-currency-mismatch`, equality across currencies is false), and mode B refusing a Money guard as a recorded differential exemption; Money `set` needs no mode B change. No grammar delta. Draft. *Updates RFC-0016 §3 (+RFC-0038 §3), RFC-0015 §3, RFC-0044 §5, RFC-0016 §5, RFC-0028 §6 (+RFC-0050)* |
 | [0052 Lookup-key clause `by <ref>`](rfcs/0052-lookup-key-clause.md) | Every entity's row in one run lived under the one payload `id`, so `find product` + `create order` made two orders for the same product collide (`entity.order already exists`) and `Stock.onHand` could never be found and decremented under the product's id (probe-v0.8 s1 F-3/F-6). Adds an optional `by <ref>` to `find`/`read`/`load`/`authenticate`/`update`/`delete`: the ref's run-time value becomes the row key (`find stock by input.productId`), a `set` on a row read that way persists under that key, and a ref that resolves to nothing fails the step instead of falling back to `-`. Admits bare, `input.<field>`, `caller.*`, network-result and bound non-`derived`/non-Password fields; any other trailing word on those verbs is now a compile error (was silently dropped); `create` keeps `as <name>` only. Seeds a first read `by input.<field>` under that field's value; mode B refuses a `by` workflow as a recorded differential exemption. Draft. *Updates RFC-0002 §Full grammar (+RFC-0049), RFC-0012 §G12.2/§G12.5/§G12.6, RFC-0016 §5 (+RFC-0051)* |
 | [0055 `optional` field modifier](rfcs/0055-optional-field-modifier.md) | Every declared entity field was required, so adding one field turned every request from a client that did not send it yet into a 400 (issue #208, AIP-180). Adds a second field modifier, `<name> <Type> optional` (`optional derived` together, a repeated modifier, or `id ... optional` is a compile error). An absent or JSON-`null` optional field passes `validate` (a present value is still type-checked), is never stored (no invented default), is left out of OpenAPI `required` (request type becomes nullable), is not a `db check`/`stored-row-shape-mismatch` mismatch, and is omitted from `respond`/`emit ... with` instead of sent as `null`; `lnpl migrate --set` still backfills it; `_schema_gen` ignores the flag. Opens `exists`/`missing` on an optional field of any type and registers `optional-field-unguarded-arithmetic` (warning); mode B refuses a guard that reads an optional field. Default values stay out of scope. Draft. *Updates RFC-0001 §노드 카탈로그/Entity, RFC-0016 §3 (+RFC-0038, +RFC-0051), RFC-0015 §3 (+RFC-0051)* |
+| [0056 Text and enum equality in guards](rfcs/0056-text-equality-guards.md) | A guard could not branch on a status string — `when order.status == input.expected` was refused as "neither Integer nor DateTime", so `CancelOrder` could cancel an already-cancelled order and a spec could not assert a status (issue #207). Extends RFC-0038's `list where` equality to `when`/`until` guards and their `or` alternatives: `==`/`!=` on a Text-family field (base UUID, Email, Phone, Currency, Html, Markdown or Text, enum refinements included) against a reference of the same base or a bare-name literal. A bare name is a literal only when paired with such a field (elsewhere it is still a payload field); the compiler records that decision on the Guard as `textEqualityOperands`, and against an enum refinement the literal must be a member (the refusal lists the members and adds a did-you-mean for a close typo). Ordering on Text, arithmetic on either side, and Password fields (RFC-0001 masking) stay refused. `spec` `result <ref> ==/!= <value>` evaluates the same way; the `set` refusal on a Text field now names `format`. Mode B refuses such a workflow as a recorded differential exemption, after the Money, lookup and optional checks. Draft. *Updates RFC-0016 §3 (+RFC-0038, +RFC-0051, +RFC-0055), RFC-0038 §3, RFC-0015 §3 (+RFC-0051, +RFC-0055), RFC-0001 §노드 카탈로그/Guard (+RFC-0028)* |
 
-Forty-six are `Accepted`, seven (`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`) are `Draft`; 0000 is superseded by 0007, which was itself formally
+Forty-six are `Accepted`, eight (`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`, `0056`) are `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -398,7 +399,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 4321 tests in 137.870s
+Ran 4395 tests in 137.870s
 OK
 ```
 

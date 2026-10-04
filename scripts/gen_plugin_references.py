@@ -177,8 +177,15 @@ def render_grammar():
                  "한 가드로 쓴다. 선언이 가드로 끝나도(감쌀 항목이 없어도) 에러다.\n")
     lines.append("가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — "
                  "존재 검사(`exists`/`missing`)도 숫자 형태 술어(%s)도 "
-                 "마찬가지다. `Text` 필드에 가드를 걸면 lowering이 "
-                 "거부한다(RFC-0016). `Money` 필드는 다른 Money 참조와의 "
+                 "마찬가지다(RFC-0016). 예외는 Text류 필드(base가 `UUID`·"
+                 "`Email`·`Phone`·`Currency`·`Html`·`Markdown`·`Text`, enum "
+                 "refinement 포함, `Password` 제외)다: `==`/`!=`로만 비교할 수 "
+                 "있다. 상대는 같은 base의 참조이거나 맨이름 리터럴이고"
+                 "(`when order.status == paid`), 상대 필드가 enum이면 리터럴은 "
+                 "그 멤버여야 한다. 맨이름은 그 자리에서만 리터럴이고 다른 "
+                 "자리에서는 payload 필드다 — Text 등가에서 payload를 읽으려면 "
+                 "`input.<field>`로 쓴다. Text의 순서 비교와 산술은 lowering이 "
+                 "거부한다(RFC-0056). `Money` 필드는 다른 Money 참조와의 "
                  "비교와 `set`의 `+`/`-`/Integer `*`에만 쓸 수 있다"
                  "(RFC-0051) — 숫자와 비교하거나, `exists`/`missing`·숫자 "
                  "형태 술어를 걸거나, 나누면 거부다. 통화가 다르면 순서 "
@@ -720,6 +727,9 @@ RFC_ROUTES = {
              "필드를 보내지 않거나 null을 보내도 validate가 거부하지 않고, "
              "저장된 행과 OpenAPI·db check·migrate·Presence 가드가 그 부재를 "
              "어떻게 다루는지", ()),
+    "0056": ("가드(when/until)에서 Text·enum 필드를 ==/!=로 비교하고 싶다 — "
+             "맨이름이 리터럴인지 참조인지 어떻게 갈리는지, enum이면 멤버 검사가 "
+             "어떻게 되는지, 모드 B가 왜 그 워크플로를 거부하는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

@@ -141,6 +141,44 @@ class TestEvaluationsOnAComparisonGuard(unittest.TestCase):
         self.assertEqual(result["skipped"], [])
 
 
+    def test_skipped_evaluations_show_the_compared_text_values(self):
+        # RFC-0056: a Text equality's skip names both compared strings.
+        doc = _doc(TEXT_SRC % "    when order.status == paid", "shop")
+        _interp, result = _run_doc(doc, TEXT_PAYLOAD, workflow="wf.cancel.order",
+                                   entities=("entity.order",))
+        self.assertEqual(result["skipped"][0]["evaluations"],
+                         [{"ref": "order.status", "value": "pending", "op": "==",
+                           "expected": "paid", "holds": False}])
+
+    def test_skipped_evaluations_show_both_resolved_references(self):
+        doc = _doc(TEXT_SRC % "    when order.status != input.status", "shop")
+        _interp, result = _run_doc(doc, TEXT_PAYLOAD, workflow="wf.cancel.order",
+                                   entities=("entity.order",))
+        self.assertEqual(result["skipped"][0]["evaluations"],
+                         [{"ref": "order.status", "value": "pending", "op": "!=",
+                           "expected": "pending", "holds": False}])
+
+
+TEXT_SRC = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+service OrderService
+    policy
+        retry 0
+workflow CancelOrder
+    find order
+%s
+    update order
+"""
+
+TEXT_PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "status": "pending"}
+
+
 class TestEvaluationsAreMaskedLikeAnyOtherChannel(unittest.TestCase):
     """D3: a `ref` naming a sensitive entity field gets its `value` masked the
     same way `mask_payload` masks a bound row — reusing that chokepoint, not a
@@ -184,6 +222,19 @@ class TestEvaluationsAreMaskedLikeAnyOtherChannel(unittest.TestCase):
                          [{"ref": "input.cardNumber", "value": CARD,
                            "op": "missing", "expected": None,
                            "holds": False}])
+
+
+    def test_text_equality_evaluation_has_no_password_masking_artifact(self):
+        # RFC-0056 D2: a Password field never reaches this path (refused at
+        # compile time), so a Text equality's entry is the plain shape every
+        # other comparison has, with nothing masked.
+        doc = _doc(TEXT_SRC % "    when order.status == cancelled", "shop")
+        _interp, result = _run_doc(doc, TEXT_PAYLOAD, workflow="wf.cancel.order",
+                                   entities=("entity.order",))
+        entry = result["skipped"][0]["evaluations"][0]
+        self.assertEqual({"ref", "value", "op", "expected", "holds"}, set(entry))
+        self.assertNotIn("***", repr(entry))
+        self.assertEqual("pending", entry["value"])
 
 
 class TestEvaluationsOnAnAndCondition(unittest.TestCase):

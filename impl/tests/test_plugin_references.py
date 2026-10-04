@@ -529,6 +529,16 @@ class UndocumentedRuleTest(unittest.TestCase):
         text = self._read("grammar.md")
         self.assertIn("Integer 또는 DateTime", text)
 
+    def test_guard_text_equality_rule_is_documented(self):
+        """RFC-0056: Text류 필드는 가드에서 `==`/`!=`로만 비교된다 — 옛 문장
+        ("Text 필드에 가드를 걸면 거부")은 이제 거짓이므로 남으면 안 된다."""
+        text = self._read("grammar.md")
+        self.assertIn("`==`/`!=`로만 비교할 수 있다", text)
+        self.assertIn("RFC-0056", text)
+        self.assertIn("`Password` 제외", text)
+        self.assertIn("when order.status == paid", text)
+        self.assertNotIn("`Text` 필드에 가드를 걸면 lowering이 거부한다", text)
+
     def test_step_object_spelling_rule_is_documented(self):
         """t3 F-4/F-6: 다단어 엔티티 참조 불가 + 복수형 불인식."""
         from lnpl.lower import split_pascal
