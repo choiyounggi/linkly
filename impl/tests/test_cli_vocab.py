@@ -15,7 +15,7 @@ import io
 import json
 import unittest
 
-from lnpl import cli
+from lnpl import cli, lexer, wsgi
 from lnpl.diagnostics import CODES
 from lnpl.vocab import vocabulary_document
 
@@ -130,6 +130,38 @@ class TestCliVocab(unittest.TestCase):
         self.assertTrue(
             any(form["id"] == "stored"
                 for form in spec_expectations["given_forms"]))
+
+
+class TestFailVocabulary(unittest.TestCase):
+    """RFC-0058: the `fail` verb and the reserved problem codes it may not
+    reuse."""
+
+    def test_reserved_problem_codes_matches_wsgi_titles_exactly(self):
+        # Both directions: a code added to `_TITLES` without `lexer` would let
+        # `fail <that code>` compile and collide at serve time.
+        self.assertEqual(set(lexer.RESERVED_PROBLEM_CODES),
+                         set(wsgi._TITLES),
+                         "lexer.RESERVED_PROBLEM_CODES has drifted from "
+                         "wsgi._TITLES — update both")
+        self.assertEqual(len(lexer.RESERVED_PROBLEM_CODES),
+                         len(set(lexer.RESERVED_PROBLEM_CODES)))
+
+    def test_every_reserved_code_is_itself_kebab_case(self):
+        for code in lexer.RESERVED_PROBLEM_CODES:
+            self.assertRegex(code, lexer.KEBAB_CODE_RE)
+
+    def test_kebab_code_shape_boundaries(self):
+        for good in ("out-of-stock", "x", "limit-2", "a1-b2-c3"):
+            self.assertRegex(good, lexer.KEBAB_CODE_RE)
+        for bad in ("", "-x", "x-", "a--b", "OutOfStock", "out_of_stock",
+                    "out-of-stock!", "é"):
+            self.assertNotRegex(bad, lexer.KEBAB_CODE_RE)
+
+    def test_vocab_lists_fail_as_the_rejection_verb(self):
+        rc, out, _err = _main(["vocab", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out)["verbs"]["fail"],
+                         {"effect": "Rejection", "attrs": {}})
 
 
 if __name__ == "__main__":

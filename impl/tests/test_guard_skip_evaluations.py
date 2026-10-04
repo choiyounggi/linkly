@@ -279,5 +279,58 @@ class TestEvaluationsAreExcludedFromTheDifferentialProjection(unittest.TestCase)
                            "step": "create order", "rounds": None}])
 
 
+# RFC-0058: issue #206's `Reserve`, with the rejection declared. A `fail`
+# step is a WorkflowStep like any other, so a false guard skips it the way
+# RFC-0014 already skips everything else.
+RESERVE_SRC = """
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+"""
+
+RESERVE_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3306"
+
+
+class TestAFalseGuardSkipsAFailStep(unittest.TestCase):
+
+    def _reserve(self, stock, quantity):
+        payload = {"id": RESERVE_ID, "quantity": quantity}
+        return _run(RESERVE_SRC, payload, workflow="wf.reserve",
+                    entities=("entity.product",),
+                    shaped={"entity.product": {"id": RESERVE_ID,
+                                               "stock": stock}})
+
+    def test_a_false_guard_skips_a_fail_step_exactly_like_any_other(self):
+        _interp, result = self._reserve(stock=5, quantity=1)
+        self.assertEqual("completed", result["status"])
+        self.assertNotIn("failure_kind", result)
+        self.assertEqual(1, len(result["skipped"]))
+        self.assertEqual(["fail out-of-stock"], result["skipped"][0]["steps"])
+        self.assertEqual(["find product", "create order"],
+                         [s["step"] for s in result["steps"]])
+
+    def test_the_boundary_equal_stock_still_skips(self):
+        # `<` is strict: stock == quantity is enough stock.
+        _interp, result = self._reserve(stock=2, quantity=2)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(["fail out-of-stock"], result["skipped"][0]["steps"])
+
+    def test_a_true_guard_reaches_the_fail_step_and_skips_nothing(self):
+        _interp, result = self._reserve(stock=1, quantity=5)
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("rejected", result["failure_kind"])
+        self.assertEqual([], result["skipped"])
+
+
 if __name__ == "__main__":
     unittest.main()

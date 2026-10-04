@@ -33,7 +33,8 @@ from lnpl.lower import lower
 from lnpl.openapi import generate
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows
-from lnpl.wsgi import build_event_consume_routes, make_wsgi_app
+from lnpl.wsgi import (build_event_consume_routes, make_wsgi_app,
+                       map_consume_result)
 
 from tests.test_wsgi_contract import call_wsgi
 
@@ -324,6 +325,70 @@ class TestExecutionOutcomes(unittest.TestCase):
         self.assertEqual(503, status)
         self.assertEqual("event-retry-later", body["code"])
         self.assertEqual("1", headers["Retry-After"])
+
+
+# RFC-0058 / issue #206: a consumer that rejects a business rule with `fail`.
+RESERVE_SRC = """
+capability postgres
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+
+service ShopService
+
+event ReserveRequested
+    consume by Reserve
+
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+"""
+
+EVENTS_PATH_RESERVE = "/-/events/reserve-requested"
+RESERVE_DATA = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c330a"}
+
+
+class TestDeclaredRejectionIsE7(unittest.TestCase):
+    """RFC-0058: a reached `fail` is a permanent rejection (E7) — a redelivery
+    of the identical event rejects identically, so the relay must not retry."""
+
+    def test_a_reached_fail_is_422_event_rejected_without_retry_after(self):
+        app = make_wsgi_app(_doc(RESERVE_SRC))
+        status, headers, body = _post(
+            app, EVENTS_PATH_RESERVE,
+            _envelope(event_type="ReserveRequested",
+                      data=dict(RESERVE_DATA, stock=1, quantity=5)))
+        self.assertEqual(422, status)
+        self.assertEqual("event-rejected", body["code"])
+        self.assertEqual("out-of-stock", body["detail"])
+        self.assertEqual("fail out-of-stock", body["failed_step"])
+        self.assertNotIn("Retry-After", headers)
+
+    def test_a_skipped_fail_is_200(self):
+        app = make_wsgi_app(_doc(RESERVE_SRC))
+        status, _headers, body = _post(
+            app, EVENTS_PATH_RESERVE,
+            _envelope(event_type="ReserveRequested",
+                      data=dict(RESERVE_DATA, stock=5, quantity=5)))
+        self.assertEqual(200, status)
+        self.assertEqual("completed", body["status"])
+
+    def test_the_kind_decides_before_the_failed_step_s_effects(self):
+        # Typed by `failure_kind`, not by the effects list: even a stub whose
+        # failed step carried a transient-looking effect stays permanent.
+        result = {"status": "failed", "failed_step": "s",
+                  "failure_reason": "out-of-stock", "failure_kind": "rejected",
+                  "steps": [{"step": "s", "effects": ["RepositoryCall"]}]}
+        self.assertEqual((422, "event-rejected"), map_consume_result(result))
 
 
 class TestIdempotency(unittest.TestCase):

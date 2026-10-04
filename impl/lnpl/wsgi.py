@@ -792,6 +792,10 @@ def map_result(result):
         return 404, "not-found"                           # M8b
     if result.get("failure_kind") == "write-conflict":
         return 409, "write-conflict"                      # M8c
+    if result.get("failure_kind") == "rejected":
+        # RFC-0058: the author's declared business rejection. 422 for every
+        # code (typed by kind, #113); the problem `code` is the author's.
+        return 422, result["failure_reason"]              # M8e
     return 500, "workflow-failed"                         # M8
 
 
@@ -825,6 +829,9 @@ def map_consume_result(result):
     if result.get("failure_kind") == "conflict":
         return 422, "event-rejected"
     if result.get("failure_kind") == "not-found":
+        return 422, "event-rejected"
+    # RFC-0058: a reached `fail` rejects the identical event identically.
+    if result.get("failure_kind") == "rejected":
         return 422, "event-rejected"
     # issue #201: a version conflict is transient -- a redelivery re-reads
     # and can succeed. Checked by kind, because the step that fails is a
@@ -876,10 +883,11 @@ def problem(status, code, detail, **extras):
 
     `code` is the stable string clients branch on (never the message); extras
     carry the run observables (`correlation_id`, `failed_step`, `skipped`) when
-    a run happened.
+    a run happened. A `fail <code>` code (RFC-0058) is not in `_TITLES` —
+    `lower` refuses every key there — so it takes the generic title.
     """
-    body = {"title": _TITLES[code], "status": status, "code": code,
-            "detail": detail}
+    body = {"title": _TITLES.get(code, "the workflow rejected the request"),
+            "status": status, "code": code, "detail": detail}
     body.update(extras)
     return body
 

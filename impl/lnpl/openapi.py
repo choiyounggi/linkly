@@ -541,6 +541,13 @@ def _operation(wf, service, con, nodes, entities, refined):
                 request_entity = _entity_for_target(effect, entities)
 
     response_schema = _response_schema(steps, nodes, entities, refined)
+    # RFC-0058: the codes a reached `fail` answers 422 with, so a client
+    # generator can branch on them. Absent when the workflow declares none,
+    # which keeps every other operation byte-identical.
+    fail_codes = sorted({nodes[child_id]["code"]
+                         for step in steps
+                         for child_id in step.get("children", [])
+                         if nodes[child_id]["kind"] == "Rejection"})
 
     op = {
         "operationId": "%s_%s" % (_slug(service["name"]).replace("-", "_"),
@@ -567,6 +574,10 @@ def _operation(wf, service, con, nodes, entities, refined):
     if response_schema is not None:
         op["responses"]["200"]["content"] = {
             "application/json": {"schema": response_schema}}
+    if fail_codes:
+        op["responses"]["422"] = {
+            "description": "the workflow rejected the request (RFC-0058): "
+                           "codes %s" % ", ".join(fail_codes)}
     if request_entity is not None:
         op["requestBody"] = {
             "required": True,

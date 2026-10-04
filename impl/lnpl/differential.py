@@ -424,6 +424,11 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "has no compiled evaluator for it (RFC-0056 §Mode B, recorded "
             "exemption); differential comparison is not attempted"
             % workflow_id)
+    if backend.workflow_uses_fail(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses `fail` — mode B has no compiled evaluator for "
+            "it (RFC-0058 §Mode B, recorded exemption); differential "
+            "comparison is not attempted" % workflow_id)
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "

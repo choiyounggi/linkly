@@ -37,6 +37,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | authorize | Authorization | requirement를 **기록만** 한다 — §B의 `security` 항목과 같은 간극 |
 | respond | Response | 목적어가 엔티티명이 아니라 `<binding>.<field>` Reference 목록이다(`respond order.id order.status`). 다른 Effect와 달리 상태를 바꾸지 않는다 — 워크플로가 성공적으로 끝난 시점에 바인딩값을 읽어 `response` 절로 조립할 뿐이다. Password 계열 참조는 컴파일 에러 — 마스킹 chokepoint(#43)를 respond로 우회하는 경로를 막는다. OpenAPI 200 스키마가 이 목록에서 유도된다 — issue #96 |
 | note | Annotation | 목적어가 엔티티명이 아니라 `"<template>" [with <ref>...]`다(`note "picked-tier-{}" with customer.tier`) — `format`의 저장 표현식 파서(`condition._parse_format_rhs`)를 그대로 재사용한다. respond와 같은 이유로 Effect가 아니다: 상태를 바꾸지 않고 현재 span에 구조화 어노테이션 하나를 남길 뿐이다. 참조는 컴파일 타임에 검증하지 않는다 — 미바인딩 참조는 실행 실패가 아니라 값 `null`(관측이 실행을 죽이면 안 된다), Password 계열 값은 `mask_payload` chokepoint(#43)로 마스킹된 채로만 실린다. 워크플로당 16개 초과 시 `note-cap-exceeded` 경고 — issue #111 |
+| fail | Rejection | 목적어가 엔티티명이 아니라 kebab-case 코드 하나다(`fail out-of-stock`). 도달하면 실행이 `failed`로 끝나고 `failure_kind = "rejected"`, `failure_reason` = 그 코드, 앞선 쓰기는 RFC-0032 경계가 롤백한다. `when`/`until` 가드가 소유하지 않는 `fail`(`repeat N` 아래 포함 — 본문이 언제나 실행된다), kebab-case가 아닌 코드, 코드 누락, 코드 뒤 낱말, 서버가 이미 쓰는 problem `code`(`not-found` 등)와 같은 코드는 전부 컴파일 에러다. 재시도하지 않는다. serve는 422 + `code` = 그 코드, `consume by`는 E7(422 `event-rejected`), mode B는 거부 — RFC-0058, issue #206 |
 
 ### 사전 밖 동사
 

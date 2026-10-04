@@ -453,6 +453,69 @@ class TestErrorExpectation(unittest.TestCase):
             run_shop(["valid product"], ["error wobbled"])
 
 
+# RFC-0058 / issue #206: the issue's own spec, with `fail out-of-stock`
+# declared. `expect failed` + `error reason` contract it with no new syntax.
+RESERVE_SPEC_SRC = """entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+    spec
+        given
+%s
+        when
+            reserve
+        expect
+%s
+"""
+
+
+def run_reserve(given, expect):
+    return run_shop_src(RESERVE_SPEC_SRC, given, expect)
+
+
+class TestDeclaredRejectionIsContractable(unittest.TestCase):
+
+    def test_the_issue_spec_passes(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"],
+            ["failed", "error reason out-of-stock",
+             "error step fail out-of-stock"])
+        # one count per expectation line
+        self.assertEqual((3, 0), (passed, failed), lines)
+
+    def test_expecting_completed_on_a_rejection_fails(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"], ["completed"])
+        self.assertEqual((0, 1), (passed, failed), lines)
+
+    def test_a_different_code_does_not_match(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"],
+            ["failed", "error reason over-limit"])
+        self.assertEqual((1, 1), (passed, failed), lines)
+
+    def test_enough_stock_completes_and_no_reason_exists(self):
+        # Boundary: stock == quantity skips the `fail`; asserting a reason on a
+        # run that did not fail must fail, never match vacuously.
+        passed, failed, lines = run_reserve(
+            ["stored product stock 5", "input.quantity 5"], ["completed"])
+        self.assertEqual((1, 0), (passed, failed), lines)
+        passed, failed, lines = run_reserve(
+            ["stored product stock 5", "input.quantity 5"],
+            ["error reason out-of-stock"])
+        self.assertEqual((0, 1), (passed, failed), lines)
+
+
 class TestEffectsExpectation(unittest.TestCase):
     """`effects <N>` — the total observable effect count.
 

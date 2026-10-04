@@ -2317,5 +2317,149 @@ class TestSetOnATextFieldNamesFormat(unittest.TestCase):
         self.assertEqual("order.stock", steps[0]["target"])
 
 
+# RFC-0058: the issue #206 `Reserve` program, with the business rejection
+# written where the author means it.
+FAIL_MODULE = """
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+%s
+    create order
+"""
+
+GUARDED_FAIL = "    when product.stock < input.quantity\n    fail %s"
+
+
+def fail_ir(body):
+    return ir(FAIL_MODULE % body)
+
+
+class TestFailVerbLowering(unittest.TestCase):
+    """RFC-0058: `fail <kebab-code>` lowers to a WorkflowStep with exactly one
+    `Rejection` child carrying the code; every malformed code, and a `fail`
+    no guard owns, is a compile error naming the rule."""
+
+    def _rejections(self, doc):
+        return [n for n in doc["nodes"] if n["kind"] == "Rejection"]
+
+    def test_guarded_fail_lowers_to_one_rejection_with_the_code(self):
+        doc = fail_ir(GUARDED_FAIL % "out-of-stock")
+        nodes = by_id(doc)
+        [rejection] = self._rejections(doc)
+        self.assertEqual("out-of-stock", rejection["code"])
+        self.assertEqual({"kind", "id", "code", "line"}, set(rejection))
+        step = nodes[rejection["id"].rsplit(".", 1)[0]]
+        self.assertEqual("WorkflowStep", step["kind"])
+        self.assertEqual("fail out-of-stock", step["name"])
+        self.assertEqual([rejection["id"]], step["children"])
+        self.assertTrue(rejection["id"].endswith(".reject"))
+
+    def test_the_lowered_document_validates_against_the_ir_schema(self):
+        import jsonschema
+        with open(os.path.join(REPO_ROOT, "schemas", "lir.schema.json"),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        jsonschema.validate(fail_ir(GUARDED_FAIL % "out-of-stock"), schema)
+
+    def test_a_rejection_without_a_code_violates_the_ir_schema(self):
+        import jsonschema
+        with open(os.path.join(REPO_ROOT, "schemas", "lir.schema.json"),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        doc = fail_ir(GUARDED_FAIL % "out-of-stock")
+        self._rejections(doc)[0].pop("code")
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(doc, schema)
+
+    def test_a_single_character_code_is_kebab_case(self):
+        [rejection] = self._rejections(fail_ir(GUARDED_FAIL % "x"))
+        self.assertEqual("x", rejection["code"])
+
+    def test_a_non_kebab_code_is_refused(self):
+        for code in ("OutOfStock", "out_of_stock", "-out", "out-", "out--of",
+                     "out-of-stock!"):
+            with self.subTest(code=code):
+                with self.assertRaises(LowerError) as ctx:
+                    fail_ir(GUARDED_FAIL % code)
+                self.assertIn("kebab-case", str(ctx.exception))
+                self.assertIn(code, str(ctx.exception))
+
+    def test_a_bare_fail_without_a_code_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    when product.stock < input.quantity\n    fail")
+        self.assertIn("needs a kebab-case code", str(ctx.exception))
+
+    def test_trailing_words_after_the_code_are_refused(self):
+        # Same rule `create order because reasons` already follows: words the
+        # compiler would not act on are an error, never a silent no-op.
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir(GUARDED_FAIL % "out-of-stock because empty")
+        self.assertIn("one code", str(ctx.exception))
+        self.assertIn("because", str(ctx.exception))
+
+    def test_every_reserved_problem_code_is_refused(self):
+        from lnpl.lexer import RESERVED_PROBLEM_CODES
+        for code in RESERVED_PROBLEM_CODES:
+            with self.subTest(code=code):
+                with self.assertRaises(LowerError) as ctx:
+                    fail_ir(GUARDED_FAIL % code)
+                self.assertIn("reserved problem code", str(ctx.exception))
+
+    def test_an_unguarded_fail_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    fail out-of-stock")
+        msg = str(ctx.exception)
+        self.assertIn("not guarded", msg)
+        self.assertIn("Reserve", msg)
+        self.assertIn("RFC-0058", msg)
+
+    def test_a_fail_under_repeat_is_refused(self):
+        # `repeat N` runs its body at least once, so it cannot be false: the
+        # `fail` would end every run failed, same as no guard at all.
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    repeat 2\n    fail out-of-stock")
+        self.assertIn("not guarded", str(ctx.exception))
+
+    def test_a_fail_under_until_is_guarded(self):
+        # `until` can run zero rounds (RFC-0014 example 2), so it can skip.
+        doc = fail_ir("    until product.stock < input.quantity\n"
+                      "    fail out-of-stock")
+        self.assertEqual(["out-of-stock"],
+                         [n["code"] for n in self._rejections(doc)])
+
+    def test_a_fail_inside_a_guarded_block_is_guarded(self):
+        doc = fail_ir("    when product.stock < input.quantity\n"
+                      "    parallel\n"
+                      "        note \"rejecting\"\n"
+                      "        fail out-of-stock\n"
+                      "    merge")
+        self.assertEqual(["out-of-stock"],
+                         [n["code"] for n in self._rejections(doc)])
+
+    def test_a_fail_inside_an_unguarded_block_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            fail_ir("    parallel\n"
+                    "        fail out-of-stock\n"
+                    "    merge")
+        self.assertIn("not guarded", str(ctx.exception))
+
+    def test_fail_is_no_longer_an_unknown_verb(self):
+        doc = lower(parse(FAIL_MODULE % (GUARDED_FAIL % "out-of-stock")), "t")
+        self.assertEqual([], list(doc.diagnostics.by_code("unknown-verb")))
+
+    def test_a_workflow_without_fail_lowers_with_no_rejection(self):
+        doc = fail_ir("    when product.stock < input.quantity\n"
+                      "    note \"short\"")
+        self.assertEqual([], self._rejections(doc))
+
+
 if __name__ == "__main__":
     unittest.main()

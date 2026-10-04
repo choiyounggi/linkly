@@ -1239,5 +1239,59 @@ class TestOptionalFields(unittest.TestCase):
             generate(doc)
 
 
+# RFC-0058: two declared rejections in one workflow, plus a sibling workflow
+# that declares none.
+FAIL_SRC = """
+entity Product
+    field
+        id UUID
+        stock Integer
+        limit Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    when product.limit < input.quantity
+    fail over-limit
+    when product.limit < 1
+    fail out-of-stock
+    create order
+workflow Browse
+    find product
+"""
+
+
+class TestDeclaredFailureCodes(unittest.TestCase):
+    """RFC-0058: an operation whose workflow can reach `fail` lists its codes
+    under a 422 response; any other operation is unchanged."""
+
+    def setUp(self):
+        self.paths = spec_for(FAIL_SRC)["paths"]
+
+    def test_the_422_response_names_every_declared_code_once_sorted(self):
+        responses = self.paths["/shop-service/reserve"]["post"]["responses"]
+        description = responses["422"]["description"]
+        self.assertIn("RFC-0058", description)
+        self.assertTrue(description.endswith("codes out-of-stock, over-limit"),
+                        description)
+
+    def test_an_operation_without_fail_has_no_422(self):
+        responses = self.paths["/shop-service/browse"]["post"]["responses"]
+        self.assertNotIn("422", responses)
+        self.assertEqual({"200", "400", "404", "409", "412", "504"},
+                         set(responses))
+
+    def test_a_document_without_fail_has_no_422_anywhere(self):
+        for path, item in spec_for()["paths"].items():
+            for method, op in item.items():
+                with self.subTest(path=path, method=method):
+                    self.assertNotIn("422", op.get("responses", {}))
+
+
 if __name__ == "__main__":
     unittest.main()
