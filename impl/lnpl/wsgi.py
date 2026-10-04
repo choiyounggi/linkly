@@ -790,6 +790,8 @@ def map_result(result):
         return 409, "conflict"                            # M8a
     if result.get("failure_kind") == "not-found":
         return 404, "not-found"                           # M8b
+    if result.get("failure_kind") == "write-conflict":
+        return 409, "write-conflict"                      # M8c
     return 500, "workflow-failed"                         # M8
 
 
@@ -824,6 +826,12 @@ def map_consume_result(result):
         return 422, "event-rejected"
     if result.get("failure_kind") == "not-found":
         return 422, "event-rejected"
+    # issue #201: a version conflict is transient -- a redelivery re-reads
+    # and can succeed. Checked by kind, because the step that fails is a
+    # `set`, whose effect is `Assignment`, not `RepositoryCall`, so the
+    # effects-based branch below would call it permanent.
+    if result.get("failure_kind") == "write-conflict":
+        return 503, "event-retry-later"
     failed = result["failed_step"]
     for entry in result["steps"]:
         if entry["step"] == failed:
@@ -841,6 +849,7 @@ _TITLES = {
     "auth-invalid": "authorization token rejected",
     "forbidden": "the caller's role does not permit this",
     "conflict": "the request conflicts with the current state of the target resource",
+    "write-conflict": "a concurrent write changed the row since it was read -- retry is safe",
     "idempotency-in-progress": "a request with this Idempotency-Key is already running",
     "precondition-failed": "the If-Match version no longer matches the stored row",
     "precondition-invalid": "the If-Match header value is not a recognized ETag",

@@ -551,7 +551,7 @@ def _operation(wf, service, con, nodes, entities, refined):
             "200": {"description": "the workflow completed"},
             "400": {"description": "validation failed"},
             "404": {"description": "a workflow read found no row for the entity it looked up (not-found) -- issue #197"},
-            "409": {"description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"},
+            "409": {"description": "a repository create conflicted with an existing row (conflict), another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113, or an optimistic-version write conflict (write-conflict) -- issue #201"},
             "412": {"description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"},
             "504": {"description": "the workflow deadline was exceeded"},
         },

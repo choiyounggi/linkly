@@ -135,9 +135,13 @@ UPDATE lnpl_rows
 ```
 
 영향받은 행이 0이면 읽은 뒤 누군가 먼저 썼다는 뜻이다 — 조용히 덮어쓰는 대신
-`DriverError("write conflict: row changed since read ...")`를 내고, 이는 다른
+`WriteConflictError("write conflict: row changed since read ...")`를 내고, 이는 다른
 드라이버 오류와 같은 경로로 `RunError`가 되어 평범한 실패 실행이 된다(`status:
-failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프로세스
+failed`, `failure_kind: "write-conflict"`, 이슈 #201). `WriteConflictError`는
+`DriverError`의 하위 타입이고 create 충돌의 `ConflictError`와는 형제다(서로의 하위
+타입이 아니다). 외부 드라이버는 `lnpl.drivers`에서 이 타입을 가져와 내는 것으로
+옵트인한다 — 평범한 `DriverError`를 내는 드라이버는 문구가 같아도 종전대로 분류
+없는 실패다. fake 드라이버는 단일 프로세스
 인메모리라 이 충돌이 존재할 수 없으므로 `persist()`가 그대로 no-op이다.
 
 **충돌이 났을 때 누가 재시도하는가.** 한 `WorkflowStep`은 소스 한 줄이라
@@ -147,9 +151,15 @@ failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프
 처음부터 다시 읽는다. `policy retry`가 이미 이 효과들을 멱등으로 선언하므로
 (RFC-0003 §Policy Enforcement) 그 호출을 다시 하는 것은 안전하다 — 아무것도
 반영되지 않았으니 중복이 아니고, 선언된 재시도 예산이 몇 번까지 안전한지도 이미
-정해져 있다. 새 개념이 아니라 기존 계약을 그대로 다시 쓰는 것이다. 서빙 표면에서
-409로 매핑하는 것은 이 이슈의 범위 밖이며 `serve.py`는 손대지 않는다 — 후속
-이슈의 몫이다.
+정해져 있다. 새 개념이 아니라 기존 계약을 그대로 다시 쓰는 것이다. 서빙 표면은
+이 실패를 409 `write-conflict`로 답한다(`docs/serving.md` M8c, 이벤트 소비 경로는
+E6의 503) — 재시도는 클라이언트가 워크플로 전체를 다시 부르는 것이다.
+**`policy retry`만으로는 이 충돌에서 복구되지 않는다**: 선언된 예산은 실패한 `set`
+스텝을 같은 낡은 읽기로 다시 시도할 뿐이라(`retry 3`이면 쓰기 4번이 모두 충돌)
+한 번의 `run_workflow` 호출은 예산을 다 쓰고 실패한다 —
+`impl/tests/test_driver_concurrency.py`의
+`test_a_declared_retry_budget_does_not_by_itself_rerun_the_whole_workflow`가 이를
+고정한다.
 
 ### 시드와 flush
 
@@ -429,7 +439,10 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 — 구체 클래스가 `unittest.TestCase`와 다중 상속해야 한다. 검증 항목: 읽기·
 쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, 그리고 읽은 행이
 `observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
-#92 — 이 속성이 없으면 이 케이스는 스킵된다).
+#92), 그리고 그 충돌이 `WriteConflictError` 타입인지(이슈 #201) — 이 속성이 없으면
+두 케이스 모두 스킵된다. `observed_version`을 내면서 충돌에 평범한 `DriverError`를
+내던 외부 드라이버는 이 두 번째 케이스에서 실패하므로, `lnpl.drivers`의
+`WriteConflictError`를 내도록 바꿔야 한다.
 
 **`begin`/`commit`/`rollback`(이슈 #79, RFC-0032) — 이슈 #115로 파괴적 변경됨.**
 전에는 셋이 예외 없이 순서대로 호출 가능한지만 확인했고, 기본 계약이 no-op을

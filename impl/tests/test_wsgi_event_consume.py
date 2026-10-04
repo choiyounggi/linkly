@@ -32,12 +32,34 @@ from lnpl.interp import FakeRepository
 from lnpl.lower import lower
 from lnpl.openapi import generate
 from lnpl.parser import parse
+from lnpl.repo_policy import default_rows
 from lnpl.wsgi import build_event_consume_routes, make_wsgi_app
 
 from tests.test_wsgi_contract import call_wsgi
 
 EVENTS_PATH_VALIDATE = "/-/events/order-validated"
 EVENTS_PATH_CREATE = "/-/events/order-created"
+EVENTS_PATH_ADJUST = "/-/events/order-adjusted"
+
+# Issue #201: a read-then-set consumer, the shape an optimistic-version write
+# conflict needs. Its own document, so `SRC`'s route set stays as it was.
+ADJUST_SRC = """
+capability postgres
+
+entity Order
+    field
+        id UUID
+        amount Integer
+
+service OrderService
+
+event OrderAdjusted
+    consume by AdjustOrder
+
+workflow AdjustOrder
+    read order
+    set order.amount to order.amount + 1
+"""
 
 SRC = """
 capability postgres
@@ -398,6 +420,56 @@ class TestIdempotency(unittest.TestCase):
         self.assertEqual(200, second_status)
         self.assertEqual("completed", second_body["status"])
         self.assertEqual(2, len(attempts))   # genuinely re-ran, not replayed
+
+    def test_a_write_conflict_is_503_and_releases_the_claim(self):
+        """Issue #201: a version conflict on the consume path is transient
+        (E6, 503 `event-retry-later`) and, like the transient case above,
+        RELEASES the claim -- the same CloudEvents id redelivered gets a
+        fresh run that re-reads and succeeds, not a replayed 503."""
+        path = self.path
+        stolen = []
+
+        class _StealsOnce(SqliteRepositoryDriver):
+            def __init__(self):
+                super().__init__(path)
+
+            def execute(self, entity_id, operation, key):
+                row = super().execute(entity_id, operation, key)
+                if operation == "read" and not stolen:
+                    stolen.append(1)
+                    thief = SqliteRepositoryDriver(path)
+                    try:
+                        thief_row = thief.execute(entity_id, operation, key)
+                        thief_row["amount"] = thief_row["amount"] + 100
+                        thief.persist(entity_id, key, thief_row)
+                    finally:
+                        thief.close()
+                return row
+
+        doc = _doc(ADJUST_SRC)
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        payload = {"id": "ord-adj-1", "amount": 1}
+        seeder = SqliteRepositoryDriver(path)
+        seeder.seed(default_rows(doc, target, payload))
+        seeder.close()
+        app = make_wsgi_app(doc, repository_factory=_StealsOnce)
+        envelope = _envelope(event_id="evt-conflict-1",
+                             event_type="OrderAdjusted", data=payload)
+
+        first_status, first_headers, first_body = _post(
+            app, EVENTS_PATH_ADJUST, envelope)
+        second_status, _h2, second_body = _post(app, EVENTS_PATH_ADJUST, envelope)
+
+        self.assertEqual(503, first_status)
+        self.assertEqual("event-retry-later", first_body["code"])
+        self.assertEqual("1", first_headers.get("Retry-After"))
+        self.assertEqual(200, second_status)
+        self.assertEqual("completed", second_body["status"])
+        checker = SqliteRepositoryDriver(path)
+        self.addCleanup(checker.close)
+        # 1 + the thief's 100 + the redelivery's own 1: it re-ran, re-read
+        self.assertEqual(102, checker.execute(
+            "entity.order", "read", "entity.order#ord-adj-1")["amount"])
 
     def test_an_exception_escape_also_releases_the_claim(self):
         """The escape path (an exception `run_workflow` itself does not
