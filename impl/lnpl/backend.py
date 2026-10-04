@@ -759,6 +759,32 @@ def workflow_uses_text_guard(document, workflow_id):
     return _text_guard_offender(document, workflow_id) is not None
 
 
+def _fail_offender(document, workflow_id):
+    """`(step_name, code)` of the first reachable `fail` step (a `Rejection`
+    child, RFC-0058) of `workflow_id`, or None. Raises `BackendError` for an
+    unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if effect is not None and effect["kind"] == "Rejection":
+                return step["name"], effect["code"]
+    return None
+
+
+def workflow_uses_fail(document, workflow_id):
+    """RFC-0058 §Mode B: does `workflow_id` reach a `fail` step anywhere?
+
+    Mode B refuses such a workflow (`emit_mlir`, `build`) — its four
+    observation classes carry no author-declared failure code, so a
+    comparison could only call two different outcomes equivalent.
+    `differential.verify` asks this last, after every guard exemption, so the
+    recorded exemption does not depend on a toolchain. Raises `BackendError`
+    for an unknown workflow.
+    """
+    return _fail_offender(document, workflow_id) is not None
+
+
 def _refuse_unsupported_guards(document, workflow_id):
     """RFC-0051/0052/0055/0056 §Mode B: refuse, by name, a Money-guard,
     lookup-key, optional-field-guard or Text-guard workflow — called by
@@ -767,7 +793,8 @@ def _refuse_unsupported_guards(document, workflow_id):
     messages: reuses `_money_guard_offender`, `_lookup_offender`,
     `_optional_guard_offender` and `_text_guard_offender` verbatim, in the same
     Money-then-Lookup-then-Optional-then-Text order `differential.verify` asks
-    them, so `build` and `diff` cannot drift apart.
+    them, so `build` and `diff` cannot drift apart. A `fail` step (RFC-0058,
+    `_fail_offender`) is refused last, in the same position in both.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here — its refusal in `_render_std` depends on `_lnpl_ops`'s
     seed/payload-truncated ops stream, which a document-level check here
@@ -801,6 +828,12 @@ def _refuse_unsupported_guards(document, workflow_id):
             "step %s: guard %r compares a Text-family field, which mode B has "
             "no compiled evaluator for (RFC-0056 §Mode B, recorded exemption) "
             "— run it in mode A" % (step_name, guard_text))
+    fail_offender = _fail_offender(document, workflow_id)
+    if fail_offender is not None:
+        step_name, code = fail_offender
+        raise BackendError(
+            "step %s: `fail %s` has no compiled evaluator (RFC-0058 §Mode B, "
+            "recorded exemption) — run it in mode A" % (step_name, code))
 
 
 def encode_condition_value(value):

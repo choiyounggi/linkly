@@ -1004,3 +1004,72 @@ class TestTextGuardExemption(unittest.TestCase):
                 self.assertEqual(rc, 4, text)
                 self.assertIn("RFC-0056", text)
                 self.assertNotIn("EQUIVALENT", text)
+
+
+# RFC-0058 §Mode B: mode B refuses a workflow reaching `fail`, in `build` and
+# `diff` alike, after every guard exemption and before any toolchain use.
+def _fail_doc(body):
+    from tests.test_backend import TEXT_GUARD
+    return lower(parse(TEXT_GUARD % body), "shop").to_document(), "wf.cancel"
+
+
+FAIL_BODY = "read order\n    when order.stock < 1\n    fail out-of-stock"
+
+
+class TestFailExemption(unittest.TestCase):
+
+    _workdir = TestLookupKeyExemption._workdir
+    _forbid_tool = TestLookupKeyExemption._forbid_tool
+    _no_toolchain = TestOptionalGuardExemption._no_toolchain
+    _verify = TestOptionalGuardExemption._verify
+    _build_refusal = TestOptionalGuardExemption._build_refusal
+    _diff_refusal = TestOptionalGuardExemption._diff_refusal
+
+    def test_build_refuses_fail_without_toolchain(self):
+        doc, wf = _fail_doc(FAIL_BODY)
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("fail out-of-stock", msg)
+        self.assertIn("RFC-0058", msg)
+
+    def test_diff_refuses_fail_without_toolchain(self):
+        doc, wf = _fail_doc(FAIL_BODY)
+        msg = self._diff_refusal(doc, wf)
+        self.assertIn("`fail`", msg)
+        self.assertIn("RFC-0058", msg)
+
+    def test_diff_with_no_fail_still_diffs(self):
+        doc, wf = _fail_doc("read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_fail(doc, wf))
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def test_build_and_diff_refuse_in_the_same_order(self):
+        # Every guard exemption wins over `fail` in both commands.
+        text = _fail_doc("read order\n    when order.status == paid\n"
+                         "    fail already-paid")
+        optional = _optional_doc("    when customer.nickname exists\n"
+                                 "    fail nickname-taken")
+        for (doc, wf), first in ((text, "RFC-0056"), (optional, "RFC-0055")):
+            with self.subTest(first=first):
+                self.assertTrue(backend.workflow_uses_fail(doc, wf))
+                for msg in (self._build_refusal(doc, wf),
+                            self._diff_refusal(doc, wf)):
+                    self.assertIn(first, msg)
+                    self.assertNotIn("RFC-0058", msg)
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_backend import TEXT_GUARD
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "shop.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(TEXT_GUARD % FAIL_BODY)
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.cancel"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0058", text)
+                self.assertNotIn("EQUIVALENT", text)

@@ -155,6 +155,62 @@ class TransactionBoundaryTest(ContractTestCase):
             "entity.order", "read", "entity.order#y-1"))
 
 
+# RFC-0058: a write, then a declared business rejection. `create order` runs
+# first, so only the existing RFC-0032 boundary can take it back.
+WRITE_THEN_FAIL = """entity Product
+    field
+        id UUID
+        stock Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+
+workflow Reserve
+    find product
+    create order
+    when product.stock < input.quantity
+    fail out-of-stock
+"""
+
+
+class RejectionRollbackTest(ContractTestCase):
+    """RFC-0058: reaching `fail` ends the run failed, so RFC-0032 rolls the
+    run's earlier writes back — the same boundary, no new code path."""
+
+    def _reserve(self, backend, quantity):
+        repository = self._repository(backend)
+        repository.seed({"entity.product":
+                         {"entity.product#r-1": {"id": "r-1", "stock": 2}}})
+        result, _ = self.execute(WRITE_THEN_FAIL,
+                                 {"id": "r-1", "quantity": quantity}, backend,
+                                 seed=False, repository=repository)
+        order = repository.execute("entity.order", "read", "entity.order#r-1")
+        return result, order
+
+    def test_a_reached_fail_discards_the_earlier_create_on_both_backends(self):
+        """에러: `create order`가 성공한 뒤 `fail`에 도달하면 order 행이
+        남지 않는다."""
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                result, order = self._reserve(backend, quantity=5)
+                self.assertEqual("failed", result["status"])
+                self.assertEqual("rejected", result["failure_kind"])
+                self.assertEqual("out-of-stock", result["failure_reason"])
+                self.assertEqual("fail out-of-stock", result["failed_step"])
+                self.assertIsNone(order)
+
+    def test_a_skipped_fail_commits_the_create(self):
+        """정상(양성 대조): 가드가 거짓이면 같은 create가 커밋된다 — 위 테스트의
+        None이 '애초에 안 써졌다'가 아니라 롤백임을 보인다."""
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                result, order = self._reserve(backend, quantity=2)
+                self.assertEqual("completed", result["status"])
+                self.assertIsNotNone(order)
+
+
 class OutboxTransactionalTest(ContractTestCase):
     """RFC-0032 §Reference-level Specification (EventEmit 행) + issue #102
     이월: 실패한 실행의 emission은 `lnpl_outbox`에 잔존하지 않는다."""

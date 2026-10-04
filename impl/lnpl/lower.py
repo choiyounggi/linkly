@@ -24,8 +24,8 @@ import os
 import re
 
 from .diagnostics import ENFORCED, ENFORCEMENT, Diagnostics
-from .lexer import (COMPARATORS, SCHEDULE_RECURRENCES, SCHEDULE_ZONES,
-                    is_duration)
+from .lexer import (COMPARATORS, KEBAB_CODE_RE, RESERVED_PROBLEM_CODES,
+                    SCHEDULE_RECURRENCES, SCHEDULE_ZONES, is_duration)
 from .parser import parse
 from .refinements import (BASE_CATEGORY, FACET_NAMES, PRESETS, facets_for_base,
                           preset)
@@ -68,6 +68,7 @@ EFFECT_SLUG = {
     "BusinessRule": "rule",
     "Response": "respond",
     "Annotation": "note",
+    "Rejection": "reject",
 }
 
 # The one verb whose object is a value expression rather than an entity name
@@ -97,6 +98,14 @@ RESPOND_VERB = "respond"
 # template + reference list, not an entity name, so `_WfContext._step` sends
 # it to its own derivation (`_derive_note`) rather than `_derive_effect`.
 NOTE_VERB = "note"
+
+# RFC-0058: `fail <kebab-code>` — ends the run failed with the author's code
+# (a business rejection, issue #206). Routed the same way `NOTE_VERB` is: its
+# object is a compile-time code literal, not an entity name, so
+# `_WfContext._step` sends it to its own derivation (`_derive_fail`) rather
+# than `_derive_effect`. Nothing is written, so it gets its own IR node kind,
+# `Rejection`.
+FAIL_VERB = "fail"
 
 # issue #111, D3: more than this many `note`s in one workflow is a
 # `note-cap-exceeded` compile warning — "log what earns its place" enforced
@@ -140,6 +149,9 @@ VERB_LEXICON = {
     # issue #111: see `NOTE_VERB` — a span annotation, not an Effect, gets
     # its own kind for the same reason `respond` does.
     "note": ("Annotation", {}),
+    # RFC-0058: see `FAIL_VERB` — a declared business rejection, its own kind
+    # for the same reason `respond`/`note` have theirs.
+    "fail": ("Rejection", {}),
 }
 
 # RFC-0026: `unknown-verb`'s did-you-mean, tier 1. The closed lexicon's actual
@@ -1525,6 +1537,7 @@ def lower(decls, module_name):
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
         _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
                            mod.diagnostics, d.name)
+        _check_fail_is_guarded(ctx.emitted, top_ids, d.name)
         _check_guard_scoped_binding_reads(ctx.emitted, top_ids, d.name,
                                           mod.diagnostics)
         _check_optional_unguarded_arithmetic(ctx.emitted, top_ids, registry,
@@ -1667,6 +1680,8 @@ class _WfContext:
                 namespace=self.namespace)
         elif verb == NOTE_VERB:
             derived = _derive_note(step_id, line)
+        elif verb == FAIL_VERB:
+            derived = _derive_fail(step_id, line)
         else:
             derived = _derive_effect(step_id, verb, obj, self.registry,
                                      line.lineno, line.tokens[2:],
@@ -4015,6 +4030,52 @@ def _derive_note(step_id, line):
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Annotation"])
     return _node("Annotation", eid, template=fmt.template,
                  refs=[ref.name for ref in fmt.args], line=line.lineno)
+
+
+def _derive_fail(step_id, line):
+    """RFC-0058: `fail <code>` -> a Rejection node. The code is a compile-time
+    kebab-case literal (`KEBAB_CODE_RE`) that must not reuse a problem `code`
+    the server already answers with (`RESERVED_PROBLEM_CODES`) — a client
+    branching on `code` could not tell the two apart. Exactly one code: a
+    trailing word is refused, the rule `create`'s trailing words follow."""
+    if len(line.tokens) < 2:
+        raise LowerError("line %d: `fail` needs a kebab-case code "
+                         "(e.g. `fail out-of-stock`) (RFC-0058)" % line.lineno)
+    code = line.tokens[1]
+    if len(line.tokens) > 2:
+        raise LowerError("line %d: `fail` takes one code, got trailing %r "
+                         "after %r (RFC-0058)"
+                         % (line.lineno, tuple(line.tokens[2:]), code))
+    if not KEBAB_CODE_RE.match(code):
+        raise LowerError("line %d: `fail %s` — the code must be kebab-case "
+                         "(lowercase letters/digits, hyphen-separated, e.g. "
+                         "`out-of-stock`) (RFC-0058)" % (line.lineno, code))
+    if code in RESERVED_PROBLEM_CODES:
+        raise LowerError("line %d: `fail %s` collides with the reserved "
+                         "problem code %r — pick a different code (RFC-0058)"
+                         % (line.lineno, code, code))
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Rejection"])
+    return _node("Rejection", eid, code=code, line=line.lineno)
+
+
+def _check_fail_is_guarded(emitted, top_ids, workflow_name):
+    """RFC-0058: an unconditional `fail` would end every run of this workflow
+    failed — a compile error, not a warning, because no edit short of deleting
+    the step or guarding it removes the defect. Only a `when`/`until` guard
+    can skip its body; `repeat N` (N >= 1) always runs it, so a `fail` it owns
+    is as unconditional as one at the top level."""
+    by_id = {n["id"]: n for n in emitted}
+    owner = _guard_owner_map(top_ids, by_id)
+    for node in emitted:
+        if node["kind"] != "Rejection":
+            continue
+        guard = owner.get(node["id"])
+        if guard is None or guard.get("mode") == "repeat":
+            raise LowerError(
+                "workflow %s: `fail %s` (line %d) is not guarded by a `when`/"
+                "`until` — an unconditional `fail` would end every run "
+                "failed (RFC-0058)"
+                % (workflow_name, node["code"], node["line"]))
 
 
 def _check_internal_visibility(entity, namespace, lineno, verb, obj):

@@ -495,6 +495,44 @@ workflow W
             backend.workflow_uses_text_guard(doc, "wf.nope")
 
 
+class TestModeBRefusesFail(unittest.TestCase):
+    """RFC-0058 §Mode B: a declared business rejection has no compiled
+    evaluator, so a workflow reaching `fail` is refused by name, after every
+    guard exemption (Money, lookup, optional, Text)."""
+
+    FAIL_BODY = "read order\n    when order.stock < 1\n    fail out-of-stock"
+
+    def test_emit_mlir_refuses_fail_citing_rfc_0058(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        msg = str(ctx.exception)
+        self.assertIn("fail out-of-stock", msg)
+        self.assertIn("RFC-0058", msg)
+        self.assertIn("mode A", msg)
+
+    def test_workflow_uses_fail_detects_only_a_fail_step(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        doc, wf = _predicate_doc(TEXT_GUARD % "read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_fail(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_a_text_guard_is_refused_before_fail(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % (
+            "read order\n    when order.status == paid\n    fail already-paid"))
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertIn("RFC-0056", str(ctx.exception))
+        self.assertNotIn("RFC-0058", str(ctx.exception))
+
+    def test_workflow_uses_fail_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_fail(doc, "wf.nope")
+
+
 @NEEDS_TOOLS
 class TestNativeBuild(unittest.TestCase):
     def setUp(self):

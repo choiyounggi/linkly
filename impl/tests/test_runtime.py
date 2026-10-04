@@ -100,6 +100,32 @@ class TestPolicyEnforcement(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(failed["attempts"], 1, "a non-idempotent effect was retried")
 
+    def test_a_reached_fail_is_never_retried(self):
+        # RFC-0058: the guard already held against this run's bindings, so a
+        # retry would reject identically — `retry 3` must not replay it.
+        src = """
+entity Product
+    field
+        id UUID
+        stock Integer
+service ShopService
+    policy
+        retry 3
+workflow Reserve
+    find product
+    when product.stock < 1
+    fail out-of-stock
+"""
+        doc = lower(parse(src), "shop").to_document()
+        payload = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3307"}
+        interp = Interpreter(doc, repo_rows={"entity.product": {
+            row_key("entity.product", payload): dict(payload, stock=0)}})
+        result = interp.run_workflow("wf.reserve", payload)
+        failed = [s for s in result["steps"] if s["step"] == "fail out-of-stock"][0]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_kind"], "rejected")
+        self.assertEqual(failed["attempts"], 1, "a reached `fail` was retried")
+
     def test_an_idempotent_effect_under_the_same_policy_is_retried(self):
         # The contrast that makes the assertion above meaningful: same `retry 3`,
         # same failure shape, but a read is idempotent so it *is* replayed.

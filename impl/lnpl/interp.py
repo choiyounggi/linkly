@@ -2488,6 +2488,16 @@ class Interpreter:
             # `bindings` still holds THIS step's values, not a later step's
             # overwrite), which is why nothing runs here.
             pass
+        elif kind == "Rejection":
+            # RFC-0058: the author's declared business rejection. The code is
+            # the reason, and `failure_kind` rides the exception the same way
+            # `not_found.failure_kind` does above, so `run_workflow` types the
+            # failure without reading its wording. Rollback needs no code
+            # here: RFC-0032's boundary already discards a failed run.
+            child.attrs["code"] = effect["code"]
+            rejected = RunError(effect["code"])
+            rejected.failure_kind = "rejected"
+            raise rejected
         else:
             raise RunError("Phase 1 interpreter does not execute %s" % kind)
 
@@ -2521,6 +2531,9 @@ class Interpreter:
             if eff["kind"] in ("RepositoryCall", "CacheAccess") and key not in IDEMPOTENT_OPS:
                 return False
             if eff["kind"] in ("NetworkCall", "EventEmit"):
+                return False
+            # RFC-0058: a reached `fail` rejects identically on every attempt.
+            if eff["kind"] == "Rejection":
                 return False
         return True
 
