@@ -920,3 +920,87 @@ class TestOptionalGuardExemption(unittest.TestCase):
                 self.assertEqual(rc, 4, text)
                 self.assertIn("RFC-0055", text)
                 self.assertNotIn("EQUIVALENT", text)
+
+
+# RFC-0056 §Mode B: mode B refuses a guard comparing a Text-family field, in
+# `build` and `diff` alike, LAST among the guard exemptions and before any
+# toolchain use.
+def _text_doc(body):
+    from tests.test_backend import TEXT_GUARD
+    return lower(parse(TEXT_GUARD % body), "shop").to_document(), "wf.cancel"
+
+
+class TestTextGuardExemption(unittest.TestCase):
+
+    _workdir = TestLookupKeyExemption._workdir
+    _forbid_tool = TestLookupKeyExemption._forbid_tool
+    _no_toolchain = TestOptionalGuardExemption._no_toolchain
+    _verify = TestOptionalGuardExemption._verify
+    _build_refusal = TestOptionalGuardExemption._build_refusal
+    _diff_refusal = TestOptionalGuardExemption._diff_refusal
+
+    def test_a_text_guard_is_detected(self):
+        doc, wf = _text_doc("read order\n    when order.status == input.expected")
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_a_text_guard_through_create_as_alias_is_detected(self):
+        doc, wf = _text_doc("create order as fresh\n    when fresh.status != paid")
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_a_workflow_with_no_text_guard_is_not_detected(self):
+        doc, wf = _text_doc("read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_build_refuses_text_equality_without_toolchain(self):
+        doc, wf = _text_doc("read order\n    when order.status == paid")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("order.status == paid", msg)
+        self.assertIn("RFC-0056", msg)
+
+    def test_diff_refuses_text_equality_without_toolchain(self):
+        doc, wf = _text_doc("read order\n    when order.status == paid")
+        msg = self._diff_refusal(doc, wf)
+        self.assertIn("Text-family", msg)
+        self.assertIn("RFC-0056", msg)
+
+    def test_diff_with_no_text_guard_still_diffs(self):
+        doc, wf = _text_doc("read order\n    when order.stock > 0")
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def test_build_and_diff_refuse_in_the_same_order(self):
+        # The earlier exemptions win in both commands: optional (RFC-0055),
+        # lookup (RFC-0052), then text (RFC-0056) last.
+        optional = lower(parse(OPTIONAL_MODE_B % (
+            "", "", "    when customer.nickname == input.nickname\n"
+                    "    create order")), "crm").to_document()
+        from tests.test_backend import LOOKUP_MODULE
+        lookup = lower(parse(LOOKUP_MODULE % (
+            "    find stock by input.productId\n"
+            "    when stock.productId == p1\n    find stock")),
+            "orders").to_document()
+        for doc, wf, first in ((optional, "wf.greet", "RFC-0055"),
+                               (lookup, "wf.restock", "RFC-0052")):
+            with self.subTest(first=first):
+                self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+                for msg in (self._build_refusal(doc, wf),
+                            self._diff_refusal(doc, wf)):
+                    self.assertIn(first, msg)
+                    self.assertNotIn("RFC-0056", msg)
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_backend import TEXT_GUARD
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "shop.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(TEXT_GUARD % "read order\n    when order.status == paid")
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.cancel"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0056", text)
+                self.assertNotIn("EQUIVALENT", text)

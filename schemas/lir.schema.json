@@ -878,6 +878,15 @@
               },
               "minItems": 1
             },
+            "textEqualityOperands": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
             "children": {
               "$ref": "#/$defs/nodeIdArray"
             }

@@ -222,6 +222,12 @@ HTTP_IDEMPOTENT_METHODS = ("get", "put", "delete")
 EXPOSE_VERBS = ("list",)
 EXPOSE_SORT_BASES = ("Integer", "DateTime")
 
+TEXT_EQUALITY_OPS = ("==", "!=")
+# RFC-0056: a guard's `==`/`!=` opens BASE_CATEGORY "text" minus DateTime (it
+# has its own dimension already) minus Password (RFC-0001 masking mandate — a
+# skip record would otherwise carry its raw value unmasked).
+TEXT_EQUALITY_EXCLUDED_BASES = ("DateTime", "Password")
+
 
 class LowerError(Exception):
     """Raised when a declaration cannot be lowered to IR."""
@@ -1430,6 +1436,10 @@ def lower(decls, module_name):
 
     for n in refine_nodes:
         mod.add(n)
+    # RFC-0056: refinement name -> its enum members — a guard equality's
+    # bare-name literal is checked against this.
+    enum_of = {n["name"]: tuple(n["facets"]["enum"])
+               for n in refine_nodes if "enum" in n.get("facets", {})}
 
     for n in service_nodes:
         mod.add(n)
@@ -1510,7 +1520,8 @@ def lower(decls, module_name):
         emits_by_workflow[wid] = {node["event"] for node in ctx.emitted
                                   if node["kind"] == "EventEmit"}
         _check_scoped_conditions(ctx.emitted, registry, d.name, base_of,
-                                 top_ids, diagnostics=mod.diagnostics)
+                                 top_ids, diagnostics=mod.diagnostics,
+                                 enum_of=enum_of)
         _check_event_refs(ctx.emitted, declared_event_ids, d.name)
         _check_guard_scope(ctx.emitted, top_ids, ctx.step_lines, registry,
                            mod.diagnostics, d.name)
@@ -1646,7 +1657,7 @@ class _WfContext:
         if verb == ASSIGN_VERB:
             derived = _derive_assignment(
                 step_id, line, self._registry_with_create_bindings(),
-                namespace=self.namespace)
+                namespace=self.namespace, base_of=self.base_of)
         elif verb == FORMAT_VERB:
             derived = _derive_format(
                 step_id, line, self._registry_with_create_bindings())
@@ -2402,7 +2413,7 @@ def _check_rollback_escapes_network(emitted, workflow_name, has_rollback, diagno
 
 
 def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
-                             top_ids=None, diagnostics=None):
+                             top_ids=None, diagnostics=None, enum_of=None):
     """Refuse a guard reference that can never resolve, or can never be compared.
 
     Five judgements, all decidable from the document alone (RFC-0012 §G12.5,
@@ -2463,7 +2474,7 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                        and node.get("result")}
     scope = _Scope(workflow_name, by_binding, read_entities, declared_fields,
                    base_of or {}, network_bindings, create_bindings,
-                   registry=registry)
+                   registry=registry, enum_of=enum_of)
     by_id = {node["id"]: node for node in emitted}
     owner = _guard_owner_map(top_ids or [], by_id)
     # issue #204: (binding, field) -> set of guard-scope keys a `set`/`format`
@@ -2574,6 +2585,15 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                             % text,
                                     line=line)
                         else:
+                            target_field = scope.resolve_field(
+                                child["target"], text, ASSIGN_SUBJECT,
+                                is_target=True)
+                            if target_field is not None and scope.base_of.get(
+                                    target_field.get("type"),
+                                    target_field.get("type")) == "Text":
+                                raise _set_text_refusal(
+                                    "workflow %s" % workflow_name, text,
+                                    child["target"], target_field.get("type"))
                             target_dim = scope.check_reference(
                                 child["target"], text, ASSIGN_SUBJECT,
                                 is_target=True)
@@ -2932,9 +2952,17 @@ def _check_guard(node, scope, assigned, workflow_name, parse_condition,
     text = node.get("condition")
     if not text:
         return                            # `repeat` carries a count, not a condition
+    # RFC-0056: the operand names of each text's Text-equality terms, aligned
+    # with (condition,) + alternatives. Recorded on the node only when some
+    # text uses one, so every other guard's IR is unchanged.
+    per_text_names = []
     for one_text in (text,) + tuple(node.get("alternatives") or ()):
-        _check_one_condition(one_text, scope, assigned, workflow_name,
-                             parse_condition, references, ConditionError, Lit)
+        names = _check_one_condition(one_text, scope, assigned, workflow_name,
+                                     parse_condition, references, ConditionError,
+                                     Lit)
+        per_text_names.append(sorted(set(names or ())))
+    if any(per_text_names):
+        node["textEqualityOperands"] = per_text_names
 
 
 def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
@@ -2947,9 +2975,11 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
         return
     from .condition import Presence
     _check_input_presence_consistency(cond, scope, text, workflow_name)
+    text_eq_refs = _text_equality_operand_names(cond)
 
     for name in references(cond):
-        scope.check_reference(name, text, presence=isinstance(cond, Presence))
+        scope.check_reference(name, text, presence=isinstance(cond, Presence),
+                              equality=(name in text_eq_refs))
         # RFC-0015: mode B receives every condition field as an i64 parameter
         # fixed at entry, so a guard reading a value an earlier step assigned
         # would compare the pre-assignment number there and the current one
@@ -2972,7 +3002,7 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
         _check_literal_zero_divisor(term.left, where)
         _check_literal_zero_divisor(term.right, where)
 
-    _check_dimensions(cond, scope, text)
+    text_equality_names = _check_dimensions(cond, scope, text)
 
     for pred in _numeric_predicates(cond):
         if scope.check_reference(pred.field, text) == "money":
@@ -2992,6 +3022,7 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
                 "exists/missing check either (RFC-0051 section "
                 "Compatibility)"
                 % (workflow_name, text, pres.field))
+    return text_equality_names
 
 
 def _check_input_presence_consistency(cond, scope, text, workflow_name):
@@ -3024,7 +3055,8 @@ def _check_input_presence_consistency(cond, scope, text, workflow_name):
                                 for e in declaring)), field))
 
 
-def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
+def _value_dimension(value, scope, text, subject=GUARD_SUBJECT,
+                     equality=False):
     """One `Value`'s dimension: `"instant"`, `"scalar"`, `"money"`, or None if
     undecidable.
 
@@ -3041,13 +3073,17 @@ def _value_dimension(value, scope, text, subject=GUARD_SUBJECT):
     RFC-0051: Money ± Money stays Money, Money × scalar (either order — a
     literal is a scalar) stays Money; Money × Money, any division touching
     Money, and Money ± scalar/instant are refused.
+
+    `equality` (RFC-0056) reaches a direct `Ref` operand only — never an
+    `Arith` operand's own references, since Text has no arithmetic.
     """
     from .condition import Arith, Lit, Ref
 
     if isinstance(value, Lit):
         return "scalar"
     if isinstance(value, Ref):
-        return scope.check_reference(value.name, text, subject)
+        return scope.check_reference(value.name, text, subject,
+                                     equality=equality)
     if isinstance(value, Arith):
         left = _value_dimension(value.left, scope, text, subject)
         right = _value_dimension(value.right, scope, text, subject)
@@ -3115,10 +3151,21 @@ def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
     has no evaluator" into the judgement an author can act on: an instant and a
     duration are both i64 underneath, so nothing stops the machine comparing
     them — only the type system does, and it has to say why.
+
+    RFC-0056: a `==`/`!=` term with a Text-family side is judged by
+    `_check_text_equality_term` instead — before the None-skip, since a
+    bare-name literal resolves to None. Returns the operand names of those
+    terms, which `_check_guard` records on the Guard node.
     """
+    text_equality_names = []
     for term in _comparisons(cond):
-        left = _value_dimension(term.left, scope, text, subject)
-        right = _value_dimension(term.right, scope, text, subject)
+        is_eq = term.op in TEXT_EQUALITY_OPS
+        left = _value_dimension(term.left, scope, text, subject, equality=is_eq)
+        right = _value_dimension(term.right, scope, text, subject, equality=is_eq)
+        if left == "text" or right == "text":
+            text_equality_names.extend(_check_text_equality_term(
+                term, left, right, scope, text, subject))
+            continue
         if left is None or right is None:
             continue                      # undecidable from the document alone
         if left != right:
@@ -3131,6 +3178,93 @@ def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
                 "compare that to a duration such as `30d`%s"
                 % (scope.workflow_name, text, _describe(term.left), left,
                    _describe(term.right), right, extra))
+    return tuple(text_equality_names)
+
+
+def _text_equality_operand_names(cond):
+    """Reference names that are a DIRECT (non-Arith) operand of an `==`/`!=`
+    Comparison term of `cond` (RFC-0056) — the names the per-reference loop of
+    `_check_one_condition` checks with `equality=True`. A reference inside an
+    Arith operand is never one: Text has no arithmetic."""
+    from .condition import Ref
+    names = set()
+    for term in _comparisons(cond):
+        if term.op not in TEXT_EQUALITY_OPS:
+            continue
+        for operand in (term.left, term.right):
+            if isinstance(operand, Ref):
+                names.add(operand.name)
+    return names
+
+
+def _text_operand_type(operand, scope, text, subject=GUARD_SUBJECT):
+    """`(declared_type_name, enum_members_or_None)` for an equality operand
+    that resolves to a declared field, or `(None, None)` for a bare-name
+    literal or an operand the document cannot see (RFC-0056)."""
+    from .condition import Ref
+    if not isinstance(operand, Ref) or operand.namespace is None:
+        return None, None
+    field_node = scope.resolve_field(operand.name, text, subject)
+    if field_node is None:
+        return None, None
+    declared = field_node.get("type")
+    return declared, scope.enum_of.get(declared)
+
+
+def _check_enum_literal(operand, other_type, other_enum, scope, text):
+    """RFC-0056 + RFC-0011: a bare-name literal compared with a field whose
+    declared type is an enum refinement must name one of its members."""
+    from .condition import Ref
+    if other_enum is None or not (isinstance(operand, Ref)
+                                  and operand.namespace is None):
+        return
+    literal = operand.name
+    if literal in other_enum:
+        return
+    close = difflib.get_close_matches(literal, other_enum, n=1, cutoff=0.6)
+    suggestion = " — did you mean %r?" % close[0] if close else ""
+    raise LowerError(
+        "workflow %s: %r compares with %r, which is not a member of the enum "
+        "%s (members: %s)%s (RFC-0056)"
+        % (scope.workflow_name, text, literal, other_type,
+           ", ".join(other_enum), suggestion))
+
+
+def _check_text_equality_term(term, left_dim, right_dim, scope, text,
+                              subject=GUARD_SUBJECT):
+    """RFC-0056: a `==`/`!=` term where at least one side is `"text"`.
+    Returns the names of its `Ref` operands, to be recorded on the Guard."""
+    from .condition import Arith, Ref
+    for dim, operand in ((left_dim, term.left), (right_dim, term.right)):
+        if isinstance(operand, Arith):
+            raise LowerError(
+                "workflow %s: %r compares a Text-family field with an "
+                "arithmetic expression (%s) — RFC-0016 gives Text no "
+                "arithmetic at all (RFC-0056)"
+                % (scope.workflow_name, text, _describe(operand)))
+        if dim not in (None, "text"):
+            raise LowerError(
+                "workflow %s: %r compares %s with %s — RFC-0016 compares "
+                "like with like (a Text-family field equals only another "
+                "Text-family value, RFC-0056)"
+                % (scope.workflow_name, text, _describe(term.left),
+                   _describe(term.right)))
+    left_type, left_enum = _text_operand_type(term.left, scope, text, subject)
+    right_type, right_enum = _text_operand_type(term.right, scope, text, subject)
+    if left_type is not None and right_type is not None:
+        left_base = scope.base_of.get(left_type, left_type)
+        right_base = scope.base_of.get(right_type, right_type)
+        if left_base != right_base:
+            raise LowerError(
+                "workflow %s: %r compares %s (declared %s) with %s (declared "
+                "%s) — equality needs the same declared type on both sides "
+                "(RFC-0038 D2, extended to guard conditions by RFC-0056)"
+                % (scope.workflow_name, text, _describe(term.left), left_type,
+                   _describe(term.right), right_type))
+    _check_enum_literal(term.left, right_type, right_enum, scope, text)
+    _check_enum_literal(term.right, left_type, left_enum, scope, text)
+    return tuple(operand.name for operand in (term.left, term.right)
+                 if isinstance(operand, Ref))
 
 
 def _comparisons(cond):
@@ -3176,7 +3310,7 @@ class _Scope:
 
     def __init__(self, workflow_name, by_binding, read_entities, declared_fields,
                  base_of, network_bindings=frozenset(), create_bindings=None,
-                 registry=None):
+                 registry=None, enum_of=None):
         self.workflow_name = workflow_name
         self.by_binding = by_binding
         self.read_entities = read_entities
@@ -3197,9 +3331,13 @@ class _Scope:
         # RFC-0055: every declared entity keyed by its namespace-qualified
         # id, for `input.<field> exists`'s cross-entity agreement check.
         self.registry = registry
+        # RFC-0056: refinement name -> enum members, for a guard equality's
+        # bare-name literal.
+        self.enum_of = enum_of or {}
 
     def check_reference(self, name, text, subject=GUARD_SUBJECT,
-                        is_target=False, allow_money=False, presence=False):
+                        is_target=False, allow_money=False, presence=False,
+                        equality=False):
         """One `Reference`, judged against the document.
 
         Returns the operand's DIMENSION (`"instant"`, `"scalar"`, or
@@ -3216,12 +3354,15 @@ class _Scope:
         `presence` (RFC-0055): set for the field of an `exists`/`missing`
         term. An `optional` field then gets `"presence-any"` whatever its
         declared type — a Presence check reads only whether the key is there.
+
+        `equality` (RFC-0056): set for a direct operand of a guard's `==`/`!=`
+        term. A Text-family field (not Password) then gets `"text"`.
         """
         field_node = self.resolve_field(name, text, subject, is_target)
         if field_node is None:
             return None
         return self._dimension_of(field_node, name, text, allow_money=allow_money,
-                                  presence=presence)
+                                  presence=presence, equality=equality)
 
     def resolve_field(self, name, text, subject=GUARD_SUBJECT,
                       is_target=False):
@@ -3337,7 +3478,7 @@ class _Scope:
         return fields[field]
 
     def _dimension_of(self, field_node, name, text, allow_money=False,
-                      presence=False):
+                      presence=False, equality=False):
         """The operand's dimension, or a refusal (RFC-0015 §D6, RFC-0016).
 
         t2 F-4 is the reason this is a compile error and not a runtime one: a
@@ -3362,6 +3503,15 @@ class _Scope:
         base = self.base_of.get(declared, declared)
         if presence and field_node.get("optional"):
             return "presence-any"
+        if equality and BASE_CATEGORY.get(base) == "text":
+            if base == "Password":
+                raise LowerError(
+                    "workflow %s: %r compares %s, a Password field (declared "
+                    "type %s) — its value is masked everywhere it is reported "
+                    "(RFC-0001), so a guard may not compare it"
+                    % (self.workflow_name, text, name, declared))
+            if base not in TEXT_EQUALITY_EXCLUDED_BASES:
+                return "text"
         if base == "Integer":
             return "scalar"
         if base == "DateTime":
@@ -3632,7 +3782,17 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
 
 
-def _derive_assignment(step_id, line, registry, namespace=None):
+def _set_text_refusal(where, text, target, declared):
+    """Issue #207: `set` has no evaluator for Text — name `format`, the verb
+    that writes one, instead of only refusing the operand."""
+    return LowerError(
+        "%s: %r assigns a value to %s, a Text field (declared type %s) — "
+        "`set` has no evaluator for Text (RFC-0016 computes over whole numbers "
+        "and instants only); write a Text field with `format %s from \"...\"` "
+        "(issue #94)" % (where, text, target, declared, target))
+
+
+def _derive_assignment(step_id, line, registry, namespace=None, base_of=None):
     """`set <binding>.<field> to <value>` -> an Assignment Effect node (RFC-0015).
 
     `set` is in `VERB_LEXICON` like every other verb — one closed table is what
@@ -3649,6 +3809,21 @@ def _derive_assignment(step_id, line, registry, namespace=None):
     try:
         target, value = parse_assignment(text)
     except ConditionError as exc:
+        # A quoted value (`set order.status to "paid"`) fails to parse before
+        # a target exists, so re-read the target token to give a Text field
+        # the `format` hint.
+        tokens = line.tokens
+        if base_of is not None and len(tokens) > 2 and tokens[2] == "to":
+            binding, _, field = tokens[1].partition(".")
+            for ent in registry.values():
+                if binding_name(ent) != binding:
+                    continue
+                for f in ent["fields"]:
+                    if (f["name"] == field
+                            and base_of.get(f["type"], f["type"]) == "Text"):
+                        raise _set_text_refusal("line %d" % line.lineno, text,
+                                                tokens[1], f["type"])
+                break
         raise LowerError("line %d: %s" % (line.lineno, exc))
 
     _check_literal_zero_divisor(value, "line %d: assignment %r" % (line.lineno, text))
