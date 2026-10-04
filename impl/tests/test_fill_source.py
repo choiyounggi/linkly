@@ -568,7 +568,7 @@ class TestBareOperand(unittest.TestCase):
     def test_examples_still_compile(self):
         import glob
         paths = sorted(glob.glob(os.path.join(REPO_ROOT, "examples", "*.lnpl")))
-        self.assertEqual(len(paths), 6)
+        self.assertEqual(len(paths), 7)   # + staged.lnpl (RFC-0060)
         for path in paths:
             with open(path, encoding="utf-8") as fh:
                 compile_doc(fh.read())
