@@ -347,6 +347,8 @@ EXPECTATIONS = {
 
 
 _INPUT_PREFIX = "input."
+# RFC-0057 §9: `given run.<marker> <value>` pins the run context, not the input.
+_RUN_PREFIX = "run."
 
 # RFC-0025 §8: `stored <entity>[<i>] ...` — the entity token carries an index in
 # brackets. Matched against the SECOND `stored` token before falling back to the
@@ -386,6 +388,12 @@ GIVEN_FORMS = (
     ("network-stub-body", "call <target> returns <status> body.<key> <value>",
      "네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 "
      "행 필드를 쌓는 것과 같은 자리"),
+    ("run-generated", "run.generated <uuid>",
+     "이 실행의 `derived generated` 값을 고정(RFC-0057). payload가 아니라 실행 "
+     "문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다"),
+    ("run-clock", "run.clock <instant>",
+     "이 실행의 `derived clock` 값을 고정(RFC-0057, 존 표기 필수). 없으면 "
+     "가상 시계의 실행 시작 시각이 쓰인다"),
 )
 
 
@@ -484,6 +492,8 @@ def _check_given(phrase, schema, where=""):
         fail("unsupported given: %r (use `call <target> returns <status>` "
              "or `call <target> returns <status> body.<key> <value>`)"
              % phrase)
+    if tokens[0].startswith(_RUN_PREFIX):
+        return _check_run_given(phrase, tokens, fail)
     if len(tokens) == 2 and tokens[0].startswith(_INPUT_PREFIX):
         # An unrecognized name is refused rather than absorbed: the input
         # namespace is a closed set, so a miss is a typo (RFC-0015 §G15.2) and
@@ -520,6 +530,65 @@ def _check_given(phrase, schema, where=""):
                  % (phrase, name, _declared(fields)))
         return ("no-field", (name,)) if dropping else ("field", (name, tokens[1]))
     fail("unsupported given: %r — known forms: %s" % (phrase, _known_forms()))
+
+
+def _check_run_given(phrase, tokens, fail):
+    """`run.generated <uuid>` / `run.clock <instant>` (RFC-0057 §9) — the
+    value is checked here, at the manifest stage, like every other `given`."""
+    from .condition import ConditionError, encode_instant
+    from .interp import check_semantic_type
+    from .lower import FILL_SOURCES
+
+    marker = tokens[0][len(_RUN_PREFIX):]
+    if len(tokens) != 2 or marker not in FILL_SOURCES:
+        fail("unsupported given: %r (use `run.generated <uuid>` or "
+             "`run.clock <instant>`, RFC-0057)" % phrase)
+    value = tokens[1]
+    try:
+        if marker == "generated":
+            check_semantic_type("UUID", value, "run.generated")
+        else:
+            encode_instant(value, "run.clock")
+    except (RunError, ConditionError) as exc:
+        fail("given %r: %s" % (phrase, exc))
+    return "run-" + marker, (marker, value)
+
+
+def _run_context_from_given(given):
+    """`given run.*` lines -> the run context `run_workflow` takes."""
+    context = {}
+    for phrase in given:
+        tokens = phrase.split()
+        if tokens and tokens[0].startswith(_RUN_PREFIX):
+            context[tokens[0][len(_RUN_PREFIX):]] = tokens[1]
+    return context
+
+
+def _unpinned_generated(document, workflow_id, run_context):
+    """`(entity_name, field)` of a `derived generated` field the workflow's
+    first fill-source create would fill with a fresh UUID because the case
+    pinned no `run.generated`, or None (RFC-0057 §9 — a spec must be
+    repeatable). A `derived clock` needs no pin: the virtual clock is
+    deterministic."""
+    from .backend import BackendError, _workflow_steps
+
+    if "generated" in run_context:
+        return None
+    try:
+        nodes, steps = _workflow_steps(document, workflow_id)
+    except BackendError:
+        return None     # unknown workflow: `run_workflow` reports it
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is None or effect["kind"] != "RepositoryCall"
+                    or effect.get("operation") != "create"):
+                continue
+            entity = nodes.get(effect["entity"], {})
+            for field in entity.get("fields", []):
+                if field.get("fill_source") == "generated":
+                    return entity["name"], field["name"]
+    return None
 
 
 def _validate_given(given, decls, where):
@@ -748,6 +817,8 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
             # payload as `lnpl run` (issue #46 — t4 F-5, t2 F-11).
             name, raw = parts
             payload[name] = _typed_value(raw, field_types.get(name), refinements)
+        elif form in ("run-generated", "run-clock"):
+            continue        # the run context, never the payload (RFC-0057)
         else:                # no-input-field / no-field
             payload.pop(parts[0], None)
     if stored and any(g == "empty repository" for g in given):
@@ -940,9 +1011,19 @@ def run_manifest(manifest, document):
         # equivalent has no place here (§1): spec's determinism depends on
         # every NetworkCall answering from `given`, never a real request.
         network = FakeNetworkDriver(_network_stubs_from_given(case["given"]))
+        run_context = _run_context_from_given(case["given"])
+        unpinned = _unpinned_generated(document, case["workflow"], run_context)
+        if unpinned is not None:
+            failed += 1
+            lines.append("FAIL %s — %s.%s is `derived generated`, so an unpinned "
+                         "run gets a fresh UUID every time; pin it with "
+                         "`given run.generated <uuid>` (RFC-0057)"
+                         % ((case["name"],) + unpinned))
+            continue
         interp = Interpreter(document, repo_rows=rows, network=network)
         try:
-            result = interp.run_workflow(case["workflow"], payload)
+            result = interp.run_workflow(case["workflow"], payload,
+                                         run_context=run_context)
             # `result` expectations resolve bare references against the input, so
             # the runner carries it alongside the bindings the run produced.
             result["payload"] = payload

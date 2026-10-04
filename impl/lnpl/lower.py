@@ -1198,6 +1198,10 @@ def _resolve_type(name, refined_names, used_presets, lineno):
         "in this module, or a built-in preset (RFC-0001 A.6.1)" % (lineno, name))
 
 
+# RFC-0057 §1: fill-source marker -> the base type its field must have.
+FILL_SOURCES = {"generated": "UUID", "clock": "DateTime"}
+
+
 def lower(decls, module_name):
     """[Decl] -> Module, emitting nodes in RFC-0001 canonical order."""
     mod = Module(module_name)
@@ -1222,6 +1226,15 @@ def lower(decls, module_name):
         taken.add(d.name)
         refined_names.add(d.name)
 
+    # Declared type name -> one of the 18 bases. RFC-0015's operand check asks
+    # "is this an Integer", and `refine SafeStock of Integer` must answer yes,
+    # so the question is put to the base rather than to the written name.
+    # Built before the entity loop: RFC-0057's fill-source markers check
+    # their field's base while the fields are parsed.
+    base_of = {name: name for name in BASE_CATEGORY}
+    base_of.update({n["name"]: n["base"] for n in refine_nodes})
+    base_of.update({name: entry["base"] for name, entry in PRESETS.items()})
+
     # Entity registry. A module may declare several entities; a step selects one
     # by naming it as its object (`load order`), which the grammar already gives us.
     # With a single entity the object may be omitted, as the golden scenario does.
@@ -1237,7 +1250,25 @@ def lower(decls, module_name):
                     "together — got %d tokens"
                     % (line.lineno, len(line.tokens)))
             modifiers = line.tokens[2:]
+            # RFC-0057 §1: `derived <marker>` — the marker is a closed word,
+            # valid only directly after `derived`.
+            marker = None
+            if len(modifiers) == 2 and modifiers[0] == "derived" \
+                    and modifiers[1] not in MODIFIER_WORDS:
+                marker = modifiers[1]
+                modifiers = modifiers[:1]
+                if marker not in FILL_SOURCES:
+                    raise LowerError(
+                        "line %d: unknown fill-source marker %r after "
+                        "`derived` — valid markers are %s (RFC-0057)"
+                        % (line.lineno, marker, ", ".join(FILL_SOURCES)))
             unknown = [m for m in modifiers if m not in MODIFIER_WORDS]
+            if unknown and unknown[0] in FILL_SOURCES:
+                raise LowerError(
+                    "line %d: fill-source marker %r is valid only directly "
+                    "after `derived` — write `%s %s derived %s` (RFC-0057)"
+                    % (line.lineno, unknown[0], line.tokens[0], line.tokens[1],
+                       unknown[0]))
             if unknown:
                 raise LowerError(
                     "line %d: unknown field modifier %r — valid modifiers are "
@@ -1268,6 +1299,21 @@ def lower(decls, module_name):
                                           used_presets, line.lineno)}
             if "derived" in modifiers:
                 field["derived"] = True
+            if marker is not None:
+                base = base_of.get(field["type"], field["type"])
+                if base != FILL_SOURCES[marker]:
+                    raise LowerError(
+                        "line %d: fill-source marker %r needs a %s field, but "
+                        "%r is declared %s (RFC-0057)"
+                        % (line.lineno, marker, FILL_SOURCES[marker],
+                           field["name"], field["type"]))
+                if field["name"] == "id" and marker != "generated":
+                    raise LowerError(
+                        "line %d: field 'id' cannot be `derived %s` — the id "
+                        "keys the row, and one run's instant is not unique; "
+                        "use `derived generated` (RFC-0057)"
+                        % (line.lineno, marker))
+                field["fill_source"] = marker
             if "optional" in modifiers:
                 field["optional"] = True
             fields.append(field)
@@ -1284,13 +1330,6 @@ def lower(decls, module_name):
         if eid in registry:
             raise LowerError("two entities derive the same id %r" % eid)
         registry[eid] = {"decl": decl, "id": eid, "name": decl.name, "fields": fields}
-
-    # Declared type name -> one of the 18 bases. RFC-0015's operand check asks
-    # "is this an Integer", and `refine SafeStock of Integer` must answer yes,
-    # so the question is put to the base rather than to the written name.
-    base_of = {name: name for name in BASE_CATEGORY}
-    base_of.update({n["name"]: n["base"] for n in refine_nodes})
-    base_of.update({name: entry["base"] for name, entry in PRESETS.items()})
 
     cap_ids = [derive_id(d.name, "Capability") for d in by_kind["capability"]]
     cap_by_name = {d.name: derive_id(d.name, "Capability") for d in by_kind["capability"]}
@@ -2323,7 +2362,8 @@ def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics)
         where = step.get("line")
         where_str = ("line %d" % where) if where else workflow_name
         for field in entity["fields"]:
-            if not field.get("derived"):
+            # RFC-0057 §5: a fill-source field is filled by the run itself.
+            if not field.get("derived") or field.get("fill_source"):
                 continue
             if (entity["id"], field["name"]) in assigned:
                 continue
@@ -3632,6 +3672,37 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
 
 
+# RFC-0057 §7: a bare word that reads like a run-time value -> the marker that
+# supplies it.
+_MARKER_HINTS = {"now": "clock", "time": "clock", "timestamp": "clock",
+                 "uuid": "generated", "guid": "generated",
+                 "generated": "generated"}
+
+
+def _check_bare_operands(value, registry, lineno, text):
+    """RFC-0057 §7 (issue #209): a bare (undotted) operand names an input
+    field (RFC-0012 §G12.1), so one no declared entity has resolves to
+    nothing at run time — refused here instead. An `Aggregate`'s ref is
+    `_check_aggregate`'s business, not this check's."""
+    from .condition import Arith, Ref
+
+    operands = [value.left, value.right] if isinstance(value, Arith) else [value]
+    declared = {f["name"] for ent in registry.values() for f in ent["fields"]}
+    for operand in operands:
+        if (not isinstance(operand, Ref) or operand.namespace is not None
+                or operand.name in declared):
+            continue
+        hint = ""
+        marker = _MARKER_HINTS.get(operand.name.lower())
+        if marker is not None:
+            hint = (" — did you mean a field declared `derived %s`? The run "
+                    "fills it at `create` (RFC-0057)" % marker)
+        raise LowerError(
+            "line %d: assignment %r reads %r, which no declared entity has as "
+            "a field — a bare name is an input field (RFC-0012 §G12.1)%s"
+            % (lineno, text, operand.name, hint))
+
+
 def _derive_assignment(step_id, line, registry, namespace=None):
     """`set <binding>.<field> to <value>` -> an Assignment Effect node (RFC-0015).
 
@@ -3652,6 +3723,7 @@ def _derive_assignment(step_id, line, registry, namespace=None):
         raise LowerError("line %d: %s" % (line.lineno, exc))
 
     _check_literal_zero_divisor(value, "line %d: assignment %r" % (line.lineno, text))
+    _check_bare_operands(value, registry, line.lineno, text)
 
     binding, _, field = target.partition(".")
     if not field:

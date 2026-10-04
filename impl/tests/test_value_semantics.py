@@ -394,10 +394,13 @@ class TestMoneyDimension(unittest.TestCase):
             "set product.price to product.stock + 1"),
             "to product.price (money)", "RFC-0051")
 
-    def test_an_undeclared_right_hand_side_is_left_to_the_runtime(self):
+    def test_a_bare_right_hand_side_is_left_to_the_runtime(self):
         # Boundary: a bare reference has no declared type, so the new
-        # target/RHS check has nothing to compare and must not refuse.
-        doc = compile_doc(self.assignment("set product.price to amount"), "m")
+        # target/RHS check has nothing to compare and must not refuse —
+        # `stock` is Integer as a field, yet the bare input name is untyped.
+        # (RFC-0057 §7: the name must be declared somewhere; `amount` was
+        # not, and an undeclared bare name is now a compile error.)
+        doc = compile_doc(self.assignment("set product.price to stock"), "m")
         self.assertEqual(1, len(nodes_of(doc, "Assignment")))
 
     # ---- Decimal stays refused --------------------------------------------
@@ -554,6 +557,16 @@ class TestAssignmentRuntime(unittest.TestCase):
         self.assertEqual(
             seed["entity.product"][row_key("entity.product", payload)]["stock"], 5,
             "the caller's seed must be untouched")
+
+
+def _with_bare_inputs(source):
+    """RFC-0057 §7: a bare operand must name a declared field. These names
+    are declared Text on an entity no workflow touches, so the operand stays
+    untyped for lowering and its runtime shape is the payload's."""
+    return source.replace("service S\n", "entity Inputs\n    field\n"
+                          "        id UUID\n        extra Text\n"
+                          "        left Text\n        right Text\n\n"
+                          "service S\n", 1)
 
 
 MONEY_RUNTIME = """capability postgres
@@ -723,9 +736,9 @@ class TestMoneyRuntime(unittest.TestCase):
         self.assertIn("money-encode-precision", result["failure_reason"])
 
     def test_a_money_payload_value_meeting_an_integer_fails_the_run(self):
-        # An undeclared ref can carry Money where lowering could not see it.
-        doc = compile_doc(MONEY_RUNTIME.replace(
-            "set order.net to input.net", "set order.qty to order.qty + extra"),
+        # A bare (input) ref can carry Money where lowering could not see it.
+        doc = compile_doc(_with_bare_inputs(MONEY_RUNTIME.replace(
+            "set order.net to input.net", "set order.qty to order.qty + extra")),
             "money")
         [wf] = [n for n in doc["nodes"] if n.get("name") == "Carry"]
         key = row_key("entity.order", {"id": PRODUCT_ID})
@@ -738,10 +751,10 @@ class TestMoneyRuntime(unittest.TestCase):
         self.assertEqual(1, interp.repo.rows["entity.order"][key]["qty"])
 
     def _run_bare(self, expression, payload):
-        """`set order.qty to <expression>` over undeclared (payload) refs —
+        """`set order.qty to <expression>` over bare (payload) refs —
         lowering cannot see their shapes, so the refusal is the runtime's."""
-        doc = compile_doc(MONEY_RUNTIME.replace(
-            "set order.net to input.net", "set order.qty to " + expression),
+        doc = compile_doc(_with_bare_inputs(MONEY_RUNTIME.replace(
+            "set order.net to input.net", "set order.qty to " + expression)),
             "money")
         [wf] = [n for n in doc["nodes"] if n.get("name") == "Carry"]
         key = row_key("entity.order", {"id": PRODUCT_ID})

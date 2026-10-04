@@ -392,7 +392,8 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     a toolchain happens to be installed. A workflow whose guard compares a
     declared Money field is the same kind of exemption (RFC-0051 §Mode B), and
     so is one whose repository call carries a `by <ref>` lookup key (RFC-0052
-    §Mode B), and one whose guard reads an `optional` field (RFC-0055 §Mode B).
+    §Mode B), one whose guard reads an `optional` field (RFC-0055 §Mode B),
+    and one that creates a fill-source entity (RFC-0057 §Mode B).
     """
     if backend.workflow_uses_numeric_predicate(document, workflow_id):
         raise DifferentialError(
@@ -417,6 +418,14 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "comparison) — mode B has no compiled evaluator for it "
             "(RFC-0055 §Mode B, recorded exemption); differential "
             "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_fill_source_create(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r creates a row of entity %s, which fills a `derived "
+            "generated`/`derived clock` field from the run — mode B has no "
+            "channel for it (RFC-0057 §Mode B, recorded exemption); "
+            "differential comparison is not attempted"
+            % (workflow_id,
+               backend._fill_source_create_offender(document, workflow_id)[1]))
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "

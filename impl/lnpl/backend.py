@@ -713,6 +713,33 @@ def workflow_uses_optional_guard(document, workflow_id):
     return _optional_guard_offender(document, workflow_id) is not None
 
 
+def _fill_source_create_offender(document, workflow_id):
+    """`(step_name, entity_id)` of the first `create` of `workflow_id` (guarded
+    or not) whose entity declares a `derived generated`/`derived clock` field
+    (RFC-0057 §8), or None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is None or effect["kind"] != "RepositoryCall"
+                    or effect.get("operation") != "create"):
+                continue
+            entity = nodes.get(effect["entity"])
+            if entity is not None and any(
+                    f.get("fill_source") for f in entity.get("fields", [])):
+                return step["name"], effect["entity"]
+    return None
+
+
+def workflow_uses_fill_source_create(document, workflow_id):
+    """RFC-0057 §8: does `workflow_id` create a row of an entity with a
+    fill-source field? Mode B has no channel for the run's id/instant, so it
+    refuses (`emit_mlir`, `build`); `differential.verify` asks this last, after
+    the optional-guard check, so the exemption needs no toolchain. Raises
+    `BackendError` for an unknown workflow."""
+    return _fill_source_create_offender(document, workflow_id) is not None
+
+
 def _refuse_unsupported_guards(document, workflow_id):
     """RFC-0051/0052/0055 §Mode B: refuse, by name, a Money-guard, lookup-key
     or optional-field-guard workflow — called by `build()` immediately before
@@ -721,6 +748,7 @@ def _refuse_unsupported_guards(document, workflow_id):
     `_money_guard_offender`, `_lookup_offender` and `_optional_guard_offender`
     verbatim, in the same Money-then-Lookup-then-Optional order
     `differential.verify` asks them, so `build` and `diff` cannot drift apart.
+    A fill-source create (RFC-0057) is asked last, here and there.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here — its refusal in `_render_std` depends on `_lnpl_ops`'s
     seed/payload-truncated ops stream, which a document-level check here
@@ -747,6 +775,14 @@ def _refuse_unsupported_guards(document, workflow_id):
             "step %s: guard %r reads an `optional` field, which mode B has "
             "no compiled evaluator for (RFC-0055 §Mode B, recorded "
             "exemption) — run it in mode A" % (step_name, guard_text))
+    fill_offender = _fill_source_create_offender(document, workflow_id)
+    if fill_offender is not None:
+        step_name, entity_id = fill_offender
+        raise BackendError(
+            "step %s: create %s fills a `derived generated`/`derived clock` "
+            "field from the run, which mode B has no channel for (RFC-0057 "
+            "§Mode B, recorded exemption) — run it in mode A"
+            % (step_name, entity_id))
 
 
 def encode_condition_value(value):
@@ -1158,7 +1194,10 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
                 if node["entity"] not in seeded_now and node["entity"] not in created:
                     fail_at = index
             elif kind == "RepositoryCall" and operation == "create":
-                if node["entity"] in seeded_now or node["entity"] in created:
+                # RFC-0057 §6: mode A refuses an id-less create (id-required)
+                # before the write; a fill-source create never reaches here.
+                if (payload.get("id") is None or node["entity"] in seeded_now
+                        or node["entity"] in created):
                     fail_at = index
                 else:
                     created.add(node["entity"])

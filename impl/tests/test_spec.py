@@ -952,3 +952,105 @@ class TestExpectResultWithNumericPredicate(unittest.TestCase):
         passed, failed, lines = self._run(2)
         self.assertEqual(failed, 0, lines)
         self.assertEqual(passed, 2)
+
+
+# RFC-0057 §9: `spec` pins the run's fill-source values with `given run.*`.
+FILL_PIN_ID = "00000000-0000-4000-8000-000000000057"
+FILL_PIN_AT = "2030-01-02T03:04:05.006Z"
+FILL_SRC = """entity AuditEntry
+    field
+        id UUID derived generated
+        at DateTime derived clock
+        action Text
+
+entity Probe
+    field
+        id UUID
+        expectedAt DateTime
+
+service AuditService
+
+workflow Record
+    create auditentry as a
+    respond a.action
+    spec
+        given
+{given}
+        when
+            record
+        expect
+            completed
+            rows AuditEntry 1
+            result a.id exists
+            result a.at == input.expectedAt
+"""
+FILL_GIVEN = ("            action login\n"
+              "            run.generated %s\n"
+              "            run.clock %s\n"
+              "            input.expectedAt %s" % (FILL_PIN_ID, FILL_PIN_AT,
+                                                  FILL_PIN_AT))
+
+
+def fill_build(given=FILL_GIVEN):
+    decls = parse(FILL_SRC.format(given=given))
+    return lower(decls, "audit").to_document(), extract(decls, "audit")
+
+
+class TestFillSourcePinning(unittest.TestCase):
+
+    def run_capturing(self, doc, manifest):
+        """run_manifest, keeping each case's Interpreter to read the store."""
+        import lnpl.spec as spec_mod
+        made = []
+        real = spec_mod.Interpreter
+
+        def capture(*args, **kwargs):
+            made.append(real(*args, **kwargs))
+            return made[-1]
+        spec_mod.Interpreter = capture
+        try:
+            return run_manifest(manifest, doc), made
+        finally:
+            spec_mod.Interpreter = real
+
+    def test_spec_pins_both_fill_source_markers(self):
+        doc, manifest = fill_build()
+        (passed, failed, lines), made = self.run_capturing(doc, manifest)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 4)
+        rows = made[0].repo.rows["entity.audit.entry"]
+        self.assertEqual(list(rows), ["entity.audit.entry#" + FILL_PIN_ID])
+        row = rows["entity.audit.entry#" + FILL_PIN_ID]
+        self.assertEqual((row["id"], row["at"]), (FILL_PIN_ID, FILL_PIN_AT))
+        # Deterministic: the same manifest twice gives byte-identical output.
+        (_p, _f, again), made2 = self.run_capturing(doc, manifest)
+        self.assertEqual(lines, again)
+        self.assertEqual(made2[0].repo.rows["entity.audit.entry"], rows)
+
+    def test_an_unpinned_generated_id_fails_the_case_naming_the_given(self):
+        given = "\n".join(g for g in FILL_GIVEN.splitlines()
+                          if "run.generated" not in g)
+        doc, manifest = fill_build(given)
+        passed, failed, lines = run_manifest(manifest, doc)
+        self.assertEqual((passed, failed), (0, 1))
+        self.assertTrue(any("run.generated" in x and "id" in x for x in lines),
+                        lines)
+
+    def test_an_unpinned_clock_runs_on_the_virtual_clock(self):
+        # Boundary: `derived clock` needs no pin — the virtual clock is
+        # deterministic, so the run reads 1970-01-01 at its start.
+        given = "\n".join(g for g in FILL_GIVEN.splitlines()
+                          if "run.clock" not in g).replace(
+            FILL_PIN_AT, "1970-01-01T00:00:00.000Z")
+        doc, manifest = fill_build(given)
+        passed, failed, lines = run_manifest(manifest, doc)
+        self.assertEqual(failed, 0, lines)
+
+    def test_a_malformed_run_given_is_refused_at_extraction(self):
+        for line, fragment in (("run.generated not-a-uuid", "run.generated"),
+                               ("run.clock 2030-01-02", "run.clock"),
+                               ("run.bogus x", "run.generated")):
+            with self.subTest(line=line):
+                with self.assertRaises(SpecError) as ctx:
+                    fill_build("            action login\n            " + line)
+                self.assertIn(fragment, str(ctx.exception))

@@ -720,6 +720,10 @@ RFC_ROUTES = {
              "필드를 보내지 않거나 null을 보내도 validate가 거부하지 않고, "
              "저장된 행과 OpenAPI·db check·migrate·Presence 가드가 그 부재를 "
              "어떻게 다루는지", ()),
+    "0057": ("서버가 행 id나 생성 시각을 채우게 하고 싶다 — `derived generated`/"
+             "`derived clock` 표식, 실행 문맥 값이 create에만 들어가는 규칙, "
+             "id 없는 create의 `id-required`, spec의 `given run.*` 고정, 모드 B "
+             "거부", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

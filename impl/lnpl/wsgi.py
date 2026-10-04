@@ -790,6 +790,8 @@ def map_result(result):
         return 409, "conflict"                            # M8a
     if result.get("failure_kind") == "not-found":
         return 404, "not-found"                           # M8b
+    if result.get("failure_kind") == "id-required":
+        return 400, "id-required"                         # M8d (RFC-0057)
     return 500, "workflow-failed"                         # M8
 
 
@@ -822,7 +824,7 @@ def map_consume_result(result):
     # the transient (E6) branch below.
     if result.get("failure_kind") == "conflict":
         return 422, "event-rejected"
-    if result.get("failure_kind") == "not-found":
+    if result.get("failure_kind") in ("not-found", "id-required"):
         return 422, "event-rejected"
     failed = result["failed_step"]
     for entry in result["steps"]:
@@ -836,6 +838,7 @@ def map_consume_result(result):
 
 _TITLES = {
     "not-found": "no such path",
+    "id-required": "the payload must supply an id for this create",
     "method-not-allowed": "method not allowed",
     "auth-missing": "authorization required",
     "auth-invalid": "authorization token rejected",
