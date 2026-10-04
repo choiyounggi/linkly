@@ -69,5 +69,6 @@
 | RFC-0058 `fail` 동사 — 저자가 선언하는 업무 거절 | 업무 규칙 위반으로 실행을 실패시키고 싶다(`fail <code>`) — 가드 아래에만 쓸 수 있는 이유, 코드 규칙과 예약 코드, serve 422·consume E7·OpenAPI·spec이 그 거절을 어떻게 다루고 모드 B는 왜 거부하는지 | `rfcs/0058-fail-business-rejection.md` |
 | RFC-0059 `call ... send` — 아웃바운드 본문 매핑 절 | call/request가 보내는 본문을 고르고 싶다(`send <ref>...`) — send·with·as의 고정 순서, emit … with와 같은 참조 규칙, 절이 없을 때 본문이 입력 전체인 이유와 모드 B가 그대로 지원하는 이유 | `rfcs/0059-body-mapping-clause.md` |
 | RFC-0060 파이프라인 암묵 종결과 모순되는 들여쓰기의 거부 | `pipeline` 안에 들여 쓴 가드·블록이 왜 거부되는지, 가드된 `pipeline`을 이어 다단 조건 흐름을 쓰는 법과 그것이 기대는 '미바인딩 참조 비교는 거짓' 계약이 궁금하다 | `rfcs/0060-pipeline-implicit-close-indentation.md` |
+| RFC-0061 `respond`의 이름 붙인 집계 항과 목록 항 | 조회 전용 워크플로가 개수·합계·조건부 목록을 행을 쓰지 않고 응답하고 싶다(`respond <name> as <func> <ref>`, `respond list <binding>`) — `limit`이 필요한 이유, `next`가 늘 null인 이유, OpenAPI·spec이 항을 다루는 법과 모드 B가 거부하는 이유 | `rfcs/0061-respond-aggregate-and-list-terms.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

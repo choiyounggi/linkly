@@ -676,7 +676,7 @@ def _resolve_lookup_key(entity_id, lookup_ref, payload, bindings, caller):
     return row_key(entity_id, {"id": value})
 
 
-def resolve_reference(name, payload, bindings, caller=None):
+def resolve_reference(name, payload, bindings, caller=None, response=None):
     """Resolve a condition/expectation `Reference` to a value (RFC-0012 §G12.1).
 
     Bare `stock` names an input payload field; qualified `product.stock` names a
@@ -696,8 +696,15 @@ def resolve_reference(name, payload, bindings, caller=None):
     `caller_view` derived from this run's verified claims. `caller.subject`/
     `caller.role` resolve the same way `input.*` does — a reserved namespace
     checked before the general `bindings` lookup, never a bound row.
+
+    `response` (RFC-0061 §6, optional, default `None`): the run's
+    `result["response"]` — only `spec`'s `expect result` passes it, so a
+    bare name that is a `respond` term name answers that term's value, ahead
+    of the payload field of the same name. Guards never pass it.
     """
     if "." not in name:
+        if response is not None and name in response:
+            return response[name]
         return payload.get(name)
     binding, _, field = name.partition(".")
     if binding == CALLER_NAMESPACE:
@@ -766,7 +773,7 @@ def _resolve_predicate_value(value, payload, bindings, caller=None):
 
 def _condition_holds(condition, payload, bindings, collector=None, caller=None,
                       money_fields=None, text_equality_operands=None,
-                      text_fields=None):
+                      text_fields=None, response=None):
     """Mode A condition evaluation: Presence + Comparison.
 
     RFC-0008: evaluates parsed conditions (Presence and Comparison).
@@ -826,7 +833,8 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
             except money.MoneyError as exc:
                 raise RunError(str(exc))
             if parsed is not None:
-                actual = resolve_reference(ref, payload, bindings, caller)
+                actual = resolve_reference(ref, payload, bindings, caller,
+                                           response=response)
                 if op in ("==", "!="):
                     return (actual == parsed) if op == "==" else (actual != parsed)
                 try:
@@ -854,7 +862,8 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
         return True
 
     if isinstance(cond, Presence):
-        raw = resolve_reference(cond.field, payload, bindings, caller)
+        raw = resolve_reference(cond.field, payload, bindings, caller,
+                                response=response)
         holds = (raw is not None) if cond.kind == "exists" else (raw is None)
         if collector is not None:
             collector.append({"ref": cond.field, "value": raw, "op": cond.kind,
@@ -864,7 +873,7 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
     if isinstance(cond, Comparison):
         return _comparison_holds(cond, condition, payload, bindings, collector, caller,
                                  text_equality_operands=text_equality_operands,
-                                 text_fields=text_fields)
+                                 text_fields=text_fields, response=response)
 
     if isinstance(cond, NumericPredicate):
         return _numeric_predicate_holds(cond, payload, bindings, collector, caller)
@@ -882,7 +891,7 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
                 results.append(_comparison_holds(
                     term, condition, payload, bindings, collector, caller,
                     text_equality_operands=text_equality_operands,
-                    text_fields=text_fields))
+                    text_fields=text_fields, response=response))
         return all(results)
 
     raise RunError(f"Unknown condition type: {type(cond)}")
@@ -935,7 +944,8 @@ def _is_numeric_shaped(raw):
 
 
 def _comparison_holds(cmp_node, condition, payload, bindings, collector=None,
-                      caller=None, text_equality_operands=None, text_fields=None):
+                      caller=None, text_equality_operands=None, text_fields=None,
+                      response=None):
     """One `Comparison` against this scope. Unresolved reference -> False.
 
     `collector` (issue #83): see `_condition_holds`. `ref` is the left
@@ -954,8 +964,10 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None,
             cmp_node, text_equality_operands, text_fields):
         return _text_comparison_holds(cmp_node, condition, payload, bindings,
                                       collector, caller)
-    left = eval_value(cmp_node.left, condition, payload, bindings, caller)
-    right = eval_value(cmp_node.right, condition, payload, bindings, caller)
+    left = eval_value(cmp_node.left, condition, payload, bindings, caller,
+                      response=response)
+    right = eval_value(cmp_node.right, condition, payload, bindings, caller,
+                       response=response)
     op = cmp_node.op
     if left is None or right is None:
         # A reference that names nothing behaves as it did before RFC-0015:
@@ -1047,7 +1059,7 @@ def _text_comparison_holds(cmp_node, condition, payload, bindings, collector,
     return holds
 
 
-def eval_value(value, condition, payload, bindings, caller=None):
+def eval_value(value, condition, payload, bindings, caller=None, response=None):
     """A parsed `Value` -> int, a `(minor, currency)` Money pair (RFC-0051),
     or None when a reference resolves to nothing.
 
@@ -1063,7 +1075,8 @@ def eval_value(value, condition, payload, bindings, caller=None):
     if isinstance(value, Lit):
         return value.value
     if isinstance(value, Ref):
-        raw = resolve_reference(value.name, payload, bindings, caller)
+        raw = resolve_reference(value.name, payload, bindings, caller,
+                                response=response)
         if raw is None:
             return None
         if isinstance(raw, bool):
@@ -1102,8 +1115,10 @@ def eval_value(value, condition, payload, bindings, caller=None):
         raise RunError(f"Cannot compare non-numeric {value.name}={raw!r} "
                        f"in condition {condition!r}")
     if isinstance(value, Arith):
-        left = eval_value(value.left, condition, payload, bindings, caller)
-        right = eval_value(value.right, condition, payload, bindings, caller)
+        left = eval_value(value.left, condition, payload, bindings, caller,
+                          response=response)
+        right = eval_value(value.right, condition, payload, bindings, caller,
+                           response=response)
         if left is None or right is None:
             return None
         if isinstance(left, tuple) or isinstance(right, tuple):
@@ -1739,6 +1754,49 @@ class Interpreter:
                   for f in node.get("fields", [])]
         return dict(node, fields=fields)
 
+    def _aggregate(self, agg, expression, rowsets, agg_field_type):
+        """One `Aggregate` over this run's RowSets — `set`'s right-hand side
+        and `respond`'s named term (RFC-0061 §4) both evaluate through here.
+        RFC-0055 §9: a RowSet is always bound under its entity's default
+        binding name (`list` has no `as`), so this finds it."""
+        agg_entity_id = self._entity_id_for_binding(
+            agg.ref.namespace or agg.ref.name)
+        agg_entity = self.nodes.get(agg_entity_id) if agg_entity_id else None
+        field_optional = bool(agg_entity and any(
+            f["name"] == agg.ref.field and f.get("optional")
+            for f in agg_entity.get("fields", [])))
+        return eval_aggregate(agg, expression, rowsets,
+                              agg_field_type=agg_field_type,
+                              field_optional=field_optional)
+
+    def _respond_terms(self, node, response, rowsets):
+        """RFC-0061 §4: add one `Response` node's terms to `response`.
+
+        A named aggregate term is a flat key, evaluated by the same
+        `_aggregate` a `set` uses — it reads RowSets only, so nothing is
+        written. A list term replaces the whole response with the
+        `{"items", "next"}` envelope (`expose list`'s shape); `next` is
+        always None because a workflow takes no cursor and `limit` already
+        bounds the RowSet. RowSet rows never pass `_masked_bindings`, so each
+        row goes through `mask_payload` here — the same chokepoint, with the
+        same entity view.
+        """
+        from .condition import parse_value_or_aggregate
+        for term in node.get("aggTerms") or []:
+            expression = "%s %s" % (term["func"], term["ref"])
+            response[term["name"]] = self._aggregate(
+                parse_value_or_aggregate(expression), expression, rowsets,
+                term.get("agg_field_type"))
+        list_term = node.get("listTerm")
+        if list_term is None:
+            return response
+        binding = list_term["binding"]
+        entity_id = self._entity_id_for_binding(binding)
+        view = self._entity_view(self.nodes[entity_id]) if entity_id else None
+        return {"items": [mask_payload(row, view)
+                          for row in rowsets.get(binding) or []],
+                "next": None}
+
     def _masked_bindings(self, bindings):
         """A masked COPY of the execution scope for the result channel (issue
         #43). The scope itself stays raw — guards evaluate real values
@@ -1868,6 +1926,9 @@ class Interpreter:
         # after the fact, so a guard that never fired contributes nothing —
         # the same rule every other Effect gets from this loop.
         response_refs = []
+        # RFC-0061 §4: the `Response` nodes carrying named aggregate terms or
+        # a list term, same rule — only a step that actually ran adds one.
+        response_terms = []
         # issue #111, D4: same collection shape as `response_refs`, but
         # resolved to VALUES immediately rather than deferred to end-of-run
         # — a `note` is a span annotation, a snapshot of `bindings` at the
@@ -1895,7 +1956,7 @@ class Interpreter:
                     self._run_parallel_block(item_id, wf["name"], result, root,
                                              con, payload, bindings, rowsets,
                                              deadline, response_refs, notes,
-                                             binding_keys)
+                                             binding_keys, response_terms)
                     if result["status"] == "failed":
                         break
                     continue
@@ -1938,7 +1999,9 @@ class Interpreter:
                     for child_id in step.get("children", []):
                         child = self.nodes[child_id]
                         if child["kind"] == "Response":
-                            response_refs.extend(child["refs"])
+                            response_refs.extend(child.get("refs") or [])
+                            if child.get("aggTerms") or child.get("listTerm"):
+                                response_terms.append((step["name"], child))
                         elif child["kind"] == "Annotation":
                             notes.append({"template": child["template"],
                                          "values": _note_values(
@@ -1983,6 +2046,28 @@ class Interpreter:
         except RunError:
             self.repo.rollback()
             raise
+        # RFC-0061 §4: `respond`'s terms are evaluated here, after the last
+        # step and before the commit — a term that cannot be evaluated (`avg`
+        # of an empty RowSet) fails the run on its own step and rolls back,
+        # exactly as the same aggregate in a `set` would, rather than
+        # escaping `run_workflow` after the commit.
+        term_response = None
+        if result["status"] == "completed" and response_terms:
+            term_response = {}
+            for step_name, node in response_terms:
+                try:
+                    term_response = self._respond_terms(node, term_response,
+                                                        rowsets)
+                except RunError as exc:
+                    result["status"] = "failed"
+                    result["failed_step"] = step_name
+                    result["failure_reason"] = str(exc)
+                    kind = getattr(exc, "failure_kind", None)
+                    if kind is not None:
+                        result["failure_kind"] = kind
+                    self.trace.log("ERROR", "step failed",
+                                   step=step_name, reason=str(exc))
+                    break
         if result["status"] == "completed":
             self.repo.commit()
         else:
@@ -2023,7 +2108,8 @@ class Interpreter:
         # `result` is unchanged from before this feature existed. Built from
         # `result["bindings"]`, i.e. AFTER the masking chokepoint, per RFC-0003
         # §Observability — no second masking rule for this channel either.
-        if result["status"] == "completed" and response_refs:
+        if result["status"] == "completed" and (response_refs
+                                                 or term_response is not None):
             response = {}
             reported = set()
             for ref in response_refs:
@@ -2057,6 +2143,9 @@ class Interpreter:
                                     % (ref, field, binding))
                     continue
                 response.setdefault(binding, {})[field] = row[field]
+            # A list term's envelope arrives here alone (RFC-0061 §1/§4 leave
+            # no other key beside it), so `update` yields exactly it.
+            response.update(term_response or {})
             result["response"] = response
         # issue #102, D5: additive and non-destructive, the same `response`
         # precedent (issue #96) — a run that never emits gets no `emissions`
@@ -2143,17 +2232,8 @@ class Interpreter:
                 # before RFC-0047 — `.get()` yields `None` in all three
                 # cases, which `eval_aggregate` treats as "no Money-zero
                 # special case, fall back to the RFC-0045 behavior."
-                # RFC-0055 §9: a RowSet is always bound under its entity's
-                # default binding name (`list` has no `as`), so this finds it.
-                agg_binding = rhs.ref.namespace or rhs.ref.name
-                agg_entity_id = self._entity_id_for_binding(agg_binding)
-                agg_entity = self.nodes.get(agg_entity_id) if agg_entity_id else None
-                field_optional = bool(agg_entity and any(
-                    f["name"] == rhs.ref.field and f.get("optional")
-                    for f in agg_entity.get("fields", [])))
-                value = eval_aggregate(rhs, effect["expression"], rowsets,
-                                       agg_field_type=effect.get("agg_field_type"),
-                                       field_optional=field_optional)
+                value = self._aggregate(rhs, effect["expression"], rowsets,
+                                        effect.get("agg_field_type"))
             elif isinstance(rhs, FormatCall):
                 value = eval_format(rhs, payload, bindings, self.caller)
             else:
@@ -2631,7 +2711,8 @@ class Interpreter:
                                  deadline, bindings, rowsets, lock,
                                  cancel_event, binding_keys):
         """Run one step to completion under its retry policy; never raises —
-        returns `(span, entry, error, response_ext, notes_ext)`, `error`
+        returns `(span, entry, error, response_ext, notes_ext, terms_ext)`,
+        `error`
         being the final `RunError` or `None`. `_run_parallel_block`'s
         per-step worker (only caller): the sequential main loop keeps its
         own, separate inline copy of this same shape rather than calling
@@ -2670,7 +2751,7 @@ class Interpreter:
                                    attempt=attempts, reason=str(exc))
                     self.clock.advance(_backoff_ms(attempts))
         span.end_ms = _wall_clock_ms()
-        response_ext, notes_ext = [], []
+        response_ext, notes_ext, terms_ext = [], [], []
         with lock:
             span.attrs["attempts"] = attempts
             self.trace.metric("step.duration_ms",
@@ -2685,7 +2766,9 @@ class Interpreter:
                 for child_id in step.get("children", []):
                     child = self.nodes[child_id]
                     if child["kind"] == "Response":
-                        response_ext.extend(child["refs"])
+                        response_ext.extend(child.get("refs") or [])
+                        if child.get("aggTerms") or child.get("listTerm"):
+                            terms_ext.append((step["name"], child))
                     elif child["kind"] == "Annotation":
                         notes_ext.append({"template": child["template"],
                                           "values": _note_values(
@@ -2693,11 +2776,12 @@ class Interpreter:
             else:
                 self.trace.log("ERROR", "step failed", step=step["name"],
                                reason=str(last_error))
-        return span, entry, last_error, response_ext, notes_ext
+        return span, entry, last_error, response_ext, notes_ext, terms_ext
 
     def _run_parallel_block(self, group, workflow_name, result, root, con,
                             payload, bindings, rowsets, deadline,
-                            response_refs, notes, binding_keys):
+                            response_refs, notes, binding_keys,
+                            response_terms):
         """issue #108 D1-D4/D6/D7: run one `parallel` block's steps
         concurrently on a block-scoped `ThreadPoolExecutor` — created and
         shut down within this call, so no task from this block outlives it
@@ -2755,11 +2839,12 @@ class Interpreter:
             outcome = outcomes.get(step["id"])
             if outcome is None:
                 continue   # cancelled before it ever started — no record
-            span, entry, error, response_ext, notes_ext = outcome
+            span, entry, error, response_ext, notes_ext, terms_ext = outcome
             root.children.append(span)
             result["steps"].append(entry)
             if error is None:
                 response_refs.extend(response_ext)
+                response_terms.extend(terms_ext)
                 notes.extend(notes_ext)
             elif earliest_failure_start is None or span.start_ms < earliest_failure_start:
                 earliest_failure_start = span.start_ms
