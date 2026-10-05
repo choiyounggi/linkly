@@ -395,7 +395,9 @@ liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
 3. `--jwt-secret-env`가 지정돼 있으면 그 환경변수가 **지금도** 설정돼
    있는지 — 기동 시 검증(`cli.cmd_serve`)과 별개로, 매 프로브마다 다시
    읽는다(프로세스가 떠 있는 동안 그 변수가 사라지는 드문 드리프트도
-   다음 프로브가 잡는다).
+   다음 프로브가 잡는다). `build_app()`(gunicorn) 경로에서도 똑같이
+   돈다 — `LNPL_JWT_SECRET_ENV`(또는 `jwt_secret_env` 인자)로 이름을 주면
+   검사하고, 주지 않으면 검사할 것이 없어 통과한다(이슈 #187).
 4. `--network http`를 썼으면 논리명 endpoint 매핑이 전부 해소돼 있는지 —
    (1)과 같은 이유로, 기동 시 이미 판정된 사실을 노출한다.
 
@@ -448,14 +450,17 @@ kind}`, RFC-0003)가 소스에서부터 이 계약을 막아 왔고, 이 issue�
 `threading.Lock`으로 보호한다(D10) — dev 서버는 스레드-퍼-요청이라 락 없는
 `+=`는 동시 요청 아래서 갱신을 잃는다.
 
-**`lnpl serve`/`serve.serve()` 전용.** `--metrics`와 readyz 검사 ③(살아있는
-`--jwt-secret-env` 재확인)은 지금은 `lnpl serve` 경로에만 있다 —
-`build_app()`(운영 배치, gunicorn)의 환경 변수 표(아래 "운영 배치" 절)에는
-아직 대응 항목이 없다. `--trust-incoming-trace`(이슈 #107)가 이미 세운
-같은 전례다: `serve()`에 새 플래그가 늘 때마다 자동으로 `build_app()`의
-env-var 표면까지 넓히지 않는다. `/-/healthz`/`/-/readyz` 자체는 `build_app()`
-경로에서도 그대로 뜬다 — 둘 다 `make_wsgi_app()` 안에서 무조건 합류하는
-`build_ops_routes`가 만들기 때문이다(위).
+**`build_app()` 경로에서도 켤 수 있다(이슈 #187).** `--metrics`,
+`--trust-incoming-trace`, readyz 검사 ③(살아있는 `--jwt-secret-env`
+재확인)은 `lnpl serve` 경로에만 있었다 — 이제 `build_app()`(운영 배치,
+gunicorn)도 같은 것을 받는다: `LNPL_METRICS`, `LNPL_TRUST_INCOMING_TRACE`,
+그리고 `LNPL_JWT_SECRET_ENV`가 주어졌을 때의 검사 ③(아래 "운영 배치" 절의
+환경 변수 표). `serve`의 옵션마다 `build_app()` 대응 변수가 있거나, 없는
+이유가 적혀 있는지는 `impl/tests/test_build_app_serve_parity.py`가 지킨다 —
+새 `serve` 플래그를 대응 없이 더하면 그 테스트가 실패한다. `/-/healthz`/
+`/-/readyz` 자체는 `build_app()` 경로에서도 그대로 뜬다 — 둘 다
+`make_wsgi_app()` 안에서 무조건 합류하는 `build_ops_routes`가 만들기
+때문이다(위).
 
 ## Rate limit — `--rate-limit` (이슈 #148)
 
@@ -727,10 +732,21 @@ env-var 대응:
 | `LNPL_SOURCE` | `lnpl serve <src>` | (필수) — 파일들(`os.pathsep` 구분) 또는 디렉터리 1개, t77 `load_sources` 그대로 소비 |
 | `LNPL_BACKEND` | `--backend` | `fake` |
 | `LNPL_JWT_SECRET_ENV` | `--jwt-secret-env` | (미설정 — presence-checked, not verified) |
-| `LNPL_CLOCK` | `--clock` | `virtual` |
+| `LNPL_CLOCK` | (없음 — `serve`에는 `--clock` 플래그가 없다. `serve`의 내장 dev 서버는 항상 virtual clock으로 돌고, `LNPL_CLOCK`은 gunicorn 워커 전용 편의다) | `virtual` |
 | `LNPL_ENDPOINT_<NAME>` | `--endpoint NAME=URL` | (이슈 #101 계약 그대로 재사용 — `build_app()`이 새로 발명하지 않는다) |
 | `LNPL_LOG_FORMAT` | `--log-format` | `text` (이슈 #78) |
 | `LNPL_TRACE_EXPORTER` | `--trace-exporter` | (미설정 — 아무것도 내보내지 않음, 이슈 #78) |
+| `LNPL_IDEMPOTENCY_TTL_S` | `--idempotency-ttl` | `86400` (24시간, 정수 초 — 이슈 #113) |
+| `LNPL_METRICS` | `--metrics` | (미설정 = 꺼짐) — 불리언: `1`/`true`/`yes`/`on` 또는 `0`/`false`/`no`/`off`, 대소문자 무시 |
+| `LNPL_CAPTURE_ON_FAILURE` | `--capture-on-failure` | (미설정 = 꺼짐) — 같은 불리언 표기 |
+| `LNPL_TRUST_INCOMING_TRACE` | `--trust-incoming-trace` | (미설정 = 꺼짐) — 같은 불리언 표기 |
+| `LNPL_RATE_LIMIT` | `--rate-limit` | (미설정 = 무제한) — 0보다 큰 유한한 수 |
+
+표의 마지막 네 변수(`LNPL_METRICS`부터)는 빈 문자열을 미설정으로 본다. 닫힌 목록
+밖의 불리언 표기, 숫자가 아니거나 0 이하·`nan`·`inf`인 `LNPL_RATE_LIMIT`은
+그 변수 이름을 담은 `WsgiConfigError`로 기동이 실패한다. `build_app()`을
+인자로 직접 부를 때는 명시 인자(`None`이 아닌 값)가 환경 변수를 이긴다 —
+`metrics=False`는 `LNPL_METRICS=1`을 끈다(이슈 #187).
 
 해석 실패(존재하지 않는 소스, 알 수 없는 backend/clock 선택자, 미설정
 JWT secret, 매핑되지 않은 network target)는 `lnpl.wsgi.WsgiConfigError`를

@@ -11,8 +11,10 @@ gunicorn으로 띄우는 참조 컨테이너다. 이 저장소의 CI/릴리스 �
 저장소 — 계약은 `docs/serving.md` "계약 한계")로 서빙한다. 영속 저장소가
 필요하면 `LNPL_BACKEND=sqlite:/path/to.db`로 바꾼다(`docs/backends.md`).
 전체 환경 변수 계약(`LNPL_SOURCE`/`LNPL_BACKEND`/`LNPL_JWT_SECRET_ENV`/
-`LNPL_CLOCK`)은 `docs/serving.md` "운영 배치" 절이 정본이다 — 이 Dockerfile은
-그 계약을 소비할 뿐 재정의하지 않는다.
+`LNPL_CLOCK`, 그리고 `docker run -e`로 켜는 `LNPL_METRICS`/
+`LNPL_CAPTURE_ON_FAILURE`/`LNPL_TRUST_INCOMING_TRACE`/`LNPL_RATE_LIMIT`)은
+`docs/serving.md` "운영 배치" 절이 정본이다 — 이 Dockerfile은 그 계약을
+소비할 뿐 재정의하지 않는다.
 
 ## 빌드
 
@@ -50,8 +52,10 @@ docker rmi linkly-deploy-smoke
 ## 자동 스모크 테스트
 
 위 build/run/curl 절차는 `test_deploy.py`로도 자동화되어 있다 — docker
-build 1회 + 컨테이너 3개(케이스별)로 200(save-bookmark 완료)/404(미등록
-경로)/400(파싱 불가 body) 세 경로를 검증하고 정리한다:
+build 1회 + 컨테이너 6개(케이스별)로 여섯 경우를 검증하고 정리한다 —
+200(save-bookmark 완료), 404(미등록 경로), 400(파싱 불가 body),
+`LNPL_METRICS=1`일 때 `/-/metrics` 200, 미설정일 때 `/-/metrics` 404,
+`LNPL_RATE_LIMIT=1`일 때 연속 10회 요청의 첫 200과 이후 429(+`Retry-After`):
 
 ```bash
 .venv/bin/python -m unittest discover -s examples/deploy -p "test_*.py" -v

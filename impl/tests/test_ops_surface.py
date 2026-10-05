@@ -28,14 +28,19 @@ import json
 import os
 import signal
 import unittest
+from unittest import mock
 
 from lnpl.drivers import DriverError, HmacTokenProvider
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.serve import serve
-from lnpl.wsgi import ServeError, build_ops_routes, build_routes, make_wsgi_app
+from lnpl.wsgi import (ServeError, build_app, build_ops_routes, build_routes,
+                       make_wsgi_app)
 
 from tests.test_wsgi_contract import call_wsgi
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SHORTEN = os.path.join(REPO, "examples", "shorten.lnpl")
 
 # No `security` clause at all — the plain case for the assertions that are
 # not about auth.
@@ -174,6 +179,31 @@ class NormalTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual({"status": "ok"}, body)
 
+    # issue #187: the build_app-path twins of the readyz check 3 cases.
+    # `build_app` used to drop `jwt_secret_env` before `make_wsgi_app`, so
+    # the check never evaluated behind gunicorn.
+
+    def test_normal_readyz_stays_200_on_a_source_and_backend_only_build_app_deployment(self):
+        with mock.patch.dict(os.environ, {"LNPL_TEST_R9_SECRET": "x" * 32}):
+            app = build_app(sources=[SHORTEN], jwt_secret_env="LNPL_TEST_R9_SECRET")
+
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+
+        self.assertEqual("LNPL_TEST_R9_SECRET", app.jwt_secret_env)
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, body)
+
+    def test_normal_readyz_stays_200_when_no_jwt_secret_env_is_configured_at_all(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LNPL_JWT_SECRET_ENV", None)
+            app = build_app(sources=[SHORTEN])
+
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+
+        self.assertIsNone(app.jwt_secret_env)
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, body)
+
 
 class ErrorTest(unittest.TestCase):
 
@@ -204,6 +234,20 @@ class ErrorTest(unittest.TestCase):
 
         self.assertEqual(503, status)
         self.assertEqual(["repository", "jwt-secret-env"], body["checks"])
+
+    def test_error_readyz_is_503_when_jwt_secret_env_is_removed_after_build_on_build_app_path(self):
+        # issue #187: built with the secret present, then the variable goes
+        # away (a rotated/unmounted secret) — readyz must report it.
+        with mock.patch.dict(os.environ, {"LNPL_TEST_R9_SECRET": "x" * 32}):
+            app = build_app(sources=[SHORTEN], jwt_secret_env="LNPL_TEST_R9_SECRET")
+            os.environ.pop("LNPL_TEST_R9_SECRET")
+
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+
+        self.assertEqual(503, status)
+        self.assertEqual("not-ready", body["code"])
+        self.assertEqual(["jwt-secret-env"], body["checks"])
+        self.assertNotIn("x" * 32, json.dumps(body))
 
 
 class BoundaryTest(unittest.TestCase):

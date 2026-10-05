@@ -16,6 +16,7 @@ import os
 import unittest
 from unittest import mock
 
+from lnpl import cli, wsgi
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.wsgi import TokenBucket, make_wsgi_app
@@ -37,6 +38,18 @@ workflow GetReport
 
 def _doc(src, module="m148rate"):
     return lower(parse(src), module).to_document()
+
+
+def _write_tmp(testcase, text, name="mod.lnpl"):
+    import tempfile
+    tmp_root = os.path.join(REPO, ".claude", "tmp")
+    os.makedirs(tmp_root, exist_ok=True)
+    box = tempfile.TemporaryDirectory(dir=tmp_root)
+    testcase.addCleanup(box.cleanup)
+    path = os.path.join(box.name, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return path
 
 
 class _FakeClock:
@@ -189,6 +202,133 @@ class CliRateLimitFlagTest(unittest.TestCase):
         with mock.patch("lnpl.cli.serve", return_value=server) as factory:
             self._main(["serve", src])
         self.assertIsNone(factory.call_args.kwargs["rate_limit"])
+
+    def test_error_cli_rate_limit_nan_and_inf_now_rejected(self):
+        # issue #187: before the shared validator, `nan <= 0` and `inf <= 0`
+        # were both False, so each reached `serve()` unrejected.
+        src = self._write("ok.lnpl", OPEN_SRC)
+        for value in ("nan", "inf"):
+            with self.subTest(value=value):
+                server = mock.Mock()
+                server.server_address = ("127.0.0.1", 8080)
+                server.serve_forever.side_effect = KeyboardInterrupt
+                with mock.patch("lnpl.cli.serve", return_value=server) as factory:
+                    rc, _out, err = self._main(["serve", src, "--rate-limit", value])
+                self.assertEqual(2, rc)
+                self.assertIn("must be a positive number", err)
+                factory.assert_not_called()
+
+
+class RateLimitCharacterizationTest(unittest.TestCase):
+    """issue #187: pins `lnpl serve --rate-limit 0`'s complete stderr text and
+    exit code, written against the inline check before `cmd_serve` moved to
+    the validator `build_app` shares."""
+
+    def test_error_rate_limit_zero_exact_text_and_rc_characterization(self):
+        src = _write_tmp(self, OPEN_SRC, name="char.lnpl")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["serve", src, "--rate-limit", "0"])
+        self.assertEqual(2, rc)
+        self.assertEqual("", out.getvalue())
+        self.assertEqual("error: --rate-limit must be a positive number\n", err.getvalue())
+
+
+class _RateLimitEnvIsolatedTest(unittest.TestCase):
+    _ENV_KEYS = ("LNPL_RATE_LIMIT",)
+
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k, None) for k in self._ENV_KEYS}
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+class BuildAppRateLimitTest(_RateLimitEnvIsolatedTest):
+    """issue #187: `rate_limit` / LNPL_RATE_LIMIT on the build_app path."""
+
+    def _build(self, **kwargs):
+        return wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)], **kwargs)
+
+    def test_error_explicit_rate_limit_zero_argument_raises(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._build(rate_limit=0)
+        self.assertIn("LNPL_RATE_LIMIT must be a positive number", str(cm.exception))
+
+    def test_error_explicit_rate_limit_zero_argument_beats_a_valid_env_value(self):
+        os.environ["LNPL_RATE_LIMIT"] = "5"
+        with self.assertRaises(wsgi.WsgiConfigError):
+            self._build(rate_limit=0)
+
+    def test_error_lnpl_rate_limit_env_non_numeric_fails_the_launch(self):
+        os.environ["LNPL_RATE_LIMIT"] = "abc"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._build()
+        self.assertIn("LNPL_RATE_LIMIT is not a number", str(cm.exception))
+
+    def test_error_lnpl_rate_limit_env_whitespace_only_fails_the_launch(self):
+        os.environ["LNPL_RATE_LIMIT"] = "   "
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._build()
+        self.assertIn("LNPL_RATE_LIMIT is not a number", str(cm.exception))
+
+    def test_error_lnpl_rate_limit_env_zero_and_negative_fail_the_launch(self):
+        for value in ("0", "-5"):
+            with self.subTest(value=value):
+                os.environ["LNPL_RATE_LIMIT"] = value
+                with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                    self._build()
+                self.assertIn("LNPL_RATE_LIMIT must be a positive number",
+                              str(cm.exception))
+
+    def test_error_lnpl_rate_limit_env_nan_fails_the_launch(self):
+        os.environ["LNPL_RATE_LIMIT"] = "nan"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._build()
+        self.assertIn("LNPL_RATE_LIMIT must be a positive number", str(cm.exception))
+
+    def test_error_lnpl_rate_limit_env_inf_fails_the_launch(self):
+        os.environ["LNPL_RATE_LIMIT"] = "inf"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._build()
+        self.assertIn("LNPL_RATE_LIMIT must be a positive number", str(cm.exception))
+
+    def test_error_string_rate_limit_argument_raises_typeerror(self):
+        with self.assertRaises(TypeError) as cm:
+            self._build(rate_limit="5")
+        self.assertIn("must be real number", str(cm.exception))
+
+    def test_boundary_lnpl_rate_limit_unset_is_unlimited(self):
+        app = self._build()
+        self.assertIsNone(app._rate_limiter)
+
+    def test_boundary_lnpl_rate_limit_empty_string_behaves_as_unset(self):
+        os.environ["LNPL_RATE_LIMIT"] = ""
+        app = self._build()
+        self.assertIsNone(app._rate_limiter)
+
+    def test_normal_lnpl_rate_limit_env_var_limits_requests_with_429_and_retry_after(self):
+        os.environ["LNPL_RATE_LIMIT"] = "1"
+        app = self._build()
+        first_status, _h, _b = call_wsgi(app, "POST", "/rollup/get-report", body=b"{}")
+        second_status, second_headers, second_body = call_wsgi(
+            app, "POST", "/rollup/get-report", body=b"{}")
+        self.assertEqual(200, first_status)
+        self.assertEqual(429, second_status)
+        self.assertEqual("rate-limited", second_body["code"])
+        self.assertIn("Retry-After", second_headers)
+
+    def test_normal_explicit_rate_limit_argument_beats_lnpl_rate_limit_env(self):
+        os.environ["LNPL_RATE_LIMIT"] = "1"
+        app = self._build(rate_limit=3)
+        statuses = [call_wsgi(app, "POST", "/rollup/get-report", body=b"{}")[0]
+                    for _ in range(4)]
+        self.assertEqual([200, 200, 200, 429], statuses)
 
 
 if __name__ == "__main__":
