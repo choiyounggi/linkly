@@ -277,6 +277,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | **브로커 → `consume by` 인입의 실바인딩(kafka 컨슈머 등)** | #88 원칙을 소비 쪽에 대칭 적용한 것(이슈 #118). 코어가 소유하는 것은 구독 선언(`consume by`)·인입 엔드포인트(`POST /-/events/<slug>`)·멱등/오류-분류 의미론뿐이다 — 브로커에서 읽어 그 엔드포인트를 찌르는 것은 `lnpl relay`(레퍼런스, urllib만) 또는 외부 릴레이 구현체의 몫이다. 실제 kafka 컨슈머 그룹·오프셋 관리는 이 레포 밖 |
 | **`security encrypt <field>`** | 제거됨 — RFC-0035 §D3 참조(issue #127). 실제로 집행할 외부 드라이버가 0건이었던 것이 "드라이버 의존"이 아니라 항상 빈 집합이었다는 이유로, 닫힌 어휘에서 빠졌다. `Password` 마스킹(#43, 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 관측 채널 규칙)은 이 결정과 무관하게 그대로 남는다 |
 | **`NetworkDriver`의 커넥션 풀 실드라이버** | `HttpNetworkDriver`는 매 호출 연결을 열고 닫는다 — RFC-0037(이슈 #109)이 더한 것은 retry/backoff/jitter/서킷브레이커/경로 템플릿뿐이다. `lnpl.networks` entry-points SPI 표면 자체는 이슈 #132가 열었다(§10) — keep-alive 풀이 있는 실드라이버(`urllib3`/`httpx` 기반)를 그 표면에 등록하는 외부 패키지는 여전히 이 레포 밖이다 |
+| **오브젝트 스토리지(S3/GCS/Blob) 전용 capability** | `capability http` 우회로 가능한 범위를 실제 시나리오로 판정했다(issue #193) — [docs/object-storage-http-assessment.md](object-storage-http-assessment.md) |
 
 **소비 측 대칭 경계 (이슈 #118).** 발행 쪽에서 이미 세운 경계 — 코어는 계약
 (테이블 스키마, drain/ack 의미론)만 소유하고 실제 브로커 바인딩은 릴레이의
