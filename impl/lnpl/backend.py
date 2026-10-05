@@ -812,6 +812,35 @@ def workflow_uses_fail(document, workflow_id):
     return _fail_offender(document, workflow_id) is not None
 
 
+def _respond_term_offender(document, workflow_id):
+    """`(step_name, "aggregate"|"list")` of the first reachable `respond`
+    carrying a named aggregate term or a list term (RFC-0061), or None.
+    Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if effect is None or effect["kind"] != "Response":
+                continue
+            if effect.get("aggTerms"):
+                return step["name"], "aggregate"
+            if effect.get("listTerm"):
+                return step["name"], "list"
+    return None
+
+
+def workflow_uses_respond_aggregate_or_list(document, workflow_id):
+    """RFC-0061 §Mode B: does `workflow_id` answer a named aggregate term or a
+    list term? A RowSet, and an aggregate computed from it, are none of the
+    four observation classes mode B compares (RFC-0045 §7's reasoning), so
+    mode B refuses such a workflow — asked after `fail` and before RFC-0062's
+    two links, by both `_refuse_unsupported_guards` and `differential.verify`.
+    Raises
+    `BackendError` for an unknown workflow.
+    """
+    return _respond_term_offender(document, workflow_id) is not None
+
+
 def _workflow_nodes(document, workflow_id):
     nodes = {n["id"]: n for n in document["nodes"]}
     wf = nodes.get(workflow_id)
@@ -885,7 +914,8 @@ def workflow_uses_assigned_guard_field(document, workflow_id):
     """RFC-0062 §Mode B: does a guard of `workflow_id` read a field an earlier
     step assigns? Mode A evaluates it against the current value; mode B fixes
     every condition field at entry (RFC-0008 G8), so it refuses (`emit_mlir`,
-    `build`) and `differential.verify` asks this after `workflow_uses_fail`.
+    `build`) and `differential.verify` asks this after
+    `workflow_uses_respond_aggregate_or_list`.
     Raises `BackendError` for an unknown workflow."""
     return _assigned_guard_offender(document, workflow_id) is not None
 
@@ -939,10 +969,11 @@ def _refuse_unsupported_guards(document, workflow_id):
     Money-then-Lookup-then-Optional-then-Text order `differential.verify` asks
     them, so `build` and `diff` cannot drift apart. A fill-source create
     (RFC-0057, `_fill_source_create_offender`) is refused next, then a `fail`
-    step (RFC-0058, `_fail_offender`), then a guard reading a field an earlier
-    step assigns and, last, a guard owning an `otherwise` item (RFC-0062,
-    `_assigned_guard_offender`, `_otherwise_offender`), in the same positions
-    in both.
+    step (RFC-0058, `_fail_offender`), then a `respond` aggregate or list
+    term (RFC-0061, `_respond_term_offender`), then a guard reading a field
+    an earlier step assigns and, last, a guard owning an `otherwise` item
+    (RFC-0062, `_assigned_guard_offender`, `_otherwise_offender`), in the
+    same positions in both.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here — its refusal in `_render_std` depends on `_lnpl_ops`'s
     seed/payload-truncated ops stream, which a document-level check here
@@ -990,6 +1021,13 @@ def _refuse_unsupported_guards(document, workflow_id):
         raise BackendError(
             "step %s: `fail %s` has no compiled evaluator (RFC-0058 §Mode B, "
             "recorded exemption) — run it in mode A" % (step_name, code))
+    respond_offender = _respond_term_offender(document, workflow_id)
+    if respond_offender is not None:
+        step_name, term_kind = respond_offender
+        raise BackendError(
+            "step %s: `respond` %s term has no compiled evaluator (RFC-0061 "
+            "§Mode B, recorded exemption) — run it in mode A"
+            % (step_name, term_kind))
     assigned_offender = _assigned_guard_offender(document, workflow_id)
     if assigned_offender is not None:
         step_name, guard_text, field = assigned_offender

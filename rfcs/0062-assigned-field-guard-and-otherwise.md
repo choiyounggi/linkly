@@ -400,9 +400,14 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0014 §Reference-level Specific
 
 거부 순서는 `build`와 `diff`가 같다(issue #185): Money 가드(RFC-0051) → 조회 키(RFC-0052)
 → `optional` 필드 가드(RFC-0055) → Text 등가 가드(RFC-0056) → fill-source create(RFC-0057)
-→ `fail`(RFC-0058) → 할당한 필드를 읽는 가드 → `otherwise`(이 RFC). 앞선 것이 먼저 거부한다.
-`diff`는 그 앞에 숫자 형태 술어(RFC-0050)를 먼저 묻는다(RFC-0050 원문 그대로). 다른 거부
-RFC가 `fail` 뒤에 끼어들면 이 RFC의 두 고리는 그 뒤에 온다.
+→ `fail`(RFC-0058) → `respond` 집계·목록 항(RFC-0061) → 할당한 필드를 읽는 가드 →
+`otherwise`(이 RFC). 앞선 것이 먼저 거부한다. `diff`는 그 앞에 숫자 형태 술어(RFC-0050)를
+먼저 묻는다(RFC-0050 원문 그대로). 다른 거부 RFC가 `respond` 고리 뒤에 끼어들면 이 RFC의 두
+고리는 그 뒤에 온다.
+
+RFC-0061 §4의 "`respond list`는 워크플로의 유일한 `respond`" 규칙은 `otherwise`의 두 가지를
+합쳐 센다 — 서로 배타적인 두 가지에 각각 `respond`를 두어도, 그중 하나가 목록 항이면
+거부된다. 보수적인 거부이므로 이 RFC는 그대로 둔다.
 
 참조 구현: `impl/lnpl/backend.py::_assigned_guard_offender`, `_otherwise_offender`,
 `_refuse_unsupported_guards`; `impl/lnpl/differential.py::verify`.

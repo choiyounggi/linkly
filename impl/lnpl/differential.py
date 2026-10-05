@@ -395,7 +395,8 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     §Mode B), one whose guard reads an `optional` field (RFC-0055 §Mode B),
     one whose guard compares a Text-family field (RFC-0056 §Mode B), one that
     creates a fill-source entity (RFC-0057 §Mode B), one that reaches a `fail`
-    step (RFC-0058 §Mode B), one whose guard reads a field an earlier step
+    step (RFC-0058 §Mode B), one that answers a `respond` aggregate or list
+    term (RFC-0061 §Mode B), one whose guard reads a field an earlier step
     assigns and, last, one whose guard owns an `otherwise` item (RFC-0062
     §Mode B).
     """
@@ -441,6 +442,13 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "workflow %r uses `fail` — mode B has no compiled evaluator for "
             "it (RFC-0058 §Mode B, recorded exemption); differential "
             "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_respond_aggregate_or_list(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r answers a `respond` %s term — mode B has no "
+            "compiled evaluator for it (RFC-0061 §Mode B, recorded "
+            "exemption); differential comparison is not attempted"
+            % (workflow_id,
+               backend._respond_term_offender(document, workflow_id)[1]))
     if backend.workflow_uses_assigned_guard_field(document, workflow_id):
         raise DifferentialError(
             "workflow %r has a guard that reads a field an earlier step "

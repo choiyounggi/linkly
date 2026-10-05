@@ -97,5 +97,55 @@ class TestOtherwiseModeB(_Refusals):
                 self.assertNotIn("EQUIVALENT", text)
 
 
+
+class TestOtherwiseWithRespondTerms(_Refusals):
+    """RFC-0061 x RFC-0062: an `otherwise` item that answers a `respond`
+    aggregate term, in mode A and against both mode B chains."""
+
+    def _source(self, guarded, other):
+        from tests.test_respond_aggregate import HEAD as STATS, LIST_A
+        return (STATS + "    %s\n    when input.quantity > 0\n    %s\n"
+                "    otherwise\n    %s\n" % (LIST_A, guarded, other))
+
+    def _run(self, quantity):
+        from lnpl.interp import Interpreter
+        from tests.test_respond_aggregate import (CUSTOMER_A, THREE_FOR_A,
+                                                  WORKFLOW, order_rows)
+        doc = doc_of(self._source("respond orderCount as count order",
+                                  "respond revenue as sum order.total"))
+        return Interpreter(doc, repo_rows=order_rows(*THREE_FOR_A)).run_workflow(
+            WORKFLOW, {"customerId": CUSTOMER_A, "quantity": quantity})
+
+    def test_each_branch_answers_its_own_aggregate(self):
+        held = self._run(quantity=1)
+        self.assertEqual(held["response"], {"orderCount": 3})
+        self.assertEqual([(r["mode"], r["steps"]) for r in held["skipped"]],
+                         [("otherwise", ["respond revenue as sum order.total"])])
+        fell = self._run(quantity=0)
+        self.assertEqual(fell["response"],
+                         {"revenue": {"amount": "4.00", "currency": "USD"}})
+        self.assertEqual([(r["mode"], r["steps"]) for r in fell["skipped"]],
+                         [("when", ["respond orderCount as count order"])])
+
+    def test_the_respond_term_link_fires_before_otherwise_in_both_commands(self):
+        from tests.test_respond_aggregate import WORKFLOW
+        doc = doc_of(self._source("respond orderCount as count order",
+                                  "respond revenue as sum order.total"))
+        self.assertTrue(backend.workflow_uses_otherwise(doc, WORKFLOW))
+        for msg in (self._build_refusal(doc, WORKFLOW),
+                    self._diff_refusal(doc, WORKFLOW)):
+            self.assertIn("RFC-0061", msg)
+            self.assertNotIn("RFC-0062", msg)
+
+    def test_a_list_term_still_must_be_the_only_respond_across_branches(self):
+        """RFC-0061 §4 counts `respond` steps workflow-wide, `otherwise`
+        branches included — a conservative rejection, kept as is."""
+        from lnpl.lower import LowerError
+        with self.assertRaises(LowerError) as ctx:
+            doc_of(self._source("respond list order",
+                                "respond orderCount as count order"))
+        self.assertIn("must be the workflow's only `respond` step",
+                      str(ctx.exception))
+
 if __name__ == "__main__":
     unittest.main()

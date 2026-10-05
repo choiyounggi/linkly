@@ -2047,6 +2047,10 @@ def _check_guard_scoped_binding_reads(emitted, top_ids, workflow_name,
     for node in emitted:
         if node["kind"] == "Response":
             refs = list(node.get("refs") or [])
+            # RFC-0061 §2: a term reads its RowSet's binding too.
+            refs.extend(term["ref"] for term in node.get("aggTerms") or [])
+            if node.get("listTerm"):
+                refs.append(node["listTerm"]["binding"])
             rendering = "`respond %s`" % " ".join(refs)
         elif node["kind"] == "Assignment":
             try:
@@ -2585,6 +2589,32 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     # this walk, in program order, so an `Aggregate` sees exactly the `list`s
     # that precede it in the text.
     listed = set()
+    # RFC-0061 §2: binding -> the `limit` of every `list` that fills it, in
+    # or out of a guard — any of them may be the one that ran, so a
+    # `respond list <binding>` needs every one of them bounded.
+    list_limits = {}
+    # RFC-0061 §4: a list term's envelope IS the whole response, so it cannot
+    # be merged with what another `respond` step of the same workflow adds.
+    responses = [n for n in emitted if n["kind"] == "Response"]
+    if len(responses) > 1 and any(n.get("listTerm") for n in responses):
+        raise LowerError(
+            "workflow %s: `respond list <binding>` answers the whole "
+            "`{items, next}` envelope, so it must be the workflow's only "
+            "`respond` step — this workflow has %d (RFC-0061 §4)"
+            % (workflow_name, len(responses)))
+
+    def orphaned(text, line):
+        if diagnostics is not None:
+            diagnostics.add(
+                code="aggregation-orphaned-list",
+                where=("line %d" % line) if line else workflow_name,
+                subject=text,
+                message="`%s` reads a RowSet no earlier "
+                        "unguarded `list` fills in this "
+                        "workflow, so it is always empty and "
+                        "this always evaluates to 0"
+                        % text,
+                line=line)
 
     def visit(ids, guarded=False):
         for nid in ids:
@@ -2608,13 +2638,20 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                         if child.get("operation") == "query":
                             if not guarded:
                                 listed.add(child["entity"])
+                            list_limits.setdefault(
+                                binding_name(registry[child["entity"]]),
+                                []).append(child.get("limit"))
                             if child.get("predicate"):
                                 _check_list_predicate(child, registry, scope,
                                                      workflow_name)
                         continue
                     if child["kind"] == "Response":
-                        text = "respond %s" % " ".join(child["refs"])
-                        _check_respond(child["refs"], scope, text, base_of or {})
+                        refs = child.get("refs") or []
+                        text = "respond %s" % " ".join(refs)
+                        _check_respond(refs, scope, text, base_of or {})
+                        _check_respond_terms(child, by_binding, base_of or {},
+                                             workflow_name, listed,
+                                             list_limits, orphaned)
                         continue
                     if child["kind"] == "EventEmit":
                         if child.get("payloadMap"):
@@ -2669,18 +2706,8 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                 # base type — `count` (agg_base is None) has
                                 # no field, so no `agg_field_type` to record.
                                 child["agg_field_type"] = agg_base
-                            if entity_id not in listed and diagnostics is not None:
-                                line = child.get("line")
-                                diagnostics.add(
-                                    code="aggregation-orphaned-list",
-                                    where=("line %d" % line) if line else workflow_name,
-                                    subject=text,
-                                    message="`%s` reads a RowSet no earlier "
-                                            "unguarded `list` fills in this "
-                                            "workflow, so it is always empty and "
-                                            "this always evaluates to 0"
-                                            % text,
-                                    line=line)
+                            if entity_id not in listed:
+                                orphaned(text, child.get("line"))
                         else:
                             target_field = scope.resolve_field(
                                 child["target"], text, ASSIGN_SUBJECT,
@@ -2920,6 +2947,50 @@ def _check_respond(refs, scope, text, base_of):
                 "chokepoint: a masked field's value must never leave "
                 "through an unmasked one)"
                 % (scope.workflow_name, ref, declared))
+
+
+def _check_respond_terms(node, by_binding, base_of, workflow_name, listed,
+                         list_limits, orphaned):
+    """RFC-0061 §2: the document-level rules for `respond`'s two term kinds.
+
+    A named aggregate term is judged by `_check_aggregate` — the very check
+    `set <target> to <aggregate>` gets — and records the same
+    `agg_field_type` (RFC-0047) on the term, plus the same
+    `aggregation-orphaned-list` warning when no earlier unguarded `list`
+    fills its RowSet. A list term must name an entity's RowSet, and every
+    `list` that fills that RowSet must declare `limit`: a response must not
+    carry an unbounded set of rows.
+    """
+    from .condition import parse_value_or_aggregate
+
+    for term in node.get("aggTerms") or []:
+        text = "respond %s as %s %s" % (term["name"], term["func"], term["ref"])
+        agg = parse_value_or_aggregate("%s %s" % (term["func"], term["ref"]))
+        entity_id, agg_base = _check_aggregate(agg, by_binding, base_of,
+                                               workflow_name, text)
+        if agg_base is not None:
+            term["agg_field_type"] = agg_base
+        if entity_id not in listed:
+            orphaned(text, node.get("line"))
+    list_term = node.get("listTerm")
+    if list_term is None:
+        return
+    binding = list_term["binding"]
+    entity = by_binding.get(binding)
+    if entity is None:
+        raise LowerError(
+            "workflow %s: `respond list %s` names %r, which is not an "
+            "entity's RowSet — `list <Entity> where ... limit <n>` fills one "
+            "under the entity's binding name" % (workflow_name, binding, binding))
+    limits = list_limits.get(binding)
+    if not limits:
+        orphaned("respond list %s" % binding, node.get("line"))
+    elif any(limit is None for limit in limits):
+        raise LowerError(
+            "workflow %s: `respond list %s` reads a RowSet that a `list %s` "
+            "without `limit` fills — a response cannot carry an unbounded "
+            "RowSet; add `limit <n>` to every `list %s` (RFC-0061 §2)"
+            % (workflow_name, binding, binding, binding))
 
 
 def _check_lookup(lookup_ref, scope, workflow_name, base_of):
@@ -4119,14 +4190,72 @@ def _derive_respond(step_id, line, registry, namespace=None):
     chokepoint) both need the whole step list and stay
     `_check_scoped_conditions`'s job, via `_check_respond` — the same split
     `format`'s Password check uses.
+
+    RFC-0061 §1 adds two term kinds. `<name> as <func> <ref>` (four tokens,
+    recognised by the `as` after the name) is a named aggregate term, free to
+    mix with bare references; `list <binding>` is a list term and stands
+    alone on its line. Only each term's shape is judged here — the aggregate
+    type rules and the `limit` rule need the whole step list and run in
+    `_check_scoped_conditions`, same split as above.
     """
+    from .condition import AGG_FUNCS
     from .repo_policy import binding_name
 
-    refs = line.tokens[1:]
-    if not refs:
+    tokens = line.tokens[1:]
+    if not tokens:
         raise LowerError(
             "line %d: `respond` names no references — list at least one "
             "`<binding>.<field>`" % line.lineno)
+    eid = "%s.%s" % (step_id, EFFECT_SLUG["Response"])
+
+    list_alone = LowerError(
+        "line %d: `respond list <binding>` stands alone — it answers the "
+        "whole `{items, next}` envelope, so it takes exactly one binding and "
+        "no other term (RFC-0061 §1)" % line.lineno)
+    if tokens[0] == "list" and tokens[1:2] != ["as"]:
+        if len(tokens) != 2:
+            raise list_alone
+        return _node("Response", eid, listTerm={"binding": tokens[1]},
+                     line=line.lineno)
+
+    refs, agg_terms = [], []
+    i = 0
+    while i < len(tokens):
+        if i + 1 < len(tokens) and tokens[i + 1] == "as":
+            if i + 3 >= len(tokens):
+                raise LowerError(
+                    "line %d: `respond %s` — `as` needs a function and a "
+                    "reference after it (`<name> as <func> <ref>`, RFC-0061 "
+                    "§1)" % (line.lineno, " ".join(tokens[i:])))
+            name, func, ref = tokens[i], tokens[i + 2], tokens[i + 3]
+            if not WORD_RE.match(name):
+                raise LowerError(
+                    "line %d: respond term name %r is not a valid name — it "
+                    "must be camelCase, like a binding name (RFC-0061 §1)"
+                    % (line.lineno, name))
+            if func not in AGG_FUNCS:
+                raise LowerError(
+                    "line %d: respond term %r uses %r, which is not an "
+                    "aggregate — use one of %s (RFC-0061 §1)"
+                    % (line.lineno, name, func, ", ".join(AGG_FUNCS)))
+            if any(t["name"] == name for t in agg_terms):
+                raise LowerError(
+                    "line %d: respond term name %r is used more than once — "
+                    "each term is one key of the response" % (line.lineno, name))
+            for ent in registry.values():
+                if name == binding_name(ent):
+                    raise LowerError(
+                        "line %d: respond term name %r collides with entity "
+                        "%s's binding name — a term cannot share a name with "
+                        "a binding (RFC-0061 §1)"
+                        % (line.lineno, name, ent["name"]))
+            agg_terms.append({"name": name, "func": func, "ref": ref})
+            i += 4
+            continue
+        if tokens[i] == "list":
+            raise list_alone
+        refs.append(tokens[i])
+        i += 1
 
     for ref in refs:
         binding, _, field = ref.partition(".")
@@ -4151,8 +4280,11 @@ def _derive_respond(step_id, line, registry, namespace=None):
                 % (line.lineno, ref, field, entity["name"]))
         _check_internal_visibility(entity, namespace, line.lineno, "respond", ref)
 
-    eid = "%s.%s" % (step_id, EFFECT_SLUG["Response"])
-    return _node("Response", eid, refs=list(refs), line=line.lineno)
+    # `_node` drops a None field, so a line without bare references carries
+    # no `refs` key at all — and a line without terms is byte-identical to
+    # what it lowered to before RFC-0061.
+    return _node("Response", eid, refs=refs or None,
+                 aggTerms=agg_terms or None, line=line.lineno)
 
 
 def _derive_note(step_id, line):
