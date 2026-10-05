@@ -44,7 +44,8 @@ from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
-                   resolve_schedule_triggers, _schedule_events)
+                   resolve_schedule_triggers, _schedule_events,
+                   _validate_rate_limit)
 from .spec import SpecError, extract, run_manifest
 
 
@@ -844,8 +845,10 @@ def cmd_serve(args):
         return 2
 
     rate_limit = getattr(args, "rate_limit", None)
-    if rate_limit is not None and rate_limit <= 0:
-        print("error: --rate-limit must be a positive number", file=sys.stderr)
+    try:
+        _validate_rate_limit(rate_limit, "--rate-limit")
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
         return 2
     grace_period_s = getattr(args, "grace_period", 30.0)
     if grace_period_s < 0:
@@ -1663,7 +1666,10 @@ def cmd_agents(args):
     return 0
 
 
-def main(argv=None):
+def _build_parser(subparsers_out=None):
+    """The whole `lnpl` argument parser. `subparsers_out`, when given, is a
+    dict that receives the `serve` subparser under "serve" — the handle the
+    build_app/serve parity test enumerates options from (issue #187)."""
     ap = argparse.ArgumentParser(prog="lnpl", description="compile and run LNPL sources")
     ap.add_argument("--version", action="version",
                     version="lnpl %s" % __version__)
@@ -2103,6 +2109,13 @@ def main(argv=None):
     ag.add_argument("-o", "--output", help="write the resulting IR here")
     ag.set_defaults(func=cmd_agents)
 
+    if subparsers_out is not None:
+        subparsers_out["serve"] = sv
+    return ap
+
+
+def main(argv=None):
+    ap = _build_parser()
     args = ap.parse_args(argv)
     try:
         return args.func(args)

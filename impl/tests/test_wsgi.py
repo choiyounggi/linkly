@@ -100,6 +100,80 @@ workflow Pay
     call PaymentGateway with input.id as p
 """
 
+# Named DEAD_ENDPOINT_FAIL_SOURCE, distinct from the EXISTING
+# UNBOUND_CALL_SOURCE (which has no `capability http` declaration at all
+# and fails at BUILD time). This fixture DECLARES the capability and
+# fails at REQUEST time because its endpoint is unreachable -- the one
+# failure build_app can produce without a custom repository_factory.
+# No `as p`: an unbound `call` re-raises a transport failure as RunError
+# (a 500), where a bound one turns it into a value the guard can branch on.
+DEAD_ENDPOINT_FAIL_SOURCE = """
+capability http PaymentGateway
+    method post
+    auth bearer from %s
+entity Order
+    field
+        id UUID
+service Checkout
+workflow Pay
+    call PaymentGateway
+""" % PAYMENT_TOKEN_ENV
+
+# issue #187: mirrors test_trace_canonical_line.py's fixture.
+VALID = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+TRACE_SOURCE = """
+capability postgres
+entity Order
+    field
+        id UUID
+service Checkout
+    policy
+        retry 0
+workflow Ping
+    find order
+"""
+
+
+def _raw_get(app, path):
+    environ = {
+        "REQUEST_METHOD": "GET", "PATH_INFO": path, "QUERY_STRING": "",
+        "wsgi.input": io.BytesIO(b""), "wsgi.errors": io.StringIO(),
+        "wsgi.version": (1, 0), "wsgi.multithread": True,
+        "wsgi.multiprocess": False, "wsgi.run_once": False,
+        "wsgi.url_scheme": "http", "SERVER_NAME": "test", "SERVER_PORT": "80",
+        "SERVER_PROTOCOL": "HTTP/1.1", "SCRIPT_NAME": "",
+    }
+    captured = {}
+
+    def start_response(status, headers, exc_info=None):
+        captured["status"] = status
+        captured["headers"] = dict(headers)
+
+    result = app(environ, start_response)
+    raw = b"".join(result)
+    status_code = int(captured["status"].split(" ", 1)[0])
+    return status_code, captured["headers"], raw
+
+
+def _post_json_lines(app, path, headers=None, body=None):
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        status, _headers, _body = call_wsgi(
+            app, "POST", path,
+            body=body if body is not None else json.dumps(
+                {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301"}).encode("utf-8"),
+            headers=headers or {})
+    lines = []
+    for ln in buf.getvalue().splitlines():
+        if not ln.strip():
+            continue
+        try:
+            lines.append(json.loads(ln))
+        except ValueError:
+            continue
+    return status, lines
+
 
 def _environ(method="GET", path="/", query=""):
     body = b""
@@ -135,7 +209,8 @@ class _EnvIsolatedTest(unittest.TestCase):
     must never leak into a resolution this test is trying to pin."""
 
     _ENV_KEYS = ("LNPL_SOURCE", "LNPL_BACKEND", "LNPL_JWT_SECRET_ENV",
-                "LNPL_CLOCK", PAYMENT_TOKEN_ENV)
+                "LNPL_CLOCK", PAYMENT_TOKEN_ENV, "LNPL_METRICS",
+                "LNPL_CAPTURE_ON_FAILURE", "LNPL_TRUST_INCOMING_TRACE")
 
     def setUp(self):
         self._saved = {k: os.environ.pop(k, None) for k in self._ENV_KEYS}
@@ -323,6 +398,173 @@ class BuildAppBoundaryTest(_EnvIsolatedTest):
                 result.close()
         self.assertTrue(captured["status"].startswith("404"))
         self.assertIn(b"not-found", body)
+
+
+class BuildAppMetricsTest(_EnvIsolatedTest):
+    """issue #187: `metrics` / LNPL_METRICS on the build_app path."""
+
+    def test_normal_lnpl_metrics_env_var_exposes_metrics_endpoint(self):
+        os.environ["LNPL_METRICS"] = "1"
+        app = wsgi.build_app(sources=[SHORTEN])
+        status, _headers, raw = _raw_get(app, "/-/metrics")
+        self.assertEqual(200, status)
+        self.assertTrue(len(raw) > 0)
+
+    def test_normal_lnpl_metrics_absent_by_default_returns_404(self):
+        app = wsgi.build_app(sources=[SHORTEN])
+        status, _headers, _raw = _raw_get(app, "/-/metrics")
+        self.assertEqual(404, status)
+
+    def test_normal_explicit_false_metrics_overrides_lnpl_metrics_env(self):
+        os.environ["LNPL_METRICS"] = "1"
+        app = wsgi.build_app(sources=[SHORTEN], metrics=False)
+        self.assertIsNone(app.metrics)
+        status, _headers, _raw = _raw_get(app, "/-/metrics")
+        self.assertEqual(404, status)
+
+    def test_boundary_lnpl_metrics_empty_string_behaves_as_unset(self):
+        os.environ["LNPL_METRICS"] = ""
+        app = wsgi.build_app(sources=[SHORTEN])
+        self.assertIsNone(app.metrics)
+
+    def test_boundary_lnpl_metrics_false_spellings_keep_the_endpoint_off(self):
+        for value in ("0", "false", "No", " off "):
+            with self.subTest(value=value):
+                os.environ["LNPL_METRICS"] = value
+                app = wsgi.build_app(sources=[SHORTEN])
+                self.assertIsNone(app.metrics)
+
+    def test_error_lnpl_metrics_malformed_value_fails_the_launch(self):
+        os.environ["LNPL_METRICS"] = "maybe"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[SHORTEN])
+        self.assertIn("LNPL_METRICS", str(cm.exception))
+
+    def test_error_explicit_metrics_non_bool_argument_raises_typeerror(self):
+        with self.assertRaises(TypeError) as cm:
+            wsgi.build_app(sources=[SHORTEN], metrics="0")
+        self.assertIn("metrics", str(cm.exception))
+
+
+def _dead_endpoint_url():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    dead_port = s.getsockname()[1]
+    s.close()
+    return "http://127.0.0.1:%d/" % dead_port
+
+
+class BuildAppCaptureOnFailureTest(_EnvIsolatedTest):
+    """issue #187: `capture_on_failure` / LNPL_CAPTURE_ON_FAILURE on the
+    build_app path. The failure is a refused connection to a closed port."""
+
+    PAY_BODY = json.dumps({"id": "11111111-1111-1111-1111-111111111111"}).encode("utf-8")
+
+    def test_normal_on_and_failed_includes_the_masked_input(self):
+        os.environ[PAYMENT_TOKEN_ENV] = "secret-token-value"
+        app = wsgi.build_app(sources=[_write_tmp(self, DEAD_ENDPOINT_FAIL_SOURCE)],
+                             endpoints={"PaymentGateway": _dead_endpoint_url()},
+                             capture_on_failure=True, log_format="json")
+        status, lines = _post_json_lines(app, "/checkout/pay", body=self.PAY_BODY)
+        self.assertEqual(500, status)
+        self.assertIn("input", lines[0])
+
+    def test_normal_off_and_failed_omits_the_input(self):
+        os.environ[PAYMENT_TOKEN_ENV] = "secret-token-value"
+        app = wsgi.build_app(sources=[_write_tmp(self, DEAD_ENDPOINT_FAIL_SOURCE)],
+                             endpoints={"PaymentGateway": _dead_endpoint_url()},
+                             log_format="json")
+        status, lines = _post_json_lines(app, "/checkout/pay", body=self.PAY_BODY)
+        self.assertEqual(500, status)
+        self.assertNotIn("input", lines[0])
+
+    def test_normal_lnpl_capture_on_failure_env_var_includes_the_masked_input(self):
+        os.environ[PAYMENT_TOKEN_ENV] = "secret-token-value"
+        os.environ["LNPL_CAPTURE_ON_FAILURE"] = "true"
+        app = wsgi.build_app(sources=[_write_tmp(self, DEAD_ENDPOINT_FAIL_SOURCE)],
+                             endpoints={"PaymentGateway": _dead_endpoint_url()},
+                             log_format="json")
+        status, lines = _post_json_lines(app, "/checkout/pay", body=self.PAY_BODY)
+        self.assertEqual(500, status)
+        self.assertEqual({"id": "11111111-1111-1111-1111-111111111111"},
+                         lines[0]["input"])
+
+    def test_normal_explicit_false_overrides_lnpl_capture_on_failure_env(self):
+        os.environ["LNPL_CAPTURE_ON_FAILURE"] = "1"
+        app = wsgi.build_app(sources=[SHORTEN], capture_on_failure=False)
+        self.assertFalse(app.capture_on_failure)
+
+    def test_boundary_lnpl_capture_on_failure_empty_string_behaves_as_unset(self):
+        os.environ["LNPL_CAPTURE_ON_FAILURE"] = ""
+        app = wsgi.build_app(sources=[SHORTEN])
+        self.assertFalse(app.capture_on_failure)
+
+    def test_error_lnpl_capture_on_failure_malformed_value_fails_the_launch(self):
+        os.environ["LNPL_CAPTURE_ON_FAILURE"] = "maybe"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[SHORTEN])
+        self.assertIn("LNPL_CAPTURE_ON_FAILURE", str(cm.exception))
+
+    def test_error_explicit_capture_on_failure_non_bool_argument_raises_typeerror(self):
+        with self.assertRaises(TypeError) as cm:
+            wsgi.build_app(sources=[SHORTEN], capture_on_failure="0")
+        self.assertIn("capture_on_failure", str(cm.exception))
+
+
+class BuildAppTrustIncomingTraceTest(_EnvIsolatedTest):
+    """issue #187: `trust_incoming_trace` / LNPL_TRUST_INCOMING_TRACE on the
+    build_app path."""
+
+    def test_normal_on_adopts_the_inbound_trace_id(self):
+        app = wsgi.build_app(sources=[_write_tmp(self, TRACE_SOURCE)],
+                             trust_incoming_trace=True, log_format="json")
+        status, lines = _post_json_lines(app, "/checkout/ping",
+                                         headers={"traceparent": VALID})
+        self.assertEqual(200, status)
+        self.assertEqual("4bf92f3577b34da6a3ce929d0e0e4736", lines[0]["trace_id"])
+
+    def test_normal_off_default_mints_a_fresh_trace_id(self):
+        app = wsgi.build_app(sources=[_write_tmp(self, TRACE_SOURCE)],
+                             log_format="json")
+        status, lines = _post_json_lines(app, "/checkout/ping",
+                                         headers={"traceparent": VALID})
+        self.assertEqual(200, status)
+        self.assertNotEqual("4bf92f3577b34da6a3ce929d0e0e4736", lines[0]["trace_id"])
+
+    def test_normal_lnpl_trust_incoming_trace_env_var_adopts_the_inbound_trace_id(self):
+        os.environ["LNPL_TRUST_INCOMING_TRACE"] = "ON"
+        app = wsgi.build_app(sources=[_write_tmp(self, TRACE_SOURCE)],
+                             log_format="json")
+        status, lines = _post_json_lines(app, "/checkout/ping",
+                                         headers={"traceparent": VALID})
+        self.assertEqual(200, status)
+        self.assertEqual("4bf92f3577b34da6a3ce929d0e0e4736", lines[0]["trace_id"])
+
+    def test_normal_explicit_false_overrides_lnpl_trust_incoming_trace_env(self):
+        os.environ["LNPL_TRUST_INCOMING_TRACE"] = "1"
+        app = wsgi.build_app(sources=[_write_tmp(self, TRACE_SOURCE)],
+                             trust_incoming_trace=False, log_format="json")
+        status, lines = _post_json_lines(app, "/checkout/ping",
+                                         headers={"traceparent": VALID})
+        self.assertEqual(200, status)
+        self.assertNotEqual("4bf92f3577b34da6a3ce929d0e0e4736", lines[0]["trace_id"])
+
+    def test_boundary_lnpl_trust_incoming_trace_empty_string_behaves_as_unset(self):
+        os.environ["LNPL_TRUST_INCOMING_TRACE"] = ""
+        app = wsgi.build_app(sources=[SHORTEN])
+        self.assertFalse(app.trust_incoming_trace)
+
+    def test_error_lnpl_trust_incoming_trace_malformed_value_fails_the_launch(self):
+        os.environ["LNPL_TRUST_INCOMING_TRACE"] = "maybe"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[SHORTEN])
+        self.assertIn("LNPL_TRUST_INCOMING_TRACE", str(cm.exception))
+
+    def test_error_explicit_trust_incoming_trace_non_bool_argument_raises_typeerror(self):
+        with self.assertRaises(TypeError) as cm:
+            wsgi.build_app(sources=[SHORTEN], trust_incoming_trace="0")
+        self.assertIn("trust_incoming_trace", str(cm.exception))
 
 
 class RetryPassthroughWsgiTest(_ServerTestCase):

@@ -2247,9 +2247,36 @@ def _resolve_network(document, endpoints):
     return HttpNetworkDriver(endpoints=resolved_endpoints, capabilities=resolved_caps)
 
 
+def _env_or_none(name):
+    return os.environ.get(name) or None
+
+
+def _typecheck_bool_or_none(value, name):
+    if value is not None and not isinstance(value, bool):
+        raise TypeError("%s must be a bool or None" % name)
+
+
+def _parse_bool_env(raw, name):
+    if raw is None:
+        return None
+    low = raw.strip().lower()
+    if low in ("1", "true", "yes", "on"):
+        return True
+    if low in ("0", "false", "no", "off"):
+        return False
+    raise WsgiConfigError(
+        "%s is not a recognized boolean (use 1/0, true/false, yes/no, on/off)" % name)
+
+
+def _validate_rate_limit(value, option):
+    if value is not None and (not math.isfinite(value) or value <= 0):
+        raise WsgiConfigError("%s must be a positive number" % option)
+
+
 def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
               endpoints=None, log_format=None, trace_exporter=None,
-              idempotency_ttl_s=None):
+              idempotency_ttl_s=None, metrics=None, capture_on_failure=None,
+              trust_incoming_trace=None, rate_limit=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
 
@@ -2273,6 +2300,16 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
                                            claim is honored before a repeat
                                            becomes a fresh miss (issue #113,
                                            D10); default 86400 (24h)
+      metrics            LNPL_METRICS         closed boolean vocabulary (see
+                                           _parse_bool_env); default False
+      capture_on_failure LNPL_CAPTURE_ON_FAILURE  same boolean vocabulary; default False
+      trust_incoming_trace LNPL_TRUST_INCOMING_TRACE  same boolean vocabulary; default False
+      rate_limit         LNPL_RATE_LIMIT      a positive, finite float; default
+                                           None (unlimited)
+
+    LNPL_CACHE, LNPL_NETWORK, LNPL_TOKEN_PROVIDER, LNPL_JWT_ISSUER,
+    LNPL_CONFIG, LNPL_PROFILE: not read by build_app in this release; see
+    issue #187.
 
     A `sources`/`backend`/`jwt_secret_env`/`clock`/`log_format`/
     `trace_exporter`/network target that cannot be resolved raises
@@ -2365,8 +2402,34 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
             "LNPL_IDEMPOTENCY_TTL_S %r is not an integer number of seconds"
             % idempotency_ttl_s) from exc
 
+    _typecheck_bool_or_none(metrics, "metrics")
+    metrics = (metrics if metrics is not None
+               else (_parse_bool_env(_env_or_none("LNPL_METRICS"), "LNPL_METRICS") or False))
+    _typecheck_bool_or_none(capture_on_failure, "capture_on_failure")
+    capture_on_failure = (capture_on_failure if capture_on_failure is not None
+                          else (_parse_bool_env(_env_or_none("LNPL_CAPTURE_ON_FAILURE"),
+                                                "LNPL_CAPTURE_ON_FAILURE") or False))
+    _typecheck_bool_or_none(trust_incoming_trace, "trust_incoming_trace")
+    trust_incoming_trace = (trust_incoming_trace if trust_incoming_trace is not None
+                            else (_parse_bool_env(_env_or_none("LNPL_TRUST_INCOMING_TRACE"),
+                                                  "LNPL_TRUST_INCOMING_TRACE") or False))
+    if rate_limit is None:
+        rate_limit_raw = _env_or_none("LNPL_RATE_LIMIT")
+        if rate_limit_raw is None:
+            rate_limit = None
+        else:
+            try:
+                rate_limit = float(rate_limit_raw)
+            except ValueError as exc:
+                raise WsgiConfigError("LNPL_RATE_LIMIT is not a number") from exc
+    _validate_rate_limit(rate_limit, "LNPL_RATE_LIMIT")
+
     return make_wsgi_app(document, repository_factory=repository_factory,
                          token_provider=token_provider, network=network,
                          clock=clock_obj, log_format=log_format,
                          exporter=exporter,
-                         idempotency_ttl_ms=idempotency_ttl_ms)
+                         idempotency_ttl_ms=idempotency_ttl_ms,
+                         metrics=metrics, capture_on_failure=capture_on_failure,
+                         trust_incoming_trace=trust_incoming_trace,
+                         rate_limit=rate_limit,
+                         jwt_secret_env=jwt_secret_env)

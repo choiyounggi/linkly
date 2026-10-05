@@ -54,14 +54,15 @@ class DeployDockerfileTest(unittest.TestCase):
     def tearDownClass(cls):
         subprocess.run(["docker", "rmi", IMAGE], capture_output=True)
 
-    def _run_container(self):
+    def _run_container(self, env=None):
         port = _PORT_COUNTER[0]
         _PORT_COUNTER[0] += 1
         name = f"{IMAGE}-run-{port}"
-        subprocess.run(
-            ["docker", "run", "-d", "--rm", "-p", f"{port}:8000", "--name", name, IMAGE],
-            cwd=REPO_ROOT, check=True, capture_output=True, timeout=30,
-        )
+        cmd = ["docker", "run", "-d", "--rm", "-p", f"{port}:8000", "--name", name]
+        for key, value in (env or {}).items():
+            cmd.extend(["-e", f"{key}={value}"])
+        cmd.append(IMAGE)
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True, capture_output=True, timeout=30)
         self.addCleanup(subprocess.run, ["docker", "stop", name], capture_output=True)
         time.sleep(2)
         return port
@@ -100,6 +101,52 @@ class DeployDockerfileTest(unittest.TestCase):
             raise AssertionError("expected HTTPError for a malformed JSON body, request succeeded")
         except urllib.error.HTTPError as exc:
             assert exc.code == 400, f"expected 400, got {exc.code}"
+
+    def test_metrics_env_var_exposes_metrics_endpoint(self):
+        port = self._run_container(env={"LNPL_METRICS": "1"})
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/-/metrics")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            body = resp.read()
+        assert status == 200, f"expected 200, got {status}"
+        assert len(body) > 0, "expected a non-empty Prometheus body"
+
+    def test_metrics_env_var_absent_by_default_returns_404(self):
+        port = self._run_container()
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/-/metrics")
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            raise AssertionError("expected HTTPError, request succeeded")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404, f"expected 404, got {exc.code}"
+
+    def test_rate_limit_env_var_returns_429_beyond_limit(self):
+        """env LNPL_RATE_LIMIT=1: the TokenBucket starts with 1 token and
+        refills about 1 token/second, far slower than 10 requests issued
+        back-to-back with no sleep. The "at least one 429" assertion holds
+        while the 10 requests finish within 1 second in total, which a
+        loopback round trip to a fake-backend workflow does."""
+        port = self._run_container(env={"LNPL_RATE_LIMIT": "1"})
+        statuses = []
+        retry_afters = []
+        for _ in range(10):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/link-hub-service/save-bookmark",
+                data=SAVE_BOOKMARK_BODY,
+                headers={"Authorization": "Bearer any"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    statuses.append(resp.status)
+                    retry_afters.append(None)
+            except urllib.error.HTTPError as exc:
+                statuses.append(exc.code)
+                retry_afters.append(exc.headers.get("Retry-After"))
+        assert statuses[0] == 200, f"expected request 1 to be 200, got {statuses[0]}"
+        assert 429 in statuses[1:], f"expected at least one 429 in {statuses[1:]}"
+        for status, retry_after in zip(statuses, retry_afters):
+            if status == 429:
+                assert retry_after is not None, "a 429 response is missing Retry-After"
 
 
 @unittest.skipUnless(shutil.which("docker") and shutil.which("openssl"),
