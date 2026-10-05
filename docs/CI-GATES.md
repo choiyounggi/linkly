@@ -23,6 +23,7 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | `golden-approval` | AI | `_ai-gate.yml`(t4) | advisory | 골든 시나리오 변경의 타당성 |
 | `test-quality` | AI | `_ai-gate.yml`(t5) | advisory | 자기 코드를 자기가 평가하는 테스트(구현/평가 미분리), 가짜 통과 |
 | `prose-factcheck` | AI | `_ai-gate.yml`(t5) | advisory | PR 산문(설명·주석)이 실제 diff와 어긋나는 주장 |
+| 컨테이너 이미지 배선(`test_release_workflow.py`의 `image` 잡 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 비활성 유지 회귀 |
 
 AI 게이트 4종은 전부 이 문서가 만든 재사용 워크플로 `_ai-gate.yml`(`on:
 workflow_call`) 위에 얹힌다. 게이트별 워크플로는 `gate_name`·`prompt_file`만

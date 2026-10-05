@@ -131,6 +131,87 @@ jobs:
             --title "$(cat title.txt)" \
             --notes-file notes.md
 
+  image:
+    name: build + push container image (issue #190)
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # same rationale as the `release` job's TAG above (issue #154): never
+      # interpolate `${{ github. }}` directly into a `run:` block.
+      TAG: ${{ github.ref_name }}
+      REPO_OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compute image tags (issue #190)
+        id: vars
+        run: |
+          owner_lc="$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner_lc}/linkly"
+          core="${TAG#v}"
+          core="${core%%-*}"
+          xy="$(cut -d. -f1-2 <<< "$core")"
+          {
+            echo "tags<<TAGEOF"
+            echo "${image}:${TAG}"
+            if [[ "$TAG" != *-* ]]; then
+              echo "${image}:${xy}"
+            fi
+            echo "TAGEOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build image for the local smoke
+        run: docker build -f docker/Dockerfile -t linkly-smoke:ci .
+
+      - name: Smoke test (same commands as the local check in docs/RELEASING.md)
+        run: |
+          docker run --rm -d --name linkly-smoke -p 8000:8000 \
+            -v "$PWD/examples/linkhub.lnpl:/data/linkhub.lnpl:ro" \
+            -e LNPL_SOURCE=/data/linkhub.lnpl \
+            -e LNPL_BACKEND=fake -e LNPL_CLOCK=virtual \
+            linkly-smoke:ci
+          sleep 3
+          status="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:8000/-/healthz)"
+          docker logs linkly-smoke > smoke.log 2>&1
+          docker stop linkly-smoke
+          cat smoke.log
+          if [ "$status" != "200" ]; then
+            echo "healthz returned $status, expected 200"
+            exit 1
+          fi
+          if grep -q "ERROR" smoke.log; then
+            echo "smoke container log contains an ERROR line"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (SBOM + provenance attestations)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          # the runner is linux/amd64 only; no QEMU/cross-build setup exists
+          # in this job, so this is stated explicitly rather than left to
+          # buildx's default (the base image's digest is a multi-platform
+          # index, but this job does not build every platform in it).
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.vars.outputs.tags }}
+          sbom: true
+          provenance: true
+
   # Scaffolded, disabled: PyPI publishing needs a Trusted Publisher registered
   # at https://pypi.org/manage/project/<name>/settings/publishing/ first
   # (issue #141 explicitly excludes actual publishing from this phase). Once
