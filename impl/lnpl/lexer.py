@@ -63,6 +63,13 @@ LOGICAL_OPS = ("and",)
 # `when`/`until`/`repeat`, `or` does not open a new guard on its own.
 GUARD_ALT_KEYWORD = "or"
 
+# RFC-0062: the sibling-branch keyword. Recognized by the parser only right
+# after a `when` guard's single item was attached — see
+# `parser._append_workflow_item`'s `_otherwise_slot` state. Not a
+# `KEYWORDS_CONTROL` entry: unlike `when`/`until`/`repeat`, `otherwise` never
+# opens a new guard on its own.
+GUARD_OTHERWISE_KEYWORD = "otherwise"
+
 # RFC-0015 §1 `Presence`: the two existence checks, `<ref> exists|missing`.
 # Moved here from `condition.py` (issue #177) so every guard-condition word
 # the generated reference renders comes from one table module.

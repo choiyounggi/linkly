@@ -325,6 +325,206 @@ class TestPipelineGuardLayout(unittest.TestCase):
         self.assertIn("pipeline place", str(ctx.exception))
 
 
+class TestOtherwiseBranch(unittest.TestCase):
+    """RFC-0062: `otherwise` on the line after a `when` guard's item owns
+    exactly one item, as the guard's sibling — never a nested block.
+
+    The parse tree carries it on the guard item itself (`item["otherwise"]`),
+    so a guard with no `otherwise` keeps exactly the shape it had.
+    """
+
+    def test_otherwise_after_a_guarded_step_is_attached_to_that_guard(self):
+        decls = parse(workflow("    when order.qty > 0\n"
+                               "    validate order\n"
+                               "    otherwise\n"
+                               "    notify order\n"))
+        items = only_workflow(decls).items
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["item"], "guard")
+        self.assertEqual(items[0]["guarded"]["line"].tokens, ["validate", "order"])
+        self.assertEqual(items[0]["otherwise"]["item"], "step")
+        self.assertEqual(items[0]["otherwise"]["line"].tokens, ["notify", "order"])
+
+    def test_otherwise_closes_a_guarded_pipeline_and_owns_the_next_item(self):
+        decls = parse(workflow("    when order.qty > 0\n"
+                               "    pipeline place\n"
+                               "        validate order\n"
+                               "        notify order\n"
+                               "    otherwise\n"
+                               "    notify order\n"
+                               "    validate order\n"))
+        items = only_workflow(decls).items
+        self.assertEqual([i["item"] for i in items], ["guard", "step"])
+        self.assertEqual(len(items[0]["guarded"]["block"]["steps"]), 2)
+        self.assertEqual(items[0]["otherwise"]["line"].tokens, ["notify", "order"])
+
+    def test_otherwise_can_own_a_block(self):
+        decls = parse(workflow("    when order.qty > 0\n"
+                               "    validate order\n"
+                               "    otherwise\n"
+                               "    parallel\n"
+                               "        notify order\n"
+                               "        validate order\n"
+                               "    merge\n"))
+        items = only_workflow(decls).items
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["otherwise"]["block"]["type"], "parallel")
+        self.assertEqual(len(items[0]["otherwise"]["block"]["steps"]), 2)
+
+    def test_otherwise_after_a_guard_with_alternatives_is_accepted(self):
+        decls = parse(workflow("    when order.qty > 10\n"
+                               "    or order.qty < 0\n"
+                               "    validate order\n"
+                               "    otherwise\n"
+                               "    notify order\n"))
+        item = only_workflow(decls).items[0]
+        self.assertEqual(item["guard"]["alternatives"], ["order.qty < 0"])
+        self.assertEqual(item["otherwise"]["line"].tokens, ["notify", "order"])
+
+    def test_a_guard_without_otherwise_carries_none(self):
+        decls = parse(workflow("    when order.qty > 0\n"
+                               "    validate order\n"
+                               "    notify order\n"))
+        items = only_workflow(decls).items
+        self.assertEqual([i["item"] for i in items], ["guard", "step"])
+        self.assertIsNone(items[0]["otherwise"])
+
+    def test_no_parse_scratch_state_survives(self):
+        decls = parse(workflow("    when order.qty > 0\n"
+                               "    validate order\n"
+                               "    otherwise\n"
+                               "    notify order\n"))
+        self.assertEqual(
+            [k for k in only_workflow(decls).extra if k.startswith("_")], [])
+
+    # ---- errors ----
+
+    def test_otherwise_with_no_preceding_guard_is_rejected(self):
+        for body in ("    otherwise\n    notify order\n",
+                     # a plain step between the guard's item and `otherwise`
+                     # ends the guard's reach
+                     "    when order.qty > 0\n    validate order\n"
+                     "    notify order\n    otherwise\n    notify order\n"):
+            with self.subTest(body=body):
+                with self.assertRaises(ParseError) as ctx:
+                    parse(workflow(body))
+                self.assertIn("no preceding guard", str(ctx.exception))
+
+    def test_a_second_otherwise_is_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    validate order\n"
+                           "    otherwise\n"
+                           "    notify order\n"
+                           "    otherwise\n"
+                           "    validate order\n"))
+        message = str(ctx.exception)
+        self.assertIn("line 18", message)
+        self.assertIn("a second `otherwise`", message)
+        self.assertIn("line 16", message)            # the first one
+
+    def test_two_otherwise_lines_back_to_back_are_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    validate order\n"
+                           "    otherwise\n"
+                           "    otherwise\n"
+                           "    notify order\n"))
+        self.assertIn("a second `otherwise`", str(ctx.exception))
+
+    def test_otherwise_inside_parallel_is_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    parallel\n"
+                           "        validate order\n"
+                           "        otherwise\n"
+                           "        notify order\n"
+                           "    merge\n"))
+        message = str(ctx.exception)
+        self.assertIn("cannot appear inside a `parallel` block", message)
+        self.assertIn("close it with `merge` first", message)
+
+    def test_otherwise_after_until_or_repeat_is_rejected(self):
+        for guard in ("until order.qty > 0", "repeat 3"):
+            with self.subTest(guard=guard):
+                with self.assertRaises(ParseError) as ctx:
+                    parse(workflow("    %s\n" % guard
+                                   + "    validate order\n"
+                                   + "    otherwise\n"
+                                   + "    notify order\n"))
+                message = str(ctx.exception)
+                self.assertIn("`%s` guard on line 14" % guard.split()[0], message)
+                self.assertIn("only a `when` guard can own an `otherwise`", message)
+
+    def test_otherwise_indented_into_an_open_pipeline_is_rejected(self):
+        """Known-true-positive for RFC-0060's rule extended to `otherwise`."""
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    pipeline place\n"
+                           "        validate order\n"
+                           "        otherwise\n"
+                           "        notify order\n"))
+        message = str(ctx.exception)
+        self.assertIn("runs outside the pipeline", message)
+        self.assertIn("this `otherwise`", message)
+        self.assertIn("wrap the following steps in a new `pipeline`", message)
+
+    def test_otherwise_between_a_guard_and_its_item_is_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    validate order\n"
+                           "    when order.qty > 5\n"
+                           "    otherwise\n"
+                           "    notify order\n"))
+        message = str(ctx.exception)
+        self.assertIn("guard on line 16", message)
+        self.assertIn("has no item yet", message)
+
+    def test_a_guard_cannot_be_the_item_otherwise_owns(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    validate order\n"
+                           "    otherwise\n"
+                           "    when order.qty > 5\n"
+                           "    notify order\n"))
+        self.assertIn("follows the `otherwise` on line 16", str(ctx.exception))
+
+    def test_otherwise_takes_no_words(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    validate order\n"
+                           "    otherwise notify order\n"))
+        self.assertIn("`otherwise` takes no words", str(ctx.exception))
+
+    # ---- boundaries ----
+
+    def test_otherwise_that_owns_nothing_is_rejected(self):
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "    validate order\n"
+                           "    otherwise\n"))
+        self.assertIn("ends with an `otherwise` that owns nothing",
+                      str(ctx.exception))
+
+    def test_otherwise_deeper_than_its_guarded_step_is_rejected(self):
+        """The guarded step sits deeper than its guard, so a deeper
+        `otherwise` reads as inside the guard — `_check_guard_layout`'s rule."""
+        with self.assertRaises(ParseError) as ctx:
+            parse(workflow("    when order.qty > 0\n"
+                           "        validate order\n"
+                           "        otherwise\n"
+                           "        notify order\n"))
+        self.assertIn("indented as if it were inside the `when` guard",
+                      str(ctx.exception))
+
+    def test_otherwise_and_its_item_at_column_zero_are_accepted(self):
+        decls = parse(HEAD + "\nworkflow Restock\nwhen order.qty > 0\n"
+                      "validate order\notherwise\nnotify order\n")
+        items = only_workflow(decls).items
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["otherwise"]["line"].tokens, ["notify", "order"])
+
+
 SPEC_BLOCK = ("    spec\n"
               "        given\n"
               "            valid order\n"

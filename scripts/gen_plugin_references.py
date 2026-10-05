@@ -100,6 +100,21 @@ def render_grammar():
                  "들어가지 않는다 — 위 절이 말하는 대로 `and`만 여전히 항을 "
                  "잇는다. `until`/`repeat` 뒤에는 쓸 수 없다.\n"
                  % (guard_alt, guard_alt, guard_alt))
+    lines.append("## \"아니면\" 항목 (RFC-0062)\n")
+    otherwise = kw["otherwise_keyword"]
+    lines.append("`when` 가드가 소유한 항목 다음 줄에 `%s`을 쓰면, 그 다음 항목 "
+                 "하나(스텝 한 줄이나 `pipeline`/`parallel` 블록 하나)는 가드와 "
+                 "모든 `%s` 대안이 거짓일 때만 실행된다. 중첩이 아니라 가드의 "
+                 "형제라 깊이 2를 넘지 않는다. 가드가 참이면 `%s` 항목은 "
+                 "`skipped[]`에 `mode: \"%s\"`로 남는다. `until`/`repeat`에는 "
+                 "거짓 가지가 없어 쓸 수 없고, 가드 없이·두 번 연달아·`parallel` "
+                 "안에서 쓰면 거부된다. 모드 B는 `%s`을 쓴 워크플로를 거부한다.\n"
+                 % (otherwise, guard_alt, otherwise, otherwise, otherwise))
+    lines.append("가드는 앞선 스텝이 `set`으로 바꾼 필드를 읽을 수 있다 — 모드 A는 "
+                 "그 시점의 값으로 평가한다(`set product.stock to product.stock - "
+                 "input.quantity` 다음 줄 `when product.stock >= 0`). 모드 B는 "
+                 "조건 필드를 실행 시작 시점 값으로 고정하므로 그런 워크플로를 "
+                 "거부한다(RFC-0062, RFC-0015 Open Question 1).\n")
     # r3 N-2: the rule existed only in the refusal. `create report` then
     # `set report.orderCount to …` is rejected, and nothing in the references
     # said why — so the author had to reverse-engineer "read-family only" from
@@ -747,6 +762,9 @@ RFC_ROUTES = {
              "응답하고 싶다(`respond <name> as <func> <ref>`, `respond list "
              "<binding>`) — `limit`이 필요한 이유, `next`가 늘 null인 이유, "
              "OpenAPI·spec이 항을 다루는 법과 모드 B가 거부하는 이유", ()),
+    "0062": ("가드가 앞 스텝이 바꾼 값을 읽어도 되는지(RFC-0015 OQ1), 가드가 "
+             "거짓일 때 다른 항목을 실행하고 싶다(`otherwise`) — 어디에 쓸 수 "
+             "있고 skipped[]에 무엇이 남는지, 모드 B는 왜 둘 다 거부하는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

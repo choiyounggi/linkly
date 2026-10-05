@@ -70,5 +70,6 @@
 | RFC-0059 `call ... send` — 아웃바운드 본문 매핑 절 | call/request가 보내는 본문을 고르고 싶다(`send <ref>...`) — send·with·as의 고정 순서, emit … with와 같은 참조 규칙, 절이 없을 때 본문이 입력 전체인 이유와 모드 B가 그대로 지원하는 이유 | `rfcs/0059-body-mapping-clause.md` |
 | RFC-0060 파이프라인 암묵 종결과 모순되는 들여쓰기의 거부 | `pipeline` 안에 들여 쓴 가드·블록이 왜 거부되는지, 가드된 `pipeline`을 이어 다단 조건 흐름을 쓰는 법과 그것이 기대는 '미바인딩 참조 비교는 거짓' 계약이 궁금하다 | `rfcs/0060-pipeline-implicit-close-indentation.md` |
 | RFC-0061 `respond`의 이름 붙인 집계 항과 목록 항 | 조회 전용 워크플로가 개수·합계·조건부 목록을 행을 쓰지 않고 응답하고 싶다(`respond <name> as <func> <ref>`, `respond list <binding>`) — `limit`이 필요한 이유, `next`가 늘 null인 이유, OpenAPI·spec이 항을 다루는 법과 모드 B가 거부하는 이유 | `rfcs/0061-respond-aggregate-and-list-terms.md` |
+| RFC-0062 할당한 필드를 읽는 가드와 `otherwise` 항목 | 가드가 앞 스텝이 바꾼 값을 읽어도 되는지(RFC-0015 OQ1), 가드가 거짓일 때 다른 항목을 실행하고 싶다(`otherwise`) — 어디에 쓸 수 있고 skipped[]에 무엇이 남는지, 모드 B는 왜 둘 다 거부하는지 | `rfcs/0062-assigned-field-guard-and-otherwise.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

@@ -251,6 +251,7 @@
         "is-numeric",
         "is-not-numeric"
       ],
+      "otherwise_keyword": "otherwise",
       "payload_namespace": "input",
       "presence_kinds": [
         "exists",

@@ -324,10 +324,15 @@ def _dry_run_plan(doc, workflow_id):
         if kind == "WorkflowStep":
             return {"kind": "step", "name": node["name"], "line": node.get("line")}
         if kind == "Guard":
-            return {"kind": "guard", "mode": node["mode"],
-                    "condition": node.get("condition"), "count": node.get("count"),
-                    "line": node.get("line"),
-                    "children": [_walk(node["children"][0])]}
+            entry = {"kind": "guard", "mode": node["mode"],
+                     "condition": node.get("condition"), "count": node.get("count"),
+                     "line": node.get("line"),
+                     "children": [_walk(node["children"][0])]}
+            # RFC-0062: the `otherwise` item, keyed apart from `children` so a
+            # reader never mistakes it for a second guarded item.
+            if len(node["children"]) > 1:
+                entry["otherwise"] = _walk(node["children"][1])
+            return entry
         if kind == "Concurrency":
             return {"kind": "parallel",
                     "children": [_walk(c) for c in node["children"]]}
@@ -369,6 +374,9 @@ def _print_dry_run_plan_node(node, indent):
             print("%sguard %s %s" % (prefix, node["mode"], node["condition"] or ""))
         for child in node["children"]:
             _print_dry_run_plan_node(child, indent + 1)
+        if "otherwise" in node:
+            print("%sotherwise" % prefix)
+            _print_dry_run_plan_node(node["otherwise"], indent + 1)
     elif node["kind"] == "parallel":
         print("%sparallel" % prefix)
         for child in node["children"]:
@@ -500,9 +508,16 @@ def _print_human(result, interp, log_level="warn"):
     for record in skipped:
         # The guard's own text, so the reader learns WHY the step did not run
         # rather than only that something did not.
-        print("  skipped by `%s %s`: %s"
-              % (record["mode"], record["condition"] or "",
-                 ", ".join(record["steps"]) or "(no step)"))
+        if record["mode"] == "otherwise":
+            # RFC-0062: `condition` is the guard that HELD — not a condition
+            # of the `otherwise` itself.
+            print("  skipped by `otherwise` (`when %s` held): %s"
+                  % (record["condition"],
+                     ", ".join(record["steps"]) or "(no step)"))
+        else:
+            print("  skipped by `%s %s`: %s"
+                  % (record["mode"], record["condition"] or "",
+                     ", ".join(record["steps"]) or "(no step)"))
         for e in record.get("evaluations") or []:
             # Issue #83: the same evaluations[] the JSON trace carries (already
             # masked), printed for a reader who never asked for --json. No new

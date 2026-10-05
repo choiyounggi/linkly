@@ -696,6 +696,62 @@ def alt_guard_negatives():
     ]
 
 
+GUARD_OTHERWISE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "guard_otherwise",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.settle",
+            "name": "Settle",
+            "children": ["wf.settle.guard.1"],
+        },
+        {
+            "kind": "Guard",
+            "id": "wf.settle.guard.1",
+            "mode": "when",
+            "condition": "a > 0",
+            "children": ["wf.settle.step.1", "wf.settle.step.2"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.settle.step.1",
+            "name": "create payment",
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.settle.step.2",
+            "name": "fail declined",
+        },
+    ],
+}
+
+
+def guard_otherwise_negatives():
+    """RFC-0062 — a `Guard` owns its guarded item plus at most one `otherwise`
+    item, so `children` holds 1 or 2 ids. One negative per bound the
+    `children` constraint turns on: a third child (`maxItems`), none at all
+    (`minItems`), and a second child on an `until`/`repeat` guard, which has
+    no false branch for an `otherwise` item to run on.
+    """
+    n1 = copy.deepcopy(GUARD_OTHERWISE_FIXTURE)
+    n1["nodes"][1]["children"].append("wf.settle.step.3")     # 3번째 자식
+
+    n2 = copy.deepcopy(GUARD_OTHERWISE_FIXTURE)
+    n2["nodes"][1]["children"] = []                            # 자식 없음
+
+    n3 = copy.deepcopy(GUARD_OTHERWISE_FIXTURE)
+    n3["nodes"][1]["mode"] = "repeat"
+    n3["nodes"][1]["count"] = 2
+    del n3["nodes"][1]["condition"]                            # repeat엔 otherwise 없음
+
+    return [
+        ("Guard with 3 children (guarded + 2 otherwise)", n1),
+        ("Guard with 0 children", n2),
+        ("otherwise child on a repeat guard", n3),
+    ]
+
+
 RESPOND_FIXTURE = {
     "lir_version": "0.1",
     "module": "respond",
@@ -924,6 +980,8 @@ def self_test():
          DERIVED_FIELD_FIXTURE),
         ("FILL_SOURCE_FIXTURE (RFC-0057 fill_source markers)",
          FILL_SOURCE_FIXTURE),
+        ("GUARD_OTHERWISE_FIXTURE (RFC-0062 Guard otherwise child)",
+         GUARD_OTHERWISE_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -965,7 +1023,7 @@ def self_test():
       + respond_negatives() + create_negatives() + expose_negatives() \
       + capability_http_negatives() + subscribe_negatives() \
       + consume_negatives() + lookup_negatives() + optional_negatives() \
-      + fill_source_negatives()
+      + fill_source_negatives() + guard_otherwise_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

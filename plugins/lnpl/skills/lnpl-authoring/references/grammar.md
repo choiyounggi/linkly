@@ -46,6 +46,12 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 `when` 뒤에 `or` 줄을 이어 쓰면 대안 가드다 — 조건이나 그 대안 중 하나라도 참이면 피가드 항목을 실행한다(`when input.channel == 1` 다음 줄 `or input.amount <= 100`). `or` 자체는 `Condition` 문법에 들어가지 않는다 — 위 절이 말하는 대로 `and`만 여전히 항을 잇는다. `until`/`repeat` 뒤에는 쓸 수 없다.
 
+## "아니면" 항목 (RFC-0062)
+
+`when` 가드가 소유한 항목 다음 줄에 `otherwise`을 쓰면, 그 다음 항목 하나(스텝 한 줄이나 `pipeline`/`parallel` 블록 하나)는 가드와 모든 `or` 대안이 거짓일 때만 실행된다. 중첩이 아니라 가드의 형제라 깊이 2를 넘지 않는다. 가드가 참이면 `otherwise` 항목은 `skipped[]`에 `mode: "otherwise"`로 남는다. `until`/`repeat`에는 거짓 가지가 없어 쓸 수 없고, 가드 없이·두 번 연달아·`parallel` 안에서 쓰면 거부된다. 모드 B는 `otherwise`을 쓴 워크플로를 거부한다.
+
+가드는 앞선 스텝이 `set`으로 바꾼 필드를 읽을 수 있다 — 모드 A는 그 시점의 값으로 평가한다(`set product.stock to product.stock - input.quantity` 다음 줄 `when product.stock >= 0`). 모드 B는 조건 필드를 실행 시작 시점 값으로 고정하므로 그런 워크플로를 거부한다(RFC-0062, RFC-0015 Open Question 1).
+
 ## 할당(`set`)의 대상
 
 `set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽었거나 만든** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.
