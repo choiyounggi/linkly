@@ -1,9 +1,10 @@
 # 참조 Dockerfile — WSGI 운영 기동 (issue #87)
 
 `examples/deploy/Dockerfile`은 `lnpl.wsgi:build_app()`(issue #80)을
-gunicorn으로 띄우는 참조 컨테이너다. 이 저장소의 CI/릴리스 이미지가 아니라
-— 그런 파이프라인은 없다(`docs/RELEASING.md`) — 운영자가 실제 배치에
-시작점으로 삼을 수 있는, **실측된** 절차다.
+gunicorn으로 띄우는 참조 컨테이너다. 이 저장소의 CI/릴리스 이미지가
+아니다 — 공식 릴리스 이미지는 `docker/Dockerfile`과 `release.yml`의
+`image` 잡이 별도로 만든다(`docs/RELEASING.md`, issue #190). 이 참조는
+운영자가 실제 배치에 시작점으로 삼을 수 있는, **실측된** 절차다.
 
 ## 무엇을 서빙하는가
 
@@ -115,9 +116,12 @@ $ docker stop linkly-deploy-smoke-run && docker rmi linkly-deploy-smoke
 리다이렉트, gunicorn(포트 8000)으로의 리버스 프록시, `/-/` ops 경로
 패스스루(k8s 프로브가 nginx를 거쳐도 인증·rate limit에 걸리지 않아야
 한다 — `docs/serving.md` "Rate limit" 절의 `/-/` 면제와 같은 이유)를
-담는다. 위 Dockerfile과 마찬가지로 이 저장소의 CI/릴리스 대상이 아니라
-시작점이다 — `server_name`과 `ssl_certificate`/`ssl_certificate_key`
-경로를 실제 도메인·인증서로 바꿔야 데모를 벗어난다.
+담는다. 위 Dockerfile과 마찬가지로 이 저장소의 CI/릴리스 파이프라인
+대상이 아니라 시작점이다 — `release.yml`의 `image` 잡이 만드는 공식
+이미지는 TLS 종단을 담지 않는다(그 책임은 여전히 이 nginx 참조나
+운영자의 로드밸런서에 있다). `server_name`과
+`ssl_certificate`/`ssl_certificate_key` 경로를 실제 도메인·인증서로
+바꿔야 데모를 벗어난다.
 
 ```bash
 docker run -d --rm -p 8000:8000 --name linkly-deploy-smoke-run linkly-deploy-smoke
@@ -144,7 +148,12 @@ curl -sk https://127.0.0.1/-/healthz
 
 ## 이 참조가 다루지 않는 것
 
-CI, 이미지 레지스트리 push, k8s 매니페스트는 이 이슈의 범위 밖이다
-(#87 out-of-scope — 후속 이슈로 남는다). 워커 풀 관리는 `docs/serving.md`가
-이미 명시한 대로 gunicorn의 책임이지 이 Dockerfile의 책임이 아니다 —
-TLS 종단은 위 "TLS 종단" 절의 `nginx.conf`가 참조를 준다.
+이미지 레지스트리 push는 더 이상 범위 밖이 아니다 — `docker/Dockerfile`과
+`release.yml`의 `image` 잡이 처리한다(issue #190). 공식 이미지는 코어
+런타임만 담으며, `postgres`·`redis`·`otel` 드라이버는 파생 이미지로
+얹는 방식을 권장한다(`docs/RELEASING.md` 5단계 참고). 이 예제 자체의 CI
+오케스트레이션과 k8s 매니페스트는 여전히 범위 밖이다(#87 out-of-scope —
+후속 이슈로 남는다; k8s 매니페스트 생성은 별도로 issue #189의
+compose/k8s 생성기가 다룬다). 워커 풀 관리는 `docs/serving.md`가 이미
+명시한 대로 gunicorn의 책임이지 이 Dockerfile의 책임이 아니다 — TLS
+종단은 위 "TLS 종단" 절의 `nginx.conf`가 참조를 준다.
