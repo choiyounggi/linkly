@@ -930,7 +930,15 @@
               }
             },
             "children": {
-              "$ref": "#/$defs/nodeIdArray"
+              "allOf": [
+                {
+                  "$ref": "#/$defs/nodeIdArray"
+                },
+                {
+                  "minItems": 1,
+                  "maxItems": 2
+                }
+              ]
             }
           },
           "required": [
@@ -951,6 +959,24 @@
                   "until",
                   "repeat"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "children"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "until",
+                  "repeat"
+                ]
+              },
+              "children": {
+                "minItems": 2
               }
             }
           }

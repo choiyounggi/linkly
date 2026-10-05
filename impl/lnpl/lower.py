@@ -176,6 +176,14 @@ VERB_ALIASES = {
     "notify": "emit",
 }
 
+# RFC-0062: words that LOOK like a verb but name a reserved structural keyword.
+# Checked before `VERB_ALIASES` (whose values are all real `VERB_LEXICON`
+# entries) and before the difflib fallback, so the natural English word for
+# "otherwise" points at the keyword, not at a verb that merely spells alike.
+KEYWORD_DID_YOU_MEAN = {
+    "else": "otherwise",
+}
+
 # What a refusal calls the construct it is about. The guard check and the
 # assignment check share `_Scope.check_reference`, and the message used to
 # hard-code "guard condition" for both — so a rejected `set` sent the author
@@ -1664,7 +1672,7 @@ class _WfContext:
         if item["item"] == "block":
             return self._block(item["block"])
         if item["item"] == "guard":
-            return self._guard(item["guard"], item["guarded"])
+            return self._guard(item["guard"], item["guarded"], item.get("otherwise"))
         raise LowerError("unknown body item %r" % item["item"])
 
     def _next_step_id(self):
@@ -1742,7 +1750,7 @@ class _WfContext:
             # wrong suggestion is worse than none) — offered both in the
             # message and as a structured `suggestion` so a caller can act on
             # it without parsing prose.
-            suggestion = VERB_ALIASES.get(verb)
+            suggestion = KEYWORD_DID_YOU_MEAN.get(verb) or VERB_ALIASES.get(verb)
             if suggestion is None:
                 close = difflib.get_close_matches(verb, VERB_LEXICON, n=1,
                                                    cutoff=0.6)
@@ -1783,10 +1791,15 @@ class _WfContext:
                                       line=block["lineno"]))
         return node_id
 
-    def _guard(self, guard, guarded):
+    def _guard(self, guard, guarded, otherwise=None):
         self._guard_n += 1
         node_id = "%s.guard.%d" % (self.wid, self._guard_n)
-        inner_id = self.plan(guarded)
+        children = [self.plan(guarded)]
+        # RFC-0062: `otherwise` is a structural sibling, not a condition — it
+        # never widens `Condition`'s grammar. It goes through the same planner
+        # the guarded item does, so a block it owns lowers the same way.
+        if otherwise is not None:
+            children.append(self.plan(otherwise))
         fields = {"mode": guard["mode"]}
         if guard["mode"] == "repeat":
             fields["count"] = int(guard["arg"])
@@ -1796,7 +1809,7 @@ class _WfContext:
         # `parser.py` only ever populates this for `mode == "when"`.
         if guard.get("alternatives"):
             fields["alternatives"] = list(guard["alternatives"])
-        self.emitted.append(_node("Guard", node_id, children=[inner_id],
+        self.emitted.append(_node("Guard", node_id, children=children,
                                   line=guard["lineno"], **fields))
         return node_id
 
@@ -2215,8 +2228,10 @@ def _check_optional_unguarded_arithmetic(emitted, top_ids, registry,
         return bool(field and field.get("optional"))
 
     def protected(node_id, ref):
-        guard = owner.get(node_id)
-        if (guard is None or guard.get("mode") != "when"
+        guard, branch = owner.get(node_id) or (None, "then")
+        # RFC-0062: an `otherwise` item runs exactly when the presence guard
+        # is false, so it is the one place the field is known to be missing.
+        if (guard is None or branch != "then" or guard.get("mode") != "when"
                 or guard.get("alternatives")):
             return False
         try:
@@ -2262,10 +2277,13 @@ def _check_optional_unguarded_arithmetic(emitted, top_ids, registry,
 
 
 def _guard_owner_map(top_ids, by_id):
-    """node id -> the `Guard` node that owns it, or `None` at the top level.
+    """node id -> `(guard, branch)`: the `Guard` node that owns it and which of
+    its children the node is reached through — `"then"` for the guarded item,
+    `"otherwise"` for RFC-0062's sibling item — or `(None, "then")` at the top
+    level.
 
     Same tree RFC-0023's `_steps_outside_guards` already walks (top-level
-    order, a `Guard`'s single child, a block's several), generalised to record
+    order, a `Guard`'s children, a block's several), generalised to record
     *which* guard owns a node instead of filtering guarded ones out. Every
     node reachable from `top_ids` gets an entry, including a `WorkflowStep`'s
     own Effect children — an `EventEmit`/`RepositoryCall` id needs the same
@@ -2273,37 +2291,48 @@ def _guard_owner_map(top_ids, by_id):
     """
     owner = {}
 
-    def walk(node_id, guard):
+    def walk(node_id, guard, branch):
         node = by_id.get(node_id)
         if node is None:
             return
-        owner[node_id] = guard
+        owner[node_id] = (guard, branch)
         if node["kind"] == "Guard":
             children = node.get("children") or []
             if children:
-                walk(children[0], node)
+                walk(children[0], node, "then")
+            if len(children) > 1:
+                walk(children[1], node, "otherwise")
             return
         for child_id in node.get("children") or []:
-            walk(child_id, guard)
+            walk(child_id, guard, branch)
 
     for nid in top_ids or []:
-        walk(nid, None)
+        walk(nid, None, "then")
     return owner
 
 
-def _guard_key(guard):
-    """A guard's protection identity for scope comparison (issue #98).
+def _guard_key(owner_entry):
+    """A guard branch's protection identity for scope comparison (issue #98).
 
     Two *physically distinct* `Guard` nodes with the same mode+condition (the
     "repeat the guard line" remedy) count as the same scope — node identity
     would wrongly flag that remedy as still broken. `None` (top level, no
     guard) is its own key: unconditional steps always run together.
+
+    `owner_entry` is a `_guard_owner_map` value. The guarded item keeps the key
+    it always had; an `otherwise` item (RFC-0062) gets a third element, because
+    the two never run in the same execution — a binding made in one branch and
+    read in the other must not count as the same scope.
     """
+    if owner_entry is None:
+        return None
+    guard, branch = owner_entry
     if guard is None:
         return None
     if guard.get("mode") == "repeat":
         return ("repeat", guard.get("count"))
-    return (guard.get("mode"), guard.get("condition"))
+    key = (guard.get("mode"), guard.get("condition"))
+    return key if branch == "then" else key + ("otherwise",)
 
 
 def _check_event_source_mismatch(emitted, top_ids, event_sources, workflow_name,
@@ -2539,18 +2568,17 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     owner = _guard_owner_map(top_ids or [], by_id)
     # issue #204: (binding, field) -> set of guard-scope keys a `set`/`format`
     # on that field has been seen at so far in this walk. Populated forward,
-    # inside the SAME source-order DFS the `assigned`/`listed` sets below
-    # already use -- that is what makes "precedes" free, with no line-number
-    # arithmetic (line numbers lie about execution order inside a guard; see
-    # the comment above `assigned` just below).
+    # inside the SAME source-order DFS the `listed` set below already uses --
+    # that is what makes "precedes" free, with no line-number arithmetic (line
+    # numbers lie about execution order inside a guard; see the comment above
+    # `listed`'s walk just below).
     derived_assigned = {}
 
     # Source order, not emission order: `_WfContext._guard` emits its guarded step
     # BEFORE the Guard that owns it, so a flat pass over `emitted` would see an
     # assignment as preceding the guard that in fact runs first. The
-    # assigned-then-read judgement below is about the order an author wrote, so
-    # the walk has to be the tree's.
-    assigned = set()
+    # assigned-then-read judgements below (`derived_assigned`, `listed`) are
+    # about the order an author wrote, so the walk has to be the tree's.
     # RFC-0025 §4: entities a `list` has reached so far, OUTSIDE any guard — a
     # guard's own `list` does not count (its condition may be false), the same
     # exemption RFC-0023 §3 gives `_steps_outside_guards`. Populated only by
@@ -2565,7 +2593,7 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                 continue
             kind = node["kind"]
             if kind == "Guard":
-                _check_guard(node, scope, assigned, workflow_name,
+                _check_guard(node, scope, workflow_name,
                              parse_condition, references, ConditionError, Lit)
                 visit(node.get("children") or [], guarded=True)
             elif kind == "WorkflowStep":
@@ -2689,7 +2717,6 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                             # above, which name the more specific fix.
                             _check_bare_operands(rhs, registry, child["line"],
                                                  text)
-                    assigned.add(child["target"])
                     _a_binding, _, _a_field = child["target"].partition(".")
                     derived_assigned.setdefault(
                         (_a_binding, _a_field), set()).add(
@@ -3022,7 +3049,7 @@ def _check_literal_zero_divisor(value, where):
             % where)
 
 
-def _check_guard(node, scope, assigned, workflow_name, parse_condition,
+def _check_guard(node, scope, workflow_name, parse_condition,
                  references, ConditionError, Lit):
     """One Guard's condition (and, since RFC-0028, each `or` alternative):
     every reference resolvable, comparable, and stable.
@@ -3039,7 +3066,7 @@ def _check_guard(node, scope, assigned, workflow_name, parse_condition,
     # text uses one, so every other guard's IR is unchanged.
     per_text_names = []
     for one_text in (text,) + tuple(node.get("alternatives") or ()):
-        names = _check_one_condition(one_text, scope, assigned, workflow_name,
+        names = _check_one_condition(one_text, scope, workflow_name,
                                      parse_condition, references, ConditionError,
                                      Lit)
         per_text_names.append(sorted(set(names or ())))
@@ -3047,7 +3074,7 @@ def _check_guard(node, scope, assigned, workflow_name, parse_condition,
         node["textEqualityOperands"] = per_text_names
 
 
-def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
+def _check_one_condition(text, scope, workflow_name, parse_condition,
                          references, ConditionError, Lit):
     try:
         cond = parse_condition(text)
@@ -3059,20 +3086,14 @@ def _check_one_condition(text, scope, assigned, workflow_name, parse_condition,
     _check_input_presence_consistency(cond, scope, text, workflow_name)
     text_eq_refs = _text_equality_operand_names(cond)
 
+    # RFC-0062 (resolving RFC-0015 Open Question 1): a guard may read a field
+    # an earlier step assigned — mode A evaluates it against the current value,
+    # like any other reference. Mode B fixes condition fields at entry, so it
+    # refuses such a workflow instead (`backend._refuse_unsupported_guards`,
+    # `differential.verify`).
     for name in references(cond):
         scope.check_reference(name, text, presence=isinstance(cond, Presence),
                               equality=(name in text_eq_refs))
-        # RFC-0015: mode B receives every condition field as an i64 parameter
-        # fixed at entry, so a guard reading a value an earlier step assigned
-        # would compare the pre-assignment number there and the current one
-        # here. Refusing is what keeps the two modes one language.
-        if name in assigned:
-            raise LowerError(
-                "workflow %s: guard condition %r reads %r, which an earlier "
-                "step assigns — a guard must not depend on a value this "
-                "workflow changed (RFC-0015: mode B fixes condition fields "
-                "at entry). Move the guard above the assignment."
-                % (workflow_name, text, name))
 
     for term in _comparisons(cond):
         if isinstance(term.left, Lit) and isinstance(term.right, Lit):
@@ -4204,7 +4225,9 @@ def _check_fail_is_guarded(emitted, top_ids, workflow_name):
     for node in emitted:
         if node["kind"] != "Rejection":
             continue
-        guard = owner.get(node["id"])
+        # RFC-0062: a `fail` an `otherwise` owns is as conditional as one its
+        # `when` owns — the branch does not matter here, only the guard.
+        guard, _branch = owner.get(node["id"]) or (None, "then")
         if guard is None or guard.get("mode") == "repeat":
             raise LowerError(
                 "workflow %s: `fail %s` (line %d) is not guarded by a `when`/"

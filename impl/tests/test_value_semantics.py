@@ -223,15 +223,22 @@ workflow W
                                          "    set product.stock 1"),
                            "needs `to`")
 
-    def test_a_guard_reading_an_assigned_field_is_refused(self):
-        # RFC-0015's mode-equivalence rule: mode B fixes condition fields at
-        # entry, so this program would compare a different number there.
-        self.compile_fails(
-            self.workflow("    read product\n"
-                          "    set product.stock to product.stock - 1\n"
-                          "    when product.stock > 0\n"
-                          "    create product"),
-            "which an earlier step assigns", "Move the guard above")
+    def test_a_guard_reading_an_assigned_field_compiles_and_mode_b_refuses_it(self):
+        # Was `test_a_guard_reading_an_assigned_field_is_refused`, asserting
+        # RFC-0015's compile error. RFC-0062 resolved RFC-0015 Open Question 1:
+        # mode A now reads the current value, and the mode-equivalence rule
+        # (mode B fixes condition fields at entry) moved to mode B, which
+        # refuses the same program as a recorded exemption.
+        from lnpl import backend
+        doc = compile_doc(self.workflow("    read product\n"
+                                        "    set product.stock to product.stock - 1\n"
+                                        "    when product.stock > 0\n"
+                                        "    create product"), "m")
+        self.assertTrue(backend.workflow_uses_assigned_guard_field(doc, "wf.w"))
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, "wf.w")
+        self.assertIn("which an earlier step assigns", str(ctx.exception))
+        self.assertIn("RFC-0062", str(ctx.exception))
 
     def test_presence_inside_and_is_refused(self):
         self.compile_fails(self.workflow("    read product\n"

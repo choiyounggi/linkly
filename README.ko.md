@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 4,571여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 4,639여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 59편 — 46편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048·RFC-0049·RFC-0050·RFC-0051·RFC-0052·RFC-0055·RFC-0056·RFC-0057·RFC-0058·RFC-0059·RFC-0060은 `Draft`.** RFC-0007은
+**RFC 60편 — 46편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048·RFC-0049·RFC-0050·RFC-0051·RFC-0052·RFC-0055·RFC-0056·RFC-0057·RFC-0058·RFC-0059·RFC-0060·RFC-0062는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -275,8 +275,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0058 `fail` — 저자가 선언하는 업무 거절](rfcs/0058-fail-business-rejection.md) | 워크플로가 업무 규칙으로 실패할 방법이 없었다 — 재고 부족·한도 초과 검사는 스텝을 스킵할 뿐 실행은 `completed`(HTTP 200)로 끝나서, 클라이언트가 `skipped[]`를 파싱해 거절인지 판정해야 했고 `spec`으로 계약할 수도 없었다(issue #206, RFC-0014 미결 1). 동사 하나 `fail <kebab-code>`를 가드 아래에 쓴다: 가드가 거짓이면 지금처럼 스킵, 참이면 실행이 `failed`로 끝나고 `failure_kind`는 `rejected`, `failure_reason`은 그 코드이며, 그 실행의 쓰기는 롤백되고(RFC-0032) 재시도하지 않는다. 코드는 컴파일 시점 kebab-case 리터럴이다 — 코드 누락·형식 위반·뒤따르는 낱말, 서버 problem `code`(`not-found`, `write-conflict` …)와 같은 코드, `when`/`until` 가드가 소유하지 않는 `fail`(`repeat N`은 본문을 언제나 실행한다)은 컴파일 에러다. `lnpl serve`는 422 problem+json에 저자의 코드를 `code`로 싣고(모든 코드에 422, `failure_kind`로 판정), `consume by`는 E7(422 `event-rejected`, 재시도 없음), OpenAPI는 operation의 `422`에 코드 목록을 싣고, `spec`은 `expect failed` + `error reason <code>`로 계약한다. 모드 B는 Money·lookup·optional·Text 검사 다음에 그 워크플로를 기록된 면제로 거부한다. `fail` 없는 워크플로는 바이트 동일하다. Draft. *Updates RFC-0001 §노드 카탈로그 (Effect, WorkflowStep), RFC-0003 §Execution Model (+RFC-0032), RFC-0014 §Open Questions/1* |
 | [0059 `call ... send` — 아웃바운드 본문 매핑](rfcs/0059-body-mapping-clause.md) | 아웃바운드 `call`/`request`는 언제나 실행 입력 전체를 본문으로 보냈다 — 워크플로가 계산한 값(`set o.total to ...`)을 보낼 수 없었고, 상대가 요구하지 않은 필드가 그대로 나갔으며, `with`는 이미 경로 치환이었다(issue #200). `send <ref>...` 절을 더한다. `with`(경로)·`as`(결과 바인딩)와 `send`, `with`, `as` 순서로만 함께 쓸 수 있고, 다른 순서는 컴파일 에러다. 본문은 나열한 필드뿐이고 각 필드 이름은 참조의 마지막 세그먼트이며, `emit ... with`(RFC-0049)와 같은 코드가 조립·마스킹한다. 참조 규칙도 RFC-0049를 그대로 쓴다 — 맨 이름, 선언되지 않은 바인딩, Password 계열, 중복 필드 이름, 앞선 `set`/`format`이 없는 `derived` 필드는 컴파일 에러이고, 실행이 채우는 필드(RFC-0057)는 허용된다(`emit ... with`도 마찬가지). `guard-scoped-binding-escape`가 `send`도 본다. `send`가 없으면 본문은 바이트 동일하다(입력 전체, 마스킹 없음 — Password 계열 입력 필드의 원문이 여전히 실린다. 실측했고 별도 이슈로 넘긴다). `spec` 본문 단언과 새 진단은 없다. 모드 B는 그대로 지원한다. Draft. *Updates RFC-0027 §Reference-level Specification/2* |
 | [0060 파이프라인 암묵 종결과 모순되는 들여쓰기의 거부](rfcs/0060-pipeline-implicit-close-indentation.md) | `pipeline`은 들여쓰기가 아니라 다음 키워드에서 닫히므로, 열린 파이프라인 안에 들여 쓴 `when`/`until`/`repeat`/`pipeline`/`parallel`이 진단 0건으로 그 파이프라인을 닫았다 — 이슈 #211 (3)에서는 재고 가드 아래에 쓴 스텝이 재고가 부족해도 실행됐다. RFC-0019의 닫힌 모순 목록에 세 번째 사례를 더한다: 열린 `pipeline` 줄보다 깊은 열에 쓴 제어 키워드는, 실제로는 그 파이프라인을 닫으므로, 그 파이프라인을 지목하고 고치는 법(가드: 파이프라인 열로 내어 쓰거나 뒤 스텝을 새 `pipeline`으로 묶기, 블록 개시: 내어 쓰기)을 말하는 컴파일 에러다. 키워드가 파이프라인과 같은 열이면 영향이 없다. "미바인딩 참조의 비교는 거짓"(RFC-0012 §G12.4)을 계약으로 명시한다 — 새 정본 다단 조건 흐름 예제 `examples/staged.lnpl`이 이에 기댄다: 가드된 파이프라인을 잇고, 둘째 가드는 첫 파이프라인만 바인딩하는 `pay.status`를 읽는다. Draft. *Updates RFC-0002 §Block structure (+RFC-0019)* |
+| [0062 할당한 필드를 읽는 가드와 `otherwise` 항목](rfcs/0062-assigned-field-guard-and-otherwise.md) | 다단 조건 흐름을 쓰기 어렵게 하던 두 가지(이슈 #211 (1), (4))를 닫는다. 가드가 앞선 스텝이 할당한 필드를 읽을 수 없었고(`set product.stock to product.stock - input.quantity` 뒤의 `when product.stock >= 0`이 컴파일 에러, RFC-0015 §3), "아니면" 가지가 없었다(`else`는 아무것도 하지 않는 스텝이 되고 제안은 `delete`였다). RFC-0015 Open Question 1을 해소한다: 모드 A는 그 가드를 그 시점의 값으로 평가하고, 조건 필드를 실행 시작 시점 값으로 고정하는 모드 B는 그 워크플로를 기록된 예외로 거부한다. `when` 가드의 항목 다음 줄에 `otherwise`를 더한다: 항목 하나(스텝이나 블록)를 소유하고, 가드와 모든 `or` 대안이 거짓일 때만 실행되며, 가드의 형제라 깊이 2를 유지한다. 실행되지 않은 가지는 언제나 `skipped[]`에 남는다(가드가 참이었으면 `mode: "otherwise"`). 가드 없는 `otherwise`, 두 번째 `otherwise`, `until`/`repeat` 뒤나 `parallel` 안의 `otherwise`는 컴파일 에러이고, `else`는 이제 `otherwise`를 제안한다. 모드 B는 `otherwise`를 쓴 워크플로를 거부한다. Draft. *Updates RFC-0015 §3 (+RFC-0051/0055/0056)·§Open Questions, RFC-0001 §노드 카탈로그/Guard (+RFC-0028/0056), RFC-0002 §Full grammar (+RFC-0012/0052)·§Block structure (+RFC-0019/0060), RFC-0014 §2.1 (+RFC-0028)·§2.4 (+RFC-0028/0050)* |
 
-46편이 `Accepted`, 12편(`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`, `0056`, `0057`, `0058`, `0059`, `0060`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+46편이 `Accepted`, 13편(`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0055`, `0056`, `0057`, `0058`, `0059`, `0060`, `0062`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -333,7 +334,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 4571 tests in 120.818s
+Ran 4639 tests in 131.617s
 OK
 ```
 

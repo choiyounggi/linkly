@@ -112,6 +112,23 @@ class TestCorpusSweep(unittest.TestCase):
         self.assertIn("Dedent it to the pipeline's own column", message)
         self.assertIn("wrap the following steps in a new `pipeline`", message)
 
+    def test_the_sweep_catches_an_otherwise_indented_into_the_pipeline(self):
+        """RFC-0062 widens the rule to `otherwise`: a known violation must
+        come back with the rule's own message, not as "uncompiled"."""
+        source = ISSUE_REPRO.replace("        when pay.status == 200\n"
+                                     "            set o.paid to 1\n"
+                                     "        update order\n",
+                                     "        otherwise\n"
+                                     "        update order\n")
+        self.assertNotEqual(source, ISSUE_REPRO)
+        message = _check(source)
+        self.assertIsNotNone(message)
+        self.assertIn(RULE_MARK, message)
+        self.assertIn("this `otherwise`", message)
+        self.assertIn("pipeline place", message)
+        # the guard path's repair: `otherwise` owns one item, as a guard does
+        self.assertIn("wrap the following steps in a new `pipeline`", message)
+
     def test_the_repro_dedented_to_the_pipelines_column_compiles(self):
         fixed = ISSUE_REPRO.replace("        when pay.status == 200\n"
                                     "            set o.paid to 1\n"

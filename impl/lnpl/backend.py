@@ -812,6 +812,123 @@ def workflow_uses_fail(document, workflow_id):
     return _fail_offender(document, workflow_id) is not None
 
 
+def _workflow_nodes(document, workflow_id):
+    nodes = {n["id"]: n for n in document["nodes"]}
+    wf = nodes.get(workflow_id)
+    if wf is None or wf["kind"] != "Workflow":
+        raise BackendError("no such workflow: %r" % workflow_id)
+    return nodes, wf
+
+
+def _first_step_name(nodes, node_id):
+    """The name of the first `WorkflowStep` at or under `node_id`, or the id."""
+    node = nodes.get(node_id)
+    if node is None:
+        return node_id
+    if node["kind"] == "WorkflowStep":
+        return node["name"]
+    for child_id in node.get("children") or []:
+        name = _first_step_name(nodes, child_id)
+        if name != child_id:
+            return name
+    return node_id
+
+
+def _assigned_guard_offender(document, workflow_id):
+    """`(step_name, guard_text, field)` of the first guard (condition or `or`
+    alternative) of `workflow_id` that reads a field an earlier step assigns
+    (RFC-0062 §Mode B), or None. Raises `BackendError` for an unknown workflow.
+
+    Walks the tree in source order exactly as `lower._check_scoped_conditions`
+    walked it when RFC-0015 refused this at compile time — a guard is judged
+    before the item it owns — so mode B refuses precisely the workflows that
+    used to fail to compile. `_workflow_steps` is not used: it unrolls `until`,
+    which would also catch a loop whose body assigns the field its own
+    condition reads, a workflow RFC-0015 always admitted.
+    """
+    nodes, wf = _workflow_nodes(document, workflow_id)
+    assigned = set()
+
+    def visit(ids):
+        for nid in ids:
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            if node["kind"] == "Guard":
+                for text in ((node.get("condition"),)
+                             + tuple(node.get("alternatives") or ())):
+                    parsed = _parsed(text) if text else None
+                    if parsed is None:
+                        continue
+                    for name in references(parsed):
+                        if name in assigned:
+                            children = node.get("children") or [nid]
+                            return (_first_step_name(nodes, children[0]),
+                                    text, name)
+                found = visit(node.get("children") or [])
+            elif node["kind"] == "WorkflowStep":
+                for child_id in node.get("children") or []:
+                    child = nodes.get(child_id)
+                    if child is not None and child["kind"] == "Assignment":
+                        assigned.add(child["target"])
+                found = None
+            else:
+                found = visit(node.get("children") or [])
+            if found is not None:
+                return found
+        return None
+
+    return visit(wf.get("children") or [])
+
+
+def workflow_uses_assigned_guard_field(document, workflow_id):
+    """RFC-0062 §Mode B: does a guard of `workflow_id` read a field an earlier
+    step assigns? Mode A evaluates it against the current value; mode B fixes
+    every condition field at entry (RFC-0008 G8), so it refuses (`emit_mlir`,
+    `build`) and `differential.verify` asks this after `workflow_uses_fail`.
+    Raises `BackendError` for an unknown workflow."""
+    return _assigned_guard_offender(document, workflow_id) is not None
+
+
+def _otherwise_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when` guard of `workflow_id` that
+    owns an `otherwise` item (a second child, RFC-0062), or None. Raises
+    `BackendError` for an unknown workflow.
+
+    A node walk, not `_workflow_steps`: that flattening tags every child of a
+    `when` with its condition, so the `otherwise` item is indistinguishable
+    from the guarded one there.
+    """
+    nodes, wf = _workflow_nodes(document, workflow_id)
+
+    def visit(ids):
+        for nid in ids:
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            children = node.get("children") or []
+            if node["kind"] == "Guard" and len(children) > 1:
+                return (_first_step_name(nodes, children[0]),
+                        guard_condition_text(node.get("condition"),
+                                             node.get("alternatives")))
+            if node["kind"] != "WorkflowStep":
+                found = visit(children)
+                if found is not None:
+                    return found
+        return None
+
+    return visit(wf.get("children") or [])
+
+
+def workflow_uses_otherwise(document, workflow_id):
+    """RFC-0062 §Mode B: does a guard of `workflow_id` own an `otherwise` item?
+    Mode B compiles no branch that runs on a false guard, so it refuses
+    (`emit_mlir`, `build`); `differential.verify` asks this last, after
+    `workflow_uses_assigned_guard_field`. Raises `BackendError` for an unknown
+    workflow."""
+    return _otherwise_offender(document, workflow_id) is not None
+
+
 def _refuse_unsupported_guards(document, workflow_id):
     """RFC-0051/0052/0055/0056 §Mode B: refuse, by name, a Money-guard,
     lookup-key, optional-field-guard or Text-guard workflow — called by
@@ -821,8 +938,11 @@ def _refuse_unsupported_guards(document, workflow_id):
     `_optional_guard_offender` and `_text_guard_offender` verbatim, in the same
     Money-then-Lookup-then-Optional-then-Text order `differential.verify` asks
     them, so `build` and `diff` cannot drift apart. A fill-source create
-    (RFC-0057, `_fill_source_create_offender`) is refused next and a `fail`
-    step (RFC-0058, `_fail_offender`) last, in the same positions in both.
+    (RFC-0057, `_fill_source_create_offender`) is refused next, then a `fail`
+    step (RFC-0058, `_fail_offender`), then a guard reading a field an earlier
+    step assigns and, last, a guard owning an `otherwise` item (RFC-0062,
+    `_assigned_guard_offender`, `_otherwise_offender`), in the same positions
+    in both.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here — its refusal in `_render_std` depends on `_lnpl_ops`'s
     seed/payload-truncated ops stream, which a document-level check here
@@ -870,6 +990,21 @@ def _refuse_unsupported_guards(document, workflow_id):
         raise BackendError(
             "step %s: `fail %s` has no compiled evaluator (RFC-0058 §Mode B, "
             "recorded exemption) — run it in mode A" % (step_name, code))
+    assigned_offender = _assigned_guard_offender(document, workflow_id)
+    if assigned_offender is not None:
+        step_name, guard_text, field = assigned_offender
+        raise BackendError(
+            "step %s: guard %r reads %s, which an earlier step assigns — mode B "
+            "fixes condition fields at entry, so it would compare the value "
+            "before the assignment (RFC-0062 §Mode B, recorded exemption) — "
+            "run it in mode A" % (step_name, guard_text, field))
+    otherwise_offender = _otherwise_offender(document, workflow_id)
+    if otherwise_offender is not None:
+        step_name, guard_text = otherwise_offender
+        raise BackendError(
+            "step %s: guard %r owns an `otherwise` item, which mode B has no "
+            "compiled branch for (RFC-0062 §Mode B, recorded exemption) — run "
+            "it in mode A" % (step_name, guard_text))
 
 
 def encode_condition_value(value):

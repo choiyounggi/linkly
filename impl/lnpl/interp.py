@@ -482,6 +482,10 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                             evaluations=[_masked_evaluation(interp, e) for e in raw_evals]))
                         interp.trace.log("INFO", "guard skipped the guarded item",
                                          guard=node_id, condition=node.get("condition"))
+                        for inner in _flatten_items(nodes, inner_ids[1:2], interp,
+                                                    result, root, con, payload,
+                                                    bindings):
+                            yield inner
                         continue
                 else:
                     # RFC-0028 §Reference-level Specification/4: evaluate the
@@ -507,15 +511,24 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                             guard=node_id,
                             condition=guard_condition_text(
                                 node.get("condition"), alternatives))
+                        for inner in _flatten_items(nodes, inner_ids[1:2], interp,
+                                                    result, root, con, payload,
+                                                    bindings):
+                            yield inner
                         continue
                     fired = next(i for i, h in enumerate(holds_per_text) if h)
                     if fired > 0:
                         interp.trace.log(
                             "INFO", "guard alternative matched", guard=node_id,
                             condition=alternatives[fired - 1])
-                for inner in _flatten_items(nodes, inner_ids, interp, result, root,
+                # RFC-0062: `children[1]`, when present, is the `otherwise` item —
+                # run above only when the guard and every alternative are false.
+                for inner in _flatten_items(nodes, inner_ids[:1], interp, result, root,
                                             con, payload, bindings):
                     yield inner
+                if len(inner_ids) > 1:
+                    result["skipped"].append(_skip_record(nodes, node,
+                                                          branch="otherwise"))
             elif mode == "repeat":
                 for _ in range(int(node["count"])):
                     for inner in _flatten_items(nodes, inner_ids, interp, result,
@@ -592,7 +605,7 @@ def _guarded_step_names(nodes, ids):
     return out
 
 
-def _skip_record(nodes, node, rounds=None, evaluations=None):
+def _skip_record(nodes, node, rounds=None, evaluations=None, branch="then"):
     """One `result["skipped"]` entry — the record shape issue #44 defines.
 
     `rounds` is None for `when` (it evaluates once) and 0 for an `until` that
@@ -613,12 +626,23 @@ def _skip_record(nodes, node, rounds=None, evaluations=None):
     condition text, or — when the guard has `alternatives` — the SSOT-joined
     text `guard_condition_text` builds. Mode B's `restore_skips` calls the
     same function, so the two modes cannot independently drift on the join.
+
+    `branch` (RFC-0062): `"then"` records the guarded item (`children[0]`)
+    not running; `"otherwise"` records a `when` guard's `otherwise` item
+    (`children[1]`) not running because the guard held — `mode` reads
+    `"otherwise"` and `condition` is still the guard's own text. Either way
+    `steps` names only that branch's steps.
     """
+    children = node.get("children", [])
+    if branch == "otherwise":
+        mode, owned = "otherwise", children[1:2]
+    else:
+        mode, owned = node["mode"], children[:1]
     return {"guard": node["id"],
-            "mode": node["mode"],
+            "mode": mode,
             "condition": guard_condition_text(node.get("condition"),
                                               node.get("alternatives")),
-            "steps": _guarded_step_names(nodes, node.get("children", [])),
+            "steps": _guarded_step_names(nodes, owned),
             "rounds": rounds,
             "evaluations": evaluations if evaluations is not None else []}
 
@@ -2000,14 +2024,18 @@ class Interpreter:
         # puts it behind `--strict`, which is the only way a caller reading just
         # the exit code could ever have seen it (issue #45's gate).
         for record in result["skipped"]:
+            # RFC-0062: an `otherwise` record means its guard HELD.
+            skipper = ("`otherwise` of the `when` guard, which held,"
+                       if record["mode"] == "otherwise"
+                       else "`%s` guard" % record["mode"])
             self.diagnostics.add(
                 code="guard-skipped-steps",
                 where=record["guard"],
                 subject=record["condition"] or "(unconditional)",
-                message="the `%s` guard did not run %s; the workflow still "
+                message="the %s did not run %s; the workflow still "
                         "reports completed, so a caller reading only the status "
                         "cannot tell this run from one that ran every step"
-                        % (record["mode"],
+                        % (skipper,
                            ", ".join(record["steps"]) or "(no step)"),
                 # RFC-0024 (issue #82 line= migration): same precedent as
                 # `authorization-not-verified` below — the Guard node's own

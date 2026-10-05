@@ -283,9 +283,12 @@ MUTATIONS = [
      "lnpl/protocol.py",
      "            if child_kind and child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):\n                return (\"v5_children:",
      "            if False:\n                return (\"v5_children:"),
-    ("Structure gate: stop enforcing Guard cardinality (exactly one child)",
+    # Re-anchored 2026-10-04: RFC-0062 widened the count from exactly 1 to
+    # 1, or 2 on a `when` guard (its `otherwise` item), so `!= 1` no longer
+    # exists.
+    ("Structure gate: stop enforcing Guard cardinality (1 child, or 2 with otherwise)",
      "lnpl/protocol.py",
-     "            if children_count != 1:\n                return (\"guard_cardinality:",
+     "            if children_count not in allowed:\n                return (\"guard_cardinality:",
      "            if False:\n                return (\"guard_cardinality:"),
     # Re-anchored 2026-08-03: RFC-0010 narrowed this condition from "any dropped
     # reference" to "a dropped reference no declared move accounts for", so the
