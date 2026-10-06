@@ -11,7 +11,7 @@
 # a `pipeline` closes at the next keyword, never by indentation. The second
 # `when` is therefore written at the SAME column as `pipeline place`, which is
 # where it actually sits. Indenting it to the step column would say "inside"
-# while the compiler closes the pipeline there, so RFC-0060 rejects that.
+# while the compiler closes the pipeline there, so RFC-0058 rejects that.
 #
 # If the FIRST guard is false, `pipeline place` is skipped and `pay` is never
 # bound. The second guard's `pay.status == 200` then compares an unbound

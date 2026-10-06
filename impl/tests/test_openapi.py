@@ -1158,7 +1158,7 @@ class TestQuerySurface(unittest.TestCase):
                 self.assertIn("401", op["responses"])
 
 
-# RFC-0055: `optional` fields — nullable and not required in the entity
+# RFC-0053: `optional` fields — nullable and not required in the entity
 # (request) schema; not required, but never nullable, in the `respond` schema.
 OPTIONAL_SRC = """capability postgres
 
@@ -1222,7 +1222,7 @@ class TestOptionalFields(unittest.TestCase):
 
     def test_non_optional_entity_schema_byte_identical(self):
         # Regression: the same entity without the modifiers generates the
-        # exact schema it did before RFC-0055.
+        # exact schema it did before RFC-0053.
         plain = spec_for(OPTIONAL_SRC.replace(" optional", ""))
         customer = plain["components"]["schemas"]["Customer"]
         self.assertEqual(["id", "name", "nickname", "handle", "extra"],
@@ -1239,7 +1239,7 @@ class TestOptionalFields(unittest.TestCase):
             generate(doc)
 
 
-# RFC-0058: two declared rejections in one workflow, plus a sibling workflow
+# RFC-0056: two declared rejections in one workflow, plus a sibling workflow
 # that declares none.
 FAIL_SRC = """
 entity Product
@@ -1267,7 +1267,7 @@ workflow Browse
 
 
 class TestDeclaredFailureCodes(unittest.TestCase):
-    """RFC-0058: an operation whose workflow can reach `fail` lists its codes
+    """RFC-0056: an operation whose workflow can reach `fail` lists its codes
     under a 422 response; any other operation is unchanged."""
 
     def setUp(self):
@@ -1276,7 +1276,7 @@ class TestDeclaredFailureCodes(unittest.TestCase):
     def test_the_422_response_names_every_declared_code_once_sorted(self):
         responses = self.paths["/shop-service/reserve"]["post"]["responses"]
         description = responses["422"]["description"]
-        self.assertIn("RFC-0058", description)
+        self.assertIn("RFC-0056", description)
         self.assertTrue(description.endswith("codes out-of-stock, over-limit"),
                         description)
 

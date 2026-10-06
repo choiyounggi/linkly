@@ -347,7 +347,7 @@ workflow PlaceOrder
         self.assertNotIn("derived-never-assigned", codes)
 
 
-# RFC-0055 (issue #208): the second field modifier, `optional`. `nickname` is
+# RFC-0053 (issue #208): the second field modifier, `optional`. `nickname` is
 # the issue's own reproduction field; `name` is the required control.
 CUSTOMER_ID = "0b6f1c2e-1111-4a2b-9c3d-000000000208"
 
@@ -383,7 +383,7 @@ class TestOptionalFieldParsing(unittest.TestCase):
                 msg = str(ctx.exception)
                 self.assertIn("derived", msg)
                 self.assertIn("optional", msg)
-                self.assertIn("RFC-0055", msg)
+                self.assertIn("RFC-0053", msg)
 
     def test_duplicated_modifier_is_refused(self):
         with self.assertRaises(LowerError) as ctx:
@@ -424,7 +424,7 @@ class TestOptionalFieldParsing(unittest.TestCase):
 
 class TestOptionalValidatePolicy(unittest.TestCase):
     """`interp.validate_effect`: an `optional` field may be absent or JSON
-    `null`; a present value is still type-checked (RFC-0055)."""
+    `null`; a present value is still type-checked (RFC-0053)."""
 
     def run_payload(self, payload, steps=None):
         src = customer_src() if steps is None else customer_src(steps=steps)

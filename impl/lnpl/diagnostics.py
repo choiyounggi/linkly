@@ -62,7 +62,7 @@ CODES = (
     "predicate-not-pushed-down",    # issue #164  list where ran against a driver that does not declare supports_predicate
     "respond-field-missing",        # issue #198  `respond` names a field absent from the bound row
     "guard-scoped-binding-escape",  # issue #198  `respond`/`set`/`format`/`emit ... with` reads a `create .../call .../request ... as` binding outside the guard that creates it
-    "optional-field-unguarded-arithmetic",  # RFC-0055  set/guard arithmetic reads an `optional` field with no Presence (`exists`) guard owning the step
+    "optional-field-unguarded-arithmetic",  # RFC-0053  set/guard arithmetic reads an `optional` field with no Presence (`exists`) guard owning the step
 )
 
 # code -> grade (#52). One question decides every row:
@@ -155,7 +155,7 @@ SEVERITY_OF = {
     # issue #198: moving the reader under the guard that creates the binding
     # removes this — same test as `guard-orphaned-steps`.
     "guard-scoped-binding-escape": "warning",
-    # RFC-0055: adding a `when <ref> exists` guard (or moving the read
+    # RFC-0053: adding a `when <ref> exists` guard (or moving the read
     # under one) removes this — same test as `unknown-verb`.
     "optional-field-unguarded-arithmetic": "warning",
 }

@@ -66,7 +66,7 @@ MUTATIONS = [
     # Re-anchored 2026-08-25: issue #119 added the `caller` scope, so this
     # control-flow call now also passes `caller=interp.caller` and the old
     # anchor's text no longer exists in the file.
-    # Re-anchored 2026-10-04: RFC-0056 (issue #207) added
+    # Re-anchored 2026-10-04: RFC-0054 (issue #207) added
     # `text_equality_operands=` to the same call.
     ("Guard: ignore `when` and always run the guarded item",
      "lnpl/interp.py",
@@ -94,8 +94,8 @@ MUTATIONS = [
     # bindings out of the expectation path forks it into two, which is the
     # failure this task exists to prevent — so a test must notice.
     # issue #169 재고정: money_fields 키워드 인자가 추가된 현재 시그니처로.
-    # 2026-10-04 재고정: RFC-0056(issue #207)이 text_fields 인자를 더했다.
-    # 2026-10-04 재고정: RFC-0061(issue #210)이 response 인자를 더했다.
+    # 2026-10-04 재고정: RFC-0054(issue #207)이 text_fields 인자를 더했다.
+    # 2026-10-04 재고정: RFC-0059(issue #210)이 response 인자를 더했다.
     ("spec: evaluate `result` against an empty scope instead of the run's bindings",
      "lnpl/spec.py",
      '        ok = _condition_holds(text, result.get("payload", {}),\n'
@@ -286,7 +286,7 @@ MUTATIONS = [
      "lnpl/protocol.py",
      "            if child_kind and child_kind not in CHILDREN_ALLOWED.get(parent_kind, set()):\n                return (\"v5_children:",
      "            if False:\n                return (\"v5_children:"),
-    # Re-anchored 2026-10-04: RFC-0062 widened the count from exactly 1 to
+    # Re-anchored 2026-10-04: RFC-0060 widened the count from exactly 1 to
     # 1, or 2 on a `when` guard (its `otherwise` item), so `!= 1` no longer
     # exists.
     ("Structure gate: stop enforcing Guard cardinality (1 child, or 2 with otherwise)",

@@ -78,7 +78,7 @@ class MapResultTest(unittest.TestCase):
         self.assertEqual((400, "validation-failed"), map_result(result))
 
     def test_m8e_declared_rejection_maps_to_422_with_the_author_code(self):
-        # RFC-0058: the status is typed by `failure_kind`; the problem `code`
+        # RFC-0056: the status is typed by `failure_kind`; the problem `code`
         # IS the code the author wrote after `fail`.
         result = result_stub(status="failed", failed_step="fail out-of-stock",
                              failure_reason="out-of-stock",
@@ -121,7 +121,7 @@ class ProblemTest(unittest.TestCase):
         self.assertIn("title", body)
 
     def test_an_author_rejection_code_gets_the_generic_title(self):
-        # RFC-0058: a `fail` code is not in `_TITLES` (it may not reuse one),
+        # RFC-0056: a `fail` code is not in `_TITLES` (it may not reuse one),
         # so the title falls back instead of raising KeyError.
         body = problem(422, "out-of-stock", "out-of-stock", failed_step="f")
         self.assertEqual("the workflow rejected the request", body["title"])
@@ -418,7 +418,7 @@ class ServeSemanticsTest(ServerTestCase):
         self.assertNotIn("Traceback", json.dumps(body))
 
     def test_m8e_declared_rejection_is_422_problem_json_over_http(self):
-        # RFC-0058 / issue #206: the issue's `Reserve` with `fail out-of-stock`.
+        # RFC-0056 / issue #206: the issue's `Reserve` with `fail out-of-stock`.
         port = self.start(compile_src(RESERVE_SRC, "shop"))
         resp, body = self.post_json(port, "/shop-service/reserve",
                                     dict(RESERVE_PAYLOAD, stock=1, quantity=5))

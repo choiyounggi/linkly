@@ -767,7 +767,7 @@ class TestRestoreSkips(unittest.TestCase):
 
 
 
-# RFC-0055 §10: mode B refuses any guard — Presence or comparison — that reads
+# RFC-0053 §10: mode B refuses any guard — Presence or comparison — that reads
 # an `optional` field, in `build` and `diff` alike, before any toolchain use.
 OPTIONAL_MODE_B = """capability postgres
 %s
@@ -833,20 +833,20 @@ class TestOptionalGuardExemption(unittest.TestCase):
         msg = self._build_refusal(doc, wf)
         self.assertIn("customer.nickname exists", msg)
         self.assertIn("`optional`", msg)
-        self.assertIn("RFC-0055", msg)
+        self.assertIn("RFC-0053", msg)
         self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
 
     def test_build_refuses_comparison_on_optional_field(self):
         doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
         msg = self._build_refusal(doc, wf)
         self.assertIn("customer.bonus > 5", msg)
-        self.assertIn("RFC-0055", msg)
+        self.assertIn("RFC-0053", msg)
 
     def test_emit_mlir_refuses_too(self):
         doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
         with self.assertRaises(backend.BackendError) as ctx:
             backend.emit_mlir(doc, wf)
-        self.assertIn("RFC-0055", str(ctx.exception))
+        self.assertIn("RFC-0053", str(ctx.exception))
 
     def test_build_refuses_presence_on_optional_create_as_alias(self):
         doc, wf = _optional_doc(
@@ -870,11 +870,11 @@ class TestOptionalGuardExemption(unittest.TestCase):
         doc, wf = _optional_doc("    when customer.nickname exists\n    create order")
         msg = self._diff_refusal(doc, wf)
         self.assertIn("`optional`", msg)
-        self.assertIn("RFC-0055", msg)
+        self.assertIn("RFC-0053", msg)
 
     def test_diff_refuses_comparison_on_optional_field_without_toolchain(self):
         doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
-        self.assertIn("RFC-0055", self._diff_refusal(doc, wf))
+        self.assertIn("RFC-0053", self._diff_refusal(doc, wf))
 
     def test_mixed_entity_comparison_input_field_refused_both_orders(self):
         # `Ledger.bonus` is required, `Customer.bonus` optional: the ANY rule
@@ -884,8 +884,8 @@ class TestOptionalGuardExemption(unittest.TestCase):
                 doc, wf = _optional_doc("    when input.bonus > 5\n    create order",
                                         before=before, after=after)
                 self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
-                self.assertIn("RFC-0055", self._build_refusal(doc, wf))
-                self.assertIn("RFC-0055", self._diff_refusal(doc, wf))
+                self.assertIn("RFC-0053", self._build_refusal(doc, wf))
+                self.assertIn("RFC-0053", self._diff_refusal(doc, wf))
 
     def test_build_with_no_optional_guard_still_builds(self):
         doc, wf = _optional_doc("    create order")
@@ -918,11 +918,11 @@ class TestOptionalGuardExemption(unittest.TestCase):
                 rc, text = run_cli_err([cmd, src, "--workdir", workdir,
                                         "--workflow", "wf.greet"])
                 self.assertEqual(rc, 4, text)
-                self.assertIn("RFC-0055", text)
+                self.assertIn("RFC-0053", text)
                 self.assertNotIn("EQUIVALENT", text)
 
 
-# RFC-0056 §Mode B: mode B refuses a guard comparing a Text-family field, in
+# RFC-0054 §Mode B: mode B refuses a guard comparing a Text-family field, in
 # `build` and `diff` alike, LAST among the guard exemptions and before any
 # toolchain use.
 def _text_doc(body):
@@ -955,13 +955,13 @@ class TestTextGuardExemption(unittest.TestCase):
         doc, wf = _text_doc("read order\n    when order.status == paid")
         msg = self._build_refusal(doc, wf)
         self.assertIn("order.status == paid", msg)
-        self.assertIn("RFC-0056", msg)
+        self.assertIn("RFC-0054", msg)
 
     def test_diff_refuses_text_equality_without_toolchain(self):
         doc, wf = _text_doc("read order\n    when order.status == paid")
         msg = self._diff_refusal(doc, wf)
         self.assertIn("Text-family", msg)
-        self.assertIn("RFC-0056", msg)
+        self.assertIn("RFC-0054", msg)
 
     def test_diff_with_no_text_guard_still_diffs(self):
         doc, wf = _text_doc("read order\n    when order.stock > 0")
@@ -971,8 +971,8 @@ class TestTextGuardExemption(unittest.TestCase):
         self.assertIn("toolchain unavailable", str(ctx.exception))
 
     def test_build_and_diff_refuse_in_the_same_order(self):
-        # The earlier exemptions win in both commands: optional (RFC-0055),
-        # lookup (RFC-0052), then text (RFC-0056) last.
+        # The earlier exemptions win in both commands: optional (RFC-0053),
+        # lookup (RFC-0052), then text (RFC-0054) last.
         optional = lower(parse(OPTIONAL_MODE_B % (
             "", "", "    when customer.nickname == input.nickname\n"
                     "    create order")), "crm").to_document()
@@ -981,14 +981,14 @@ class TestTextGuardExemption(unittest.TestCase):
             "    find stock by input.productId\n"
             "    when stock.productId == p1\n    find stock")),
             "orders").to_document()
-        for doc, wf, first in ((optional, "wf.greet", "RFC-0055"),
+        for doc, wf, first in ((optional, "wf.greet", "RFC-0053"),
                                (lookup, "wf.restock", "RFC-0052")):
             with self.subTest(first=first):
                 self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
                 for msg in (self._build_refusal(doc, wf),
                             self._diff_refusal(doc, wf)):
                     self.assertIn(first, msg)
-                    self.assertNotIn("RFC-0056", msg)
+                    self.assertNotIn("RFC-0054", msg)
 
     def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
         from tests.test_backend import TEXT_GUARD
@@ -1002,11 +1002,11 @@ class TestTextGuardExemption(unittest.TestCase):
                 rc, text = run_cli_err([cmd, src, "--workdir", workdir,
                                         "--workflow", "wf.cancel"])
                 self.assertEqual(rc, 4, text)
-                self.assertIn("RFC-0056", text)
+                self.assertIn("RFC-0054", text)
                 self.assertNotIn("EQUIVALENT", text)
 
 
-# RFC-0058 §Mode B: mode B refuses a workflow reaching `fail`, in `build` and
+# RFC-0056 §Mode B: mode B refuses a workflow reaching `fail`, in `build` and
 # `diff` alike, after every guard exemption and before any toolchain use.
 def _fail_doc(body):
     from tests.test_backend import TEXT_GUARD
@@ -1029,13 +1029,13 @@ class TestFailExemption(unittest.TestCase):
         doc, wf = _fail_doc(FAIL_BODY)
         msg = self._build_refusal(doc, wf)
         self.assertIn("fail out-of-stock", msg)
-        self.assertIn("RFC-0058", msg)
+        self.assertIn("RFC-0056", msg)
 
     def test_diff_refuses_fail_without_toolchain(self):
         doc, wf = _fail_doc(FAIL_BODY)
         msg = self._diff_refusal(doc, wf)
         self.assertIn("`fail`", msg)
-        self.assertIn("RFC-0058", msg)
+        self.assertIn("RFC-0056", msg)
 
     def test_diff_with_no_fail_still_diffs(self):
         doc, wf = _fail_doc("read order\n    when order.stock > 0")
@@ -1051,13 +1051,13 @@ class TestFailExemption(unittest.TestCase):
                          "    fail already-paid")
         optional = _optional_doc("    when customer.nickname exists\n"
                                  "    fail nickname-taken")
-        for (doc, wf), first in ((text, "RFC-0056"), (optional, "RFC-0055")):
+        for (doc, wf), first in ((text, "RFC-0054"), (optional, "RFC-0053")):
             with self.subTest(first=first):
                 self.assertTrue(backend.workflow_uses_fail(doc, wf))
                 for msg in (self._build_refusal(doc, wf),
                             self._diff_refusal(doc, wf)):
                     self.assertIn(first, msg)
-                    self.assertNotIn("RFC-0058", msg)
+                    self.assertNotIn("RFC-0056", msg)
 
     def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
         from tests.test_backend import TEXT_GUARD
@@ -1071,5 +1071,5 @@ class TestFailExemption(unittest.TestCase):
                 rc, text = run_cli_err([cmd, src, "--workdir", workdir,
                                         "--workflow", "wf.cancel"])
                 self.assertEqual(rc, 4, text)
-                self.assertIn("RFC-0058", text)
+                self.assertIn("RFC-0056", text)
                 self.assertNotIn("EQUIVALENT", text)

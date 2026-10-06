@@ -413,7 +413,7 @@ CREATE_AS_OPTIONAL_SRC = OPTIONAL_RESPOND_SRC.replace(
 
 
 class TestRespondOmitsAnOptionalField(unittest.TestCase):
-    """RFC-0055: an absent or null `optional` field is simply omitted from
+    """RFC-0053: an absent or null `optional` field is simply omitted from
     the response — it is the declared shape, so no `respond-field-missing`."""
 
     def _run(self, source, row):

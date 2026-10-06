@@ -155,7 +155,7 @@ class TransactionBoundaryTest(ContractTestCase):
             "entity.order", "read", "entity.order#y-1"))
 
 
-# RFC-0058: a write, then a declared business rejection. `create order` runs
+# RFC-0056: a write, then a declared business rejection. `create order` runs
 # first, so only the existing RFC-0032 boundary can take it back.
 WRITE_THEN_FAIL = """entity Product
     field
@@ -176,7 +176,7 @@ workflow Reserve
 
 
 class RejectionRollbackTest(ContractTestCase):
-    """RFC-0058: reaching `fail` ends the run failed, so RFC-0032 rolls the
+    """RFC-0056: reaching `fail` ends the run failed, so RFC-0032 rolls the
     run's earlier writes back — the same boundary, no new code path."""
 
     def _reserve(self, backend, quantity):

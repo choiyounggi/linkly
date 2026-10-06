@@ -142,7 +142,7 @@ class TestEvaluationsOnAComparisonGuard(unittest.TestCase):
 
 
     def test_skipped_evaluations_show_the_compared_text_values(self):
-        # RFC-0056: a Text equality's skip names both compared strings.
+        # RFC-0054: a Text equality's skip names both compared strings.
         doc = _doc(TEXT_SRC % "    when order.status == paid", "shop")
         _interp, result = _run_doc(doc, TEXT_PAYLOAD, workflow="wf.cancel.order",
                                    entities=("entity.order",))
@@ -225,7 +225,7 @@ class TestEvaluationsAreMaskedLikeAnyOtherChannel(unittest.TestCase):
 
 
     def test_text_equality_evaluation_has_no_password_masking_artifact(self):
-        # RFC-0056 D2: a Password field never reaches this path (refused at
+        # RFC-0054 D2: a Password field never reaches this path (refused at
         # compile time), so a Text equality's entry is the plain shape every
         # other comparison has, with nothing masked.
         doc = _doc(TEXT_SRC % "    when order.status == cancelled", "shop")
@@ -279,7 +279,7 @@ class TestEvaluationsAreExcludedFromTheDifferentialProjection(unittest.TestCase)
                            "step": "create order", "rounds": None}])
 
 
-# RFC-0058: issue #206's `Reserve`, with the rejection declared. A `fail`
+# RFC-0056: issue #206's `Reserve`, with the rejection declared. A `fail`
 # step is a WorkflowStep like any other, so a false guard skips it the way
 # RFC-0014 already skips everything else.
 RESERVE_SRC = """

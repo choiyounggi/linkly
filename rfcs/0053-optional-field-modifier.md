@@ -1,4 +1,4 @@
-# RFC-0055: optional 필드 수식어
+# RFC-0053: optional 필드 수식어
 
 ## Status
 
@@ -89,7 +89,7 @@ entity Customer
 | 토큰이 2개 미만이거나 4개 초과 | 컴파일 거부 — 받은 토큰 수를 댄다 |
 | 어휘 밖의 수식어 | 컴파일 거부 — 그 낱말과 전체 어휘 `derived, optional`을 댄다 |
 | 같은 수식어 두 번 | 컴파일 거부 — 반복된 낱말을 댄다 |
-| `derived`와 `optional`을 함께(순서 무관) | 컴파일 거부 — 두 낱말과 RFC-0055를 댄다 |
+| `derived`와 `optional`을 함께(순서 무관) | 컴파일 거부 — 두 낱말과 RFC-0053를 댄다 |
 | 필드 이름 `id`에 `optional` | 컴파일 거부 — 행 키 `row_key`는 `id`가 없으면 모든 행이 같은 `-` 키로 떨어진다 |
 
 수식어 자리는 앞으로 다른 필드 표기가 들어올 수 있게 열어 둔다. 새 낱말은 이 표의
@@ -102,7 +102,7 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0001 §노드 카탈로그 표�
 
 > | kind | 필수 필드 | 선택 필드 | children 허용 |
 > |------|----------|----------|--------------|
-> | Entity | `name`, `fields`(배열: `{name, type(Semantic Type명 또는 refinement), required(기본 true), derived(issue #95), optional(RFC-0055)}`) | `constraints`(Constraint id[]) | Validation(엔티티 불변식) |
+> | Entity | `name`, `fields`(배열: `{name, type(Semantic Type명 또는 refinement), required(기본 true), derived(issue #95), optional(RFC-0053)}`) | `constraints`(Constraint id[]) | Validation(엔티티 불변식) |
 
 - `optional`은 boolean이고, 수식어를 쓴 필드에만 `true`로 실린다. 쓰지 않은 필드에는
   키 자체가 없다(`false`가 아니다) — `optional`을 쓰지 않은 모듈의 IR은 이 RFC 전과
@@ -245,7 +245,7 @@ RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level S
 > (`lower._check_dimensions`)와 별개이므로 한쪽을 넓혀도 다른 쪽은 조용히 넓어지지
 > 않는다.
 >
-> #### 3.2 `optional` 필드의 존재 검사 (RFC-0055)
+> #### 3.2 `optional` 필드의 존재 검사 (RFC-0053)
 >
 > `exists`/`missing`은 값을 평가하지 않고 키가 있는지만 본다. 그래서 피연산자가
 > `optional`로 선언된 필드(RFC-0001 §노드 카탈로그/Entity)이면 **선언 타입과 무관하게**
@@ -265,14 +265,14 @@ RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level S
 > | 양변이 모두 리터럴(`1 < 2`) | 아무것도 결정하지 않는 가드는 저작 오류다 |
 > | 선언 타입이 어느 차원(RFC-0016 §3: Integer·DateTime·Money)도 아닌 피연산자 | 평가기가 없다. 실측: `payment.amount`(Money) 가드가 경고 없이 컴파일된 뒤 `TypeError: '<=' not supported between instances of 'dict' and 'int'`로 죽었다(t2 F-4). Money는 RFC-0051부터 차원이 있으므로 이 행이 아니라 차원 불일치 행으로 판정된다. Decimal은 여전히 이 행이다 |
 > | 차원 규칙(RFC-0016 §3)이 거부하는 식·비교·할당 | 두 양이 같은 종류가 아니다 — 인스턴트와 숫자, Money와 숫자, Money와 Money의 곱·몫 |
-> | `optional`이 아닌 선언된 Money 필드에 `exists`/`missing` | RFC-0051이 여는 부분집합은 비교와 산술이다. 존재 검사는 열지 않는다(RFC-0051 §Reference-level Specification/7). `optional` Money 필드의 존재 검사는 RFC-0016 §3 3.2가 연다(RFC-0055) |
+> | `optional`이 아닌 선언된 Money 필드에 `exists`/`missing` | RFC-0051이 여는 부분집합은 비교와 산술이다. 존재 검사는 열지 않는다(RFC-0051 §Reference-level Specification/7). `optional` Money 필드의 존재 검사는 RFC-0016 §3 3.2가 연다(RFC-0053) |
 > | `input.<field>`의 `<field>`를 어떤 엔티티도 선언하지 않음 | payload는 선언된 전 엔티티 필드의 합집합이다. 그 밖의 이름은 오타다 |
 > | 엔티티명 `Input` | 바인딩 이름이 `input` 네임스페이스와 충돌한다 |
 > | 할당 대상이 `input.…` 또는 맨이름 | 입력은 이 워크플로가 소유한 상태가 아니다 |
 > | 할당 대상 엔티티를 워크플로가 read하지 않음 | 바인딩이 존재할 수 없다(RFC-0012 §G12.5와 같은 사유) |
 > | 앞선 스텝이 할당한 Reference를 뒤의 가드가 읽음 | 모드 B는 조건 필드를 진입 시 i64 파라미터로 고정 받는다. 그런 프로그램은 두 모드가 다른 값을 본다 |
 > | `and` 안의 `exists`/`missing` | §1의 두 채널 사유 |
-> | `input.<field>`에 `exists`/`missing`, 그 `<field>`를 선언한 엔티티가 둘 이상인데 `optional` 표시가 엇갈림 | 존재 검사의 허용 여부(RFC-0016 §3 3.2)가 엔티티마다 다르다. 어느 엔티티의 선언을 따를지 정할 근거가 없으므로 선언한 엔티티를 모두 대고 거부한다(RFC-0055) |
+> | `input.<field>`에 `exists`/`missing`, 그 `<field>`를 선언한 엔티티가 둘 이상인데 `optional` 표시가 엇갈림 | 존재 검사의 허용 여부(RFC-0016 §3 3.2)가 엔티티마다 다르다. 어느 엔티티의 선언을 따를지 정할 근거가 없으므로 선언한 엔티티를 모두 대고 거부한다(RFC-0053) |
 
 바뀐 것은 셋이다: Money 존재 검사 행이 `optional`이 아닌 Money 필드로 좁혀졌고, 맨 아래
 `input.<field>` 존재 검사 행이 새로 생겼다. 나머지 행은 RFC-0051 §2와 글자 단위로
@@ -312,7 +312,7 @@ RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level S
 ### 10. 모드 B
 
 모드 B(`lnpl build`, `lnpl diff`)는 `optional` 필드를 읽는 가드가 있는 워크플로를
-RFC-0055를 대며 거부한다 — 존재 검사든 비교든 같다. 모드 A는 해석되지 않는 참조를
+RFC-0053를 대며 거부한다 — 존재 검사든 비교든 같다. 모드 A는 해석되지 않는 참조를
 거짓으로 읽지만, 모드 B의 값 인코딩은 없는 값을 i64 `0`으로 받기 때문에 두 모드가
 다른 답을 낸다. `build`와 `diff`는 같은 순서로 거부한다(issue #185). `optional`을
 쓰지 않는 프로그램의 모드 B 동작과 RFC-0016 §5의 등가 표는 바뀌지 않는다.

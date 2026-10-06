@@ -1,4 +1,4 @@
-# RFC-0059: `call ... send` — 아웃바운드 본문 매핑 절
+# RFC-0057: `call ... send` — 아웃바운드 본문 매핑 절
 
 ## Status
 
@@ -11,9 +11,6 @@ issue #109가 `with <ref>...`(경로 치환)를 RFC 없이 더한 뒤로 실제 
 (표에는 `()`와 `("as", name)` 두 행뿐이다). 아래 §1이 `send`·`with`·`as` 셋을 함께 담은
 그 표의 치환 후 최종 텍스트다(RFC-0007 §2.2 규칙 4, 자기완결). 이 RFC는 Draft이므로
 RFC-0027에 `Updated-by:` 포인터를 달지 않는다(Accepted가 되는 시점의 일이다).
-
-번호가 0059인 이유: 0058까지 점유됐다(RFC-0058). 0053·0054는 병행 실행(oi1002)이
-쓰는 번호다. RFC-0007 §3은 번호 재사용을 금지한다.
 
 ## Motivation
 
@@ -76,7 +73,7 @@ call PaymentGateway with o.id send o.id                  # 컴파일 에러 — 
 참조 규칙은 RFC-0049 `emit ... with`와 같다. 허용: 바인딩된 행의 선언된 필드(`set`으로
 채운 값 포함), `input.<field>`, 앞선 `call ... as <name>`의 결과 필드. 컴파일 거부:
 맨 이름, 선언되지 않은 바인딩, Password 계열 필드, 같은 필드 이름 두 번, 앞선
-`set`/`format`이 없는 `derived` 필드. RFC-0057의 실행이 채우는 필드(`derived
+`set`/`format`이 없는 `derived` 필드. RFC-0055의 실행이 채우는 필드(`derived
 generated`/`derived clock`)는 `create`가 언제나 채우므로 그대로 쓸 수 있다.
 
 ## Reference-level Specification
@@ -160,7 +157,7 @@ generated`/`derived clock`)는 `create`가 언제나 채우므로 그대로 쓸 
   2. `scope.resolve_field(ref, ...)` — 선언되지 않은 바인딩이면 그 함수가 직접
      `LowerError`를 낸다(`... is not a declared entity ...`). `None`이면 네트워크 결과
      바인딩(`call ... as <name>`)이다 — 선언된 형태가 없으므로 무검사로 허용한다.
-  3. `derived` 필드: RFC-0057의 실행이 채우는 필드(`field["fill_source"]`가 있음)면
+  3. `derived` 필드: RFC-0055의 실행이 채우는 필드(`field["fill_source"]`가 있음)면
      허용한다 — `create`가 언제나 채우고 `set`/`format`으로는 채울 수 없으므로 가드
      스코프 조건이 없다. 아니면 같은 `<binding>.<field>`를 채우는 `set`/`format`이
      같은 가드 스코프에서 앞서 있을 때만 허용한다(issue #204). 없으면 `LowerError`.
@@ -175,7 +172,7 @@ generated`/`derived clock`)는 `create`가 언제나 채우므로 그대로 쓸 
 `interp.py`의 `Interpreter._assemble_mapped_payload(payload_map, payload, bindings)`가
 RFC-0049 §4의 조립을 그대로 한다: 각 참조를 `resolve_reference`로 해석하고, 참조 종류에
 맞는 엔티티 뷰로 필드 단위 `mask_payload`를 통과시키고, 값이 없는 optional 필드는
-생략한다(RFC-0055). `EventEmit`과 `NetworkCall`이 같은 메서드를 부른다.
+생략한다(RFC-0053). `EventEmit`과 `NetworkCall`이 같은 메서드를 부른다.
 
 `NetworkCall`에 `bodyMap`이 있으면 그 결과가 `NetworkDriver.call`의 `payload` 인자다.
 없으면 지금과 똑같이 실행 입력 `payload`를 **그대로**(마스킹 없이) 넘긴다 — 새 분기를

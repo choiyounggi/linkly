@@ -1,4 +1,4 @@
-# RFC-0056: 가드의 Text·enum 등가 비교
+# RFC-0054: 가드의 Text·enum 등가 비교
 
 ## Status
 
@@ -13,12 +13,12 @@ RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연
 RFC에 `Updated-by:` 포인터를 달지 않는다(Accepted가 되는 시점의 일이다).
 
 - **차원 규칙(RFC-0016 §3)과 등가 비교의 타입 규칙(RFC-0038 §3).** RFC-0038 §3이 3.1을
-  붙였고, Draft RFC-0051 §1이 본문을, Draft RFC-0055 §6이 3.2를 갱신하는 중이다. 아래
-  §6의 최종 텍스트는 RFC-0055 §6의 최종 텍스트 **위에** 3.3 한 항을 더하고, 이 RFC로
+  붙였고, Draft RFC-0051 §1이 본문을, Draft RFC-0053 §6이 3.2를 갱신하는 중이다. 아래
+  §6의 최종 텍스트는 RFC-0053 §6의 최종 텍스트 **위에** 3.3 한 항을 더하고, 이 RFC로
   거짓이 되는 두 문장(합성 타입 문단의 "여전히 컴파일 거부", 3.1 끝 문단의 "가드에서
   비교하면 여전히 컴파일 거부")을 고친 것이다. 3.1을 고치므로 RFC-0038 §3도 지목한다.
-- **정적 거부(RFC-0015 §3).** Draft RFC-0051 §2와 Draft RFC-0055 §7이 갱신하는 중이다.
-  아래 §7의 최종 텍스트는 RFC-0055 §7의 표 **위에** 한 행을 고치고 세 행을 더한 것이다.
+- **정적 거부(RFC-0015 §3).** Draft RFC-0051 §2와 Draft RFC-0053 §7이 갱신하는 중이다.
+  아래 §7의 최종 텍스트는 RFC-0053 §7의 표 **위에** 한 행을 고치고 세 행을 더한 것이다.
 - **노드 카탈로그/Guard(RFC-0001).** RFC-0028 §3이 갱신한 행이다(RFC-0001 머리의
   `Updated-by: RFC-0028 (§노드 카탈로그/Guard)`). 이 RFC가 Guard 노드에 선택 필드
   `textEqualityOperands`를 더하므로 RFC-0001과 RFC-0028을 함께 지목한다. 아래 §2가 그
@@ -33,7 +33,7 @@ Draft끼리의 순서: 위 Draft 중 먼저 Accepted되는 쪽이 직전 갱신�
   않으므로 "비수치 값의 비교 → `RunError`" 행의 대상이 아니다 — 그 행은 수치 비교에
   그대로 남는다. 한쪽 참조가 해소되지 않으면 그 비교는 거짓이라는 행이 Text 등가 항에도
   똑같이 적용된다. 새 실패 클래스는 없다.
-- RFC-0028 §6(Mode B). 모드 B가 이 비교를 담은 워크플로를 거부하는 것은 RFC-0055 §10과
+- RFC-0028 §6(Mode B). 모드 B가 이 비교를 담은 워크플로를 거부하는 것은 RFC-0053 §10과
   같은 방식으로 이 RFC의 §5에 둔다 — 모드 B가 컴파일하는 가드의 규칙은 바뀌지 않는다.
 - RFC-0012 §G12.1(참조의 해소). 맨이름이 payload 필드라는 규칙은 그대로다. 이 RFC가
   더하는 것은 "Text류 필드와 짝지어진 등가 항 안의 맨이름"이라는 한 자리뿐이고, 그 자리는
@@ -101,9 +101,9 @@ workflow CancelOrder
 
   ```
   when order.status == shipped
-  → compile error: workflow CancelOrder: 'order.status == shipped' compares with 'shipped', which is not a member of the enum OrderStatus (members: pending, paid, cancelled) (RFC-0056)
+  → compile error: workflow CancelOrder: 'order.status == shipped' compares with 'shipped', which is not a member of the enum OrderStatus (members: pending, paid, cancelled) (RFC-0054)
   when order.status == paidd
-  → ... which is not a member of the enum OrderStatus (members: pending, paid, cancelled) — did you mean 'paid'? (RFC-0056)
+  → ... which is not a member of the enum OrderStatus (members: pending, paid, cancelled) — did you mean 'paid'? (RFC-0054)
   ```
 
   멤버 목록은 항상 나온다. `did you mean`은 가까운 멤버가 있을 때만 붙는다. 평범한
@@ -121,7 +121,7 @@ payload 필드다 — `when stock == available`은 두 payload 값을 숫자로 
 
 `spec`의 `result <ref> == <값>`과 `!=`도 같은 규칙으로 평가된다 — `result order.status ==
 cancelled`가 저장된 상태를 단언한다. 모드 B(`lnpl build`, `lnpl diff`)는 이런 가드를 담은
-워크플로를 RFC-0056을 대며 거부한다. Text 값에는 i64 인코딩이 없다.
+워크플로를 RFC-0054을 대며 거부한다. Text 값에는 i64 인코딩이 없다.
 
 덧붙여 `set order.status to paid`(또는 `to "paid"`)의 거부 문면이 Text를 쓰는 방법을
 알려 준다: `write a Text field with format order.status from "..."`. 동작은 그대로
@@ -146,7 +146,7 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0001 "### 노드 카탈로그" 
 
 | kind | 필수 필드 | 선택 필드 | children 허용 |
 |------|----------|----------|--------------|
-| Guard | `mode`(`when`\|`until`\|`repeat` — 닫힌 enum) | `condition`(`when`·`until` 전용 — 조건 서술), `count`(`repeat` 전용 — 1 이상 정수), `alternatives`(`when` 전용, 배열, 1개 이상의 문자열 — `or`로 이어지는 대안 조건 서술. RFC-0028 신설), `textEqualityOperands`(배열의 배열 — `[condition, *alternatives]`와 같은 순서로 각 서술마다 하나, Text 등가 항(RFC-0016 §3 3.3)의 피연산자 이름을 중복 없이 정렬한 문자열 배열. 그런 항이 없는 서술은 빈 배열. 어느 서술에도 없으면 필드 자체가 없다. RFC-0056 신설) | 피가드 항목 1개(WorkflowStep, Concurrency, Pipeline 중 하나). 실행 의미는 RFC-0014 §2. 2026-07-31 신설(RFC-0002 부록 A.4-① 해소), 2026-08-24 `alternatives` 추가(RFC-0028, 이슈 #93), 2026-10-04 `textEqualityOperands` 추가(RFC-0056, 이슈 #207) |
+| Guard | `mode`(`when`\|`until`\|`repeat` — 닫힌 enum) | `condition`(`when`·`until` 전용 — 조건 서술), `count`(`repeat` 전용 — 1 이상 정수), `alternatives`(`when` 전용, 배열, 1개 이상의 문자열 — `or`로 이어지는 대안 조건 서술. RFC-0028 신설), `textEqualityOperands`(배열의 배열 — `[condition, *alternatives]`와 같은 순서로 각 서술마다 하나, Text 등가 항(RFC-0016 §3 3.3)의 피연산자 이름을 중복 없이 정렬한 문자열 배열. 그런 항이 없는 서술은 빈 배열. 어느 서술에도 없으면 필드 자체가 없다. RFC-0054 신설) | 피가드 항목 1개(WorkflowStep, Concurrency, Pipeline 중 하나). 실행 의미는 RFC-0014 §2. 2026-07-31 신설(RFC-0002 부록 A.4-① 해소), 2026-08-24 `alternatives` 추가(RFC-0028, 이슈 #93), 2026-10-04 `textEqualityOperands` 추가(RFC-0054, 이슈 #207) |
 
 `textEqualityOperands`는 컴파일러가 쓰는 필드다. 그 안의 이름은 참조(`order.status`,
 `input.expected`)이거나 맨이름 리터럴(`paid`)이다 — 어느 쪽인지는 이름에 점이 있는지로
@@ -184,21 +184,21 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0001 "### 노드 카탈로그" 
 ### 5. 모드 B
 
 모드 B(`lnpl build`, `lnpl diff`)는 가드(서술이든 `or` 대안이든)가 Text류 필드를 읽는
-워크플로를 RFC-0056을 대며 거부한다. Text 값에는 모드 B가 조건 필드를 받는 i64 인코딩이
+워크플로를 RFC-0054을 대며 거부한다. Text 값에는 모드 B가 조건 필드를 받는 i64 인코딩이
 없다. 검출은 문서에서 한다: 엔티티의 기본 바인딩과 `create ... as <이름>` 별칭의 Text류
 필드, 그리고 마지막으로 선언한 엔티티 기준 Text류인 `input.<field>`(컴파일러의
 `declared_fields`와 같은 규칙)를 읽는 가드다. 컴파일러가 가드에서 Text류 필드를 받는 자리는
 §6 3.3의 등가 항뿐이므로 이 검출은 그 항과 같다.
 
 거부 순서는 `build`와 `diff`가 같다(issue #185): Money 가드(RFC-0051) → 조회 키(RFC-0052)
-→ `optional` 필드 가드(RFC-0055) → Text 등가 가드(이 RFC). 앞선 것이 먼저 거부한다. 모드 B
+→ `optional` 필드 가드(RFC-0053) → Text 등가 가드(이 RFC). 앞선 것이 먼저 거부한다. 모드 B
 도구가 없어도 같은 거부가 먼저 나온다.
 
 ### 6. 피연산자의 차원 규칙 — RFC-0016 §3 / RFC-0038 §3 갱신 (치환 후 최종 텍스트)
 
 RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level Specification/3의
-치환 후 최종 텍스트다(RFC-0038이 붙인 3.1, Draft RFC-0051 §1, Draft RFC-0055 §6의 텍스트
-포함). 인용 안의 "RFC-0015"는 RFC-0015 §3을 가리킨다. RFC-0055 §6의 인용과 다른 곳은
+치환 후 최종 텍스트다(RFC-0038이 붙인 3.1, Draft RFC-0051 §1, Draft RFC-0053 §6의 텍스트
+포함). 인용 안의 "RFC-0015"는 RFC-0015 §3을 가리킨다. RFC-0053 §6의 인용과 다른 곳은
 셋이다: 합성 타입 문단 끝에 한 문장을 더했고, 3.1 끝 문단의 "Text 필드를 가드에서 비교하면
 여전히 컴파일 거부다"를 3.3을 가리키는 문장으로 고쳤고, 3.3을 새로 붙였다.
 
@@ -268,7 +268,7 @@ RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level S
 > (`lower._check_dimensions`)와 별개이므로 한쪽을 넓혀도 다른 쪽은 조용히 넓어지지
 > 않는다.
 >
-> #### 3.2 `optional` 필드의 존재 검사 (RFC-0055)
+> #### 3.2 `optional` 필드의 존재 검사 (RFC-0053)
 >
 > `exists`/`missing`은 값을 평가하지 않고 키가 있는지만 본다. 그래서 피연산자가
 > `optional`로 선언된 필드(RFC-0001 §노드 카탈로그/Entity)이면 **선언 타입과 무관하게**
@@ -277,7 +277,7 @@ RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level S
 > 이 예외는 존재 검사에만 있다. `optional` 필드를 비교·산술에 쓰는 것은 위 표가
 > 그 선언 타입대로 판정한다.
 >
-> #### 3.3 가드 조건의 Text 등가 비교 (RFC-0056)
+> #### 3.3 가드 조건의 Text 등가 비교 (RFC-0054)
 >
 > `when`/`until` 서술과 `or` 대안의 `==`/`!=` 항은, 한쪽 피연산자가 base가 Text류(UUID,
 > Email, Phone, Currency, Html, Markdown, Text — 그 base의 refinement 포함)인 선언 필드를
@@ -307,22 +307,22 @@ RFC-0007 §2.2 규칙 4에 따라, 아래 인용은 RFC-0016 §Reference-level S
 > | 거부 | 사유 |
 > |------|------|
 > | 양변이 모두 리터럴(`1 < 2`) | 아무것도 결정하지 않는 가드는 저작 오류다 |
-> | 선언 타입이 어느 차원(RFC-0016 §3: Integer·DateTime·Money)도 아닌 피연산자 | 평가기가 없다. 실측: `payment.amount`(Money) 가드가 경고 없이 컴파일된 뒤 `TypeError: '<=' not supported between instances of 'dict' and 'int'`로 죽었다(t2 F-4). Money는 RFC-0051부터 차원이 있으므로 이 행이 아니라 차원 불일치 행으로 판정된다. Decimal은 여전히 이 행이다. 가드 `==`/`!=`의 Text류 필드는 이 행이 아니라 RFC-0016 §3 3.3으로 판정된다(RFC-0056) |
+> | 선언 타입이 어느 차원(RFC-0016 §3: Integer·DateTime·Money)도 아닌 피연산자 | 평가기가 없다. 실측: `payment.amount`(Money) 가드가 경고 없이 컴파일된 뒤 `TypeError: '<=' not supported between instances of 'dict' and 'int'`로 죽었다(t2 F-4). Money는 RFC-0051부터 차원이 있으므로 이 행이 아니라 차원 불일치 행으로 판정된다. Decimal은 여전히 이 행이다. 가드 `==`/`!=`의 Text류 필드는 이 행이 아니라 RFC-0016 §3 3.3으로 판정된다(RFC-0054) |
 > | 차원 규칙(RFC-0016 §3)이 거부하는 식·비교·할당 | 두 양이 같은 종류가 아니다 — 인스턴트와 숫자, Money와 숫자, Money와 Money의 곱·몫 |
-> | `optional`이 아닌 선언된 Money 필드에 `exists`/`missing` | RFC-0051이 여는 부분집합은 비교와 산술이다. 존재 검사는 열지 않는다(RFC-0051 §Reference-level Specification/7). `optional` Money 필드의 존재 검사는 RFC-0016 §3 3.2가 연다(RFC-0055) |
+> | `optional`이 아닌 선언된 Money 필드에 `exists`/`missing` | RFC-0051이 여는 부분집합은 비교와 산술이다. 존재 검사는 열지 않는다(RFC-0051 §Reference-level Specification/7). `optional` Money 필드의 존재 검사는 RFC-0016 §3 3.2가 연다(RFC-0053) |
 > | `input.<field>`의 `<field>`를 어떤 엔티티도 선언하지 않음 | payload는 선언된 전 엔티티 필드의 합집합이다. 그 밖의 이름은 오타다 |
 > | 엔티티명 `Input` | 바인딩 이름이 `input` 네임스페이스와 충돌한다 |
 > | 할당 대상이 `input.…` 또는 맨이름 | 입력은 이 워크플로가 소유한 상태가 아니다 |
 > | 할당 대상 엔티티를 워크플로가 read하지 않음 | 바인딩이 존재할 수 없다(RFC-0012 §G12.5와 같은 사유) |
 > | 앞선 스텝이 할당한 Reference를 뒤의 가드가 읽음 | 모드 B는 조건 필드를 진입 시 i64 파라미터로 고정 받는다. 그런 프로그램은 두 모드가 다른 값을 본다 |
 > | `and` 안의 `exists`/`missing` | §1의 두 채널 사유 |
-> | `input.<field>`에 `exists`/`missing`, 그 `<field>`를 선언한 엔티티가 둘 이상인데 `optional` 표시가 엇갈림 | 존재 검사의 허용 여부(RFC-0016 §3 3.2)가 엔티티마다 다르다. 어느 엔티티의 선언을 따를지 정할 근거가 없으므로 선언한 엔티티를 모두 대고 거부한다(RFC-0055) |
-> | `Password` base 필드를 가드의 `==`/`!=`에 씀 | RFC-0001의 마스킹 의무 — 가드 스킵 레코드가 비교한 값을 싣는다(RFC-0056) |
-> | 가드 등가의 맨이름 리터럴이 상대쪽 `enum` refinement의 멤버가 아님 | enum은 닫힌 값 집합이다(RFC-0011) — 멤버가 아닌 리터럴은 항상 거짓이므로 저작 오류다(RFC-0056) |
-> | 가드의 Text 등가 항 어느 쪽이든 산술식 | RFC-0016은 Text에 산술을 주지 않는다 — 평가기가 없다(RFC-0056) |
+> | `input.<field>`에 `exists`/`missing`, 그 `<field>`를 선언한 엔티티가 둘 이상인데 `optional` 표시가 엇갈림 | 존재 검사의 허용 여부(RFC-0016 §3 3.2)가 엔티티마다 다르다. 어느 엔티티의 선언을 따를지 정할 근거가 없으므로 선언한 엔티티를 모두 대고 거부한다(RFC-0053) |
+> | `Password` base 필드를 가드의 `==`/`!=`에 씀 | RFC-0001의 마스킹 의무 — 가드 스킵 레코드가 비교한 값을 싣는다(RFC-0054) |
+> | 가드 등가의 맨이름 리터럴이 상대쪽 `enum` refinement의 멤버가 아님 | enum은 닫힌 값 집합이다(RFC-0011) — 멤버가 아닌 리터럴은 항상 거짓이므로 저작 오류다(RFC-0054) |
+> | 가드의 Text 등가 항 어느 쪽이든 산술식 | RFC-0016은 Text에 산술을 주지 않는다 — 평가기가 없다(RFC-0054) |
 
 바뀐 것은 넷이다: "어느 차원도 아닌 피연산자" 행의 사유 끝에 3.3을 가리키는 문장을
-더했고, 맨 아래 세 행이 새로 생겼다. 나머지 행은 RFC-0055 §7과 글자 단위로 같다.
+더했고, 맨 아래 세 행이 새로 생겼다. 나머지 행은 RFC-0053 §7과 글자 단위로 같다.
 
 ## Examples
 
@@ -391,10 +391,10 @@ workflow CancelOrder
 
 ```
 when order.status < paid              → ... declared type OrderStatus is neither Integer nor DateTime ...
-when order.status == shipped          → ... not a member of the enum OrderStatus (members: pending, paid, cancelled) (RFC-0056)
-when order.status == order.ownerId    → ... equality needs the same declared type on both sides (RFC-0038 D2, extended to guard conditions by RFC-0056)
+when order.status == shipped          → ... not a member of the enum OrderStatus (members: pending, paid, cancelled) (RFC-0054)
+when order.status == order.ownerId    → ... equality needs the same declared type on both sides (RFC-0038 D2, extended to guard conditions by RFC-0054)
 when order.status == 5                → ... RFC-0016 compares like with like ...
-when order.status == order.stock + 1  → ... compares a Text-family field with an arithmetic expression ... (RFC-0056)
+when order.status == order.stock + 1  → ... compares a Text-family field with an arithmetic expression ... (RFC-0054)
 when order.secret == hunter           → ... compares order.secret, a Password field (declared type Password) — its value is masked everywhere it is reported (RFC-0001), so a guard may not compare it
 set order.status to paid              → ... `set` has no evaluator for Text ...; write a Text field with `format order.status from "..."` (issue #94)
 ```

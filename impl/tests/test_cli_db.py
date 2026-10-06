@@ -206,7 +206,7 @@ OPTIONAL_SOURCE = SOURCE.replace("        label Text\n",
 
 
 class OptionalFieldDbCheckTest(DbCheckTestCase):
-    """RFC-0055: `db check` does not count an absent optional field as a
+    """RFC-0053: `db check` does not count an absent optional field as a
     mismatch; a missing required field is still reported. The store lives
     under `.claude/tmp`, never the system temp directory."""
 

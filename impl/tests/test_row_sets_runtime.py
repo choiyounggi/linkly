@@ -550,7 +550,7 @@ class TestDateTimeMinMaxEvaluation(unittest.TestCase):
 
 
 
-# RFC-0055 §9: aggregates skip a row lacking (or null on) an `optional`
+# RFC-0053 §9: aggregates skip a row lacking (or null on) an `optional`
 # field; `count` still counts every row.
 OPTIONAL_AGG = AGG_SOURCE.replace("        clicks Integer\n",
                                   "        clicks Integer optional\n")

@@ -354,7 +354,7 @@ class TestWorkflowSelection(unittest.TestCase):
         self.assertIn("no workflow to run", text)
 
 
-# RFC-0058 / issue #206: the issue's `Reserve`, with the rejection declared.
+# RFC-0056 / issue #206: the issue's `Reserve`, with the rejection declared.
 RESERVE_WITH_FAIL = """entity Product
     field
         id UUID

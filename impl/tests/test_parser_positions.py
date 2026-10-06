@@ -244,7 +244,7 @@ class TestGuardLayout(unittest.TestCase):
 
 
 class TestPipelineGuardLayout(unittest.TestCase):
-    """RFC-0060 (issue #211 (3)): a `pipeline` closes at the next control
+    """RFC-0058 (issue #211 (3)): a `pipeline` closes at the next control
     keyword, never by indentation — so a keyword written deeper than the open
     pipeline's own line looks nested but runs outside it.
 
@@ -326,7 +326,7 @@ class TestPipelineGuardLayout(unittest.TestCase):
 
 
 class TestOtherwiseBranch(unittest.TestCase):
-    """RFC-0062: `otherwise` on the line after a `when` guard's item owns
+    """RFC-0060: `otherwise` on the line after a `when` guard's item owns
     exactly one item, as the guard's sibling — never a nested block.
 
     The parse tree carries it on the guard item itself (`item["otherwise"]`),
@@ -457,7 +457,7 @@ class TestOtherwiseBranch(unittest.TestCase):
                 self.assertIn("only a `when` guard can own an `otherwise`", message)
 
     def test_otherwise_indented_into_an_open_pipeline_is_rejected(self):
-        """Known-true-positive for RFC-0060's rule extended to `otherwise`."""
+        """Known-true-positive for RFC-0058's rule extended to `otherwise`."""
         with self.assertRaises(ParseError) as ctx:
             parse(workflow("    when order.qty > 0\n"
                            "    pipeline place\n"

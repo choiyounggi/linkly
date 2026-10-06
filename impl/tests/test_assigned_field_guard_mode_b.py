@@ -1,4 +1,4 @@
-"""RFC-0062 §Mode B: a guard reading a field an earlier step assigns is a
+"""RFC-0060 §Mode B: a guard reading a field an earlier step assigns is a
 recorded exemption — `build` and `diff` refuse it by name, in the same chain
 position, before any toolchain lookup.
 
@@ -74,18 +74,18 @@ class TestAssignedFieldGuardModeB(_Refusals):
         self.assertIn("step update product", msg)
         self.assertIn("'product.stock >= 0'", msg)
         self.assertIn("reads product.stock, which an earlier step assigns", msg)
-        self.assertIn("RFC-0062", msg)
+        self.assertIn("RFC-0060", msg)
         self.assertIn("mode A", msg)
 
     def test_build_refuses_without_a_toolchain(self):
         msg = self._build_refusal(doc_of(ISSUE_REPRO))
-        self.assertIn("RFC-0062", msg)
+        self.assertIn("RFC-0060", msg)
         self.assertIn("product.stock", msg)
 
     def test_diff_refuses_without_a_toolchain(self):
         msg = self._diff_refusal(doc_of(ISSUE_REPRO))
         self.assertIn("reads a field an earlier step assigns", msg)
-        self.assertIn("RFC-0062", msg)
+        self.assertIn("RFC-0060", msg)
 
     def test_detector_reads_alternatives_too(self):
         source = UNGUARDED_DECREMENT.replace(
@@ -121,14 +121,14 @@ class TestAssignedFieldGuardModeB(_Refusals):
             backend.workflow_uses_assigned_guard_field(doc_of(ISSUE_REPRO), "wf.nope")
 
     def test_fail_is_refused_before_the_assigned_field_guard(self):
-        """RFC-0058's link precedes RFC-0062's in both commands."""
+        """RFC-0056's link precedes RFC-0060's in both commands."""
         doc = doc_of(UNGUARDED_DECREMENT.replace("    update product\n",
                                                  "    fail out-of-stock\n"))
         self.assertTrue(backend.workflow_uses_assigned_guard_field(doc, WF))
         self.assertTrue(backend.workflow_uses_fail(doc, WF))
         for msg in (self._build_refusal(doc), self._diff_refusal(doc)):
-            self.assertIn("RFC-0058", msg)
-            self.assertNotIn("RFC-0062", msg)
+            self.assertIn("RFC-0056", msg)
+            self.assertNotIn("RFC-0060", msg)
 
     def test_lnpl_build_and_diff_report_the_refusal_as_rc_4(self):
         from tests.test_cli import run_cli_err
@@ -141,7 +141,7 @@ class TestAssignedFieldGuardModeB(_Refusals):
                 rc, text = run_cli_err([cmd, src, "--workdir", workdir,
                                         "--workflow", WF])
                 self.assertEqual(rc, 4, text)
-                self.assertIn("RFC-0062", text)
+                self.assertIn("RFC-0060", text)
                 self.assertNotIn("EQUIVALENT", text)
 
 

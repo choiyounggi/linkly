@@ -63,7 +63,7 @@ LOGICAL_OPS = ("and",)
 # `when`/`until`/`repeat`, `or` does not open a new guard on its own.
 GUARD_ALT_KEYWORD = "or"
 
-# RFC-0062: the sibling-branch keyword. Recognized by the parser only right
+# RFC-0060: the sibling-branch keyword. Recognized by the parser only right
 # after a `when` guard's single item was attached — see
 # `parser._append_workflow_item`'s `_otherwise_slot` state. Not a
 # `KEYWORDS_CONTROL` entry: unlike `when`/`until`/`repeat`, `otherwise` never
@@ -115,7 +115,7 @@ SCHEDULE_ZONES = ("UTC",)
 # change issue #49 does not ask for. RFC-0016 §Open Questions records it.
 EVENT_TRIGGERS = ("schedule",)
 
-# RFC-0058: `fail <code>`'s code must not collide with an existing problem
+# RFC-0056: `fail <code>`'s code must not collide with an existing problem
 # `code` -- mirrors impl/lnpl/wsgi.py's `_TITLES` keys (duplicated here, not
 # imported, because `wsgi.py` imports `lower.py`, which would make the reverse
 # import circular). A conformance test in impl/tests/test_cli_vocab.py asserts
@@ -131,7 +131,7 @@ RESERVED_PROBLEM_CODES = (
     "workflow-failed", "write-conflict",
 )
 
-# RFC-0058: the kebab-case shape `fail <code>` requires -- lowercase
+# RFC-0056: the kebab-case shape `fail <code>` requires -- lowercase
 # letters/digits, hyphen-separated, no leading/trailing/double hyphen.
 KEBAB_CODE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 

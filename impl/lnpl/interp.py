@@ -196,7 +196,7 @@ class FakeRepository:
         same `(field value, row_key)` pair, so the two backends agree).
         """
         table = self.rows.get(entity_id, {})
-        # RFC-0055 §9: a row lacking the field sorts last, in row_key order.
+        # RFC-0053 §9: a row lacking the field sorts last, in row_key order.
         items = sorted(table.items(), key=lambda kv: kv[0])
         present = [kv for kv in items if kv[1].get(field) is not None]
         missing = [kv for kv in items if kv[1].get(field) is None]
@@ -427,7 +427,7 @@ class _ParallelGroup:
 
 def _text_ops(node, index):
     """The operand names lowering recorded for the Text-equality terms of the
-    guard text at `index` in (condition,) + alternatives (RFC-0056), or None
+    guard text at `index` in (condition,) + alternatives (RFC-0054), or None
     when the guard records none — read from the IR, never re-derived."""
     ops = node.get("textEqualityOperands")
     return frozenset(ops[index]) if ops else None
@@ -521,7 +521,7 @@ def _flatten_items(nodes, ids, interp, result, root, con, payload, bindings):
                         interp.trace.log(
                             "INFO", "guard alternative matched", guard=node_id,
                             condition=alternatives[fired - 1])
-                # RFC-0062: `children[1]`, when present, is the `otherwise` item —
+                # RFC-0060: `children[1]`, when present, is the `otherwise` item —
                 # run above only when the guard and every alternative are false.
                 for inner in _flatten_items(nodes, inner_ids[:1], interp, result, root,
                                             con, payload, bindings):
@@ -627,7 +627,7 @@ def _skip_record(nodes, node, rounds=None, evaluations=None, branch="then"):
     text `guard_condition_text` builds. Mode B's `restore_skips` calls the
     same function, so the two modes cannot independently drift on the join.
 
-    `branch` (RFC-0062): `"then"` records the guarded item (`children[0]`)
+    `branch` (RFC-0060): `"then"` records the guarded item (`children[0]`)
     not running; `"otherwise"` records a `when` guard's `otherwise` item
     (`children[1]`) not running because the guard held — `mode` reads
     `"otherwise"` and `condition` is still the guard's own text. Either way
@@ -721,7 +721,7 @@ def resolve_reference(name, payload, bindings, caller=None, response=None):
     `caller.role` resolve the same way `input.*` does — a reserved namespace
     checked before the general `bindings` lookup, never a bound row.
 
-    `response` (RFC-0061 §6, optional, default `None`): the run's
+    `response` (RFC-0059 §6, optional, default `None`): the run's
     `result["response"]` — only `spec`'s `expect result` passes it, so a
     bare name that is a `respond` term name answers that term's value, ahead
     of the payload field of the same name. Guards never pass it.
@@ -831,12 +831,12 @@ def _condition_holds(condition, payload, bindings, collector=None, caller=None,
     shape (a non-money ref, a non-money-literal-shaped value, no `money_fields`
     at all) falls through unchanged to the existing path.
 
-    `text_equality_operands` (RFC-0056, optional, default `None`): the
+    `text_equality_operands` (RFC-0054, optional, default `None`): the
     operand names a guard's Text-equality terms carry, as lowering recorded
     them (`textEqualityOperands` on the Guard node). A `==`/`!=` term naming
     one compares text, not numbers — see `_comparison_holds`.
 
-    `text_fields` (RFC-0056, optional, default `None`): a predicate
+    `text_fields` (RFC-0054, optional, default `None`): a predicate
     `ref -> bool` naming Text-family fields — only `spec._expect_result`
     passes one, since a `result` text has no Guard node to read a recorded
     decision from. A `==`/`!=` term with a QUALIFIED operand it confirms
@@ -978,7 +978,7 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None,
     evaluated here, unmasked (`_masked_evaluation` in `_flatten_items` masks a
     sensitive one before it reaches a skip record).
 
-    RFC-0056: a `==`/`!=` term with an operand named in
+    RFC-0054: a `==`/`!=` term with an operand named in
     `text_equality_operands` compares text — a bare name is its own literal
     text, a qualified name resolves via `resolve_reference` — and never
     reaches `eval_value`'s number/instant coercion. Without a recorded set,
@@ -1040,7 +1040,7 @@ def _comparison_holds(cmp_node, condition, payload, bindings, collector=None,
 
 
 def _is_text_term(cmp_node, text_equality_operands, text_fields):
-    """RFC-0056: is this `==`/`!=` term a Text equality? From the guard's
+    """RFC-0054: is this `==`/`!=` term a Text equality? From the guard's
     recorded operand names when given; otherwise from `text_fields`, which
     only a QUALIFIED operand can satisfy — a bare name is never Text on its
     own, only by being paired with one."""
@@ -1057,7 +1057,7 @@ def _is_text_term(cmp_node, text_equality_operands, text_fields):
 
 def _text_comparison_holds(cmp_node, condition, payload, bindings, collector,
                            caller):
-    """RFC-0056: one Text-equality term. Unresolved operand -> False, the
+    """RFC-0054: one Text-equality term. Unresolved operand -> False, the
     same rule a numeric comparison follows."""
     from .condition import Ref
 
@@ -1065,7 +1065,7 @@ def _text_comparison_holds(cmp_node, condition, payload, bindings, collector,
         if not isinstance(operand, Ref):
             # Lowering refuses this in a guard; only a spec `result` gets here.
             raise RunError("%r compares a Text-family field with %s, which "
-                           "is not text (RFC-0056)"
+                           "is not text (RFC-0054)"
                            % (condition, _value_text(operand)))
         if operand.namespace is None:
             return operand.name           # a bare name here is a literal
@@ -1263,7 +1263,7 @@ def eval_aggregate(agg, expression, rowsets, agg_field_type=None,
         absent = not isinstance(row, dict) or field not in row or (
             field_optional and row.get(field) is None)
         if absent:
-            # RFC-0055 §9: an `optional` field's absence (or null) is skipped,
+            # RFC-0053 §9: an `optional` field's absence (or null) is skipped,
             # the way SQL's SUM/AVG skip NULL; a required field still fails.
             if field_optional:
                 continue
@@ -1636,10 +1636,10 @@ class Interpreter:
     def _assemble_mapped_payload(self, payload_map, payload, bindings):
         """issue #178/#200: the per-field body for `emit ... with`'s
         `payloadMap` (RFC-0049 §4) and `call/request ... send`'s `bodyMap`
-        (RFC-0059 §4) -- each ref resolved through the one resolver and
+        (RFC-0057 §4) -- each ref resolved through the one resolver and
         masked through the one chokepoint. Each caller keeps its own
         no-clause default: `emit` masks the whole input, a call sends it
-        as-is (RFC-0059 §5).
+        as-is (RFC-0057 §5).
         """
         built_payload = {}
         for entry in payload_map:
@@ -1648,7 +1648,7 @@ class Interpreter:
             raw = resolve_reference(ref, payload, bindings, self.caller)
             binding, _, _ref_field = ref.partition(".")
             if binding == PAYLOAD_NAMESPACE:
-                # RFC-0055: `input.<field>` is optional only when
+                # RFC-0053: `input.<field>` is optional only when
                 # EVERY entity declaring that name marks it so —
                 # the same AND rule `_normalize_optional_nulls` uses.
                 declaring = [f for n in self.doc["nodes"]
@@ -1672,7 +1672,7 @@ class Interpreter:
                     f["name"] == _ref_field and f.get("optional")
                     for f in entity.get("fields", [])))
                 if raw is None and optional:
-                    # RFC-0055: omitted, never an invented null.
+                    # RFC-0053: omitted, never an invented null.
                     continue
                 if entity is None:
                     masked = {field: raw}
@@ -1780,8 +1780,8 @@ class Interpreter:
 
     def _aggregate(self, agg, expression, rowsets, agg_field_type):
         """One `Aggregate` over this run's RowSets — `set`'s right-hand side
-        and `respond`'s named term (RFC-0061 §4) both evaluate through here.
-        RFC-0055 §9: a RowSet is always bound under its entity's default
+        and `respond`'s named term (RFC-0059 §4) both evaluate through here.
+        RFC-0053 §9: a RowSet is always bound under its entity's default
         binding name (`list` has no `as`), so this finds it."""
         agg_entity_id = self._entity_id_for_binding(
             agg.ref.namespace or agg.ref.name)
@@ -1794,7 +1794,7 @@ class Interpreter:
                               field_optional=field_optional)
 
     def _respond_terms(self, node, response, rowsets):
-        """RFC-0061 §4: add one `Response` node's terms to `response`.
+        """RFC-0059 §4: add one `Response` node's terms to `response`.
 
         A named aggregate term is a flat key, evaluated by the same
         `_aggregate` a `set` uses — it reads RowSets only, so nothing is
@@ -1850,7 +1850,7 @@ class Interpreter:
 
     # ---- execution ---------------------------------------------------------
     def _normalize_optional_nulls(self, payload):
-        """RFC-0055: JSON `null` for a field that EVERY entity declaring that
+        """RFC-0053: JSON `null` for a field that EVERY entity declaring that
         name marks `optional` means absent — dropped once here so validate,
         `create` and plain `emit` all inherit it. AND across the declaring
         entities, so the result never depends on declaration order. A name
@@ -1874,7 +1874,7 @@ class Interpreter:
                 if not (k in optional_names and v is None)}
 
     def _decide_run_context(self, run_context):
-        """RFC-0057 §3: the run's fill-source values, decided ONCE at run
+        """RFC-0055 §3: the run's fill-source values, decided ONCE at run
         start — before validate, seed or any create. A caller (`spec`) pins
         either value through `run_context`; an unpinned one is decided here:
         a fresh UUIDv4 for `generated`, this run's Clock reading for `clock`
@@ -1885,12 +1885,12 @@ class Interpreter:
         unknown = sorted(set(pinned) - set(FILL_SOURCES))
         if unknown:
             raise RunError("run context names %s — the fill sources are %s "
-                           "(RFC-0057)" % (", ".join(map(repr, unknown)),
+                           "(RFC-0055)" % (", ".join(map(repr, unknown)),
                                            ", ".join(FILL_SOURCES)))
         for name, value in pinned.items():
             if not isinstance(value, str) or not value:
                 raise RunError("run context %r must be a non-empty string, "
-                               "got %r (RFC-0057)" % (name, value))
+                               "got %r (RFC-0055)" % (name, value))
         if "generated" not in pinned:
             pinned["generated"] = str(uuid.uuid4())
         if "clock" not in pinned:
@@ -1902,7 +1902,7 @@ class Interpreter:
     def _fill_values(self, entity_node):
         """`{field: value}` for `entity_node`'s fill-source fields, from this
         run's context — applied only at a create of THAT entity, never
-        written into the shared payload (RFC-0057 §4)."""
+        written into the shared payload (RFC-0055 §4)."""
         if entity_node is None:
             return {}
         return {f["name"]: self._run_context[f["fill_source"]]
@@ -1950,7 +1950,7 @@ class Interpreter:
         # after the fact, so a guard that never fired contributes nothing —
         # the same rule every other Effect gets from this loop.
         response_refs = []
-        # RFC-0061 §4: the `Response` nodes carrying named aggregate terms or
+        # RFC-0059 §4: the `Response` nodes carrying named aggregate terms or
         # a list term, same rule — only a step that actually ran adds one.
         response_terms = []
         # issue #111, D4: same collection shape as `response_refs`, but
@@ -2070,7 +2070,7 @@ class Interpreter:
         except RunError:
             self.repo.rollback()
             raise
-        # RFC-0061 §4: `respond`'s terms are evaluated here, after the last
+        # RFC-0059 §4: `respond`'s terms are evaluated here, after the last
         # step and before the commit — a term that cannot be evaluated (`avg`
         # of an empty RowSet) fails the run on its own step and rolls back,
         # exactly as the same aggregate in a `set` would, rather than
@@ -2109,7 +2109,7 @@ class Interpreter:
         # puts it behind `--strict`, which is the only way a caller reading just
         # the exit code could ever have seen it (issue #45's gate).
         for record in result["skipped"]:
-            # RFC-0062: an `otherwise` record means its guard HELD.
+            # RFC-0060: an `otherwise` record means its guard HELD.
             skipper = ("`otherwise` of the `when` guard, which held,"
                        if record["mode"] == "otherwise"
                        else "`%s` guard" % record["mode"])
@@ -2158,7 +2158,7 @@ class Interpreter:
                     # absent from it (the response-ref twin of
                     # `stored-row-shape-mismatch`, #85) — omit it and say so
                     # once per ref, however often `respond` repeats it.
-                    # RFC-0055: an `optional` field's absence (or stored
+                    # RFC-0053: an `optional` field's absence (or stored
                     # null) is its declared shape — omitted, not reported.
                     if not optional and ref not in reported:
                         reported.add(ref)
@@ -2171,7 +2171,7 @@ class Interpreter:
                                     % (ref, field, binding))
                     continue
                 response.setdefault(binding, {})[field] = row[field]
-            # A list term's envelope arrives here alone (RFC-0061 §1/§4 leave
+            # A list term's envelope arrives here alone (RFC-0059 §1/§4 leave
             # no other key beside it), so `update` yields exactly it.
             response.update(term_response or {})
             result["response"] = response
@@ -2393,17 +2393,17 @@ class Interpreter:
             if effect["operation"] == "create":
                 fills = self._fill_values(self.nodes.get(effect["entity"]))
                 if "id" not in fills and payload.get("id") is None:
-                    # RFC-0057 §6 (issue #209): no payload id would key the
+                    # RFC-0055 §6 (issue #209): no payload id would key the
                     # row under the shared `<entity>#-` sentinel, so every
                     # second create conflicts. Refused before any write.
                     missing = RunError(
                         "repository create of %s needs an id: the payload has "
                         "no `id` and the entity's id is not `derived generated` "
-                        "(RFC-0057)" % effect["entity"])
+                        "(RFC-0055)" % effect["entity"])
                     missing.failure_kind = "id-required"
                     raise missing
             if "id" in fills:
-                # RFC-0057 §4: a `derived generated` id keys the row.
+                # RFC-0055 §4: a `derived generated` id keys the row.
                 key = row_key(effect["entity"], {"id": fills["id"]})
             else:
                 # issue #175 / RFC-0052 §3: resolved outside the `try` — an
@@ -2470,7 +2470,7 @@ class Interpreter:
                 # scope a `read` binding gets (RFC-0027 §2 notation reused).
                 created_key = key
                 entity_node = self.nodes.get(effect["entity"])
-                # RFC-0057 §4: both drivers' skeleton row holds the row-key
+                # RFC-0055 §4: both drivers' skeleton row holds the row-key
                 # string under `id`; a declared `id` is overwritten with the
                 # value the row is keyed by, so a UUID field never stores a
                 # key string. An entity declaring no `id` keeps the skeleton
@@ -2487,7 +2487,7 @@ class Interpreter:
                             continue
                         if field.get("derived"):
                             continue
-                        # RFC-0055: an optional field's null is not stored —
+                        # RFC-0053: an optional field's null is not stored —
                         # per entity, for a name only this entity marks
                         # optional (`_normalize_optional_nulls` is AND-wide).
                         if fname in payload and not (
@@ -2584,7 +2584,7 @@ class Interpreter:
                             "NetworkCall %r: `with` reference %r resolved to "
                             "nothing" % (effect["id"], ref))
                     path_args.append(value)
-            # RFC-0059 §4: `send` builds the body from the mapped refs; with
+            # RFC-0057 §4: `send` builds the body from the mapped refs; with
             # no `send` the body is the run input, unmasked, as before.
             body_map = effect.get("bodyMap")
             if body_map:
@@ -2685,7 +2685,7 @@ class Interpreter:
             # overwrite), which is why nothing runs here.
             pass
         elif kind == "Rejection":
-            # RFC-0058: the author's declared business rejection. The code is
+            # RFC-0056: the author's declared business rejection. The code is
             # the reason, and `failure_kind` rides the exception the same way
             # `not_found.failure_kind` does above, so `run_workflow` types the
             # failure without reading its wording. Rollback needs no code
@@ -2728,7 +2728,7 @@ class Interpreter:
                 return False
             if eff["kind"] in ("NetworkCall", "EventEmit"):
                 return False
-            # RFC-0058: a reached `fail` rejects identically on every attempt.
+            # RFC-0056: a reached `fail` rejects identically on every attempt.
             if eff["kind"] == "Rejection":
                 return False
         return True
@@ -2932,7 +2932,7 @@ def validate_effect(nodes, effect, payload, refinements):
     is server-computed, so the client sending one is mass-assignment, not a
     completed form.
 
-    An `optional` field (RFC-0055) may be absent or JSON `null`; a present
+    An `optional` field (RFC-0053) may be absent or JSON `null`; a present
     non-null value is still type-checked. Null-aware here, not only at
     `run_workflow`'s boundary, because mode B's `_validation_fails` calls this
     function without ever running a workflow.
@@ -2956,7 +2956,7 @@ def validate_effect(nodes, effect, payload, refinements):
                 continue
             if field.get("optional") and (field["name"] not in payload
                                           or payload[field["name"]] is None):
-                # RFC-0055: absent or JSON null both mean "not supplied".
+                # RFC-0053: absent or JSON null both mean "not supplied".
                 continue
             if field["name"] not in payload:
                 raise RunError("missing required field %r" % field["name"])
@@ -3114,7 +3114,7 @@ def row_shape_mismatches(entity_node, row, refinements):
             continue
         name = field["name"]
         optional = field.get("optional")
-        # RFC-0055: an `optional` field's missing key or stored null is the
+        # RFC-0053: an `optional` field's missing key or stored null is the
         # normal shape; a present value of the wrong type still reports.
         if name not in row or (optional and row[name] is None):
             if optional:

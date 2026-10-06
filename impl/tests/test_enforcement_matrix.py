@@ -377,7 +377,7 @@ class TestVerbCrossReference(unittest.TestCase):
         # 16 through RFC-0014; `set` (RFC-0015) is the seventeenth, `list`
         # (RFC-0025) the eighteenth; `format` (issue #94) is the nineteenth;
         # `respond` (issue #96) is the twentieth; `note` (issue #111) is the
-        # twenty-first; `fail` (RFC-0058) is the twenty-second.
+        # twenty-first; `fail` (RFC-0056) is the twenty-second.
         self.assertEqual(len(VERB_LEXICON), 22)
         self.assertEqual(verb_reference_errors(self.markdown), [])
 
@@ -391,12 +391,12 @@ class TestVerbCrossReference(unittest.TestCase):
             self.assertNotIn(verb, VERB_LEXICON,
                              "%r joined VERB_LEXICON; §A now lies" % verb)
 
-    def test_the_respond_row_names_the_rfc_0061_terms(self):
-        # RFC-0061 widened `respond`'s object; the row must keep saying so.
+    def test_the_respond_row_names_the_rfc_0059_terms(self):
+        # RFC-0059 widened `respond`'s object; the row must keep saying so.
         row = next(line for line in section(self.markdown, HEADING_A).splitlines()
                    if line.startswith("| respond |"))
         for phrase in ("`<name> as <func> <ref>`", "`respond list <binding>`",
-                       "`limit`", "RFC-0061", "모드 B"):
+                       "`limit`", "RFC-0059", "모드 B"):
             self.assertIn(phrase, row)
 
     def test_the_policy_is_stated_in_both_polarities(self):

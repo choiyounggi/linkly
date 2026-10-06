@@ -82,7 +82,7 @@ LINKHUB_LIR = os.path.join(_REPO, "examples", "linkhub.lir.json")
 LINKHUB_SPEC = os.path.join(_REPO, "examples", "linkhub.spec.json")
 LINKHUB_OPENAPI = os.path.join(_REPO, "examples", "linkhub.openapi.json")
 
-# The multi-stage conditional-flow exemplar (issue #211, RFC-0060): guarded
+# The multi-stage conditional-flow exemplar (issue #211, RFC-0058): guarded
 # `pipeline` blocks chained, a later guard reading a binding only the earlier
 # pipeline creates.
 STAGED_LNPL = os.path.join(_REPO, "examples", "staged.lnpl")

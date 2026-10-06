@@ -328,7 +328,7 @@ class TestLinkhubGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase
 
 
 class TestStagedGoldenPair(GoldenPairContract, unittest.TestCase):
-    """The multi-stage conditional-flow exemplar (issue #211, RFC-0060).
+    """The multi-stage conditional-flow exemplar (issue #211, RFC-0058).
 
     No `refine`/`service`, so the first entity leads; the declared
     `capability http PaymentGateway` closes the order after postgres.

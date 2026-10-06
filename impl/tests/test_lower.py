@@ -1809,7 +1809,7 @@ class TestAssignmentDiagnosticNamesTheStepItIsAbout(unittest.TestCase):
 
 
 
-# RFC-0055 Track B: `optional` fields in guards.
+# RFC-0053 Track B: `optional` fields in guards.
 OPTIONAL_GUARD_SOURCE = """
 capability postgres
 entity Customer
@@ -1841,7 +1841,7 @@ def optional_guard_module(body):
 
 
 class TestPresenceOnOptionalFields(unittest.TestCase):
-    """RFC-0055 §6 3.2: `exists`/`missing` is open on an `optional` field of
+    """RFC-0053 §6 3.2: `exists`/`missing` is open on an `optional` field of
     any declared type; a non-optional Text/Money field is still refused."""
 
     def test_presence_on_optional_text_field_compiles(self):
@@ -1872,8 +1872,8 @@ class TestPresenceOnOptionalFields(unittest.TestCase):
         self.assertIn("RFC-0051", str(caught.exception))
 
     def test_comparison_on_optional_text_field_ordering_still_refused(self):
-        # Boundary: the Presence exemption (RFC-0055 §6 3.2) and the equality
-        # exemption (RFC-0056) are both independent of `optional` — ordering
+        # Boundary: the Presence exemption (RFC-0053 §6 3.2) and the equality
+        # exemption (RFC-0054) are both independent of `optional` — ordering
         # comparison on a Text-family field stays refused either way.
         with self.assertRaises(LowerError) as caught:
             optional_guard_module(
@@ -1881,7 +1881,7 @@ class TestPresenceOnOptionalFields(unittest.TestCase):
         self.assertIn("neither Integer nor DateTime", str(caught.exception))
 
     def test_comparison_on_optional_text_field_equality_now_compiles(self):
-        # RFC-0056: equality is independent of `optional`.
+        # RFC-0054: equality is independent of `optional`.
         mod = optional_guard_module(
             "    when customer.nickname == input.nickname\n    create order")
         guard = mod.get("wf.greet.guard.1")
@@ -1941,7 +1941,7 @@ ORDER_NOTE_OPTIONAL = "entity Order\n    field\n        id UUID\n        note Te
 
 
 class TestInputPresenceAcrossEntities(unittest.TestCase):
-    """RFC-0055 §11 first rule / RFC-0015 §3 new row: `input.<field>
+    """RFC-0053 §11 first rule / RFC-0015 §3 new row: `input.<field>
     exists` needs every declaring entity to agree on `optional`."""
 
     def lower_entities(self, *entities):
@@ -1952,7 +1952,7 @@ class TestInputPresenceAcrossEntities(unittest.TestCase):
             self.lower_entities(*entities)
         message = str(caught.exception)
         self.assertIn("Customer, Order", message)
-        self.assertIn("RFC-0055", message)
+        self.assertIn("RFC-0053", message)
         self.assertIn("input.note exists", message)
 
     def test_input_field_presence_ambiguous_entities_refused(self):
@@ -2000,7 +2000,7 @@ class TestInputPresenceAcrossEntities(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("billing.Customer", message)
         self.assertIn("shipping.Customer", message)
-        self.assertIn("RFC-0055", message)
+        self.assertIn("RFC-0053", message)
 
 
 ARITH_GUARD_SOURCE = OPTIONAL_GUARD_SOURCE
@@ -2013,7 +2013,7 @@ def arith_warnings(body):
 
 
 class TestOptionalUnguardedArithmetic(unittest.TestCase):
-    """RFC-0055 §8: `set`/guard arithmetic on an optional field is
+    """RFC-0053 §8: `set`/guard arithmetic on an optional field is
     protected only by the nearest enclosing `when <same field> exists`."""
 
     def test_arithmetic_inside_the_exact_guard_no_warning(self):
@@ -2036,7 +2036,7 @@ class TestOptionalUnguardedArithmetic(unittest.TestCase):
         self.assertEqual("warning", found[0].severity)
         self.assertEqual(23, found[0].line)
         self.assertIn("when customer.score exists", found[0].message)
-        self.assertIn("RFC-0055", found[0].message)
+        self.assertIn("RFC-0053", found[0].message)
         self.assertIn("when <ref> exists", found[0].hint)
 
     def test_arithmetic_with_no_guard_at_all_warns(self):
@@ -2078,7 +2078,7 @@ class TestOptionalUnguardedArithmetic(unittest.TestCase):
 
     def test_guard_comparison_arithmetic_cannot_be_protected_by_an_outer_guard(self):
         # Guards never nest: a guard line closes the open `pipeline`, so the
-        # second guard is top-level and its arithmetic still warns (RFC-0055 §8).
+        # second guard is top-level and its arithmetic still warns (RFC-0053 §8).
         found = arith_warnings(
             "    when customer.score exists\n    pipeline\n    create order\n"
             "    when customer.score + 1 > 5\n    create order")
@@ -2139,7 +2139,7 @@ def text_guard_refusal(test, condition):
 
 
 class TestTextEqualityGuards(unittest.TestCase):
-    """RFC-0056: a guard compares a Text-family field with `==`/`!=`."""
+    """RFC-0054: a guard compares a Text-family field with `==`/`!=`."""
 
     def test_guard_equality_on_text_field_compiles(self):
         guard = text_guard("order.note == input.note")
@@ -2196,7 +2196,7 @@ class TestTextEqualityGuards(unittest.TestCase):
         self.assertIn("order.secret", message)
         self.assertIn("RFC-0001", message)
         self.assertIn("mask", message)
-        self.assertNotIn("RFC-0056", message)
+        self.assertNotIn("RFC-0054", message)
 
     def test_guard_equality_on_decimal_field_still_refused(self):
         message = text_guard_refusal(self, "order.ratio == input.ratio")
@@ -2238,12 +2238,12 @@ class TestTextEqualityGuards(unittest.TestCase):
     def test_arithmetic_on_either_side_of_a_text_equality_is_refused(self):
         message = text_guard_refusal(self, "order.status == order.stock + 1")
         self.assertIn("arithmetic", message)
-        self.assertIn("RFC-0056", message)
+        self.assertIn("RFC-0054", message)
         # A Text field inside the arithmetic hits the plain dimension refusal.
         message = text_guard_refusal(self, "order.note + 1 == paid")
         self.assertIn("neither Integer nor DateTime", message)
 
-    def test_two_bare_integer_names_in_equality_unaffected_by_rfc_0056(self):
+    def test_two_bare_integer_names_in_equality_unaffected_by_rfc_0054(self):
         guard = text_guard("stock == available")
         self.assertEqual("stock == available", guard["condition"])
         self.assertNotIn("textEqualityOperands", guard)
@@ -2269,7 +2269,7 @@ class TestTextEqualityGuards(unittest.TestCase):
         self.assertEqual([[], ["order.status", "pending"]],
                          guard["textEqualityOperands"])
 
-    def test_list_where_text_equality_is_unaffected_by_rfc_0056(self):
+    def test_list_where_text_equality_is_unaffected_by_rfc_0054(self):
         mod = text_guard_module("    list order where status == input.expected")
         calls = [n for n in mod.nodes() if n.get("operation") == "query"]
         self.assertEqual(
@@ -2317,7 +2317,7 @@ class TestSetOnATextFieldNamesFormat(unittest.TestCase):
         self.assertEqual("order.stock", steps[0]["target"])
 
 
-# RFC-0058: the issue #206 `Reserve` program, with the business rejection
+# RFC-0056: the issue #206 `Reserve` program, with the business rejection
 # written where the author means it.
 FAIL_MODULE = """
 entity Product
@@ -2343,7 +2343,7 @@ def fail_ir(body):
 
 
 class TestFailVerbLowering(unittest.TestCase):
-    """RFC-0058: `fail <kebab-code>` lowers to a WorkflowStep with exactly one
+    """RFC-0056: `fail <kebab-code>` lowers to a WorkflowStep with exactly one
     `Rejection` child carrying the code; every malformed code, and a `fail`
     no guard owns, is a compile error naming the rule."""
 
@@ -2419,7 +2419,7 @@ class TestFailVerbLowering(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("not guarded", msg)
         self.assertIn("Reserve", msg)
-        self.assertIn("RFC-0058", msg)
+        self.assertIn("RFC-0056", msg)
 
     def test_a_fail_under_repeat_is_refused(self):
         # `repeat N` runs its body at least once, so it cannot be false: the

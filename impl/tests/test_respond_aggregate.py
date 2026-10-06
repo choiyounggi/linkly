@@ -1,7 +1,7 @@
-"""Issue #210 / RFC-0061 — `respond` answers a count, a sum or a bounded list
+"""Issue #210 / RFC-0059 — `respond` answers a count, a sum or a bounded list
 without writing anything.
 
-Before RFC-0061 a read-only workflow had to `create` a row to hold its
+Before RFC-0059 a read-only workflow had to `create` a row to hold its
 answer, so the read wrote to the store and the second identical call failed
 409. `respond` now takes two more term kinds next to `<binding>.<field>`:
 
@@ -11,7 +11,7 @@ answer, so the read wrote to the store and the second identical call failed
     `{"items": [...], "next": null}` envelope. The RowSet must be bounded:
     every `list` feeding it declares `limit`.
 
-Neither writes a row. Mode B refuses both (RFC-0061 §Mode B), after `fail`,
+Neither writes a row. Mode B refuses both (RFC-0059 §Mode B), after `fail`,
 in `build` and `diff` alike.
 """
 
@@ -74,7 +74,7 @@ LIST_STEPS = ("list order where customerId == input.customerId "
               "respond list order")
 
 
-# RFC-0058: a `fail` must sit under a guard.
+# RFC-0056: a `fail` must sit under a guard.
 CLOSED = "    when input.quantity > 0\n    fail stats-closed\n"
 
 
@@ -124,7 +124,7 @@ def tmp_dir(test):
     return path
 
 
-# ---- grammar, static checks, IR (RFC-0061 §1-§3) ---------------------------
+# ---- grammar, static checks, IR (RFC-0059 §1-§3) ---------------------------
 
 class TestRespondTermGrammar(unittest.TestCase):
 
@@ -213,7 +213,7 @@ class TestRespondTermGrammar(unittest.TestCase):
                 "respond list order"))
         msg = str(ctx.exception)
         self.assertIn("limit", msg)
-        self.assertIn("RFC-0061", msg)
+        self.assertIn("RFC-0059", msg)
 
     def test_every_list_feeding_the_list_term_needs_limit(self):
         with self.assertRaises(LowerError) as ctx:
@@ -290,7 +290,7 @@ class TestRespondTermGrammar(unittest.TestCase):
             jsonschema.validate(doc, schema)
 
 
-# ---- runtime assembly (RFC-0061 §4) ---------------------------------------
+# ---- runtime assembly (RFC-0059 §4) ---------------------------------------
 
 class TestRespondTermRuntime(unittest.TestCase):
 
@@ -455,7 +455,7 @@ class TestRespondTermWritesNothing(unittest.TestCase):
         self.assertEqual(before, self.row_count())
 
 
-# ---- OpenAPI (RFC-0061 §5) -------------------------------------------------
+# ---- OpenAPI (RFC-0059 §5) -------------------------------------------------
 
 def schema_200(src):
     spec = generate(compile_doc(src))
@@ -504,7 +504,7 @@ class TestRespondTermOpenApi(unittest.TestCase):
         self.assertIsNone(_response_schema(steps, nodes, entities, {}))
 
 
-# ---- spec `result <name>` (RFC-0061 §6) ------------------------------------
+# ---- spec `result <name>` (RFC-0059 §6) ------------------------------------
 
 SPEC_TAIL = """    spec
         given
@@ -550,7 +550,7 @@ class TestRespondTermSpec(unittest.TestCase):
         self.assertEqual((0, 1), (passed, failed), lines)
 
 
-# ---- mode B (RFC-0061 §7) -------------------------------------------------
+# ---- mode B (RFC-0059 §7) -------------------------------------------------
 
 class TestRespondTermModeB(unittest.TestCase):
 
@@ -592,14 +592,14 @@ class TestRespondTermModeB(unittest.TestCase):
             for name, msg in (("build", self.build_refusal(doc)),
                               ("diff", self.diff_refusal(doc))):
                 with self.subTest(kind=kind, cmd=name):
-                    self.assertIn("RFC-0061", msg)
+                    self.assertIn("RFC-0059", msg)
                     self.assertIn("`respond` %s term" % kind, msg)
 
     def test_fail_is_refused_first_in_both(self):
         doc = compile_doc(source(*AGG_STEPS) + CLOSED)
         for msg in (self.build_refusal(doc), self.diff_refusal(doc)):
-            self.assertIn("RFC-0058", msg)
-            self.assertNotIn("RFC-0061", msg)
+            self.assertIn("RFC-0056", msg)
+            self.assertNotIn("RFC-0059", msg)
 
     def test_the_existing_form_is_not_this_refusal(self):
         doc = compile_doc(source("find customer", "respond customer.tier"))
@@ -624,7 +624,7 @@ class TestRespondTermModeB(unittest.TestCase):
                     rc = cli.main([cmd, path, "--workdir", workdir,
                                    "--workflow", WORKFLOW])
                 self.assertEqual(4, rc, err.getvalue())
-                self.assertIn("RFC-0061", err.getvalue())
+                self.assertIn("RFC-0059", err.getvalue())
 
 
 if __name__ == "__main__":

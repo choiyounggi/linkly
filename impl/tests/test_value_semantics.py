@@ -225,7 +225,7 @@ workflow W
 
     def test_a_guard_reading_an_assigned_field_compiles_and_mode_b_refuses_it(self):
         # Was `test_a_guard_reading_an_assigned_field_is_refused`, asserting
-        # RFC-0015's compile error. RFC-0062 resolved RFC-0015 Open Question 1:
+        # RFC-0015's compile error. RFC-0060 resolved RFC-0015 Open Question 1:
         # mode A now reads the current value, and the mode-equivalence rule
         # (mode B fixes condition fields at entry) moved to mode B, which
         # refuses the same program as a recorded exemption.
@@ -238,7 +238,7 @@ workflow W
         with self.assertRaises(backend.BackendError) as ctx:
             backend.emit_mlir(doc, "wf.w")
         self.assertIn("which an earlier step assigns", str(ctx.exception))
-        self.assertIn("RFC-0062", str(ctx.exception))
+        self.assertIn("RFC-0060", str(ctx.exception))
 
     def test_presence_inside_and_is_refused(self):
         self.compile_fails(self.workflow("    read product\n"
@@ -405,7 +405,7 @@ class TestMoneyDimension(unittest.TestCase):
         # Boundary: a bare reference has no declared type, so the new
         # target/RHS check has nothing to compare and must not refuse —
         # `stock` is Integer as a field, yet the bare input name is untyped.
-        # (RFC-0057 §7: the name must be declared somewhere; `amount` was
+        # (RFC-0055 §7: the name must be declared somewhere; `amount` was
         # not, and an undeclared bare name is now a compile error.)
         doc = compile_doc(self.assignment("set product.price to stock"), "m")
         self.assertEqual(1, len(nodes_of(doc, "Assignment")))
@@ -567,7 +567,7 @@ class TestAssignmentRuntime(unittest.TestCase):
 
 
 def _with_bare_inputs(source):
-    """RFC-0057 §7: a bare operand must name a declared field. These names
+    """RFC-0055 §7: a bare operand must name a declared field. These names
     are declared Text on an entity no workflow touches, so the operand stays
     untyped for lowering and its runtime shape is the payload's."""
     return source.replace("service S\n", "entity Inputs\n    field\n"

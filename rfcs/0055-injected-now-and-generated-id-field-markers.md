@@ -1,4 +1,4 @@
-# RFC-0057: 실행이 채우는 필드 — `derived generated`와 `derived clock`
+# RFC-0055: 실행이 채우는 필드 — `derived generated`와 `derived clock`
 
 ## Status
 
@@ -120,13 +120,13 @@ workflow Record
 - 기본형 불일치(`at Text derived generated`) — 표식, 필요한 기본형, 선언된 타입을 댄다.
 - `id`에 `clock`(`id DateTime derived clock`) — `id`는 행 키이고 한 실행의 시각은 유일하지
   않다(가상 시계에서는 실행마다 같다). `id`가 받는 표식은 `generated`뿐이다.
-- `optional`과의 결합은 RFC-0055의 `derived`+`optional` 거부가 그대로 막는다(필드 줄은
+- `optional`과의 결합은 RFC-0053의 `derived`+`optional` 거부가 그대로 막는다(필드 줄은
   토큰 4개가 상한이라 셋을 함께 쓸 자리도 없다).
 
 ### 2. IR — 노드 카탈로그/Entity의 `fields[]`
 
 표식이 있는 필드에만 `fill_source: "generated" | "clock"`이 붙는다. 표식이 없으면 키
-자체가 없다(RFC-0055의 `optional`과 같은 "부재 = 아님" 규칙). 표식 필드는 언제나
+자체가 없다(RFC-0053의 `optional`과 같은 "부재 = 아님" 규칙). 표식 필드는 언제나
 `derived: true`도 가진다.
 
 ```json
@@ -164,17 +164,17 @@ refinement 이름일 수 있다).
 
 RFC-0007 §2.2 규칙 4에 따라 RFC-0030 §4 전체를 아래로 치환한다.
 
-> **4. payload 시드 (D3; RFC-0057 갱신)**
+> **4. payload 시드 (D3; RFC-0055 갱신)**
 >
 > 생성 시점에, 그 Entity가 선언한 필드마다:
 >
-> - **채움 원천 표식이 있는 필드**(RFC-0057 §1)는 이 실행의 실행 문맥 값(§3)을 새 행의
+> - **채움 원천 표식이 있는 필드**(RFC-0055 §1)는 이 실행의 실행 문맥 값(§3)을 새 행의
 >   초기값으로 삼는다. payload의 동명 키는 보지 않는다.
 > - **그 밖의 `derived` 필드**는 issue #95의 규칙대로 시드하지 않는다 — derived는 서버
 >   계산 전용이고, `create` 시점에 그 계산이 아직 실행되지 않았을 수 있다.
 > - **나머지 필드**는 payload가 동명 키를 가지면 그 값을 초기값으로 삼는다. payload에
 >   없는 필드는 시드하지 않는다(생성 직후 값이 없는 채로 남는다). `optional` 필드의
->   `null`은 저장하지 않는다(RFC-0055 §4).
+>   `null`은 저장하지 않는다(RFC-0053 §4).
 >
 > 행 키: 그 Entity의 `id`가 `derived generated`이면 `row_key(entity, {"id": <실행 문맥의
 > generated>})`, 아니면 이전처럼 `row_key(entity, payload)`다.
@@ -224,7 +224,7 @@ RFC-0007 §2.2 규칙 4에 따라 RFC-0030 §4 전체를 아래로 치환한다.
 `timestamp`이면 `derived clock`을, `uuid`/`guid`/`generated`이면 `derived generated`를
 제안한다. `format`의 인자, 가드 조건(RFC-0016 §3의 기존 허용), 집계(`count`/`sum`)의
 참조는 바뀌지 않는다. 이 검사는 대상 필드의 타입 검사 **뒤에** 돈다 — `set`이 쓸 수
-없는 대상(Text 필드는 RFC-0056의 "`format`을 쓰라" 거부, UUID 필드는 차원 거부)은 그
+없는 대상(Text 필드는 RFC-0054의 "`format`을 쓰라" 거부, UUID 필드는 차원 거부)은 그
 거부가 먼저 나온다.
 
 이 규칙 때문에 바뀐 기존 테스트(의도된 변경): `test_value_semantics`의 미선언 맨이름
@@ -237,7 +237,7 @@ RFC-0007 §2.2 규칙 4에 따라 RFC-0030 §4 전체를 아래로 치환한다.
 모드 B의 파라미터 채널은 i64이고 UUID 문자열을 실을 수 없다. 그래서 RFC-0052처럼
 **거부한다**: 도달 가능한 `create`가 표식 필드를 가진 Entity를 대상으로 하면(가드 안이어도)
 `emit_mlir`/`build`는 `BackendError`로, `diff`(`differential.verify`)는
-`DifferentialError`로 RFC-0057을 인용해 거절한다. 각자의 거부 사슬에서 **마지막**에 묻는다
+`DifferentialError`로 RFC-0055을 인용해 거절한다. 각자의 거부 사슬에서 **마지막**에 묻는다
 — `build`는 Money → lookup → optional → fill-source, `diff`는 numeric → Money → lookup
 → optional → fill-source. 둘이 공유하는 넷의 순서가 같다. 표식 엔티티를 읽기만 하거나
 표식 없는 엔티티를 만드는 워크플로는 영향이 없다.
@@ -308,10 +308,10 @@ workflow Record
 ### 컴파일 거부
 
 ```
-line 3: fill-source marker 'generated' needs a UUID field, but 'at' is declared Text (RFC-0057)
-line 3: fill-source marker 'clock' is valid only directly after `derived` — write `at DateTime derived clock` (RFC-0057)
-line 3: unknown fill-source marker 'now' after `derived` — valid markers are generated, clock (RFC-0057)
-line 11: assignment 'set a.at to now' reads 'now', which no declared entity has as a field — a bare name is an input field (RFC-0012 §G12.1) — did you mean a field declared `derived clock`? The run fills it at `create` (RFC-0057)
+line 3: fill-source marker 'generated' needs a UUID field, but 'at' is declared Text (RFC-0055)
+line 3: fill-source marker 'clock' is valid only directly after `derived` — write `at DateTime derived clock` (RFC-0055)
+line 3: unknown fill-source marker 'now' after `derived` — valid markers are generated, clock (RFC-0055)
+line 11: assignment 'set a.at to now' reads 'now', which no declared entity has as a field — a bare name is an input field (RFC-0012 §G12.1) — did you mean a field declared `derived clock`? The run fills it at `create` (RFC-0055)
 ```
 
 ## Alternatives
@@ -322,7 +322,7 @@ line 11: assignment 'set a.at to now' reads 'now', which no declared entity has 
 2. **값을 입력 payload에 써 넣기 — 기각.** payload는 모든 엔티티가 공유하는 이름
    공간이다(RFC-0015 §G15.2). `AuditEntry`의 생성 id가 `payload.id`에 들어가면 같은
    워크플로의 표식 없는 `Order` 생성이 그 id를 집어 `id-required`를 우회하고, `read`는
-   엉뚱한 키를 읽는다. 엇갈림을 컴파일 오류로 막으면(RFC-0055 §11 방식) `id`를 선언한
+   엉뚱한 키를 읽는다. 엇갈림을 컴파일 오류로 막으면(RFC-0053 §11 방식) `id`를 선언한
    다른 엔티티가 있는 모듈에서는 표식을 쓸 수 없다.
 3. **payload 값이 있으면 그것을 쓰기(호출자 고정) — 기각.** `derived` 필드를
    클라이언트가 고르게 된다 — issue가 지적한 "클라이언트 시계를 믿는 주문 시각"이 그대로

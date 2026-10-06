@@ -1,4 +1,4 @@
-"""RFC-0057 (issue #209) — server-generated id and run-time field markers.
+"""RFC-0055 (issue #209) — server-generated id and run-time field markers.
 
 Scope: `id-required` (a `create` with no payload `id` fails instead of writing
 under the `<entity>#-` sentinel key), the `derived generated` /
@@ -158,8 +158,8 @@ class TestIdRequiredServing(unittest.TestCase):
         self.assertIn("id", _TITLES["id-required"])
 
     def test_fail_cannot_reuse_the_id_required_code(self):
-        # RFC-0058: an author's `fail <code>` may not collide with a code the
-        # server already sends, and RFC-0057 added `id-required`.
+        # RFC-0056: an author's `fail <code>` may not collide with a code the
+        # server already sends, and RFC-0055 added `id-required`.
         from lnpl.lower import LowerError
         src = AUDIT_SRC.replace(
             "    create auditentry as a\n",
@@ -172,7 +172,7 @@ class TestIdRequiredServing(unittest.TestCase):
 
 
 
-# The issue's module with both markers (RFC-0057 §1).
+# The issue's module with both markers (RFC-0055 §1).
 AUDIT_SRC = """entity AuditEntry
     field
         id UUID derived generated
@@ -199,7 +199,7 @@ def entity_fields(doc, name):
 
 
 class TestMarkerGrammar(unittest.TestCase):
-    """RFC-0057 §1/§2: `derived generated` on a UUID base, `derived clock`
+    """RFC-0055 §1/§2: `derived generated` on a UUID base, `derived clock`
     on a DateTime base; the IR carries `fill_source`, absent otherwise."""
 
     def lower_fails(self, source, *fragments):
@@ -278,7 +278,7 @@ PINNED_AT = "2030-01-02T03:04:05.006Z"
 
 
 class TestFillAtCreate(unittest.TestCase):
-    """RFC-0057 §3/§4 (ruling-1): values decided once per run, applied only
+    """RFC-0055 §3/§4 (ruling-1): values decided once per run, applied only
     at a create of the marked entity — never written into the payload."""
 
     def setUp(self):
@@ -464,7 +464,7 @@ class TestMarkedAndUnmarkedEntities(unittest.TestCase):
 
 
 class TestStoredIdIsTheKeyValue(unittest.TestCase):
-    """RFC-0057 §4 (decision 5): the skeleton row both drivers write holds
+    """RFC-0055 §4 (decision 5): the skeleton row both drivers write holds
     `{"id": <row key>}`; a declared `id` must end up holding the id value."""
 
     def test_an_id_only_payload_stores_the_id_not_the_row_key(self):
@@ -521,7 +521,7 @@ workflow Touch
 
 
 class TestBareOperand(unittest.TestCase):
-    """RFC-0057 §7 (decision 6): an undeclared bare name in a `set` value is a
+    """RFC-0055 §7 (decision 6): an undeclared bare name in a `set` value is a
     compile error; a marker-like one suggests the marker."""
 
     def lower_fails(self, line, *fragments):
@@ -568,15 +568,15 @@ class TestBareOperand(unittest.TestCase):
     def test_examples_still_compile(self):
         import glob
         paths = sorted(glob.glob(os.path.join(REPO_ROOT, "examples", "*.lnpl")))
-        self.assertEqual(len(paths), 7)   # + staged.lnpl (RFC-0060)
+        self.assertEqual(len(paths), 7)   # + staged.lnpl (RFC-0058)
         for path in paths:
             with open(path, encoding="utf-8") as fh:
                 compile_doc(fh.read())
 
 
 
-# A guard on an optional field (RFC-0055 refusal) AND a fill-source create
-# (RFC-0057 refusal) in one workflow — which refusal wins is the order.
+# A guard on an optional field (RFC-0053 refusal) AND a fill-source create
+# (RFC-0055 refusal) in one workflow — which refusal wins is the order.
 BOTH_REFUSALS_SRC = AUDIT_SRC.replace(
     "        action Text\n", "        action Text\n        note Text optional\n"
 ).replace("    create auditentry as a\n",
@@ -596,7 +596,7 @@ def _workdir(test):
 
 
 class TestModeB(unittest.TestCase):
-    """RFC-0057 §8: mode B refuses a workflow that creates a fill-source
+    """RFC-0055 §8: mode B refuses a workflow that creates a fill-source
     entity — `build`/`emit_mlir` and `diff` alike, each as the LAST check of
     its own refusal chain."""
 
@@ -616,15 +616,15 @@ class TestModeB(unittest.TestCase):
     def test_build_and_diff_refuse_a_fill_source_create(self):
         built, diffed = self.refusals(AUDIT_SRC)
         for message in (built, diffed):
-            self.assertIn("RFC-0057", message)
+            self.assertIn("RFC-0055", message)
             self.assertIn("entity.audit.entry", message)
             self.assertNotIn("toolchain unavailable", message)
 
     def test_both_refuse_in_the_same_order(self):
         built, diffed = self.refusals(BOTH_REFUSALS_SRC)
         for message in (built, diffed):
-            self.assertIn("RFC-0055", message)
-            self.assertNotIn("RFC-0057", message)
+            self.assertIn("RFC-0053", message)
+            self.assertNotIn("RFC-0055", message)
 
     def test_reading_a_marked_entity_or_creating_an_unmarked_one_is_not_refused(self):
         from lnpl import backend

@@ -453,7 +453,7 @@ class TestErrorExpectation(unittest.TestCase):
             run_shop(["valid product"], ["error wobbled"])
 
 
-# RFC-0058 / issue #206: the issue's own spec, with `fail out-of-stock`
+# RFC-0056 / issue #206: the issue's own spec, with `fail out-of-stock`
 # declared. `expect failed` + `error reason` contract it with no new syntax.
 RESERVE_SPEC_SRC = """entity Product
     field
@@ -1053,7 +1053,7 @@ def run_cancel(given, expect):
 
 
 class TestResultTextEquality(unittest.TestCase):
-    """RFC-0056: `result <ref> ==/!= <value>` compares a Text-family field —
+    """RFC-0054: `result <ref> ==/!= <value>` compares a Text-family field —
     a bare name paired with it is a literal, as in a guard."""
 
     def test_spec_result_text_equality_passes(self):
@@ -1105,7 +1105,7 @@ class TestResultTextEquality(unittest.TestCase):
         self.assertIn("Text-family", str(caught.exception))
 
 
-# RFC-0057 §9: `spec` pins the run's fill-source values with `given run.*`.
+# RFC-0055 §9: `spec` pins the run's fill-source values with `given run.*`.
 FILL_PIN_ID = "00000000-0000-4000-8000-000000000057"
 FILL_PIN_AT = "2030-01-02T03:04:05.006Z"
 FILL_SRC = """entity AuditEntry

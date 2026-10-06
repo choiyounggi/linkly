@@ -755,7 +755,7 @@ OPTIONAL_SOURCE = SOURCE.replace("        status Text\n",
 
 
 class OptionalFieldBackfillTest(MigrateTestCase):
-    """RFC-0055: an `optional` field is an ordinary `--set` target (deliberate
+    """RFC-0053: an `optional` field is an ordinary `--set` target (deliberate
     choice — "may be absent" is request-side tolerance, backfilling stored
     rows is a separate operator decision). The store lives under
     `.claude/tmp`, never the system temp directory."""

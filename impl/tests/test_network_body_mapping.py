@@ -1,10 +1,10 @@
-"""Issue #200 / RFC-0059 -- a body-mapping clause on call/request:
+"""Issue #200 / RFC-0057 -- a body-mapping clause on call/request:
 `call <Target> send <ref>... [with <ref>...] [as <name>]`.
 
 Grammar and IR shape (lower.py), the shared reference rules (RFC-0049's,
 reused), runtime assembly against a real local recording HTTP server, and
 the measurement of today's no-clause default body (issue #43's masking
-contract) -- see RFC-0059.
+contract) -- see RFC-0057.
 """
 import unittest
 
@@ -345,7 +345,7 @@ class SendClauseRuntimeAssemblyTest(_ServerTestCase):
 
 
 class PasswordInDefaultBodyMeasurementTest(unittest.TestCase):
-    """RFC-0059 §8: measures, does not fix, issue #43's masking gap in the
+    """RFC-0057 §8: measures, does not fix, issue #43's masking gap in the
     no-clause default body. A plain `call ... as` (no `send`) passes the
     whole run payload to the driver UNMASKED -- today's real behavior,
     asserted so the gap is a reproducible fact. The planted value is an

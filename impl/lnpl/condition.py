@@ -457,7 +457,7 @@ def encode_instant(raw, where) -> int:
 
 def decode_instant(ms) -> str:
     """UTC epoch-milliseconds -> RFC 3339 `YYYY-MM-DDTHH:MM:SS.mmmZ`, the
-    inverse of `encode_instant` for an in-range value (RFC-0057 §3, the
+    inverse of `encode_instant` for an in-range value (RFC-0055 §3, the
     `derived clock` fill). Always zoned `Z`, always millisecond precision.
     """
     from datetime import datetime, timedelta, timezone

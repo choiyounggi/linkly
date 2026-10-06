@@ -286,7 +286,7 @@ class TestModeAEvaluation(unittest.TestCase):
 
 
 class TestTextTermsChainLikeAnyOtherTerm(unittest.TestCase):
-    """RFC-0056: `!=` and `and` with a Text term, run end to end."""
+    """RFC-0054: `!=` and `and` with a Text term, run end to end."""
 
     def _run(self, condition, status, total=10):
         interp = text_chain_interp(
@@ -331,7 +331,7 @@ class TestTextTermsChainLikeAnyOtherTerm(unittest.TestCase):
 
 
 class TestAlternativeGuardRuntimeWithATextTerm(unittest.TestCase):
-    """RFC-0056 + RFC-0028: an `or` alternative may carry a Text term."""
+    """RFC-0054 + RFC-0028: an `or` alternative may carry a Text term."""
 
     BODY = ("    when order.total > 1000000\n"
             "    or order.status == pending\n"

@@ -1,37 +1,37 @@
-# RFC-0062: 할당한 필드를 읽는 가드와 `otherwise` 항목
+# RFC-0060: 할당한 필드를 읽는 가드와 `otherwise` 항목
 
 ## Status
 
 - Status: Draft
-- Updates: RFC-0015 §Reference-level Specification/3. 정적 거부 (+RFC-0051 §2, RFC-0055 §7, RFC-0056 §7),
+- Updates: RFC-0015 §Reference-level Specification/3. 정적 거부 (+RFC-0051 §2, RFC-0053 §7, RFC-0054 §7),
   RFC-0015 §Open Questions,
-  RFC-0001 §노드 카탈로그/Guard (+RFC-0028, RFC-0056),
+  RFC-0001 §노드 카탈로그/Guard (+RFC-0028, RFC-0054),
   RFC-0002 §Full grammar (+RFC-0012, RFC-0052),
-  RFC-0002 §Block structure (+RFC-0019, RFC-0060),
+  RFC-0002 §Block structure (+RFC-0019, RFC-0058),
   RFC-0014 §Reference-level Specification/2.1 `when` 모드 (+RFC-0028),
   RFC-0014 §Reference-level Specification/2.4 스킵 레코드 (+RFC-0028, RFC-0050)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라 이미
 갱신된 절은 대상과 **직전 갱신 RFC를 모두** 지목한다. 괄호 안이 직전 갱신이다. 그중
-RFC-0050·RFC-0051·RFC-0052·RFC-0055·RFC-0056·RFC-0060은 아직 Draft다 — 먼저 Accepted되는
+RFC-0050·RFC-0051·RFC-0052·RFC-0053·RFC-0054·RFC-0058은 아직 Draft다 — 먼저 Accepted되는
 쪽이 직전 갱신이 되고, 나중 쪽이 승격할 때 그 사실을 `Updates:`에 반영한다(RFC-0051·RFC-0052
 선례). Draft이므로 대상 RFC에 `Updated-by:` 포인터를 달지 않는다.
 
-- **정적 거부(RFC-0015 §3).** 아래 §1의 최종 텍스트는 RFC-0056 §7의 표에서 "앞선 스텝이
+- **정적 거부(RFC-0015 §3).** 아래 §1의 최종 텍스트는 RFC-0054 §7의 표에서 "앞선 스텝이
   할당한 Reference를 뒤의 가드가 읽음" 행 **하나를 뺀** 것이다.
 - **Open Questions(RFC-0015).** 1번 "할당 후 가드의 해제 경로"를 해소한다(§2).
 - **노드 카탈로그/Guard(RFC-0001).** `children`이 `otherwise` 항목을 하나 더 가질 수 있다(§3).
 - **Full grammar(RFC-0002).** `GuardedItem` 생산규칙만 바꾼다(§4). RFC-0012는 그 생산규칙을
   "손대지 않는다"고 적었고, RFC-0052(RFC-0049 위)는 `StepLine`을 바꾼다 — 둘 다 이 RFC가
   바꾸는 생산규칙과 겹치지 않지만 같은 절이므로 지목한다.
-- **Block structure(RFC-0002).** RFC-0060 개정판의 3항 a·c와 4항에 `otherwise`를 넣는다(§5).
+- **Block structure(RFC-0002).** RFC-0058 개정판의 3항 a·c와 4항에 `otherwise`를 넣는다(§5).
 - **가드 런타임(RFC-0014 §2.1·§2.4).** RFC-0028 §4가 §2 전체를, RFC-0050 §4가 그 위에 §2.4를
   갱신했다. 이 RFC는 §2.1에 `otherwise` 실행 규칙을, §2.4에 `mode: "otherwise"` 레코드를
   더한다(§6, §7).
 
 지목하지 **않는** 것:
 
-- RFC-0016 §5(mode A/B 등가 표). 두 모드 B 거부는 RFC-0055·0056·0057·0058처럼 이 RFC의
+- RFC-0016 §5(mode A/B 등가 표). 두 모드 B 거부는 RFC-0053·0054·0055·0056처럼 이 RFC의
   §8에 둔다. RFC-0051·0052는 그 표에 행을 더했지만, 더 최근의 네 RFC가 표를 건드리지 않고
   거부를 자기 문서에 두는 쪽을 택했고 이 RFC도 그 선례를 따른다 — 누락이 아니라 선택이다.
 - RFC-0014 §2.6(모드 A/B 동등성). 모드 B가 `otherwise`를 쓴 워크플로와 할당한 필드를 읽는
@@ -42,12 +42,12 @@ RFC-0050·RFC-0051·RFC-0052·RFC-0055·RFC-0056·RFC-0060은 아직 Draft다 �
   `otherwise`를 구조로 읽고, 다른 모든 자리에서는 §4·§5의 거부가 결정한다.
 
 이슈 #211 제안 3(RFC-0015 Open Question 1)과 4(`otherwise` 가지)를 닫는다. 제안 1·2는
-RFC-0060이 닫았다.
+RFC-0058이 닫았다.
 
 ## Motivation
 
 2026-10-02 QA(main `c5e1679`, 이슈 #211)에서 "확인 → 실행 → 결과 보고 다음 단계"처럼
-조건이 두 번 이상 이어지는 흐름을 쓰기 어려운 이유가 넷 나왔다. RFC-0060이 (3)을 닫았고,
+조건이 두 번 이상 이어지는 흐름을 쓰기 어려운 이유가 넷 나왔다. RFC-0058이 (3)을 닫았고,
 이 RFC는 나머지 둘을 다룬다.
 
 **(1) 워크플로가 바꾼 값은 가드에 쓸 수 없었다.**
@@ -69,7 +69,7 @@ guard above the assignment.
 RFC-0015 §3이 이것을 거부한 이유는 모드 B 하나다: 모드 B는 조건 필드를 실행 시작 시점의
 i64 파라미터로 받으므로 할당 뒤의 값을 볼 수 없다. 모드 A는 처음부터 현재 값을 읽는다.
 이 레포는 같은 모양의 긴장을 이미 세 번 풀었다 — 모드 A는 받고 모드 B가 그 워크플로를
-기록된 예외로 거부한다(RFC-0050 숫자 형태 술어, RFC-0052 조회 키, RFC-0055·0056의
+기록된 예외로 거부한다(RFC-0050 숫자 형태 술어, RFC-0052 조회 키, RFC-0053·0054의
 `optional`·Text 가드). AWS Step Functions의 Choice 상태가 "직전 상태의 출력"으로 분기하는
 것이 기본 용례이듯, 다단 흐름의 핵심은 앞 단계가 바꾼 값으로 다음 단계를 가르는 것이다.
 
@@ -143,32 +143,32 @@ workflow Settle
 > | 거부 | 사유 |
 > |------|------|
 > | 양변이 모두 리터럴(`1 < 2`) | 아무것도 결정하지 않는 가드는 저작 오류다 |
-> | 선언 타입이 어느 차원(RFC-0016 §3: Integer·DateTime·Money)도 아닌 피연산자 | 평가기가 없다. 실측: `payment.amount`(Money) 가드가 경고 없이 컴파일된 뒤 `TypeError: '<=' not supported between instances of 'dict' and 'int'`로 죽었다(t2 F-4). Money는 RFC-0051부터 차원이 있으므로 이 행이 아니라 차원 불일치 행으로 판정된다. Decimal은 여전히 이 행이다. 가드 `==`/`!=`의 Text류 필드는 이 행이 아니라 RFC-0016 §3 3.3으로 판정된다(RFC-0056) |
+> | 선언 타입이 어느 차원(RFC-0016 §3: Integer·DateTime·Money)도 아닌 피연산자 | 평가기가 없다. 실측: `payment.amount`(Money) 가드가 경고 없이 컴파일된 뒤 `TypeError: '<=' not supported between instances of 'dict' and 'int'`로 죽었다(t2 F-4). Money는 RFC-0051부터 차원이 있으므로 이 행이 아니라 차원 불일치 행으로 판정된다. Decimal은 여전히 이 행이다. 가드 `==`/`!=`의 Text류 필드는 이 행이 아니라 RFC-0016 §3 3.3으로 판정된다(RFC-0054) |
 > | 차원 규칙(RFC-0016 §3)이 거부하는 식·비교·할당 | 두 양이 같은 종류가 아니다 — 인스턴트와 숫자, Money와 숫자, Money와 Money의 곱·몫 |
-> | `optional`이 아닌 선언된 Money 필드에 `exists`/`missing` | RFC-0051이 여는 부분집합은 비교와 산술이다. 존재 검사는 열지 않는다(RFC-0051 §Reference-level Specification/7). `optional` Money 필드의 존재 검사는 RFC-0016 §3 3.2가 연다(RFC-0055) |
+> | `optional`이 아닌 선언된 Money 필드에 `exists`/`missing` | RFC-0051이 여는 부분집합은 비교와 산술이다. 존재 검사는 열지 않는다(RFC-0051 §Reference-level Specification/7). `optional` Money 필드의 존재 검사는 RFC-0016 §3 3.2가 연다(RFC-0053) |
 > | `input.<field>`의 `<field>`를 어떤 엔티티도 선언하지 않음 | payload는 선언된 전 엔티티 필드의 합집합이다. 그 밖의 이름은 오타다 |
 > | 엔티티명 `Input` | 바인딩 이름이 `input` 네임스페이스와 충돌한다 |
 > | 할당 대상이 `input.…` 또는 맨이름 | 입력은 이 워크플로가 소유한 상태가 아니다 |
 > | 할당 대상 엔티티를 워크플로가 read하지 않음 | 바인딩이 존재할 수 없다(RFC-0012 §G12.5와 같은 사유) |
 > | `and` 안의 `exists`/`missing` | §1의 두 채널 사유 |
-> | `input.<field>`에 `exists`/`missing`, 그 `<field>`를 선언한 엔티티가 둘 이상인데 `optional` 표시가 엇갈림 | 존재 검사의 허용 여부(RFC-0016 §3 3.2)가 엔티티마다 다르다. 어느 엔티티의 선언을 따를지 정할 근거가 없으므로 선언한 엔티티를 모두 대고 거부한다(RFC-0055) |
-> | `Password` base 필드를 가드의 `==`/`!=`에 씀 | RFC-0001의 마스킹 의무 — 가드 스킵 레코드가 비교한 값을 싣는다(RFC-0056) |
-> | 가드 등가의 맨이름 리터럴이 상대쪽 `enum` refinement의 멤버가 아님 | enum은 닫힌 값 집합이다(RFC-0011) — 멤버가 아닌 리터럴은 항상 거짓이므로 저작 오류다(RFC-0056) |
-> | 가드의 Text 등가 항 어느 쪽이든 산술식 | RFC-0016은 Text에 산술을 주지 않는다 — 평가기가 없다(RFC-0056) |
+> | `input.<field>`에 `exists`/`missing`, 그 `<field>`를 선언한 엔티티가 둘 이상인데 `optional` 표시가 엇갈림 | 존재 검사의 허용 여부(RFC-0016 §3 3.2)가 엔티티마다 다르다. 어느 엔티티의 선언을 따를지 정할 근거가 없으므로 선언한 엔티티를 모두 대고 거부한다(RFC-0053) |
+> | `Password` base 필드를 가드의 `==`/`!=`에 씀 | RFC-0001의 마스킹 의무 — 가드 스킵 레코드가 비교한 값을 싣는다(RFC-0054) |
+> | 가드 등가의 맨이름 리터럴이 상대쪽 `enum` refinement의 멤버가 아님 | enum은 닫힌 값 집합이다(RFC-0011) — 멤버가 아닌 리터럴은 항상 거짓이므로 저작 오류다(RFC-0054) |
+> | 가드의 Text 등가 항 어느 쪽이든 산술식 | RFC-0016은 Text에 산술을 주지 않는다 — 평가기가 없다(RFC-0054) |
 >
-> 앞선 스텝이 할당한 Reference를 뒤의 가드가 읽는 것은 거부가 아니다(RFC-0062). 모드 A는
+> 앞선 스텝이 할당한 Reference를 뒤의 가드가 읽는 것은 거부가 아니다(RFC-0060). 모드 A는
 > 그 가드를 그 시점의 값으로 평가하고, 모드 B는 그런 워크플로를 기록된 예외로 거부한다
-> (RFC-0062 §8).
+> (RFC-0060 §8).
 
-RFC-0056 §7과 다른 곳은 둘이다: "앞선 스텝이 할당한 Reference를 뒤의 가드가 읽음" 행이
+RFC-0054 §7과 다른 곳은 둘이다: "앞선 스텝이 할당한 Reference를 뒤의 가드가 읽음" 행이
 빠졌고, 표 아래에 그 사실을 적은 문단이 붙었다.
 
 ### 2. Open Questions — RFC-0015 §Open Questions 갱신 (치환 후 최종 텍스트)
 
-> 1. **할당 후 가드의 해제 경로 — 해소(RFC-0062).** 모드 A는 할당한 필드를 읽는 가드를
+> 1. **할당 후 가드의 해제 경로 — 해소(RFC-0060).** 모드 A는 할당한 필드를 읽는 가드를
 >    그 시점의 값으로 평가하고, 모드 B는 그 워크플로를 거부한다. 방출기가 갱신된 값을
 >    SSA로 이어 흘리는 길(scf.if의 결과값, unroll된 루프의 iter_args)은 택하지 않았다 —
->    RFC-0062 §Alternatives.
+>    RFC-0060 §Alternatives.
 >
 > 2. **존재 판정을 파라미터로 승격하기.** 존재를 실행당 boolean 하나가 아니라 참조당
 >    i64 0/1 파라미터로 넘기면 `and` 안의 Presence 금지를 풀 수 있다. `run_binary`의
@@ -189,12 +189,12 @@ RFC-0056 §7과 다른 곳은 둘이다: "앞선 스텝이 할당한 Reference�
 ### 3. 노드 카탈로그 `Guard` 행 — RFC-0001 §노드 카탈로그/Guard 갱신 (치환 후 최종 텍스트)
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0001 "### 노드 카탈로그" 절 **Behavior** 표의
-`Guard` 행에 대한 치환 후 최종 텍스트다(RFC-0028 §3, RFC-0056 §2의 텍스트 포함). 다른 kind의
+`Guard` 행에 대한 치환 후 최종 텍스트다(RFC-0028 §3, RFC-0054 §2의 텍스트 포함). 다른 kind의
 행과 표 서두의 산문은 그대로다.
 
 | kind | 필수 필드 | 선택 필드 | children 허용 |
 |------|----------|----------|--------------|
-| Guard | `mode`(`when`\|`until`\|`repeat` — 닫힌 enum) | `condition`(`when`·`until` 전용 — 조건 서술), `count`(`repeat` 전용 — 1 이상 정수), `alternatives`(`when` 전용, 배열, 1개 이상의 문자열 — `or`로 이어지는 대안 조건 서술. RFC-0028 신설), `textEqualityOperands`(배열의 배열 — `[condition, *alternatives]`와 같은 순서로 각 서술마다 하나, Text 등가 항(RFC-0016 §3 3.3)의 피연산자 이름을 중복 없이 정렬한 문자열 배열. 그런 항이 없는 서술은 빈 배열. 어느 서술에도 없으면 필드 자체가 없다. RFC-0056 신설) | 피가드 항목 1개(WorkflowStep, Concurrency, Pipeline 중 하나), 그리고 `mode`가 `when`이면 그 뒤에 `otherwise` 항목 0~1개(같은 세 kind 중 하나 — 가드와 모든 대안이 거짓일 때만 실행. RFC-0062). 실행 의미는 RFC-0014 §2. 2026-07-31 신설(RFC-0002 부록 A.4-① 해소), 2026-08-24 `alternatives` 추가(RFC-0028, 이슈 #93), 2026-10-04 `textEqualityOperands` 추가(RFC-0056, 이슈 #207), 2026-10-04 `otherwise` 항목 추가(RFC-0062, 이슈 #211) |
+| Guard | `mode`(`when`\|`until`\|`repeat` — 닫힌 enum) | `condition`(`when`·`until` 전용 — 조건 서술), `count`(`repeat` 전용 — 1 이상 정수), `alternatives`(`when` 전용, 배열, 1개 이상의 문자열 — `or`로 이어지는 대안 조건 서술. RFC-0028 신설), `textEqualityOperands`(배열의 배열 — `[condition, *alternatives]`와 같은 순서로 각 서술마다 하나, Text 등가 항(RFC-0016 §3 3.3)의 피연산자 이름을 중복 없이 정렬한 문자열 배열. 그런 항이 없는 서술은 빈 배열. 어느 서술에도 없으면 필드 자체가 없다. RFC-0054 신설) | 피가드 항목 1개(WorkflowStep, Concurrency, Pipeline 중 하나), 그리고 `mode`가 `when`이면 그 뒤에 `otherwise` 항목 0~1개(같은 세 kind 중 하나 — 가드와 모든 대안이 거짓일 때만 실행. RFC-0060). 실행 의미는 RFC-0014 §2. 2026-07-31 신설(RFC-0002 부록 A.4-① 해소), 2026-08-24 `alternatives` 추가(RFC-0028, 이슈 #93), 2026-10-04 `textEqualityOperands` 추가(RFC-0054, 이슈 #207), 2026-10-04 `otherwise` 항목 추가(RFC-0060, 이슈 #211) |
 
 `children[0]`은 언제나 피가드 항목이고, `children[1]`이 있으면 `otherwise` 항목이다 —
 새 필드나 새 kind를 두지 않고 위치로 가른다. `otherwise`를 쓰지 않은 가드의 IR은 이 RFC 전과
@@ -228,12 +228,12 @@ GuardedItem       ::= (WhenGuard | RepeatGuard | UntilGuard)
 
 ### 5. Block structure — RFC-0002 §Block structure 갱신 (치환 후 최종 텍스트 전문)
 
-RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0060 개정판의 치환 후 최종 텍스트 전문이다. 3항
+RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0058 개정판의 치환 후 최종 텍스트 전문이다. 3항
 a·c와 4항에 `otherwise`를 넣었고, 4항 끝에 `otherwise`의 자리 규칙을 붙였다.
 
 ---
 
-#### Block structure (RFC-0062 개정판)
+#### Block structure (RFC-0060 개정판)
 
 1. **키워드 구획** — 블록 경계는 키워드가 정한다. 최상위 선언 키워드는 이전
    블록 전체를 자동 종결한다. 절 키워드는 소속 선언의 하위 구획을 열고, 다음
@@ -328,12 +328,12 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0014 §Reference-level Specific
 > **전부 거짓이면**(대안 가드가 없을 때의 "거짓"과 동형), 건너뛴 사실은 trace에
 > 기록되며, §2.4의 스킵 레코드 하나를 남긴다.
 >
-> **`otherwise` 항목이 있으면**(RFC-0062), 판정은 위와 같고 그 결과로 두 항목 중 정확히
+> **`otherwise` 항목이 있으면**(RFC-0060), 판정은 위와 같고 그 결과로 두 항목 중 정확히
 > 하나가 실행된다. 전부 거짓이면 피가드 항목의 스킵 레코드를 남긴 **뒤** `otherwise`
 > 항목을 실행한다. 하나라도 참이면 피가드 항목을 실행한 **뒤** `otherwise` 항목에 대한
 > `mode: "otherwise"` 스킵 레코드 하나를 남긴다. 조건은 어느 쪽이든 한 번만 판정한다 —
 > `otherwise`는 조건을 다시 평가하지 않는다. 가드가 읽는 참조는 그 가드에 도달한 시점의
-> 값이다 — 앞선 스텝이 `set`/`format`으로 바꾼 필드면 바뀐 값을 읽는다(RFC-0062 §1).
+> 값이다 — 앞선 스텝이 `set`/`format`으로 바꾼 필드면 바뀐 값을 읽는다(RFC-0060 §1).
 
 ### 7. 스킵 레코드 — RFC-0014 §2.4 갱신 (치환 후 최종 텍스트)
 
@@ -345,17 +345,17 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0014 §Reference-level Specific
 > #### 2.4 스킵 레코드 (갱신)
 >
 > 실행 결과는 **스킵 매니페스트**를 가진다. 피가드 항목을 실행하지 않은 가드마다, 그리고
-> 가드가 참이어서 실행하지 않은 `otherwise` 항목마다(RFC-0062) 레코드가 하나씩, 만난
+> 가드가 참이어서 실행하지 않은 `otherwise` 항목마다(RFC-0060) 레코드가 하나씩, 만난
 > 순서대로 들어간다.
 >
 > | 필드 | 의미 |
 > |------|------|
 > | `guard` | 가드 노드의 IR id. 모드 A 전용 — 모드 간 비교에서 제외한다 |
-> | `mode` | `"when"` 또는 `"until"`. **갱신 (RFC-0062)**: `otherwise` 항목의 레코드는 `"otherwise"` |
-> | `condition` | **갱신**: 대안이 없으면 정규화된 조건 문자열 그대로(RFC-0008 §4 불변). 대안이 있으면 조건과 모든 대안을 소스 순서대로 `" or "`로 이어붙인 문자열 — `"input.channel == 1 or input.amount <= 100"`. 이 결합은 **표시/비교 전용**이며 `parse_condition`으로 재파싱되지 않는다(§Reference-level Specification/3). `mode: "otherwise"` 레코드에서는 **참이었던** 그 가드의 같은 문자열이다(RFC-0062) |
-> | `steps` | 그 레코드가 가리키는 항목(피가드 항목, 또는 `otherwise` 항목)이 감싼 **모든 WorkflowStep의 이름**, 선언 순서. 중첩 블록(`Concurrency`·`Pipeline`)까지 하강해 수집한다. 피가드 항목의 레코드는 `otherwise` 항목의 스텝을 담지 않는다(RFC-0062) |
+> | `mode` | `"when"` 또는 `"until"`. **갱신 (RFC-0060)**: `otherwise` 항목의 레코드는 `"otherwise"` |
+> | `condition` | **갱신**: 대안이 없으면 정규화된 조건 문자열 그대로(RFC-0008 §4 불변). 대안이 있으면 조건과 모든 대안을 소스 순서대로 `" or "`로 이어붙인 문자열 — `"input.channel == 1 or input.amount <= 100"`. 이 결합은 **표시/비교 전용**이며 `parse_condition`으로 재파싱되지 않는다(§Reference-level Specification/3). `mode: "otherwise"` 레코드에서는 **참이었던** 그 가드의 같은 문자열이다(RFC-0060) |
+> | `steps` | 그 레코드가 가리키는 항목(피가드 항목, 또는 `otherwise` 항목)이 감싼 **모든 WorkflowStep의 이름**, 선언 순서. 중첩 블록(`Concurrency`·`Pipeline`)까지 하강해 수집한다. 피가드 항목의 레코드는 `otherwise` 항목의 스텝을 담지 않는다(RFC-0060) |
 > | `rounds` | `when`·`otherwise`면 없음(`null`), `until` 0라운드면 `0` |
-> | `evaluations` | (issue #83, RFC-0014 원문 불변 필드) **갱신**: 대안이 있으면 조건 자신의 항들에 이어 각 대안의 항들도 소스 순서대로 같은 리스트에 담는다 — 어느 항이 어느 대안 소속인지는 이 리스트의 위치가 아니라 `ref`가 가리키는 값으로 읽는다(추가 태깅 없음, RFC-0014가 이미 "다섯 키는 불변"이라 적은 원칙을 존중해 `evaluations`의 원소 shape을 넓히지 않는다). **갱신 (RFC-0050)**: 숫자 형태 술어 항도 한 원소를 남긴다 — 존재 검사와 같은 모양으로 `{"ref": <필드>, "value": <해소한 값, 없으면 null>, "op": "is-numeric" 또는 "is-not-numeric", "expected": null, "holds": <판정>}`. `and` 안의 술어 항은 다른 항과 함께 소스 순서대로 담긴다. **갱신 (RFC-0062)**: `mode: "otherwise"` 레코드에서는 빈 배열이다 — 가드는 참이었고, 참인 판정의 항은 이 채널이 아니라 트레이스(§2.1)가 싣는다 |
+> | `evaluations` | (issue #83, RFC-0014 원문 불변 필드) **갱신**: 대안이 있으면 조건 자신의 항들에 이어 각 대안의 항들도 소스 순서대로 같은 리스트에 담는다 — 어느 항이 어느 대안 소속인지는 이 리스트의 위치가 아니라 `ref`가 가리키는 값으로 읽는다(추가 태깅 없음, RFC-0014가 이미 "다섯 키는 불변"이라 적은 원칙을 존중해 `evaluations`의 원소 shape을 넓히지 않는다). **갱신 (RFC-0050)**: 숫자 형태 술어 항도 한 원소를 남긴다 — 존재 검사와 같은 모양으로 `{"ref": <필드>, "value": <해소한 값, 없으면 null>, "op": "is-numeric" 또는 "is-not-numeric", "expected": null, "holds": <판정>}`. `and` 안의 술어 항은 다른 항과 함께 소스 순서대로 담긴다. **갱신 (RFC-0060)**: `mode: "otherwise"` 레코드에서는 빈 배열이다 — 가드는 참이었고, 참인 판정의 항은 이 채널이 아니라 트레이스(§2.1)가 싣는다 |
 >
 > `condition`의 결합 표기는 `restore_skips`(모드 B 재구성)와 `_skip_record`(모드
 > A 실측)가 **같은 함수**로 만든다 — 이름은 §Reference-level Specification/5가
@@ -388,24 +388,24 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0014 §Reference-level Specific
    ```
    step update product: guard 'product.stock >= 0' reads product.stock, which an earlier
    step assigns — mode B fixes condition fields at entry, so it would compare the value
-   before the assignment (RFC-0062 §Mode B, recorded exemption) — run it in mode A
+   before the assignment (RFC-0060 §Mode B, recorded exemption) — run it in mode A
    ```
 
 2. **`otherwise` 항목을 소유한 가드.** 모드 B는 거짓 가드에서 실행되는 가지를 컴파일하지
    않는다. 가드의 조건만 보면 모드 B가 컴파일할 수 있는 Integer 비교여도 거부한다.
    ```
    step update payment: guard 'payment.status == 200' owns an `otherwise` item, which mode
-   B has no compiled branch for (RFC-0062 §Mode B, recorded exemption) — run it in mode A
+   B has no compiled branch for (RFC-0060 §Mode B, recorded exemption) — run it in mode A
    ```
 
 거부 순서는 `build`와 `diff`가 같다(issue #185): Money 가드(RFC-0051) → 조회 키(RFC-0052)
-→ `optional` 필드 가드(RFC-0055) → Text 등가 가드(RFC-0056) → fill-source create(RFC-0057)
-→ `fail`(RFC-0058) → `respond` 집계·목록 항(RFC-0061) → 할당한 필드를 읽는 가드 →
+→ `optional` 필드 가드(RFC-0053) → Text 등가 가드(RFC-0054) → fill-source create(RFC-0055)
+→ `fail`(RFC-0056) → `respond` 집계·목록 항(RFC-0059) → 할당한 필드를 읽는 가드 →
 `otherwise`(이 RFC). 앞선 것이 먼저 거부한다. `diff`는 그 앞에 숫자 형태 술어(RFC-0050)를
 먼저 묻는다(RFC-0050 원문 그대로). 다른 거부 RFC가 `respond` 고리 뒤에 끼어들면 이 RFC의 두
 고리는 그 뒤에 온다.
 
-RFC-0061 §4의 "`respond list`는 워크플로의 유일한 `respond`" 규칙은 `otherwise`의 두 가지를
+RFC-0059 §4의 "`respond list`는 워크플로의 유일한 `respond`" 규칙은 `otherwise`의 두 가지를
 합쳐 센다 — 서로 배타적인 두 가지에 각각 `respond`를 두어도, 그중 하나가 목록 항이면
 거부된다. 보수적인 거부이므로 이 RFC는 그대로 둔다.
 
@@ -462,7 +462,7 @@ workflow Settle
 ```
 line 9: `otherwise` has no preceding guard — it must immediately follow a `when`
 guard's single step or block, and runs when the guard (and its `or` alternatives) are
-all false (RFC-0062)
+all false (RFC-0060)
 ```
 
 ```
@@ -473,7 +473,7 @@ all false (RFC-0062)
 ```
 ```
 line 11: `otherwise` follows the `repeat` guard on line 9, but only a `when` guard can
-own an `otherwise` — `repeat` has no false branch for it to run on (RFC-0062)
+own an `otherwise` — `repeat` has no false branch for it to run on (RFC-0060)
 ```
 
 ```
@@ -487,7 +487,7 @@ own an `otherwise` — `repeat` has no false branch for it to run on (RFC-0062)
 ```
 line 13: a second `otherwise` follows the one on line 11 — a guard owns at most one
 `otherwise`, and `otherwise` owns exactly one step or block; wrap several steps in a
-`pipeline` block instead (RFC-0062)
+`pipeline` block instead (RFC-0060)
 ```
 
 ```

@@ -351,7 +351,7 @@ class TestEmissionsByteIdenticalWhenAbsent(unittest.TestCase):
 
 
 def optional_emit_src(steps, extra_entity=""):
-    """RFC-0055 fixture: `note` is optional on Order."""
+    """RFC-0053 fixture: `note` is optional on Order."""
     return """capability postgres
 
 entity Order
@@ -374,7 +374,7 @@ ORDER_ID = "0b6f1c2e-2222-4a2b-9c3d-000000000208"
 
 
 class TestEmitWithOptionalField(unittest.TestCase):
-    """RFC-0055: `emit ... with` omits an absent or null `optional` ref
+    """RFC-0053: `emit ... with` omits an absent or null `optional` ref
     instead of inventing `"note": null`."""
 
     def emitted(self, steps, payload, extra_entity="", repo_rows=None):
@@ -426,7 +426,7 @@ class TestEmitWithOptionalField(unittest.TestCase):
         # `Invoice.note` is required (declared last): under the AND rule
         # `input.note` is NOT uniformly optional, so it is treated as
         # required — the event payload gets "note": null, assigned, not
-        # omitted (unchanged pre-RFC-0055 behaviour).
+        # omitted (unchanged pre-RFC-0053 behaviour).
         payload = self.emitted(
             "    create order as newOrder\n"
             "    emit orderPlaced with newOrder.id input.note\n",

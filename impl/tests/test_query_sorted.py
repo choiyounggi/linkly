@@ -109,7 +109,7 @@ class QuerySortedErrorTest(unittest.TestCase):
 
 
 
-# RFC-0055 §9: rows lacking the sort field (or holding null) sort last.
+# RFC-0053 §9: rows lacking the sort field (or holding null) sort last.
 MISSING_ROWS = {
     ENTITY: {
         "entity.order#a": {"id": "a", "placedAt": "2026-01-03T00:00:00Z"},

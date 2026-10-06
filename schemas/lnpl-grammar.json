@@ -354,12 +354,12 @@
           "pattern": "call <target> returns <status> body.<key> <value>"
         },
         {
-          "doc": "이 실행의 `derived generated` 값을 고정(RFC-0057). payload가 아니라 실행 문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다",
+          "doc": "이 실행의 `derived generated` 값을 고정(RFC-0055). payload가 아니라 실행 문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다",
           "id": "run-generated",
           "pattern": "run.generated <uuid>"
         },
         {
-          "doc": "이 실행의 `derived clock` 값을 고정(RFC-0057, 존 표기 필수). 없으면 가상 시계의 실행 시작 시각이 쓰인다",
+          "doc": "이 실행의 `derived clock` 값을 고정(RFC-0055, 존 표기 필수). 없으면 가상 시계의 실행 시작 시각이 쓰인다",
           "id": "run-clock",
           "pattern": "run.clock <instant>"
         }

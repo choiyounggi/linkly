@@ -1,4 +1,4 @@
-"""RFC-0062 §Mode B: `otherwise` is a recorded exemption — mode B compiles no
+"""RFC-0060 §Mode B: `otherwise` is a recorded exemption — mode B compiles no
 branch that runs on a false guard, so `build` and `diff` refuse any workflow
 using it, by name, as the last link of the chain and before any toolchain
 lookup. A guard whose condition alone is a plain Integer comparison mode B
@@ -36,7 +36,7 @@ class TestOtherwiseModeB(_Refusals):
         self.assertIn("step create order", msg)
         self.assertIn("'input.quantity > 0'", msg)
         self.assertIn("`otherwise`", msg)
-        self.assertIn("RFC-0062", msg)
+        self.assertIn("RFC-0060", msg)
         self.assertIn("mode A", msg)
 
     def test_the_same_guard_without_otherwise_still_compiles(self):
@@ -48,12 +48,12 @@ class TestOtherwiseModeB(_Refusals):
     def test_build_refuses_without_a_toolchain(self):
         msg = self._build_refusal(doc_of(PLAIN_OTHERWISE))
         self.assertIn("`otherwise`", msg)
-        self.assertIn("RFC-0062", msg)
+        self.assertIn("RFC-0060", msg)
 
     def test_diff_refuses_without_a_toolchain(self):
         msg = self._diff_refusal(doc_of(PLAIN_OTHERWISE))
         self.assertIn("uses `otherwise`", msg)
-        self.assertIn("RFC-0062", msg)
+        self.assertIn("RFC-0060", msg)
 
     def test_an_otherwise_inside_a_pipeline_block_is_found(self):
         doc = doc_of(HEAD + "    pipeline place\n        create order\n"
@@ -79,8 +79,8 @@ class TestOtherwiseModeB(_Refusals):
                                              "    fail no-quantity\n"))
         self.assertTrue(backend.workflow_uses_otherwise(doc, WF))
         for msg in (self._build_refusal(doc), self._diff_refusal(doc)):
-            self.assertIn("RFC-0058", msg)
-            self.assertNotIn("RFC-0062", msg)
+            self.assertIn("RFC-0056", msg)
+            self.assertNotIn("RFC-0060", msg)
 
     def test_lnpl_build_and_diff_report_the_refusal_as_rc_4(self):
         from tests.test_cli import run_cli_err
@@ -99,7 +99,7 @@ class TestOtherwiseModeB(_Refusals):
 
 
 class TestOtherwiseWithRespondTerms(_Refusals):
-    """RFC-0061 x RFC-0062: an `otherwise` item that answers a `respond`
+    """RFC-0059 x RFC-0060: an `otherwise` item that answers a `respond`
     aggregate term, in mode A and against both mode B chains."""
 
     def _source(self, guarded, other):
@@ -134,11 +134,11 @@ class TestOtherwiseWithRespondTerms(_Refusals):
         self.assertTrue(backend.workflow_uses_otherwise(doc, WORKFLOW))
         for msg in (self._build_refusal(doc, WORKFLOW),
                     self._diff_refusal(doc, WORKFLOW)):
-            self.assertIn("RFC-0061", msg)
-            self.assertNotIn("RFC-0062", msg)
+            self.assertIn("RFC-0059", msg)
+            self.assertNotIn("RFC-0060", msg)
 
     def test_a_list_term_still_must_be_the_only_respond_across_branches(self):
-        """RFC-0061 §4 counts `respond` steps workflow-wide, `otherwise`
+        """RFC-0059 §4 counts `respond` steps workflow-wide, `otherwise`
         branches included — a conservative rejection, kept as is."""
         from lnpl.lower import LowerError
         with self.assertRaises(LowerError) as ctx:

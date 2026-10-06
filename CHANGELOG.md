@@ -111,7 +111,7 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   chooses the outbound body from workflow bindings (same mapping rules as
   `emit ... with`, RFC-0049) instead of always sending the whole input; a
   call without `send` is byte-identical to before. Mode B is unchanged
-  (issue #200, RFC-0059).
+  (issue #200, RFC-0057).
 - `lnpl token --role <r>` mints a token carrying the claim the runtime reads
   as the caller's role, so a `security jwt` service with a `role` rule can be
   tested with the built-in tool. It warns on stderr only when the route
@@ -127,12 +127,12 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   rolled back (RFC-0032), `422` problem+json with the author's code on
   `lnpl serve` and on the consume path, and the declared codes listed in
   OpenAPI. Codes the server already uses are reserved; `fail` is not retried
-  by a retry policy; mode B refuses it (issue #206, RFC-0058).
+  by a retry policy; mode B refuses it (issue #206, RFC-0056).
 - Guards compare Text-family fields and bare enum members with `==`/`!=`,
   checked at compile time against the enum's members (a did-you-mean hint
   only for close matches), so a state transition can be a guard. `spec`
   evaluates the comparison; mode B refuses it as a recorded differential
-  exemption (issue #207, RFC-0056).
+  exemption (issue #207, RFC-0054).
 - The `optional` field modifier: a client may omit an optional field or send
   `null`, and both mean absent. Absent values are left out of stored rows,
   `emit ... with` and `respond`; OpenAPI request schemas drop them from
@@ -141,12 +141,12 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   works on optional fields of any type including Money; an optional `id` is
   a compile error; arithmetic on an optional field protected only by a
   presence guard raises the `optional-field-unguarded-arithmetic` warning;
-  mode B refuses guards that read an optional field (issue #208, RFC-0055).
+  mode B refuses guards that read an optional field (issue #208, RFC-0053).
 - `respond` can answer an aggregate or a filtered list without storing rows:
   named terms `<name> as <agg> <ref>` and a bounded list term (`limit`
   required, `items`/`next` envelope), with zero repository writes, masked
   rowsets, an OpenAPI 200 schema derived from the terms, and `spec` results
-  for named aggregates. Mode B refuses it (issue #210, RFC-0061).
+  for named aggregates. Mode B refuses it (issue #210, RFC-0059).
 
 ### Changed
 - Persistent backends (sqlite, postgres) are no longer seeded from the
@@ -167,12 +167,12 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   declares is rejected. Compatibility: an id-less create used to run and
   collide on one key from the second run; it now fails on the first, so add
   `derived generated` to the id or send an id. Mode B refuses the markers
-  (issue #209, RFC-0057).
+  (issue #209, RFC-0055).
 - Two structural changes to flow control, with one parse-time and one
   runtime consequence. (a) A control keyword (`when`, `until`, `repeat`,
   `pipeline`, `parallel`) indented inside an open `pipeline` body is now a
   parse error naming the block and both fixes, instead of silently closing
-  the pipeline and compiling to a different structure (RFC-0060).
+  the pipeline and compiling to a different structure (RFC-0058).
   Compatibility: a program that compiled this way must dedent the keyword
   or re-indent the body, and the old compile ran it as the dedented
   structure (steps after the keyword fell outside the enclosing guard).
@@ -181,7 +181,7 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   one item after a `when` guard; `otherwise` after
   `until`/`repeat`, with no guard, twice, or inside `parallel` is a parse
   error, and `else` gets a did-you-mean. Mode B refuses both
-  (issue #211, RFC-0062, resolves RFC-0015 OQ1). Compatibility: a guard
+  (issue #211, RFC-0060, resolves RFC-0015 OQ1). Compatibility: a guard
   reading an assigned field used to be a compile error and is now accepted
   in mode A, so a program that dodged the error by reordering still works;
   a mode-B build of a workflow that uses either form is now refused.

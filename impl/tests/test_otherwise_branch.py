@@ -1,4 +1,4 @@
-"""RFC-0062: `otherwise` — a `when` guard's sibling item (issue #211 (4)).
+"""RFC-0060: `otherwise` — a `when` guard's sibling item (issue #211 (4)).
 
 `otherwise` on the line after a `when` guard's item owns exactly one item and
 runs exactly when the guard and every `or` alternative are false. It is the

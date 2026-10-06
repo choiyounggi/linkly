@@ -469,7 +469,7 @@ class TestApplyPredicate(unittest.TestCase):
         rows = apply_predicate(list(self.ROWS), order=("amount", False), limit=2)
         self.assertEqual([r["id"] for r in rows], ["a", "c"])
 
-    # RFC-0055 §9: a row lacking the sort field (or holding null) sorts last,
+    # RFC-0053 §9: a row lacking the sort field (or holding null) sorts last,
     # ascending and descending alike, in row_key order among themselves.
     WITH_MISSING = [{"id": "a", "amount": 10}, {"id": "b"},
                     {"id": "c", "amount": 20}, {"id": "d", "amount": None}]

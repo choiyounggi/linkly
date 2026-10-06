@@ -143,7 +143,7 @@ workflow Ping
         self.assertTrue(ok, "\n".join(report))
 
 
-# RFC-0059 §6: `send` adds nothing for mode B to refuse or diverge on.
+# RFC-0057 §6: `send` adds nothing for mode B to refuse or diverge on.
 SEND_CLAUSE_SRC = """capability postgres
 
 capability http PaymentGateway
@@ -205,7 +205,7 @@ class SendClauseModeEquivalenceTest(unittest.TestCase):
         self.assertTrue(ok, "\n".join(report))
 
     def test_build_and_diff_refuse_a_send_workflow_by_the_existing_chain(self):
-        # A `fail` beside the `send` is refused for `fail` (RFC-0058) by
+        # A `fail` beside the `send` is refused for `fail` (RFC-0056) by
         # both commands, before any toolchain use -- `send` adds no link.
         doc = compile_doc(SEND_CLAUSE_SRC.replace(
             "    update order\n",
@@ -216,8 +216,8 @@ class SendClauseModeEquivalenceTest(unittest.TestCase):
             differential.verify(doc, self.target, self.payload, self.rows,
                                 self.workdir)
         for msg in (str(built.exception), str(diffed.exception)):
-            self.assertIn("RFC-0058", msg)
-            self.assertNotIn("RFC-0059", msg)
+            self.assertIn("RFC-0056", msg)
+            self.assertNotIn("RFC-0057", msg)
 
 
 if __name__ == "__main__":

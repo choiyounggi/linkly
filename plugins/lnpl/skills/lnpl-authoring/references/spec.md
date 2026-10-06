@@ -40,8 +40,8 @@
 - `stored <entity>[<i>] <field> <value>` — 인덱스 다중 행 시드(RFC-0025 §8) — row_key=str(i). 같은 i에 여러 줄을 반복해 한 행에 필드를 더한다. 엔티티는 `stored`와 같이 선언명·바인딩명 둘 다 받는다. `list <entity>`가 읽는 RowSet을 이렇게 채운다
 - `call <target> returns <status>` — 네트워크 응답 스텁(RFC-0027 §7, issue #76). status는 정수. 스텁 없는 target은 fake 드라이버 기본값(200/빈 바디)을 결정적으로 받는다
 - `call <target> returns <status> body.<key> <value>` — 네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 행 필드를 쌓는 것과 같은 자리
-- `run.generated <uuid>` — 이 실행의 `derived generated` 값을 고정(RFC-0057). payload가 아니라 실행 문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다
-- `run.clock <instant>` — 이 실행의 `derived clock` 값을 고정(RFC-0057, 존 표기 필수). 없으면 가상 시계의 실행 시작 시각이 쓰인다
+- `run.generated <uuid>` — 이 실행의 `derived generated` 값을 고정(RFC-0055). payload가 아니라 실행 문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다
+- `run.clock <instant>` — 이 실행의 `derived clock` 값을 고정(RFC-0055, 존 표기 필수). 없으면 가상 시계의 실행 시작 시각이 쓰인다
 
 선언되지 않은 이름을 쓰면 거부된다 — `--run` 없이 `lnpl spec`만 돌려도 매니페스트 단계에서 거부되고, 진단이 어느 워크플로의 어느 블록인지와 수용되는 이름 전체를 댄다 (issue #54).
 

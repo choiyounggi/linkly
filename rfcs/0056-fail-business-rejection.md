@@ -1,4 +1,4 @@
-# RFC-0058: `fail` 동사 — 저자가 선언하는 업무 거절
+# RFC-0056: `fail` 동사 — 저자가 선언하는 업무 거절
 
 ## Status
 
@@ -13,7 +13,7 @@ RFC에 `Updated-by:` 포인터를 달지 않는다(Accepted가 되는 시점의 
 
 - **노드 카탈로그(RFC-0001).** "행의 추가·삭제는 이 RFC의 개정 사항이다"라는 그 절의
   규칙대로 새 kind `Rejection`을 Effect 표에 더하고, `WorkflowStep`의 children 허용
-  목록에 넣는다. Guard 행(RFC-0028, Draft RFC-0056)은 건드리지 않는다. 아래 §1이 바뀐
+  목록에 넣는다. Guard 행(RFC-0028, Draft RFC-0054)은 건드리지 않는다. 아래 §1이 바뀐
   두 행의 치환 후 최종 텍스트다.
 - **Execution Model의 Effect 표(RFC-0003).** RFC-0032가 이 표의 `Transaction`·`EventEmit`
   행을 갱신했다. 아래 §3이 그 표 전체의 치환 후 최종 텍스트다 — RFC-0032의 두 행은
@@ -33,9 +33,6 @@ RFC에 `Updated-by:` 포인터를 달지 않는다(Accepted가 되는 시점의 
 - RFC-0040(이벤트 소비 계약). 그 계약의 영구 실패(E7)는 "그 외 전부"이고, `fail`은
   그 정의 안에 든다. `docs/serving.md` E7 행에 사례 하나를 덧붙일 뿐이다.
 - RFC-0032(실행 경계). 롤백 규칙은 그대로이며 `fail`은 그 규칙의 새 소비자다.
-
-번호가 0058인 이유: 0053·0054는 병렬 run이, 0057은 같은 run의 다른 태스크가
-점유했다. RFC-0007 §3은 번호 재사용을 금지한다.
 
 ## Motivation
 
@@ -126,7 +123,7 @@ lower된다. 노드 id는 `<step id>.reject`.
 
 | kind | 필수 필드 | 선택 필드 | children 허용 |
 |------|----------|----------|--------------|
-| Rejection | `code`(kebab-case 문자열 — 저자가 선언한 업무 거절 코드. 서버의 예약 problem `code`와 겹칠 수 없다) | (없음) | (없음) — 2026-10-04 신설(RFC-0058) |
+| Rejection | `code`(kebab-case 문자열 — 저자가 선언한 업무 거절 코드. 서버의 예약 problem `code`와 겹칠 수 없다) | (없음) | (없음) — 2026-10-04 신설(RFC-0056) |
 
 `fail`이 없는 워크플로의 IR은 이 RFC 이전과 바이트 동일하다.
 
@@ -167,7 +164,7 @@ lower된다. 노드 id는 `<step id>.reject`.
 | Transaction | 원자적 스코프 노드: children 전부 성공 시 커밋, 하나라도 실패 시 abort — 부분 쓰기는 관측되지 않는다. `isolation` 서술은 힌트이며 집행 수준은 해당 capability가 결정한다. Policy `rollback`의 보상 경계가 이 노드다(§Policy Enforcement). **Phase 1은 이 노드를 선언할 문법이 없다**(`VERB_LEXICON`이 어떤 동사도 `Transaction`으로 도출하지 않는다) — 그 공백 동안 워크플로 실행 전체가 유일한 암묵적 경계다: 실행 시작 시 열리고, 완주 시 커밋되며, 실패 시 그 실행에서 이뤄진 모든 쓰기를 롤백한다(RFC-0032). 명시적 `Transaction` 노드가 도입되면 이 암묵적 경계는 "children으로 아무 `Transaction`도 갖지 않는 워크플로"의 경계로 좁혀진다 — 지금은 모든 워크플로가 그 경우다 |
 | Authorization | 소유 step의 다른 Effect보다 먼저 평가되는 게이트. **거부(deny)는 비재시도 실패다** — 같은 요청은 다시 보내도 같은 결과이므로 재시도 대상이 아니다. 검사 서비스 불가용(전송 실패)과 거부는 구분되며, 전자만 재시도 판정 대상이다 |
 | EventEmit | 비동기 발행 — step의 동기 구간은 발행 요청 등록까지다. Transaction의 children으로 소유된 EventEmit은 **커밋 성공 후에만** 발행된다(롤백된 트랜잭션의 이벤트 유출 금지). Phase 1은 명시적 `Transaction` 노드가 없으므로(위 Transaction 행), 모든 EventEmit은 워크플로 실행 전체의 암묵적 경계가 그 소유자다 — 등록(`record_emission`)은 그 경계의 커밋과 함께만 durable해지고, 실행이 실패해 롤백되면 등록 자체가 저장소에 남지 않는다(RFC-0032, issue #102). 전달 보장은 at-least-once이며, 소비자가 event id로 dedupe할 수 있도록 발행마다 유일한 event id를 부여한다(발행 메커니즘의 구현은 §Open Questions ③) |
-| Rejection | 저자가 선언한 업무 거절(RFC-0058). 도달하면 그 step이 실패하고 실행이 `failed`로 끝난다: `failure_kind = "rejected"`, `failure_reason` = `code`, `failed_step` = 그 step 이름. 실행이 실패했으므로 위 Transaction 행의 암묵적 경계가 그 실행의 모든 쓰기와 발행 등록을 롤백한다 — 별도 경로가 없다. **비재시도 실패다**: 가드가 이미 이 실행의 바인딩에 대해 참이었으므로 다시 시도해도 같은 결과다(Authorization 거부와 같은 이유, §Policy Enforcement "요청 자체의 오류" 행). 가드가 거짓이면 이 step은 실행되지 않으며 스킵 기록(RFC-0014 §2.4)만 남는다 |
+| Rejection | 저자가 선언한 업무 거절(RFC-0056). 도달하면 그 step이 실패하고 실행이 `failed`로 끝난다: `failure_kind = "rejected"`, `failure_reason` = `code`, `failed_step` = 그 step 이름. 실행이 실패했으므로 위 Transaction 행의 암묵적 경계가 그 실행의 모든 쓰기와 발행 등록을 롤백한다 — 별도 경로가 없다. **비재시도 실패다**: 가드가 이미 이 실행의 바인딩에 대해 참이었으므로 다시 시도해도 같은 결과다(Authorization 거부와 같은 이유, §Policy Enforcement "요청 자체의 오류" 행). 가드가 거짓이면 이 step은 실행되지 않으며 스킵 기록(RFC-0014 §2.4)만 남는다 |
 
 인터프리터는 `RunError(code)`에 `failure_kind = "rejected"`를 실어 던진다 — 순차·병렬
 실행 경로 모두 기존 `failure_kind` 번역 지점이 그대로 결과에 옮긴다. 재시도 판정
@@ -205,7 +202,7 @@ lower된다. 노드 id는 `<step id>.reject`.
 `422` 응답을 갖는다:
 
 ```json
-"422": {"description": "the workflow rejected the request (RFC-0058): codes out-of-stock, over-limit"}
+"422": {"description": "the workflow rejected the request (RFC-0056): codes out-of-stock, over-limit"}
 ```
 
 코드는 중복 없이 사전순이다. `fail`이 없는 operation과 문서는 이 RFC 이전과 바이트
@@ -222,18 +219,18 @@ Mode B는 `fail`을 담은 워크플로를 **거부**한다(기록된 면제). �
   있는가. 모르는 워크플로면 `BackendError`.
 - `build`/`emit_mlir`(`backend._refuse_unsupported_guards`)와 `diff`
   (`differential.verify`)는 같은 순서로 묻는다: Money(RFC-0051) → lookup(RFC-0052) →
-  optional(RFC-0055) → Text(RFC-0056) → **fail(RFC-0058)**. 둘 다 툴체인 확인 전에
+  optional(RFC-0053) → Text(RFC-0054) → **fail(RFC-0056)**. 둘 다 툴체인 확인 전에
   거부하므로 결과가 툴체인 설치 여부에 좌우되지 않는다. CLI는 두 명령 모두 rc 4.
-- 메시지: `step <name>: `fail <code>` has no compiled evaluator (RFC-0058 §Mode B,
+- 메시지: `step <name>: `fail <code>` has no compiled evaluator (RFC-0056 §Mode B,
   recorded exemption) — run it in mode A` / `workflow '<id>' uses `fail` — mode B has
-  no compiled evaluator for it (RFC-0058 §Mode B, recorded exemption); differential
+  no compiled evaluator for it (RFC-0056 §Mode B, recorded exemption); differential
   comparison is not attempted`.
 
 ### 8. RFC-0014 Open Questions 1 (갱신)
 
 치환 후 최종 텍스트:
 
-1. **"거부" 판정의 소유자.** — **해소(RFC-0058).** 저자가 `fail <code>`로 선언한
+1. **"거부" 판정의 소유자.** — **해소(RFC-0056).** 저자가 `fail <code>`로 선언한
    지점만 거절이다. 그 스텝을 소유한 가드가 참이면 실행이 `failed`(`failure_kind =
    "rejected"`)로 끝나고, 거짓이면 이 RFC의 §2.4대로 스킵이 기록될 뿐이다. 런타임은
    여전히 어떤 스킵도 거절로 추측하지 않는다.

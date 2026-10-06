@@ -534,7 +534,7 @@ OPTIONAL_FIELD_FIXTURE = {
 
 
 def optional_negatives():
-    """RFC-0055 — `optional` is a single boolean field, same shape
+    """RFC-0053 — `optional` is a single boolean field, same shape
     `subscribe_negatives()` uses for `Event.subscribe`."""
     n1 = copy.deepcopy(OPTIONAL_FIELD_FIXTURE)
     n1["nodes"][0]["fields"][1]["optional"] = "yes"  # type 불일치 — boolean 아님
@@ -582,7 +582,7 @@ FILL_SOURCE_FIXTURE = {
 
 
 def fill_source_negatives():
-    """issue #95 `derived` (admitted at last) and RFC-0057 `fill_source`, a
+    """issue #95 `derived` (admitted at last) and RFC-0055 `fill_source`, a
     closed enum. Which base a marker needs is a compiler check (the field's
     `type` may be a refinement name), not a schema one."""
     n1 = copy.deepcopy(DERIVED_FIELD_FIXTURE)
@@ -728,7 +728,7 @@ GUARD_OTHERWISE_FIXTURE = {
 
 
 def guard_otherwise_negatives():
-    """RFC-0062 — a `Guard` owns its guarded item plus at most one `otherwise`
+    """RFC-0060 — a `Guard` owns its guarded item plus at most one `otherwise`
     item, so `children` holds 1 or 2 ids. One negative per bound the
     `children` constraint turns on: a third child (`maxItems`), none at all
     (`minItems`), and a second child on an `until`/`repeat` guard, which has
@@ -974,13 +974,13 @@ def self_test():
          SUBSCRIBE_EVENT_FIXTURE),
         ("CONSUME_EVENT_FIXTURE (issue #118 Event.consume)",
          CONSUME_EVENT_FIXTURE),
-        ("OPTIONAL_FIELD_FIXTURE (RFC-0055 optional field)",
+        ("OPTIONAL_FIELD_FIXTURE (RFC-0053 optional field)",
          OPTIONAL_FIELD_FIXTURE),
         ("DERIVED_FIELD_FIXTURE (issue #95 derived field)",
          DERIVED_FIELD_FIXTURE),
-        ("FILL_SOURCE_FIXTURE (RFC-0057 fill_source markers)",
+        ("FILL_SOURCE_FIXTURE (RFC-0055 fill_source markers)",
          FILL_SOURCE_FIXTURE),
-        ("GUARD_OTHERWISE_FIXTURE (RFC-0062 Guard otherwise child)",
+        ("GUARD_OTHERWISE_FIXTURE (RFC-0060 Guard otherwise child)",
          GUARD_OTHERWISE_FIXTURE),
     ]
     for label, doc in positives:

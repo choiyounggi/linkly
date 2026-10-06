@@ -1,4 +1,4 @@
-"""examples/staged.lnpl (issue #211, RFC-0060) — the exemplar's own regression guard.
+"""examples/staged.lnpl (issue #211, RFC-0058) — the exemplar's own regression guard.
 
 Four claims, each run against the actual toolchain:
 
@@ -187,9 +187,9 @@ class TestStagedIsReachable(unittest.TestCase):
     def test_the_patterns_page_names_this_file_and_its_rfc(self):
         text = self._read("references", "patterns.md")
         self.assertIn("examples/staged.lnpl", text)
-        self.assertIn("RFC-0060", text)
+        self.assertIn("RFC-0058", text)
         self.assertTrue(os.path.isfile(os.path.join(
-            REPO, "rfcs", "0060-pipeline-implicit-close-indentation.md")))
+            REPO, "rfcs", "0058-pipeline-implicit-close-indentation.md")))
 
 
 if __name__ == "__main__":

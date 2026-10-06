@@ -99,7 +99,7 @@ RESPOND_VERB = "respond"
 # it to its own derivation (`_derive_note`) rather than `_derive_effect`.
 NOTE_VERB = "note"
 
-# RFC-0058: `fail <kebab-code>` — ends the run failed with the author's code
+# RFC-0056: `fail <kebab-code>` — ends the run failed with the author's code
 # (a business rejection, issue #206). Routed the same way `NOTE_VERB` is: its
 # object is a compile-time code literal, not an entity name, so
 # `_WfContext._step` sends it to its own derivation (`_derive_fail`) rather
@@ -149,7 +149,7 @@ VERB_LEXICON = {
     # issue #111: see `NOTE_VERB` — a span annotation, not an Effect, gets
     # its own kind for the same reason `respond` does.
     "note": ("Annotation", {}),
-    # RFC-0058: see `FAIL_VERB` — a declared business rejection, its own kind
+    # RFC-0056: see `FAIL_VERB` — a declared business rejection, its own kind
     # for the same reason `respond`/`note` have theirs.
     "fail": ("Rejection", {}),
 }
@@ -176,7 +176,7 @@ VERB_ALIASES = {
     "notify": "emit",
 }
 
-# RFC-0062: words that LOOK like a verb but name a reserved structural keyword.
+# RFC-0060: words that LOOK like a verb but name a reserved structural keyword.
 # Checked before `VERB_ALIASES` (whose values are all real `VERB_LEXICON`
 # entries) and before the difflib fallback, so the natural English word for
 # "otherwise" points at the keyword, not at a verb that merely spells alike.
@@ -243,7 +243,7 @@ EXPOSE_VERBS = ("list",)
 EXPOSE_SORT_BASES = ("Integer", "DateTime")
 
 TEXT_EQUALITY_OPS = ("==", "!=")
-# RFC-0056: a guard's `==`/`!=` opens BASE_CATEGORY "text" minus DateTime (it
+# RFC-0054: a guard's `==`/`!=` opens BASE_CATEGORY "text" minus DateTime (it
 # has its own dimension already) minus Password (RFC-0001 masking mandate — a
 # skip record would otherwise carry its raw value unmasked).
 TEXT_EQUALITY_EXCLUDED_BASES = ("DateTime", "Password")
@@ -1224,7 +1224,7 @@ def _resolve_type(name, refined_names, used_presets, lineno):
         "in this module, or a built-in preset (RFC-0001 A.6.1)" % (lineno, name))
 
 
-# RFC-0057 §1: fill-source marker -> the base type its field must have.
+# RFC-0055 §1: fill-source marker -> the base type its field must have.
 FILL_SOURCES = {"generated": "UUID", "clock": "DateTime"}
 
 
@@ -1255,7 +1255,7 @@ def lower(decls, module_name):
     # Declared type name -> one of the 18 bases. RFC-0015's operand check asks
     # "is this an Integer", and `refine SafeStock of Integer` must answer yes,
     # so the question is put to the base rather than to the written name.
-    # Built before the entity loop: RFC-0057's fill-source markers check
+    # Built before the entity loop: RFC-0055's fill-source markers check
     # their field's base while the fields are parsed.
     base_of = {name: name for name in BASE_CATEGORY}
     base_of.update({n["name"]: n["base"] for n in refine_nodes})
@@ -1267,7 +1267,7 @@ def lower(decls, module_name):
     registry = {}
     for decl in by_kind["entity"]:
         fields = []
-        MODIFIER_WORDS = ("derived", "optional")  # RFC-0055
+        MODIFIER_WORDS = ("derived", "optional")  # RFC-0053
         for line in decl.clauses.get("field", []):
             if len(line.tokens) < 2 or len(line.tokens) > 4:
                 raise LowerError(
@@ -1276,7 +1276,7 @@ def lower(decls, module_name):
                     "together — got %d tokens"
                     % (line.lineno, len(line.tokens)))
             modifiers = line.tokens[2:]
-            # RFC-0057 §1: `derived <marker>` — the marker is a closed word,
+            # RFC-0055 §1: `derived <marker>` — the marker is a closed word,
             # valid only directly after `derived`.
             marker = None
             if len(modifiers) == 2 and modifiers[0] == "derived" \
@@ -1286,19 +1286,19 @@ def lower(decls, module_name):
                 if marker not in FILL_SOURCES:
                     raise LowerError(
                         "line %d: unknown fill-source marker %r after "
-                        "`derived` — valid markers are %s (RFC-0057)"
+                        "`derived` — valid markers are %s (RFC-0055)"
                         % (line.lineno, marker, ", ".join(FILL_SOURCES)))
             unknown = [m for m in modifiers if m not in MODIFIER_WORDS]
             if unknown and unknown[0] in FILL_SOURCES:
                 raise LowerError(
                     "line %d: fill-source marker %r is valid only directly "
-                    "after `derived` — write `%s %s derived %s` (RFC-0057)"
+                    "after `derived` — write `%s %s derived %s` (RFC-0055)"
                     % (line.lineno, unknown[0], line.tokens[0], line.tokens[1],
                        unknown[0]))
             if unknown:
                 raise LowerError(
                     "line %d: unknown field modifier %r — valid modifiers are "
-                    "%s (issue #95, RFC-0055)"
+                    "%s (issue #95, RFC-0053)"
                     % (line.lineno, unknown[0], ", ".join(MODIFIER_WORDS)))
             if len(modifiers) != len(set(modifiers)):
                 raise LowerError(
@@ -1308,7 +1308,7 @@ def lower(decls, module_name):
                 raise LowerError(
                     "line %d: field cannot be both `derived` and `optional` — "
                     "a server-computed field's input-optionality is meaningless "
-                    "(RFC-0055)" % line.lineno)
+                    "(RFC-0053)" % line.lineno)
             if not WORD_RE.match(line.tokens[0]):
                 raise LowerError(
                     "line %d: field name %r must be a lowercase word — "
@@ -1319,7 +1319,7 @@ def lower(decls, module_name):
                 raise LowerError(
                     "line %d: field 'id' cannot be `optional` — the row key "
                     "falls back to a shared '-' sentinel when id is absent "
-                    "(RFC-0055)" % line.lineno)
+                    "(RFC-0053)" % line.lineno)
             field = {"name": line.tokens[0],
                     "type": _resolve_type(line.tokens[1], refined_names,
                                           used_presets, line.lineno)}
@@ -1330,14 +1330,14 @@ def lower(decls, module_name):
                 if base != FILL_SOURCES[marker]:
                     raise LowerError(
                         "line %d: fill-source marker %r needs a %s field, but "
-                        "%r is declared %s (RFC-0057)"
+                        "%r is declared %s (RFC-0055)"
                         % (line.lineno, marker, FILL_SOURCES[marker],
                            field["name"], field["type"]))
                 if field["name"] == "id" and marker != "generated":
                     raise LowerError(
                         "line %d: field 'id' cannot be `derived %s` — the id "
                         "keys the row, and one run's instant is not unique; "
-                        "use `derived generated` (RFC-0057)"
+                        "use `derived generated` (RFC-0055)"
                         % (line.lineno, marker))
                 field["fill_source"] = marker
             if "optional" in modifiers:
@@ -1495,7 +1495,7 @@ def lower(decls, module_name):
 
     for n in refine_nodes:
         mod.add(n)
-    # RFC-0056: refinement name -> its enum members — a guard equality's
+    # RFC-0054: refinement name -> its enum members — a guard equality's
     # bare-name literal is checked against this.
     enum_of = {n["name"]: tuple(n["facets"]["enum"])
                for n in refine_nodes if "enum" in n.get("facets", {})}
@@ -1795,7 +1795,7 @@ class _WfContext:
         self._guard_n += 1
         node_id = "%s.guard.%d" % (self.wid, self._guard_n)
         children = [self.plan(guarded)]
-        # RFC-0062: `otherwise` is a structural sibling, not a condition — it
+        # RFC-0060: `otherwise` is a structural sibling, not a condition — it
         # never widens `Condition`'s grammar. It goes through the same planner
         # the guarded item does, so a block it owns lowers the same way.
         if otherwise is not None:
@@ -2047,7 +2047,7 @@ def _check_guard_scoped_binding_reads(emitted, top_ids, workflow_name,
     for node in emitted:
         if node["kind"] == "Response":
             refs = list(node.get("refs") or [])
-            # RFC-0061 §2: a term reads its RowSet's binding too.
+            # RFC-0059 §2: a term reads its RowSet's binding too.
             refs.extend(term["ref"] for term in node.get("aggTerms") or [])
             if node.get("listTerm"):
                 refs.append(node["listTerm"]["binding"])
@@ -2066,7 +2066,7 @@ def _check_guard_scoped_binding_reads(emitted, top_ids, workflow_name,
             words = step_of[node["id"]]["name"].split()
             rendering = "`%s ... with`" % " ".join(words[:2])
         elif node["kind"] == "NetworkCall":
-            # RFC-0059 §7: `call/request ... send` reads its references.
+            # RFC-0057 §7: `call/request ... send` reads its references.
             refs = [entry["ref"] for entry in node.get("bodyMap") or []]
             words = step_of[node["id"]]["name"].split()
             rendering = "`%s ... send`" % " ".join(words[:2])
@@ -2200,7 +2200,7 @@ def _check_event_consume_cycles(event_consumes, emits_by_workflow, diagnostics):
 
 def _check_optional_unguarded_arithmetic(emitted, top_ids, registry,
                                          workflow_name, diagnostics):
-    """`optional-field-unguarded-arithmetic` (warning) -- RFC-0055 §8.
+    """`optional-field-unguarded-arithmetic` (warning) -- RFC-0053 §8.
 
     An `Arith` operand of a `set` expression, or of a guard comparison
     (condition or `or` alternative), that reads an `optional` field of a
@@ -2233,7 +2233,7 @@ def _check_optional_unguarded_arithmetic(emitted, top_ids, registry,
 
     def protected(node_id, ref):
         guard, branch = owner.get(node_id) or (None, "then")
-        # RFC-0062: an `otherwise` item runs exactly when the presence guard
+        # RFC-0060: an `otherwise` item runs exactly when the presence guard
         # is false, so it is the one place the field is known to be missing.
         if (guard is None or branch != "then" or guard.get("mode") != "when"
                 or guard.get("alternatives")):
@@ -2256,7 +2256,7 @@ def _check_optional_unguarded_arithmetic(emitted, top_ids, registry,
                 where=workflow_name, subject=ref.name, line=node.get("line"),
                 message="arithmetic reads %s, which is `optional`, with no "
                         "`when %s exists` guard protecting this step "
-                        "(RFC-0055)" % (ref.name, ref.name))
+                        "(RFC-0053)" % (ref.name, ref.name))
 
     for node in emitted:
         if node["kind"] == "Assignment":
@@ -2283,7 +2283,7 @@ def _check_optional_unguarded_arithmetic(emitted, top_ids, registry,
 def _guard_owner_map(top_ids, by_id):
     """node id -> `(guard, branch)`: the `Guard` node that owns it and which of
     its children the node is reached through — `"then"` for the guarded item,
-    `"otherwise"` for RFC-0062's sibling item — or `(None, "then")` at the top
+    `"otherwise"` for RFC-0060's sibling item — or `(None, "then")` at the top
     level.
 
     Same tree RFC-0023's `_steps_outside_guards` already walks (top-level
@@ -2324,7 +2324,7 @@ def _guard_key(owner_entry):
     guard) is its own key: unconditional steps always run together.
 
     `owner_entry` is a `_guard_owner_map` value. The guarded item keeps the key
-    it always had; an `otherwise` item (RFC-0062) gets a third element, because
+    it always had; an `otherwise` item (RFC-0060) gets a third element, because
     the two never run in the same execution — a binding made in one branch and
     read in the other must not count as the same scope.
     """
@@ -2426,7 +2426,7 @@ def _check_derived_never_assigned(emitted, registry, workflow_name, diagnostics)
         where = step.get("line")
         where_str = ("line %d" % where) if where else workflow_name
         for field in entity["fields"]:
-            # RFC-0057 §5: a fill-source field is filled by the run itself.
+            # RFC-0055 §5: a fill-source field is filled by the run itself.
             if not field.get("derived") or field.get("fill_source"):
                 continue
             if (entity["id"], field["name"]) in assigned:
@@ -2589,18 +2589,18 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
     # this walk, in program order, so an `Aggregate` sees exactly the `list`s
     # that precede it in the text.
     listed = set()
-    # RFC-0061 §2: binding -> the `limit` of every `list` that fills it, in
+    # RFC-0059 §2: binding -> the `limit` of every `list` that fills it, in
     # or out of a guard — any of them may be the one that ran, so a
     # `respond list <binding>` needs every one of them bounded.
     list_limits = {}
-    # RFC-0061 §4: a list term's envelope IS the whole response, so it cannot
+    # RFC-0059 §4: a list term's envelope IS the whole response, so it cannot
     # be merged with what another `respond` step of the same workflow adds.
     responses = [n for n in emitted if n["kind"] == "Response"]
     if len(responses) > 1 and any(n.get("listTerm") for n in responses):
         raise LowerError(
             "workflow %s: `respond list <binding>` answers the whole "
             "`{items, next}` envelope, so it must be the workflow's only "
-            "`respond` step — this workflow has %d (RFC-0061 §4)"
+            "`respond` step — this workflow has %d (RFC-0059 §4)"
             % (workflow_name, len(responses)))
 
     def orphaned(text, line):
@@ -2662,7 +2662,7 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                 child.get("line"), "emit with")
                         continue
                     if child["kind"] == "NetworkCall":
-                        # RFC-0059 §3: `send`'s references, same rule.
+                        # RFC-0057 §3: `send`'s references, same rule.
                         if child.get("bodyMap"):
                             _check_payload_map(
                                 child["bodyMap"], scope, workflow_name,
@@ -2740,7 +2740,7 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                     "dimension on both sides"
                                     % (workflow_name, text, _describe(rhs),
                                        rhs_dim, child["target"], target_dim))
-                            # RFC-0057 §7: after the target-type refusals
+                            # RFC-0055 §7: after the target-type refusals
                             # above, which name the more specific fix.
                             _check_bare_operands(rhs, registry, child["line"],
                                                  text)
@@ -2951,7 +2951,7 @@ def _check_respond(refs, scope, text, base_of):
 
 def _check_respond_terms(node, by_binding, base_of, workflow_name, listed,
                          list_limits, orphaned):
-    """RFC-0061 §2: the document-level rules for `respond`'s two term kinds.
+    """RFC-0059 §2: the document-level rules for `respond`'s two term kinds.
 
     A named aggregate term is judged by `_check_aggregate` — the very check
     `set <target> to <aggregate>` gets — and records the same
@@ -2989,7 +2989,7 @@ def _check_respond_terms(node, by_binding, base_of, workflow_name, listed,
         raise LowerError(
             "workflow %s: `respond list %s` reads a RowSet that a `list %s` "
             "without `limit` fills — a response cannot carry an unbounded "
-            "RowSet; add `limit <n>` to every `list %s` (RFC-0061 §2)"
+            "RowSet; add `limit <n>` to every `list %s` (RFC-0059 §2)"
             % (workflow_name, binding, binding, binding))
 
 
@@ -3031,7 +3031,7 @@ def _check_lookup(lookup_ref, scope, workflow_name, base_of):
 def _check_payload_map(payload_map, scope, workflow_name, base_of,
                        derived_assigned, guard_key, line, verb_label):
     """issue #178/#200, R3/R11: the reference rule shared by `emit ... with`
-    (RFC-0049) and `call/request ... send` (RFC-0059). `verb_label` is the
+    (RFC-0049) and `call/request ... send` (RFC-0057). `verb_label` is the
     phrase messages render ("emit with" / "call/request send"): its first
     word is the verb, its last the clause keyword.
 
@@ -3044,7 +3044,7 @@ def _check_payload_map(payload_map, scope, workflow_name, base_of,
     (RFC-0030 §3 / issue #95 -- a derived field is never seeded from the
     create payload and is only ever populated by an explicit
     `set`/`format` step, so its value is not reliably present to map into
-    an outbound payload) -- unless it is a fill-source field (RFC-0057
+    an outbound payload) -- unless it is a fill-source field (RFC-0055
     `field["fill_source"]`), which `create` always fills and no
     `set`/`format` ever does, so the guard-scope rule below never applies.
 
@@ -3075,7 +3075,7 @@ def _check_payload_map(payload_map, scope, workflow_name, base_of,
             continue  # network-result binding -- no declared shape, admitted
         if field.get("derived"):
             if field.get("fill_source"):
-                continue  # RFC-0057: filled by the run at create
+                continue  # RFC-0055: filled by the run at create
             binding = ref.partition(".")[0]
             if guard_key in derived_assigned.get((binding, field_name), ()):
                 continue  # issue #204: a set/format fills it in this scope
@@ -3132,7 +3132,7 @@ def _check_guard(node, scope, workflow_name, parse_condition,
     text = node.get("condition")
     if not text:
         return                            # `repeat` carries a count, not a condition
-    # RFC-0056: the operand names of each text's Text-equality terms, aligned
+    # RFC-0054: the operand names of each text's Text-equality terms, aligned
     # with (condition,) + alternatives. Recorded on the node only when some
     # text uses one, so every other guard's IR is unchanged.
     per_text_names = []
@@ -3157,7 +3157,7 @@ def _check_one_condition(text, scope, workflow_name, parse_condition,
     _check_input_presence_consistency(cond, scope, text, workflow_name)
     text_eq_refs = _text_equality_operand_names(cond)
 
-    # RFC-0062 (resolving RFC-0015 Open Question 1): a guard may read a field
+    # RFC-0060 (resolving RFC-0015 Open Question 1): a guard may read a field
     # an earlier step assigned — mode A evaluates it against the current value,
     # like any other reference. Mode B fixes condition fields at entry, so it
     # refuses such a workflow instead (`backend._refuse_unsupported_guards`,
@@ -3200,7 +3200,7 @@ def _check_one_condition(text, scope, workflow_name, parse_condition,
 
 
 def _check_input_presence_consistency(cond, scope, text, workflow_name):
-    """RFC-0055: `input.<field> exists`/`missing` is ambiguous when more
+    """RFC-0053: `input.<field> exists`/`missing` is ambiguous when more
     than one entity declares `<field>` and they disagree on `optional` --
     the flat `declared_fields` dict (last-entity-wins) would otherwise
     silently pick one entity's rule depending on declaration order.
@@ -3222,7 +3222,7 @@ def _check_input_presence_consistency(cond, scope, text, workflow_name):
                    for f in ent["fields"]) for ent in declaring):
         raise LowerError(
             "workflow %s: %r is ambiguous — declared by %s, and not every "
-            "one of them marks %r `optional` (RFC-0055: `input.<field> "
+            "one of them marks %r `optional` (RFC-0053: `input.<field> "
             "exists`/`missing` needs every declaring entity to agree)"
             % (workflow_name, text,
                ", ".join(sorted(_qualified_name(e["decl"].namespace, e["name"])
@@ -3248,7 +3248,7 @@ def _value_dimension(value, scope, text, subject=GUARD_SUBJECT,
     literal is a scalar) stays Money; Money × Money, any division touching
     Money, and Money ± scalar/instant are refused.
 
-    `equality` (RFC-0056) reaches a direct `Ref` operand only — never an
+    `equality` (RFC-0054) reaches a direct `Ref` operand only — never an
     `Arith` operand's own references, since Text has no arithmetic.
     """
     from .condition import Arith, Lit, Ref
@@ -3326,7 +3326,7 @@ def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
     duration are both i64 underneath, so nothing stops the machine comparing
     them — only the type system does, and it has to say why.
 
-    RFC-0056: a `==`/`!=` term with a Text-family side is judged by
+    RFC-0054: a `==`/`!=` term with a Text-family side is judged by
     `_check_text_equality_term` instead — before the None-skip, since a
     bare-name literal resolves to None. Returns the operand names of those
     terms, which `_check_guard` records on the Guard node.
@@ -3357,7 +3357,7 @@ def _check_dimensions(cond, scope, text, subject=GUARD_SUBJECT):
 
 def _text_equality_operand_names(cond):
     """Reference names that are a DIRECT (non-Arith) operand of an `==`/`!=`
-    Comparison term of `cond` (RFC-0056) — the names the per-reference loop of
+    Comparison term of `cond` (RFC-0054) — the names the per-reference loop of
     `_check_one_condition` checks with `equality=True`. A reference inside an
     Arith operand is never one: Text has no arithmetic."""
     from .condition import Ref
@@ -3374,7 +3374,7 @@ def _text_equality_operand_names(cond):
 def _text_operand_type(operand, scope, text, subject=GUARD_SUBJECT):
     """`(declared_type_name, enum_members_or_None)` for an equality operand
     that resolves to a declared field, or `(None, None)` for a bare-name
-    literal or an operand the document cannot see (RFC-0056)."""
+    literal or an operand the document cannot see (RFC-0054)."""
     from .condition import Ref
     if not isinstance(operand, Ref) or operand.namespace is None:
         return None, None
@@ -3386,7 +3386,7 @@ def _text_operand_type(operand, scope, text, subject=GUARD_SUBJECT):
 
 
 def _check_enum_literal(operand, other_type, other_enum, scope, text):
-    """RFC-0056 + RFC-0011: a bare-name literal compared with a field whose
+    """RFC-0054 + RFC-0011: a bare-name literal compared with a field whose
     declared type is an enum refinement must name one of its members."""
     from .condition import Ref
     if other_enum is None or not (isinstance(operand, Ref)
@@ -3399,14 +3399,14 @@ def _check_enum_literal(operand, other_type, other_enum, scope, text):
     suggestion = " — did you mean %r?" % close[0] if close else ""
     raise LowerError(
         "workflow %s: %r compares with %r, which is not a member of the enum "
-        "%s (members: %s)%s (RFC-0056)"
+        "%s (members: %s)%s (RFC-0054)"
         % (scope.workflow_name, text, literal, other_type,
            ", ".join(other_enum), suggestion))
 
 
 def _check_text_equality_term(term, left_dim, right_dim, scope, text,
                               subject=GUARD_SUBJECT):
-    """RFC-0056: a `==`/`!=` term where at least one side is `"text"`.
+    """RFC-0054: a `==`/`!=` term where at least one side is `"text"`.
     Returns the names of its `Ref` operands, to be recorded on the Guard."""
     from .condition import Arith, Ref
     for dim, operand in ((left_dim, term.left), (right_dim, term.right)):
@@ -3414,13 +3414,13 @@ def _check_text_equality_term(term, left_dim, right_dim, scope, text,
             raise LowerError(
                 "workflow %s: %r compares a Text-family field with an "
                 "arithmetic expression (%s) — RFC-0016 gives Text no "
-                "arithmetic at all (RFC-0056)"
+                "arithmetic at all (RFC-0054)"
                 % (scope.workflow_name, text, _describe(operand)))
         if dim not in (None, "text"):
             raise LowerError(
                 "workflow %s: %r compares %s with %s — RFC-0016 compares "
                 "like with like (a Text-family field equals only another "
-                "Text-family value, RFC-0056)"
+                "Text-family value, RFC-0054)"
                 % (scope.workflow_name, text, _describe(term.left),
                    _describe(term.right)))
     left_type, left_enum = _text_operand_type(term.left, scope, text, subject)
@@ -3432,7 +3432,7 @@ def _check_text_equality_term(term, left_dim, right_dim, scope, text,
             raise LowerError(
                 "workflow %s: %r compares %s (declared %s) with %s (declared "
                 "%s) — equality needs the same declared type on both sides "
-                "(RFC-0038 D2, extended to guard conditions by RFC-0056)"
+                "(RFC-0038 D2, extended to guard conditions by RFC-0054)"
                 % (scope.workflow_name, text, _describe(term.left), left_type,
                    _describe(term.right), right_type))
     _check_enum_literal(term.left, right_type, right_enum, scope, text)
@@ -3502,10 +3502,10 @@ class _Scope:
         # name.
         self.create_bindings = create_bindings or {}
         self.base_of = base_of
-        # RFC-0055: every declared entity keyed by its namespace-qualified
+        # RFC-0053: every declared entity keyed by its namespace-qualified
         # id, for `input.<field> exists`'s cross-entity agreement check.
         self.registry = registry
-        # RFC-0056: refinement name -> enum members, for a guard equality's
+        # RFC-0054: refinement name -> enum members, for a guard equality's
         # bare-name literal.
         self.enum_of = enum_of or {}
 
@@ -3525,11 +3525,11 @@ class _Scope:
         the flag now only selects the RFC-0045 wording of the refusal the
         remaining types get.
 
-        `presence` (RFC-0055): set for the field of an `exists`/`missing`
+        `presence` (RFC-0053): set for the field of an `exists`/`missing`
         term. An `optional` field then gets `"presence-any"` whatever its
         declared type — a Presence check reads only whether the key is there.
 
-        `equality` (RFC-0056): set for a direct operand of a guard's `==`/`!=`
+        `equality` (RFC-0054): set for a direct operand of a guard's `==`/`!=`
         term. A Text-family field (not Password) then gets `"text"`.
         """
         field_node = self.resolve_field(name, text, subject, is_target)
@@ -3709,7 +3709,7 @@ class _Scope:
 
 def _build_payload_map(arg_tokens, lineno, clause_label):
     """The `{field, ref}` list shared by `emit ... with` (RFC-0049) and
-    `call/request ... send` (RFC-0059): reference shape and duplicate mapped
+    `call/request ... send` (RFC-0057): reference shape and duplicate mapped
     field names only. The scope rules are `_check_payload_map`'s."""
     from .condition import _is_reference_name
     if not arg_tokens:
@@ -3863,7 +3863,7 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                 message="%r has no `capability http` declaration — it runs "
                         "with method POST and no auth" % target,
                 line=lineno)
-        # RFC-0059 §1: up to three trailing clauses, each optional, in the
+        # RFC-0057 §1: up to three trailing clauses, each optional, in the
         # fixed order `send <ref>...` (body map), `with <ref>...` (path,
         # issue #109), `as <name>` (result binding, RFC-0027 §2). The tail
         # is cut into segments at the marker words; a marker of equal or
@@ -3993,7 +3993,7 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
     raise LowerError("line %d: no derivation defined for %s" % (lineno, kind))
 
 
-# RFC-0057 §7: a bare word that reads like a run-time value -> the marker that
+# RFC-0055 §7: a bare word that reads like a run-time value -> the marker that
 # supplies it.
 _MARKER_HINTS = {"now": "clock", "time": "clock", "timestamp": "clock",
                  "uuid": "generated", "guid": "generated",
@@ -4001,7 +4001,7 @@ _MARKER_HINTS = {"now": "clock", "time": "clock", "timestamp": "clock",
 
 
 def _check_bare_operands(value, registry, lineno, text):
-    """RFC-0057 §7 (issue #209): a bare (undotted) operand names an input
+    """RFC-0055 §7 (issue #209): a bare (undotted) operand names an input
     field (RFC-0012 §G12.1), so one no declared entity has resolves to
     nothing at run time — refused here instead. An `Aggregate`'s ref is
     `_check_aggregate`'s business, not this check's."""
@@ -4017,7 +4017,7 @@ def _check_bare_operands(value, registry, lineno, text):
         marker = _MARKER_HINTS.get(operand.name.lower())
         if marker is not None:
             hint = (" — did you mean a field declared `derived %s`? The run "
-                    "fills it at `create` (RFC-0057)" % marker)
+                    "fills it at `create` (RFC-0055)" % marker)
         raise LowerError(
             "line %d: assignment %r reads %r, which no declared entity has as "
             "a field — a bare name is an input field (RFC-0012 §G12.1)%s"
@@ -4191,7 +4191,7 @@ def _derive_respond(step_id, line, registry, namespace=None):
     `_check_scoped_conditions`'s job, via `_check_respond` — the same split
     `format`'s Password check uses.
 
-    RFC-0061 §1 adds two term kinds. `<name> as <func> <ref>` (four tokens,
+    RFC-0059 §1 adds two term kinds. `<name> as <func> <ref>` (four tokens,
     recognised by the `as` after the name) is a named aggregate term, free to
     mix with bare references; `list <binding>` is a list term and stands
     alone on its line. Only each term's shape is judged here — the aggregate
@@ -4211,7 +4211,7 @@ def _derive_respond(step_id, line, registry, namespace=None):
     list_alone = LowerError(
         "line %d: `respond list <binding>` stands alone — it answers the "
         "whole `{items, next}` envelope, so it takes exactly one binding and "
-        "no other term (RFC-0061 §1)" % line.lineno)
+        "no other term (RFC-0059 §1)" % line.lineno)
     if tokens[0] == "list" and tokens[1:2] != ["as"]:
         if len(tokens) != 2:
             raise list_alone
@@ -4225,18 +4225,18 @@ def _derive_respond(step_id, line, registry, namespace=None):
             if i + 3 >= len(tokens):
                 raise LowerError(
                     "line %d: `respond %s` — `as` needs a function and a "
-                    "reference after it (`<name> as <func> <ref>`, RFC-0061 "
+                    "reference after it (`<name> as <func> <ref>`, RFC-0059 "
                     "§1)" % (line.lineno, " ".join(tokens[i:])))
             name, func, ref = tokens[i], tokens[i + 2], tokens[i + 3]
             if not WORD_RE.match(name):
                 raise LowerError(
                     "line %d: respond term name %r is not a valid name — it "
-                    "must be camelCase, like a binding name (RFC-0061 §1)"
+                    "must be camelCase, like a binding name (RFC-0059 §1)"
                     % (line.lineno, name))
             if func not in AGG_FUNCS:
                 raise LowerError(
                     "line %d: respond term %r uses %r, which is not an "
-                    "aggregate — use one of %s (RFC-0061 §1)"
+                    "aggregate — use one of %s (RFC-0059 §1)"
                     % (line.lineno, name, func, ", ".join(AGG_FUNCS)))
             if any(t["name"] == name for t in agg_terms):
                 raise LowerError(
@@ -4247,7 +4247,7 @@ def _derive_respond(step_id, line, registry, namespace=None):
                     raise LowerError(
                         "line %d: respond term name %r collides with entity "
                         "%s's binding name — a term cannot share a name with "
-                        "a binding (RFC-0061 §1)"
+                        "a binding (RFC-0059 §1)"
                         % (line.lineno, name, ent["name"]))
             agg_terms.append({"name": name, "func": func, "ref": ref})
             i += 4
@@ -4282,7 +4282,7 @@ def _derive_respond(step_id, line, registry, namespace=None):
 
     # `_node` drops a None field, so a line without bare references carries
     # no `refs` key at all — and a line without terms is byte-identical to
-    # what it lowered to before RFC-0061.
+    # what it lowered to before RFC-0059.
     return _node("Response", eid, refs=refs or None,
                  aggTerms=agg_terms or None, line=line.lineno)
 
@@ -4321,33 +4321,33 @@ def _derive_note(step_id, line):
 
 
 def _derive_fail(step_id, line):
-    """RFC-0058: `fail <code>` -> a Rejection node. The code is a compile-time
+    """RFC-0056: `fail <code>` -> a Rejection node. The code is a compile-time
     kebab-case literal (`KEBAB_CODE_RE`) that must not reuse a problem `code`
     the server already answers with (`RESERVED_PROBLEM_CODES`) — a client
     branching on `code` could not tell the two apart. Exactly one code: a
     trailing word is refused, the rule `create`'s trailing words follow."""
     if len(line.tokens) < 2:
         raise LowerError("line %d: `fail` needs a kebab-case code "
-                         "(e.g. `fail out-of-stock`) (RFC-0058)" % line.lineno)
+                         "(e.g. `fail out-of-stock`) (RFC-0056)" % line.lineno)
     code = line.tokens[1]
     if len(line.tokens) > 2:
         raise LowerError("line %d: `fail` takes one code, got trailing %r "
-                         "after %r (RFC-0058)"
+                         "after %r (RFC-0056)"
                          % (line.lineno, tuple(line.tokens[2:]), code))
     if not KEBAB_CODE_RE.match(code):
         raise LowerError("line %d: `fail %s` — the code must be kebab-case "
                          "(lowercase letters/digits, hyphen-separated, e.g. "
-                         "`out-of-stock`) (RFC-0058)" % (line.lineno, code))
+                         "`out-of-stock`) (RFC-0056)" % (line.lineno, code))
     if code in RESERVED_PROBLEM_CODES:
         raise LowerError("line %d: `fail %s` collides with the reserved "
-                         "problem code %r — pick a different code (RFC-0058)"
+                         "problem code %r — pick a different code (RFC-0056)"
                          % (line.lineno, code, code))
     eid = "%s.%s" % (step_id, EFFECT_SLUG["Rejection"])
     return _node("Rejection", eid, code=code, line=line.lineno)
 
 
 def _check_fail_is_guarded(emitted, top_ids, workflow_name):
-    """RFC-0058: an unconditional `fail` would end every run of this workflow
+    """RFC-0056: an unconditional `fail` would end every run of this workflow
     failed — a compile error, not a warning, because no edit short of deleting
     the step or guarding it removes the defect. Only a `when`/`until` guard
     can skip its body; `repeat N` (N >= 1) always runs it, so a `fail` it owns
@@ -4357,14 +4357,14 @@ def _check_fail_is_guarded(emitted, top_ids, workflow_name):
     for node in emitted:
         if node["kind"] != "Rejection":
             continue
-        # RFC-0062: a `fail` an `otherwise` owns is as conditional as one its
+        # RFC-0060: a `fail` an `otherwise` owns is as conditional as one its
         # `when` owns — the branch does not matter here, only the guard.
         guard, _branch = owner.get(node["id"]) or (None, "then")
         if guard is None or guard.get("mode") == "repeat":
             raise LowerError(
                 "workflow %s: `fail %s` (line %d) is not guarded by a `when`/"
                 "`until` — an unconditional `fail` would end every run "
-                "failed (RFC-0058)"
+                "failed (RFC-0056)"
                 % (workflow_name, node["code"], node["line"]))
 
 

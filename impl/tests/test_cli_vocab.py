@@ -133,7 +133,7 @@ class TestCliVocab(unittest.TestCase):
 
 
 class TestFailVocabulary(unittest.TestCase):
-    """RFC-0058: the `fail` verb and the reserved problem codes it may not
+    """RFC-0056: the `fail` verb and the reserved problem codes it may not
     reuse."""
 
     def test_reserved_problem_codes_matches_wsgi_titles_exactly(self):

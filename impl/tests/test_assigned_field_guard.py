@@ -1,8 +1,8 @@
-"""RFC-0062 (RFC-0015 Open Question 1): mode A lets a guard read a field this
+"""RFC-0060 (RFC-0015 Open Question 1): mode A lets a guard read a field this
 workflow already assigned, and evaluates it against the value at that point
 (issue #211 (1)).
 
-Before RFC-0062 this was a compile error — mode B fixes condition fields at
+Before RFC-0060 this was a compile error — mode B fixes condition fields at
 entry, so the two modes would have compared different numbers. Mode B now
 refuses such a workflow instead (`test_assigned_field_guard_mode_b.py`); mode
 A compiles it and reads the current value.

@@ -1,4 +1,4 @@
-"""RFC-0060 must reject nothing already shipped (issue #211 (3)).
+"""RFC-0058 must reject nothing already shipped (issue #211 (3)).
 
 The new rule rejects a control keyword indented deeper than the open
 `pipeline` it implicitly closes. Every `.lnpl` the repo ships — examples, QA
@@ -65,7 +65,7 @@ workflow PlaceOrder
 
 
 def _check(source):
-    """Return the RFC-0060 message if `source` trips the rule, else None.
+    """Return the RFC-0058 message if `source` trips the rule, else None.
 
     Any other ParseError/LowerError is reported as the string "uncompiled".
     """
@@ -100,7 +100,7 @@ class TestCorpusSweep(unittest.TestCase):
 
     def test_no_shipped_file_is_caught_by_this_rule(self):
         clean, caught, _uncompiled = _sweep()
-        self.assertEqual(caught, [], "unexpected RFC-0060 rejection(s): %r" % caught)
+        self.assertEqual(caught, [], "unexpected RFC-0058 rejection(s): %r" % caught)
         self.assertGreater(len(clean), 0)
 
     def test_the_sweep_catches_the_issue_repro(self):
@@ -113,7 +113,7 @@ class TestCorpusSweep(unittest.TestCase):
         self.assertIn("wrap the following steps in a new `pipeline`", message)
 
     def test_the_sweep_catches_an_otherwise_indented_into_the_pipeline(self):
-        """RFC-0062 widens the rule to `otherwise`: a known violation must
+        """RFC-0060 widens the rule to `otherwise`: a known violation must
         come back with the rule's own message, not as "uncompiled"."""
         source = ISSUE_REPRO.replace("        when pay.status == 200\n"
                                      "            set o.paid to 1\n"

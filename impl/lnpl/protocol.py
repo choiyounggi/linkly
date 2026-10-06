@@ -377,7 +377,7 @@ def _structure_fault(merged):
                         % (parent_kind, child_kind, child_id, node["id"]))
 
     # Guard cardinality: the guarded item, plus at most one `otherwise` item
-    # (RFC-0001 Guard row "피가드 항목 1개", widened by RFC-0062)
+    # (RFC-0001 Guard row "피가드 항목 1개", widened by RFC-0060)
     for node in merged.values():
         if node.get("kind") == "Guard":
             children_count = len(node.get("children", []))
@@ -385,7 +385,7 @@ def _structure_fault(merged):
             if children_count not in allowed:
                 return ("guard_cardinality: Guard %s has %d children; 1 required, "
                         "or 2 with an `otherwise` item on a `when` guard (RFC-0001 "
-                        "§노드 카탈로그 Guard row, RFC-0062)"
+                        "§노드 카탈로그 Guard row, RFC-0060)"
                         % (node["id"], children_count))
 
     return None

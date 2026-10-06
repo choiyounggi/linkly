@@ -286,9 +286,9 @@ class TimeoutBudgetWiringTest(unittest.TestCase):
 
 
 class NoClauseBodyIsByteIdenticalTest(unittest.TestCase):
-    """RFC-0059 §5: characterization, not a regression -- with no `send`
+    """RFC-0057 §5: characterization, not a regression -- with no `send`
     clause the driver receives the whole run input, unchanged and
-    unmasked, exactly as before RFC-0059 existed."""
+    unmasked, exactly as before RFC-0057 existed."""
 
     def test_a_call_with_no_send_clause_passes_the_whole_input_unmodified(self):
         doc = compile_doc(BOUND_SOURCE)

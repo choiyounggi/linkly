@@ -1,4 +1,4 @@
-# RFC-0060: 파이프라인 암묵 종결과 모순되는 들여쓰기의 거부
+# RFC-0058: 파이프라인 암묵 종결과 모순되는 들여쓰기의 거부
 
 ## Status
 
@@ -119,7 +119,7 @@ RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0002 §Block structure를 치�
 
 ---
 
-### Block structure (RFC-0060 개정판)
+### Block structure (RFC-0058 개정판)
 
 1. **키워드 구획** — 블록 경계는 키워드가 정한다. 최상위 선언 키워드는 이전
    블록 전체를 자동 종결한다. 절 키워드는 소속 선언의 하위 구획을 열고, 다음
@@ -195,7 +195,7 @@ compile error: line 7: this `when` is indented as if it were inside `pipeline
 place`, but a `pipeline` closes at the next keyword, not by indentation — so it
 runs outside the pipeline. Dedent it to the pipeline's own column, or wrap the
 following steps in a new `pipeline` block so a guard can own that instead
-(RFC-0060, RFC-0002 §Block structure)
+(RFC-0058, RFC-0002 §Block structure)
 ```
 
 **수용 ④ — 가드를 파이프라인 자신의 열로.** 뒤 단계도 가드가 소유해야 하면 새
@@ -230,7 +230,7 @@ compile error: line 4: this `parallel` is indented as if it were inside
 `pipeline prepare`, but a `pipeline` closes at the next keyword, not by
 indentation — so it runs outside the pipeline. Dedent it to the pipeline's own
 column if you meant a new sibling block here, not one nested inside it
-(RFC-0060, RFC-0002 §Block structure)
+(RFC-0058, RFC-0002 §Block structure)
 ```
 
 **수용 ⑥ — 형제 블록으로 내어 쓰기.** 파이프라인 안의 `parallel`은 4항(`PipelineBlock`

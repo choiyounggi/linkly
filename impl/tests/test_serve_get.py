@@ -126,7 +126,7 @@ class CursorAndPaginateTest(unittest.TestCase):
         self.assertEqual(200, _parse_limit("200"))
 
 
-# RFC-0055 §9: keyset pagination over present-then-absent order.
+# RFC-0053 §9: keyset pagination over present-then-absent order.
 PAGE_ENTITY = "entity.order"
 PAGE_ROWS = {PAGE_ENTITY: {
     "entity.order#a": {"id": "a", "n": 3},

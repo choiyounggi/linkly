@@ -101,7 +101,7 @@ class TestPolicyEnforcement(unittest.TestCase):
         self.assertEqual(failed["attempts"], 1, "a non-idempotent effect was retried")
 
     def test_a_reached_fail_is_never_retried(self):
-        # RFC-0058: the guard already held against this run's bindings, so a
+        # RFC-0056: the guard already held against this run's bindings, so a
         # retry would reject identically — `retry 3` must not replay it.
         src = """
 entity Product
@@ -389,7 +389,7 @@ CANCEL_ID = "00000000-0000-4000-8000-000000000207"
 
 
 class TestTextEqualityGuardExecution(unittest.TestCase):
-    """RFC-0056: a guard's Text equality runs in mode A — a bare literal is
+    """RFC-0054: a guard's Text equality runs in mode A — a bare literal is
     its own text, a qualified reference resolves, the two compare as text."""
 
     def _run(self, body, row, payload=None):
@@ -458,7 +458,7 @@ class TestTextEqualityGuardExecution(unittest.TestCase):
                          skipped["skipped"][0]["evaluations"])
 
     def test_a_text_value_without_a_recorded_term_still_fails_as_before(self):
-        # Error path: an IR guard that never went through RFC-0056 lowering
+        # Error path: an IR guard that never went through RFC-0054 lowering
         # (no textEqualityOperands) keeps today's numeric evaluator.
         doc = lower(parse(CANCEL_SOURCE % (
             "    when order.status == paid\n    create audit")), "shop").to_document()

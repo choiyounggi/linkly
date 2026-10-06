@@ -96,7 +96,7 @@ class SchemaGenerationDigestTest(unittest.TestCase):
                          schema_generation(with_derived))
 
     def test_optional_does_not_change_the_hash(self):
-        # RFC-0055: `optional` stays out of the hash, so declaring an existing
+        # RFC-0053: `optional` stays out of the hash, so declaring an existing
         # field optional never re-stamps or invalidates stored rows.
         required_field_node = self._node([{"name": "nickname", "type": "Text"}])
         optional_field_node = self._node(

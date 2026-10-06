@@ -185,7 +185,7 @@ class StrictGateTest(RowShapeTestCase):
 
 
 class OptionalFieldRowShapeTest(unittest.TestCase):
-    """RFC-0055: `row_shape_mismatches` on its own — an `optional` field's
+    """RFC-0053: `row_shape_mismatches` on its own — an `optional` field's
     absence (missing key or stored null) is the normal shape, but a present
     value of the wrong type is still a mismatch."""
 

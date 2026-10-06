@@ -110,7 +110,7 @@ workflow Login
 """
 
 
-# RFC-0062: `else` is what an author reaches for when they mean `otherwise`
+# RFC-0060: `else` is what an author reaches for when they mean `otherwise`
 # (issue #211 (4)); difflib's closest VERB_LEXICON match is `delete`.
 ELSE_WORD = """
 entity User

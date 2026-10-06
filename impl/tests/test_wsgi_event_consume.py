@@ -327,7 +327,7 @@ class TestExecutionOutcomes(unittest.TestCase):
         self.assertEqual("1", headers["Retry-After"])
 
 
-# RFC-0058 / issue #206: a consumer that rejects a business rule with `fail`.
+# RFC-0056 / issue #206: a consumer that rejects a business rule with `fail`.
 RESERVE_SRC = """
 capability postgres
 
@@ -358,7 +358,7 @@ RESERVE_DATA = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c330a"}
 
 
 class TestDeclaredRejectionIsE7(unittest.TestCase):
-    """RFC-0058: a reached `fail` is a permanent rejection (E7) — a redelivery
+    """RFC-0056: a reached `fail` is a permanent rejection (E7) — a redelivery
     of the identical event rejects identically, so the relay must not retry."""
 
     def test_a_reached_fail_is_422_event_rejected_without_retry_after(self):

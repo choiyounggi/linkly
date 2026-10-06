@@ -69,7 +69,7 @@ class TestListVerb(unittest.TestCase):
     def test_the_lexicon_has_twenty_two_entries(self):
         # `format` (issue #94) widened this to 19 after RFC-0025 fixed it at
         # 18; `respond` (issue #96) widened it to 20; `note` (issue #111) to
-        # 21; `fail` (RFC-0058) widens it again to 22.
+        # 21; `fail` (RFC-0056) widens it again to 22.
         self.assertEqual(len(VERB_LEXICON), 22)
 
     def test_list_lowers_to_a_query_repository_call(self):

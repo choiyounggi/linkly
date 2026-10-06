@@ -532,7 +532,7 @@ OPTIONAL_CUSTOMER_ID = "0b6f1c2e-1111-4a2b-9c3d-000000000208"
 
 
 class TestOptionalFieldStoredRow(unittest.TestCase):
-    """RFC-0055: a stored row simply omits an absent (or JSON-null) optional
+    """RFC-0053: a stored row simply omits an absent (or JSON-null) optional
     field — no invented default. Read back from the raw sqlite payload text,
     not from `result`, so the key's absence is a fact about the store."""
 

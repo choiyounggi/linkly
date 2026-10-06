@@ -189,7 +189,7 @@ def _money_field_predicate(document):
     `base == "Money"` pattern (D3(1)).
     """
     fields = _field_base_predicate(document, ("Money",), bare=True)
-    # RFC-0061 §6: a Money-typed `respond` term (`revenue as sum o.total`)
+    # RFC-0059 §6: a Money-typed `respond` term (`revenue as sum o.total`)
     # is asserted by its bare name the same way.
     terms = {term["name"] for node in document.get("nodes", [])
              if node["kind"] == "Response"
@@ -198,7 +198,7 @@ def _money_field_predicate(document):
     return lambda ref: fields(ref) or ref in terms
 
 
-# RFC-0056: the bases lowering opens to guard equality (lower.py's
+# RFC-0054: the bases lowering opens to guard equality (lower.py's
 # TEXT_EQUALITY_EXCLUDED_BASES taken out of BASE_CATEGORY "text").
 _TEXT_EQUALITY_BASES = ("UUID", "Email", "Phone", "Currency", "Html",
                         "Markdown", "Text")
@@ -206,7 +206,7 @@ _TEXT_EQUALITY_BASES = ("UUID", "Email", "Phone", "Currency", "Html",
 
 def _text_field_predicate(document):
     """`ref spelling -> bool` for `_condition_holds`'s `text_fields` param
-    (RFC-0056). Same resolution as `_money_field_predicate`, except that a
+    (RFC-0054). Same resolution as `_money_field_predicate`, except that a
     BARE name is never Text here: whether a bare operand is a literal is
     decided by pairing it with a qualified Text field in the same term."""
     return _field_base_predicate(document, _TEXT_EQUALITY_BASES, bare=False)
@@ -376,7 +376,7 @@ EXPECTATIONS = {
 
 
 _INPUT_PREFIX = "input."
-# RFC-0057 §9: `given run.<marker> <value>` pins the run context, not the input.
+# RFC-0055 §9: `given run.<marker> <value>` pins the run context, not the input.
 _RUN_PREFIX = "run."
 
 # RFC-0025 §8: `stored <entity>[<i>] ...` — the entity token carries an index in
@@ -418,10 +418,10 @@ GIVEN_FORMS = (
      "네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 "
      "행 필드를 쌓는 것과 같은 자리"),
     ("run-generated", "run.generated <uuid>",
-     "이 실행의 `derived generated` 값을 고정(RFC-0057). payload가 아니라 실행 "
+     "이 실행의 `derived generated` 값을 고정(RFC-0055). payload가 아니라 실행 "
      "문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다"),
     ("run-clock", "run.clock <instant>",
-     "이 실행의 `derived clock` 값을 고정(RFC-0057, 존 표기 필수). 없으면 "
+     "이 실행의 `derived clock` 값을 고정(RFC-0055, 존 표기 필수). 없으면 "
      "가상 시계의 실행 시작 시각이 쓰인다"),
 )
 
@@ -562,7 +562,7 @@ def _check_given(phrase, schema, where=""):
 
 
 def _check_run_given(phrase, tokens, fail):
-    """`run.generated <uuid>` / `run.clock <instant>` (RFC-0057 §9) — the
+    """`run.generated <uuid>` / `run.clock <instant>` (RFC-0055 §9) — the
     value is checked here, at the manifest stage, like every other `given`."""
     from .condition import ConditionError, encode_instant
     from .interp import check_semantic_type
@@ -571,7 +571,7 @@ def _check_run_given(phrase, tokens, fail):
     marker = tokens[0][len(_RUN_PREFIX):]
     if len(tokens) != 2 or marker not in FILL_SOURCES:
         fail("unsupported given: %r (use `run.generated <uuid>` or "
-             "`run.clock <instant>`, RFC-0057)" % phrase)
+             "`run.clock <instant>`, RFC-0055)" % phrase)
     value = tokens[1]
     try:
         if marker == "generated":
@@ -596,7 +596,7 @@ def _run_context_from_given(given):
 def _unpinned_generated(document, workflow_id, run_context):
     """`(entity_name, field)` of a `derived generated` field the workflow's
     first fill-source create would fill with a fresh UUID because the case
-    pinned no `run.generated`, or None (RFC-0057 §9 — a spec must be
+    pinned no `run.generated`, or None (RFC-0055 §9 — a spec must be
     repeatable). A `derived clock` needs no pin: the virtual clock is
     deterministic."""
     from .backend import BackendError, _workflow_steps
@@ -847,7 +847,7 @@ def _payload_from_given(given, entity_node, refinements=None, document=None):
             name, raw = parts
             payload[name] = _typed_value(raw, field_types.get(name), refinements)
         elif form in ("run-generated", "run-clock"):
-            continue        # the run context, never the payload (RFC-0057)
+            continue        # the run context, never the payload (RFC-0055)
         else:                # no-input-field / no-field
             payload.pop(parts[0], None)
     if stored and any(g == "empty repository" for g in given):
@@ -1046,7 +1046,7 @@ def run_manifest(manifest, document):
             failed += 1
             lines.append("FAIL %s — %s.%s is `derived generated`, so an unpinned "
                          "run gets a fresh UUID every time; pin it with "
-                         "`given run.generated <uuid>` (RFC-0057)"
+                         "`given run.generated <uuid>` (RFC-0055)"
                          % ((case["name"],) + unpinned))
             continue
         interp = Interpreter(document, repo_rows=rows, network=network)

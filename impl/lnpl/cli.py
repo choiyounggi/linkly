@@ -328,7 +328,7 @@ def _dry_run_plan(doc, workflow_id):
                      "condition": node.get("condition"), "count": node.get("count"),
                      "line": node.get("line"),
                      "children": [_walk(node["children"][0])]}
-            # RFC-0062: the `otherwise` item, keyed apart from `children` so a
+            # RFC-0060: the `otherwise` item, keyed apart from `children` so a
             # reader never mistakes it for a second guarded item.
             if len(node["children"]) > 1:
                 entry["otherwise"] = _walk(node["children"][1])
@@ -509,7 +509,7 @@ def _print_human(result, interp, log_level="warn"):
         # The guard's own text, so the reader learns WHY the step did not run
         # rather than only that something did not.
         if record["mode"] == "otherwise":
-            # RFC-0062: `condition` is the guard that HELD — not a condition
+            # RFC-0060: `condition` is the guard that HELD — not a condition
             # of the `otherwise` itself.
             print("  skipped by `otherwise` (`when %s` held): %s"
                   % (record["condition"],

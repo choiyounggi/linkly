@@ -198,7 +198,7 @@ class RepositoryDriver:
         `>=`/`==`/`!=`, `value` the already-resolved concrete value to bind.
         `order` is `(field, desc)` or `None`. `limit` is a positive `int` or
         `None`. Under `order`, a row lacking the field (or holding null)
-        comes last in both directions, in `row_key` order (RFC-0055 §9).
+        comes last in both directions, in `row_key` order (RFC-0053 §9).
         """
         raise NotImplementedError
 
@@ -251,7 +251,7 @@ class RepositoryDriver:
         """Every row for `entity_id`, ordered by `field` ascending, `row_key`
         (`repo_policy.row_key`) the tiebreaker for equal values (issue #99,
         D3/D7 — the `expose list` GET surface). A row lacking `field` (or
-        holding null) comes last, in `row_key` order (RFC-0055 §9).
+        holding null) comes last, in `row_key` order (RFC-0053 §9).
 
         Same empty-list-never-None contract as `query`. `field` names a
         top-level key of the JSON `payload` — never SQL text: the statement
@@ -422,7 +422,7 @@ _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
 # other varying value here (STATEMENT TEXT IS CONSTANT, module docstring).
 # `payload` carries no per-field column (D7: the existing schema is
 # unchanged), so the sort key is extracted from the JSON blob at read time.
-# RFC-0055 §9: the leading `IS NULL` column puts a row lacking the field
+# RFC-0053 §9: the leading `IS NULL` column puts a row lacking the field
 # last; it is never reversed by `DESC`, so that holds in both directions.
 _SELECT_SORTED = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
                   "ORDER BY (json_extract(payload, ?) IS NULL), "

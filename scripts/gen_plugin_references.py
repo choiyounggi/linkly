@@ -100,7 +100,7 @@ def render_grammar():
                  "들어가지 않는다 — 위 절이 말하는 대로 `and`만 여전히 항을 "
                  "잇는다. `until`/`repeat` 뒤에는 쓸 수 없다.\n"
                  % (guard_alt, guard_alt, guard_alt))
-    lines.append("## \"아니면\" 항목 (RFC-0062)\n")
+    lines.append("## \"아니면\" 항목 (RFC-0060)\n")
     otherwise = kw["otherwise_keyword"]
     lines.append("`when` 가드가 소유한 항목 다음 줄에 `%s`을 쓰면, 그 다음 항목 "
                  "하나(스텝 한 줄이나 `pipeline`/`parallel` 블록 하나)는 가드와 "
@@ -114,7 +114,7 @@ def render_grammar():
                  "그 시점의 값으로 평가한다(`set product.stock to product.stock - "
                  "input.quantity` 다음 줄 `when product.stock >= 0`). 모드 B는 "
                  "조건 필드를 실행 시작 시점 값으로 고정하므로 그런 워크플로를 "
-                 "거부한다(RFC-0062, RFC-0015 Open Question 1).\n")
+                 "거부한다(RFC-0060, RFC-0015 Open Question 1).\n")
     # r3 N-2: the rule existed only in the refusal. `create report` then
     # `set report.orderCount to …` is rejected, and nothing in the references
     # said why — so the author had to reverse-engineer "read-family only" from
@@ -200,7 +200,7 @@ def render_grammar():
                  "그 멤버여야 한다. 맨이름은 그 자리에서만 리터럴이고 다른 "
                  "자리에서는 payload 필드다 — Text 등가에서 payload를 읽으려면 "
                  "`input.<field>`로 쓴다. Text의 순서 비교와 산술은 lowering이 "
-                 "거부한다(RFC-0056). `Money` 필드는 다른 Money 참조와의 "
+                 "거부한다(RFC-0054). `Money` 필드는 다른 Money 참조와의 "
                  "비교와 `set`의 `+`/`-`/Integer `*`에만 쓸 수 있다"
                  "(RFC-0051) — 숫자와 비교하거나, `exists`/`missing`·숫자 "
                  "형태 술어를 걸거나, 나누면 거부다. 통화가 다르면 순서 "
@@ -738,31 +738,31 @@ RFC_ROUTES = {
     "0052": ("find/update/delete가 payload의 id가 아닌 다른 키로 행을 지목하게 하고 "
              "싶다(`by <ref>`) — 어떤 참조가 키가 될 수 있고, 값이 없으면 무슨 일이 "
              "나며, create는 왜 여전히 as만 받고 모드 B는 왜 거부하는지", ()),
-    "0055": ("entity 필드를 선택(optional)으로 선언하고 싶다 — payload가 그 "
+    "0053": ("entity 필드를 선택(optional)으로 선언하고 싶다 — payload가 그 "
              "필드를 보내지 않거나 null을 보내도 validate가 거부하지 않고, "
              "저장된 행과 OpenAPI·db check·migrate·Presence 가드가 그 부재를 "
              "어떻게 다루는지", ()),
-    "0056": ("가드(when/until)에서 Text·enum 필드를 ==/!=로 비교하고 싶다 — "
+    "0054": ("가드(when/until)에서 Text·enum 필드를 ==/!=로 비교하고 싶다 — "
              "맨이름이 리터럴인지 참조인지 어떻게 갈리는지, enum이면 멤버 검사가 "
              "어떻게 되는지, 모드 B가 왜 그 워크플로를 거부하는지", ()),
-    "0057": ("서버가 행 id나 생성 시각을 채우게 하고 싶다 — `derived generated`/"
+    "0055": ("서버가 행 id나 생성 시각을 채우게 하고 싶다 — `derived generated`/"
              "`derived clock` 표식, 실행 문맥 값이 create에만 들어가는 규칙, "
              "id 없는 create의 `id-required`, spec의 `given run.*` 고정, 모드 B "
              "거부", ()),
-    "0058": ("업무 규칙 위반으로 실행을 실패시키고 싶다(`fail <code>`) — 가드 "
+    "0056": ("업무 규칙 위반으로 실행을 실패시키고 싶다(`fail <code>`) — 가드 "
              "아래에만 쓸 수 있는 이유, 코드 규칙과 예약 코드, serve 422·consume "
              "E7·OpenAPI·spec이 그 거절을 어떻게 다루고 모드 B는 왜 거부하는지", ()),
-    "0059": ("call/request가 보내는 본문을 고르고 싶다(`send <ref>...`) — "
+    "0057": ("call/request가 보내는 본문을 고르고 싶다(`send <ref>...`) — "
              "send·with·as의 고정 순서, emit … with와 같은 참조 규칙, 절이 "
              "없을 때 본문이 입력 전체인 이유와 모드 B가 그대로 지원하는 이유", ()),
-    "0060": ("`pipeline` 안에 들여 쓴 가드·블록이 왜 거부되는지, 가드된 `pipeline`을 "
+    "0058": ("`pipeline` 안에 들여 쓴 가드·블록이 왜 거부되는지, 가드된 `pipeline`을 "
              "이어 다단 조건 흐름을 쓰는 법과 그것이 기대는 '미바인딩 참조 비교는 "
              "거짓' 계약이 궁금하다", ()),
-    "0061": ("조회 전용 워크플로가 개수·합계·조건부 목록을 행을 쓰지 않고 "
+    "0059": ("조회 전용 워크플로가 개수·합계·조건부 목록을 행을 쓰지 않고 "
              "응답하고 싶다(`respond <name> as <func> <ref>`, `respond list "
              "<binding>`) — `limit`이 필요한 이유, `next`가 늘 null인 이유, "
              "OpenAPI·spec이 항을 다루는 법과 모드 B가 거부하는 이유", ()),
-    "0062": ("가드가 앞 스텝이 바꾼 값을 읽어도 되는지(RFC-0015 OQ1), 가드가 "
+    "0060": ("가드가 앞 스텝이 바꾼 값을 읽어도 되는지(RFC-0015 OQ1), 가드가 "
              "거짓일 때 다른 항목을 실행하고 싶다(`otherwise`) — 어디에 쓸 수 "
              "있고 skipped[]에 무엇이 남는지, 모드 B는 왜 둘 다 거부하는지", ()),
 }
@@ -858,18 +858,18 @@ def render_patterns():
              "하고, 뒤 가드는 앞 파이프라인이 만든 바인딩을 읽는다. 비교 연산은 "
              "바인딩되지 않은 참조에 대해 거짓이므로(RFC-0012 §G12.4) 앞 가드가 "
              "거짓이면 뒤 가드도 특별취급 없이 거짓이 된다. 정본 예제는 "
-             "`examples/staged.lnpl`이다(RFC-0060).\n",
+             "`examples/staged.lnpl`이다(RFC-0058).\n",
              "| 들여 쓴 철자 (거부됨) | 대신 쓸 것 | 근거 |",
              "|---|---|---|",
              "| 뒤 가드를 앞 `pipeline`의 스텝 열에 들여 써서 그 단계도 앞 "
              "가드 안이라고 표시 | 뒤 가드를 `pipeline` 줄과 같은 열에 쓰고, 그 가드가 "
              "소유할 스텝들은 새 `pipeline`으로 묶는다 — `pipeline`은 다음 키워드에서 "
-             "닫히므로 들여 쓴 가드는 어차피 밖에서 작동한다 | RFC-0060 — "
+             "닫히므로 들여 쓴 가드는 어차피 밖에서 작동한다 | RFC-0058 — "
              "§Block structure 3항 c |",
              ""]
     return _doc("컬렉션이 필요해 보일 때 — 안티패턴과 권장패턴", "\n".join(lines),
                 canon="rfcs/0048-collections-non-goal-and-rowset-group-by.md와 "
-                      "rfcs/0060-pipeline-implicit-close-indentation.md")
+                      "rfcs/0058-pipeline-implicit-close-indentation.md")
 
 
 RENDERERS = {

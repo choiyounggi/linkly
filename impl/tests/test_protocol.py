@@ -235,10 +235,10 @@ class TestProposalIsTwoStage(unittest.TestCase):
 
     def test_override_refuses_a_guard_with_wrong_cardinality(self):
         """RFC-0001 Guard row: a Guard owns one guarded item ("피가드 항목 1개"),
-        plus at most one `otherwise` item since RFC-0062. CHILDREN_ALLOWED
+        plus at most one `otherwise` item since RFC-0060. CHILDREN_ALLOWED
         cannot express that count, so nothing but the `_structure_fault`
         cardinality check catches a Guard with three children — and it must run
-        on the override path too (issue #15). (Before RFC-0062 this fixture had
+        on the override path too (issue #15). (Before RFC-0060 this fixture had
         two children; two is now the guarded item plus its `otherwise`.)"""
         bad = [{"kind": "Workflow", "id": "wf.gc", "name": "gc",
                 "children": ["wf.gc.g"]},
@@ -259,7 +259,7 @@ class TestProposalIsTwoStage(unittest.TestCase):
         self.assertEqual(len(self.s.doc["nodes"]), self.before)
 
     def test_a_guard_with_an_otherwise_item_passes_the_cardinality_check(self):
-        """RFC-0062: two children are the guarded item and its `otherwise`."""
+        """RFC-0060: two children are the guarded item and its `otherwise`."""
         good = [{"kind": "Workflow", "id": "wf.go", "name": "go",
                  "children": ["wf.go.g"]},
                 {"kind": "Guard", "id": "wf.go.g", "mode": "when",
@@ -269,7 +269,7 @@ class TestProposalIsTwoStage(unittest.TestCase):
         self.assertIsNone(_structure_fault({n["id"]: n for n in good}))
 
     def test_an_otherwise_item_on_a_repeat_guard_fails_the_cardinality_check(self):
-        """RFC-0062: only a `when` guard has a false branch to run it on."""
+        """RFC-0060: only a `when` guard has a false branch to run it on."""
         bad = [{"kind": "Workflow", "id": "wf.gr", "name": "gr",
                 "children": ["wf.gr.g"]},
                {"kind": "Guard", "id": "wf.gr.g", "mode": "repeat", "count": 2,

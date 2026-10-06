@@ -310,7 +310,7 @@ def apply_predicate(rows, predicate=None, order=None, limit=None):
         rows = [row for row in rows if _row_matches(row, predicate)]
     if order is not None:
         field, desc = order
-        # RFC-0055 §9: a row lacking the field (or holding null) sorts last,
+        # RFC-0053 §9: a row lacking the field (or holding null) sorts last,
         # ascending and descending alike, keeping row_key order among them.
         present = [r for r in rows if r.get(field) is not None]
         missing = [r for r in rows if r.get(field) is None]
