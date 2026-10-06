@@ -414,5 +414,95 @@ db = "LNPL_T114_ANOTHER_MISSING_SECRET"
         self.assertIn("error:", err)
 
 
+OPEN_SOURCE = """entity Report
+    field
+        id UUID
+
+service Rollup
+
+workflow GetReport
+    read report
+"""
+
+
+class ServeErrorCharacterizationTest(_ConfigCliTestCase):
+    """Issue #187 piece B: `lnpl serve`'s stderr text and exit code for five
+    error paths, pinned byte-for-byte BEFORE the resolver move into wsgi.py
+    and re-checked after it — `cmd_serve` must not change observably."""
+
+    def _serve(self, *extra):
+        from unittest import mock
+        source = self.write("mod.lnpl", OPEN_SOURCE)
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 0)
+        server.serve_forever.side_effect = KeyboardInterrupt
+        with mock.patch("lnpl.cli.serve", return_value=server):
+            return self.run_cli(["serve", source] + list(extra))
+
+    def test_char_missing_secret_env_text_unchanged(self):
+        os.environ.pop("LNPL_TEST_CHAR_MISSING", None)
+        rc, _out, err = self._serve("--jwt-secret-env", "LNPL_TEST_CHAR_MISSING")
+        self.assertEqual(rc, 2)
+        self.assertEqual(err, "error: LNPL_TEST_CHAR_MISSING is not set in the environment\n")
+
+    def test_char_short_secret_text_unchanged(self):
+        os.environ["LNPL_TEST_CHAR_SHORT"] = "tooshort"
+        rc, _out, err = self._serve("--jwt-secret-env", "LNPL_TEST_CHAR_SHORT")
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err,
+            "error: the JWT signing secret must be at least 32 bytes, got 8 "
+            "(from LNPL_TEST_CHAR_SHORT)\n")
+
+    def test_char_unknown_token_provider_text_unchanged(self):
+        rc, _out, err = self._serve("--token-provider", "bogus-provider")
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err,
+            "error: unknown token provider 'bogus-provider' "
+            "(built-in: hmac; registered entry-points: none)\n")
+
+    def test_char_unknown_cache_text_unchanged(self):
+        rc, _out, err = self._serve("--cache", "bogus-cache")
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err,
+            "error: unknown cache 'bogus-cache' "
+            "(built-in: fake; registered entry-points: none)\n")
+
+    def test_char_unknown_network_text_unchanged(self):
+        rc, _out, err = self._serve("--network", "bogus-network")
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err,
+            "error: unknown network 'bogus-network' "
+            "(built-in: fake, http; registered entry-points: none)\n")
+
+    def test_normal_hmac_shadow_reported_as_provider_error_via_cli(self):
+        """`cli._token_provider` is untouched by piece B: an `lnpl.tokens`
+        entry-point named "hmac" is still refused as a shadow collision
+        (not a secret error) when the secret itself is long enough."""
+        from importlib import metadata as importlib_metadata
+        from unittest import mock
+        shadow = importlib_metadata.EntryPoint(
+            name="hmac", value="tests.token_spi_fixture:make_demo_token_provider",
+            group="lnpl.tokens")
+
+        def entry_points_for(group=None, **_kwargs):
+            return [shadow] if group == "lnpl.tokens" else []
+
+        os.environ["LNPL_TEST_CHAR_SHADOW"] = "s" * 32
+        with mock.patch.object(importlib_metadata, "entry_points", entry_points_for):
+            rc, _out, err = self._serve("--jwt-secret-env", "LNPL_TEST_CHAR_SHADOW")
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err,
+            "error: entry-point 'hmac' (registered via "
+            "'tests.token_spi_fixture:make_demo_token_provider') attempts to "
+            "shadow the built-in token provider 'hmac'; built-in names are "
+            "reserved (lnpl.tokens SPI, docs/backends.md) (from "
+            "LNPL_TEST_CHAR_SHADOW)\n")
+
+
 if __name__ == "__main__":
     unittest.main()
