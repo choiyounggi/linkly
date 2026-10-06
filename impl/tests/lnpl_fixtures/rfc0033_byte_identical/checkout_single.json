@@ -231,6 +231,7 @@
       "network": [],
       "publishers": [],
       "repository": [],
+      "secrets": [],
       "token": []
     },
     "vocabulary_digest": "sha256:341f65bb3720d4458c738260f4010e9e2b868caae7baecbc40be6097835ce0e6"

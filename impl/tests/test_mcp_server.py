@@ -350,12 +350,12 @@ class CapabilitiesToolTest(unittest.TestCase):
         self.assertEqual(body["package_path"], caps["package_path"])
         self.assertTrue(os.path.isfile(os.path.join(body["package_path"], "__init__.py")))
 
-    def test_it_reports_the_nine_contract_slots(self):
+    def test_it_reports_the_ten_contract_slots(self):
         body = payload_of(call("lnpl_capabilities", {}))
         self.assertEqual(set(body["slots"]),
                          {"repository", "cache", "network", "token",
                           "exporter", "kb", "generators", "diagnostics",
-                          "publishers"})
+                          "publishers", "secrets"})
 
 
 class KbRouteToolTest(unittest.TestCase):

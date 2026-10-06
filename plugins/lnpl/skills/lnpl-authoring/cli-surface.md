@@ -391,7 +391,7 @@ declarations·types 넷을 생성한다)가 같은 함수를 공유한다.
 |--------|-----|
 | `--json` | 명시적 안정형 — bare와 같은 문서를 낸다 |
 
-`repository`/`cache`/`network`/`token`/`exporter`/`generators`/`diagnostics`/`kb`/`publishers` 9슬롯 각각의 내장 이름과
+`repository`/`cache`/`network`/`token`/`exporter`/`generators`/`diagnostics`/`kb`/`publishers`/`secrets` 10슬롯 각각의 내장 이름과
 등록된 entry-point 이름·로드 가능 여부를 한 JSON 문서로 낸다(`pg_available_
 extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 `--trace-exporter`에 틀린 값을 줘서 실패를 읽는 대신 미리 나열해서 본다. 로드

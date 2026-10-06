@@ -30,7 +30,7 @@ from lnpl import cli
 from lnpl.capabilities import SLOTS, capabilities_document
 
 CONTRACT_SLOTS = {"repository", "cache", "network", "token", "exporter", "kb",
-                  "generators", "diagnostics", "publishers"}
+                  "generators", "diagnostics", "publishers", "secrets"}
 
 # The group each slot resolves through, keyed the same way SLOTS is keyed —
 # used only to target fixture entry-points at the right slot without leaking
@@ -88,7 +88,7 @@ class TestCliCapabilities(unittest.TestCase):
 
     # ---- normal -----------------------------------------------------------
 
-    def test_json_flag_prints_a_valid_document_with_the_nine_contract_slots(self):
+    def test_json_flag_prints_a_valid_document_with_the_ten_contract_slots(self):
         with registered():
             rc, out, err = _main(["capabilities", "--json"])
         self.assertEqual(rc, 0)
