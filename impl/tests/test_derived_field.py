@@ -347,5 +347,145 @@ workflow PlaceOrder
         self.assertNotIn("derived-never-assigned", codes)
 
 
+# RFC-0053 (issue #208): the second field modifier, `optional`. `nickname` is
+# the issue's own reproduction field; `name` is the required control.
+CUSTOMER_ID = "0b6f1c2e-1111-4a2b-9c3d-000000000208"
+
+
+def customer_src(nickname_line="nickname Text optional",
+                 steps="    validate input\n    create customer\n"):
+    return ("capability postgres\n\n"
+            "entity Customer\n"
+            "    field\n"
+            "        id UUID\n"
+            "        name Text\n"
+            "        %s\n\n"
+            "service CustomerService\n"
+            "    policy\n"
+            "        timeout 5s\n\n"
+            "workflow RegisterCustomer\n%s" % (nickname_line, steps))
+
+
+class TestOptionalFieldParsing(unittest.TestCase):
+    """`lower.py`: `optional` joins `derived` in the modifier slot."""
+
+    def test_optional_modifier_sets_the_ir_flag(self):
+        doc = compile_doc(customer_src())
+        fields = {f["name"]: f for f in entity_named(doc, "Customer")["fields"]}
+        self.assertIs(fields["nickname"]["optional"], True)
+        self.assertNotIn("derived", fields["nickname"])
+
+    def test_optional_and_derived_together_is_refused_either_order(self):
+        for order in ("optional derived", "derived optional"):
+            with self.subTest(order=order):
+                with self.assertRaises(LowerError) as ctx:
+                    compile_doc(customer_src("nickname Text %s" % order))
+                msg = str(ctx.exception)
+                self.assertIn("derived", msg)
+                self.assertIn("optional", msg)
+                self.assertIn("RFC-0053", msg)
+
+    def test_duplicated_modifier_is_refused(self):
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(customer_src("nickname Text optional optional"))
+        self.assertIn("repeated", str(ctx.exception))
+        self.assertIn("'optional'", str(ctx.exception))
+
+    def test_unknown_modifier_names_the_valid_set(self):
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(customer_src("nickname Text banana"))
+        msg = str(ctx.exception)
+        self.assertIn("'banana'", msg)
+        self.assertIn("derived, optional", msg)
+
+    def test_five_tokens_is_refused(self):
+        # Boundary: two modifiers is the ceiling (4 tokens).
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(customer_src("nickname Text optional derived extra"))
+        self.assertIn("got 5 tokens", str(ctx.exception))
+
+    def test_optional_id_is_refused(self):
+        src = customer_src().replace("        id UUID\n",
+                                     "        id UUID optional\n")
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(src)
+        self.assertIn("'id'", str(ctx.exception))
+        self.assertIn("optional", str(ctx.exception))
+
+    def test_non_optional_entity_ir_carries_no_optional_key(self):
+        doc = compile_doc(ORDER_SRC)
+        for field in entity_named(doc, "Order")["fields"]:
+            self.assertNotIn("optional", field)
+        doc = compile_doc(customer_src())
+        fields = {f["name"]: f for f in entity_named(doc, "Customer")["fields"]}
+        self.assertNotIn("optional", fields["name"])
+        self.assertNotIn("optional", fields["id"])
+
+
+class TestOptionalValidatePolicy(unittest.TestCase):
+    """`interp.validate_effect`: an `optional` field may be absent or JSON
+    `null`; a present value is still type-checked (RFC-0053)."""
+
+    def run_payload(self, payload, steps=None):
+        src = customer_src() if steps is None else customer_src(steps=steps)
+        doc = compile_doc(src, "crm")
+        interp = Interpreter(doc, repo_rows={})
+        return interp.run_workflow(only_workflow_id(doc), payload)
+
+    def test_optional_field_absent_passes_validate(self):
+        result = self.run_payload({"id": CUSTOMER_ID, "name": "Ada"})
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual((200, None), map_result(result))
+
+    def test_optional_field_null_passes_validate(self):
+        result = self.run_payload(
+            {"id": CUSTOMER_ID, "name": "Ada", "nickname": None})
+        self.assertEqual(result["status"], "completed")
+
+    def test_optional_field_wrong_type_still_400s(self):
+        result = self.run_payload(
+            {"id": CUSTOMER_ID, "name": "Ada", "nickname": 5})
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("nickname", result["failure_reason"])
+        self.assertEqual((400, "validation-failed"), map_result(result))
+
+    def test_non_optional_field_null_still_400s(self):
+        # Regression: null-means-absent is for `optional` fields only.
+        result = self.run_payload(
+            {"id": CUSTOMER_ID, "name": None, "nickname": "A"})
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("name", result["failure_reason"])
+        self.assertEqual((400, "validation-failed"), map_result(result))
+
+    def test_a_missing_required_field_is_still_rejected(self):
+        result = self.run_payload({"id": CUSTOMER_ID})
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("missing required field 'name'", result["failure_reason"])
+
+    def test_optional_field_shorthand_absent_passes(self):
+        result = self.run_payload({"id": CUSTOMER_ID, "name": "Ada"},
+                                  steps="    validate nickname\n")
+        self.assertEqual(result["status"], "completed")
+
+    def test_optional_field_shorthand_null_passes(self):
+        result = self.run_payload(
+            {"id": CUSTOMER_ID, "name": "Ada", "nickname": None},
+            steps="    validate nickname\n")
+        self.assertEqual(result["status"], "completed")
+
+    def test_optional_field_shorthand_wrong_type_still_fails(self):
+        result = self.run_payload(
+            {"id": CUSTOMER_ID, "name": "Ada", "nickname": 5},
+            steps="    validate nickname\n")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("nickname", result["failure_reason"])
+
+    def test_required_field_shorthand_absent_still_fails(self):
+        result = self.run_payload({"id": CUSTOMER_ID},
+                                  steps="    validate name\n")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("missing required field 'name'", result["failure_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

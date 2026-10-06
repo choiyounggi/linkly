@@ -46,6 +46,12 @@ LNPL은 닫힌 키워드 집합을 쓴다. 아래에 없는 키워드는 문법�
 
 `when` 뒤에 `or` 줄을 이어 쓰면 대안 가드다 — 조건이나 그 대안 중 하나라도 참이면 피가드 항목을 실행한다(`when input.channel == 1` 다음 줄 `or input.amount <= 100`). `or` 자체는 `Condition` 문법에 들어가지 않는다 — 위 절이 말하는 대로 `and`만 여전히 항을 잇는다. `until`/`repeat` 뒤에는 쓸 수 없다.
 
+## "아니면" 항목 (RFC-0060)
+
+`when` 가드가 소유한 항목 다음 줄에 `otherwise`을 쓰면, 그 다음 항목 하나(스텝 한 줄이나 `pipeline`/`parallel` 블록 하나)는 가드와 모든 `or` 대안이 거짓일 때만 실행된다. 중첩이 아니라 가드의 형제라 깊이 2를 넘지 않는다. 가드가 참이면 `otherwise` 항목은 `skipped[]`에 `mode: "otherwise"`로 남는다. `until`/`repeat`에는 거짓 가지가 없어 쓸 수 없고, 가드 없이·두 번 연달아·`parallel` 안에서 쓰면 거부된다. 모드 B는 `otherwise`을 쓴 워크플로를 거부한다.
+
+가드는 앞선 스텝이 `set`으로 바꾼 필드를 읽을 수 있다 — 모드 A는 그 시점의 값으로 평가한다(`set product.stock to product.stock - input.quantity` 다음 줄 `when product.stock >= 0`). 모드 B는 조건 필드를 실행 시작 시점 값으로 고정하므로 그런 워크플로를 거부한다(RFC-0060, RFC-0015 Open Question 1).
+
 ## 할당(`set`)의 대상
 
 `set <바인딩>.<필드> to <값>`의 바인딩은 이 워크플로가 **읽었거나 만든** 행이다. 스텝이 엔티티를 읽으면 그 행이 실행 스코프에 바인딩되고(RFC-0012), `set`은 그렇게 생긴 바인딩에만 쓴다.
@@ -96,7 +102,7 @@ merge
 
 가드를 두 줄 잇달아 쓰면 **파싱 에러**다 — 조건 두 개는 `and`로 이어 한 가드로 쓴다. 선언이 가드로 끝나도(감쌀 항목이 없어도) 에러다.
 
-가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — 존재 검사(`exists`/`missing`)도 숫자 형태 술어(`is-numeric`/`is-not-numeric`)도 마찬가지다. `Text` 필드에 가드를 걸면 lowering이 거부한다(RFC-0016). `Money` 필드는 다른 Money 참조와의 비교와 `set`의 `+`/`-`/Integer `*`에만 쓸 수 있다(RFC-0051) — 숫자와 비교하거나, `exists`/`missing`·숫자 형태 술어를 걸거나, 나누면 거부다. 통화가 다르면 순서 비교와 덧셈·뺄셈이 `money-currency-mismatch`로 실패한다.
+가드 조건이 참조하는 필드는 **Integer 또는 DateTime**이어야 한다 — 존재 검사(`exists`/`missing`)도 숫자 형태 술어(`is-numeric`/`is-not-numeric`)도 마찬가지다(RFC-0016). 예외는 Text류 필드(base가 `UUID`·`Email`·`Phone`·`Currency`·`Html`·`Markdown`·`Text`, enum refinement 포함, `Password` 제외)다: `==`/`!=`로만 비교할 수 있다. 상대는 같은 base의 참조이거나 맨이름 리터럴이고(`when order.status == paid`), 상대 필드가 enum이면 리터럴은 그 멤버여야 한다. 맨이름은 그 자리에서만 리터럴이고 다른 자리에서는 payload 필드다 — Text 등가에서 payload를 읽으려면 `input.<field>`로 쓴다. Text의 순서 비교와 산술은 lowering이 거부한다(RFC-0054). `Money` 필드는 다른 Money 참조와의 비교와 `set`의 `+`/`-`/Integer `*`에만 쓸 수 있다(RFC-0051) — 숫자와 비교하거나, `exists`/`missing`·숫자 형태 술어를 걸거나, 나누면 거부다. 통화가 다르면 순서 비교와 덧셈·뺄셈이 `money-currency-mismatch`로 실패한다.
 
 숫자 형태 술어는 값이 숫자로 읽히는지를 **실패 없이** 묻는다 — 비수치 값의 비교는 `RunError`지만 `<ref> is-numeric`은 거짓일 뿐이다. 존재 검사와 달리 `and` 안에 쓸 수 있다: `when fxResult.status == 200 and fxResult.rate is-numeric`. 대체 경로는 `or fxResult.rate is-not-numeric`(RFC-0050).
 

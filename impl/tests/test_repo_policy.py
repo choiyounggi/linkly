@@ -469,6 +469,28 @@ class TestApplyPredicate(unittest.TestCase):
         rows = apply_predicate(list(self.ROWS), order=("amount", False), limit=2)
         self.assertEqual([r["id"] for r in rows], ["a", "c"])
 
+    # RFC-0053 §9: a row lacking the sort field (or holding null) sorts last,
+    # ascending and descending alike, in row_key order among themselves.
+    WITH_MISSING = [{"id": "a", "amount": 10}, {"id": "b"},
+                    {"id": "c", "amount": 20}, {"id": "d", "amount": None}]
+
+    def test_apply_predicate_missing_field_sorts_last_asc(self):
+        rows = apply_predicate(list(self.WITH_MISSING), order=("amount", False))
+        self.assertEqual([r["id"] for r in rows], ["a", "c", "b", "d"])
+
+    def test_apply_predicate_missing_field_sorts_last_desc(self):
+        rows = apply_predicate(list(self.WITH_MISSING), order=("amount", True))
+        self.assertEqual([r["id"] for r in rows], ["c", "a", "b", "d"])
+
+    def test_apply_predicate_every_row_missing_keeps_row_key_order(self):
+        rows = apply_predicate([{"id": "x"}, {"id": "y"}], order=("amount", True))
+        self.assertEqual([r["id"] for r in rows], ["x", "y"])
+
+    def test_apply_predicate_limit_counts_missing_rows_last(self):
+        rows = apply_predicate(list(self.WITH_MISSING), order=("amount", False),
+                               limit=3)
+        self.assertEqual([r["id"] for r in rows], ["a", "c", "b"])
+
     def test_limit_larger_than_the_row_count_is_not_an_error(self):
         rows = apply_predicate(list(self.ROWS), limit=100)
         self.assertEqual(len(rows), 3)

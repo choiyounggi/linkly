@@ -14,6 +14,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 DOCTOR = os.path.join(REPO, "plugins", "lnpl", "scripts", "doctor.sh")
 SKILL_MD = os.path.join(REPO, "plugins", "lnpl", "skills", "lnpl-doctor", "SKILL.md")
 TMP = os.path.join(REPO, ".claude", "tmp", "doctortest")
+# issue #205: doctor reads the MCP launcher's state file. Tests never let it
+# read the real ~/.claude/lnpl-plugin/mcp-last-start.json — a stale one there
+# would turn every healthy-path test red.
+TMP_STATE = os.path.join(REPO, ".claude", "tmp", "doctortest-state")
+NO_STATE = os.path.join(TMP_STATE, "never-created.json")
 
 
 def run_doctor(env=None, plugin_root=None):
@@ -21,6 +26,7 @@ def run_doctor(env=None, plugin_root=None):
     run_env["PATH"] = os.path.join(REPO, ".venv", "bin") + os.pathsep + run_env["PATH"]
     run_env["PYTHONPATH"] = os.path.join(REPO, "impl")
     run_env["CLAUDE_PLUGIN_ROOT"] = plugin_root or os.path.join(REPO, "plugins", "lnpl")
+    run_env["LNPL_MCP_STATE"] = NO_STATE
     if env:
         run_env.update(env)
     return subprocess.run(["bash", DOCTOR], capture_output=True, text=True, env=run_env)
@@ -29,6 +35,7 @@ def run_doctor(env=None, plugin_root=None):
 class DoctorTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(TMP, ignore_errors=True)
+        shutil.rmtree(TMP_STATE, ignore_errors=True)
 
     def test_doctor_script_exists(self):
         self.assertTrue(os.path.isfile(DOCTOR))
@@ -77,6 +84,51 @@ class DoctorTest(unittest.TestCase):
         with open(SKILL_MD, encoding="utf-8") as fh:
             head = fh.read(400)
         self.assertIn("name: lnpl-doctor", head)
+
+
+    # ---- CLI/MCP vocabulary digest (issue #205) ---------------------------
+
+    def _state_file(self, document):
+        os.makedirs(TMP_STATE, exist_ok=True)
+        path = os.path.join(TMP_STATE, "state.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(document, fh)
+        return path
+
+    def test_flags_a_vocabulary_digest_mismatch(self):
+        stale = "sha256:" + "0" * 64
+        path = self._state_file({"vocabulary_digest": stale})
+        proc = run_doctor(env={"LNPL_MCP_STATE": path})
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("어휘 불일치", proc.stdout)
+        self.assertIn(stale, proc.stdout)
+        self.assertIn("LNPL_IMPL", proc.stdout)
+
+    def test_stays_quiet_when_the_mcp_digest_matches(self):
+        from lnpl import provenance
+        path = self._state_file(
+            {"vocabulary_digest": provenance._current_vocabulary_digest()})
+        proc = run_doctor(env={"LNPL_MCP_STATE": path})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("어휘 불일치", proc.stdout)
+        self.assertIn("이상 없음.", proc.stdout)
+
+    def test_quiet_when_no_state_file_exists(self):
+        proc = run_doctor(env={"LNPL_MCP_STATE": NO_STATE})
+        self.assertFalse(os.path.exists(NO_STATE))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("어휘 불일치", proc.stdout)
+
+    def test_a_state_file_without_a_digest_is_not_a_mismatch(self):
+        # boundary: an empty/foreign document has nothing to compare
+        path = self._state_file({})
+        proc = run_doctor(env={"LNPL_MCP_STATE": path})
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("어휘 불일치", proc.stdout)
+
+    def test_skill_md_documents_the_digest_check(self):
+        with open(SKILL_MD, encoding="utf-8") as fh:
+            self.assertIn("어휘 digest", fh.read())
 
 
 if __name__ == "__main__":

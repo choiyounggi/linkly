@@ -366,20 +366,28 @@ def _entity_schema(entity, refined):
         if tname in refined:
             # 3.1 honours keywords beside a `$ref`, but the IR states nothing
             # about the field beyond its type, so the reference stands alone.
-            props[field["name"]] = {"$ref": "#/components/schemas/%s" % tname}
+            prop = {"$ref": "#/components/schemas/%s" % tname}
         elif tname not in TYPE_SCHEMA:
             raise OpenApiError("no OpenAPI mapping for semantic type %r "
                                "(field %s.%s)" % (tname, entity["name"], field["name"]))
         else:
-            props[field["name"]] = dict(TYPE_SCHEMA[tname])
+            prop = dict(TYPE_SCHEMA[tname])
+        if field.get("optional"):
+            # RFC-0053: an absent OR explicit-null value is accepted. `Json`'s
+            # schema is `{}` (no "type"), which already admits null.
+            if "$ref" in prop:
+                prop = {"oneOf": [prop, {"type": "null"}]}
+            elif isinstance(prop.get("type"), str):
+                prop = dict(prop, type=[prop["type"], "null"])
+        props[field["name"]] = prop
         if field.get("derived"):
             # issue #95: server-computed — never required of a request, and
             # marked the way `Password`/`writeOnly` already marks the mirror
             # case, so request and response keep sharing this one schema
             # ($ref) rather than splitting into two.
-            props[field["name"]]["readOnly"] = True
+            prop["readOnly"] = True
             continue
-        if field.get("required", True):
+        if not field.get("optional"):
             required.append(field["name"])
     schema = {"type": "object", "properties": props, "additionalProperties": False}
     if required:
@@ -458,15 +466,21 @@ def _response_schema(steps, nodes, entities, refined):
     must agree, or the OpenAPI contract would describe a body the server
     never sends. Returns None when the workflow declares no `respond`, so a
     document without one generates byte-identical output (D4).
+
+    RFC-0059 §5: a named aggregate term is one more flat property, typed by
+    its `agg_field_type` (RFC-0047; `count` has none and is an Integer); a
+    list term is the whole body, `expose list`'s `items`/`next` envelope
+    with `next` always null.
     """
-    refs = None
+    response = None
     for step in steps:
         for child_id in step.get("children", []):
             effect = nodes[child_id]
             if effect["kind"] == "Response":
-                refs = effect["refs"]
-    if refs is None:
+                response = effect
+    if response is None:
         return None
+    refs = response.get("refs") or []
 
     by_binding = {binding_name(e): e for e in entities}
     # issue #173 / RFC-0030 §2: a `create ... as <alias>` binding has no
@@ -482,7 +496,23 @@ def _response_schema(steps, nodes, entities, refined):
                     and effect.get("operation") == "create"
                     and effect.get("result")):
                 create_bindings[effect["result"]] = nodes[effect["entity"]]
-    grouped, order = {}, []
+    list_term = response.get("listTerm")
+    if list_term is not None:
+        entity = by_binding.get(list_term["binding"])
+        if entity is None:
+            raise OpenApiError(
+                "respond list references unknown binding %r (not an "
+                "entity's RowSet)" % list_term["binding"])
+        return {"type": "object",
+                "properties": {
+                    "items": {"type": "array",
+                              "items": {"$ref": "#/components/schemas/%s"
+                                        % _schema_name(entity)}},
+                    "next": {"type": "null"},
+                },
+                "required": ["items", "next"],
+                "additionalProperties": False}
+    grouped, order, required_by_binding = {}, [], {}
     for ref in refs:
         binding, _, field_name = ref.partition(".")
         entity = by_binding.get(binding) or create_bindings.get(binding)
@@ -502,13 +532,25 @@ def _response_schema(steps, nodes, entities, refined):
             field_schema["readOnly"] = True
         if binding not in grouped:
             grouped[binding] = {}
+            required_by_binding[binding] = []
             order.append(binding)
         grouped[binding][field_name] = field_schema
+        # RFC-0053: `respond` omits an absent optional field rather than
+        # sending null, so it is not required — and not nullable either.
+        if not field.get("optional") and field_name not in required_by_binding[binding]:
+            required_by_binding[binding].append(field_name)
 
-    properties = {binding: {"type": "object", "properties": grouped[binding],
-                            "required": list(grouped[binding]),
-                            "additionalProperties": False}
-                 for binding in order}
+    properties = {}
+    for binding in order:
+        schema = {"type": "object", "properties": grouped[binding]}
+        if required_by_binding[binding]:
+            schema["required"] = required_by_binding[binding]
+        schema["additionalProperties"] = False
+        properties[binding] = schema
+    for term in response.get("aggTerms") or []:
+        tname = term.get("agg_field_type") or "Integer"
+        properties[term["name"]] = dict(TYPE_SCHEMA[tname])
+        order.append(term["name"])
     return {"type": "object", "properties": properties, "required": order,
            "additionalProperties": False}
 
@@ -525,6 +567,13 @@ def _operation(wf, service, con, nodes, entities, refined):
                 request_entity = _entity_for_target(effect, entities)
 
     response_schema = _response_schema(steps, nodes, entities, refined)
+    # RFC-0056: the codes a reached `fail` answers 422 with, so a client
+    # generator can branch on them. Absent when the workflow declares none,
+    # which keeps every other operation byte-identical.
+    fail_codes = sorted({nodes[child_id]["code"]
+                         for step in steps
+                         for child_id in step.get("children", [])
+                         if nodes[child_id]["kind"] == "Rejection"})
 
     op = {
         "operationId": "%s_%s" % (_slug(service["name"]).replace("-", "_"),
@@ -534,7 +583,8 @@ def _operation(wf, service, con, nodes, entities, refined):
         "responses": {
             "200": {"description": "the workflow completed"},
             "400": {"description": "validation failed"},
-            "409": {"description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"},
+            "404": {"description": "a workflow read found no row for the entity it looked up (not-found) -- issue #197"},
+            "409": {"description": "a repository create conflicted with an existing row (conflict), another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113, or an optimistic-version write conflict (write-conflict) -- issue #201"},
             "412": {"description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"},
             "504": {"description": "the workflow deadline was exceeded"},
         },
@@ -550,6 +600,10 @@ def _operation(wf, service, con, nodes, entities, refined):
     if response_schema is not None:
         op["responses"]["200"]["content"] = {
             "application/json": {"schema": response_schema}}
+    if fail_codes:
+        op["responses"]["422"] = {
+            "description": "the workflow rejected the request (RFC-0056): "
+                           "codes %s" % ", ".join(fail_codes)}
     if request_entity is not None:
         op["requestBody"] = {
             "required": True,

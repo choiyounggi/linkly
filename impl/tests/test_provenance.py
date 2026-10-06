@@ -13,6 +13,8 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -180,6 +182,42 @@ class GoldenGateIgnoresProvenanceTests(unittest.TestCase):
         compiled_without_provenance = dict(compiled)
         compiled_without_provenance.pop("provenance")
         self.assertEqual(compiled_without_provenance, committed)
+
+
+class ImportOrderTest(unittest.TestCase):
+    """issue #205: `capabilities_document()` reaches `provenance` lazily.
+
+    `provenance.py` imports `lnpl.capabilities` at module top, so a top-level
+    import in the other direction would cycle. A fresh interpreter per order is
+    the only way to observe it — this process has already imported both.
+    """
+
+    def _import_in_fresh_interpreter(self, statement):
+        env = dict(os.environ, PYTHONPATH=os.path.join(REPO, "impl"))
+        return subprocess.run([sys.executable, "-c", statement],
+                              capture_output=True, text=True, env=env)
+
+    def test_capabilities_then_provenance_imports_cleanly(self):
+        proc = self._import_in_fresh_interpreter(
+            "import lnpl.capabilities, lnpl.provenance;"
+            "print(lnpl.capabilities.capabilities_document()['vocabulary_digest'][:7])")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "sha256:")
+
+    def test_provenance_then_capabilities_imports_cleanly(self):
+        proc = self._import_in_fresh_interpreter(
+            "import lnpl.provenance, lnpl.capabilities;"
+            "print(lnpl.capabilities.capabilities_document()['vocabulary_digest'][:7])")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "sha256:")
+
+    def test_a_missing_module_is_reported_not_swallowed(self):
+        # Error path of the helper itself: a broken import must surface as a
+        # nonzero exit with the ImportError text, or the two tests above
+        # could never go red.
+        proc = self._import_in_fresh_interpreter("import lnpl.no_such_module_t205")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("ModuleNotFoundError", proc.stderr)
 
 
 if __name__ == "__main__":

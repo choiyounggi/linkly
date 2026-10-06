@@ -5,7 +5,8 @@ import os
 import unittest
 
 from lnpl.kb import KnowledgeBase
-from lnpl.protocol import ERRORS, RpcError, Server, reference_only_edit
+from lnpl.protocol import (ERRORS, RpcError, Server, _structure_fault,
+                           reference_only_edit)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -233,16 +234,20 @@ class TestProposalIsTwoStage(unittest.TestCase):
         self.assertEqual(len(self.s.doc["nodes"]), self.before)
 
     def test_override_refuses_a_guard_with_wrong_cardinality(self):
-        """RFC-0001 Guard row: a Guard owns exactly one guarded item ("피가드 항목
-        1개"). CHILDREN_ALLOWED cannot express that count, so nothing but the
-        `_structure_fault` cardinality check catches a Guard with two children —
-        and it must run on the override path too (issue #15)."""
+        """RFC-0001 Guard row: a Guard owns one guarded item ("피가드 항목 1개"),
+        plus at most one `otherwise` item since RFC-0060. CHILDREN_ALLOWED
+        cannot express that count, so nothing but the `_structure_fault`
+        cardinality check catches a Guard with three children — and it must run
+        on the override path too (issue #15). (Before RFC-0060 this fixture had
+        two children; two is now the guarded item plus its `otherwise`.)"""
         bad = [{"kind": "Workflow", "id": "wf.gc", "name": "gc",
                 "children": ["wf.gc.g"]},
                {"kind": "Guard", "id": "wf.gc.g", "mode": "when",
-                "condition": "x missing", "children": ["wf.gc.s1", "wf.gc.s2"]},
+                "condition": "x missing",
+                "children": ["wf.gc.s1", "wf.gc.s2", "wf.gc.s3"]},
                {"kind": "WorkflowStep", "id": "wf.gc.s1", "name": "s1"},
-               {"kind": "WorkflowStep", "id": "wf.gc.s2", "name": "s2"}]
+               {"kind": "WorkflowStep", "id": "wf.gc.s2", "name": "s2"},
+               {"kind": "WorkflowStep", "id": "wf.gc.s3", "name": "s3"}]
         out = self._propose(bad, role="Architect")
         with self.assertRaises(RpcError) as ctx:
             self.s.call("agent.report", task_id=out["review_task_id"],
@@ -250,7 +255,31 @@ class TestProposalIsTwoStage(unittest.TestCase):
                                  "decision": "approved"})
         self.assertEqual(ctx.exception.type, "ir_invalid")
         self.assertIn("guard_cardinality", str(ctx.exception))
+        self.assertIn("has 3 children", str(ctx.exception))
         self.assertEqual(len(self.s.doc["nodes"]), self.before)
+
+    def test_a_guard_with_an_otherwise_item_passes_the_cardinality_check(self):
+        """RFC-0060: two children are the guarded item and its `otherwise`."""
+        good = [{"kind": "Workflow", "id": "wf.go", "name": "go",
+                 "children": ["wf.go.g"]},
+                {"kind": "Guard", "id": "wf.go.g", "mode": "when",
+                 "condition": "x missing", "children": ["wf.go.s1", "wf.go.s2"]},
+                {"kind": "WorkflowStep", "id": "wf.go.s1", "name": "s1"},
+                {"kind": "WorkflowStep", "id": "wf.go.s2", "name": "s2"}]
+        self.assertIsNone(_structure_fault({n["id"]: n for n in good}))
+
+    def test_an_otherwise_item_on_a_repeat_guard_fails_the_cardinality_check(self):
+        """RFC-0060: only a `when` guard has a false branch to run it on."""
+        bad = [{"kind": "Workflow", "id": "wf.gr", "name": "gr",
+                "children": ["wf.gr.g"]},
+               {"kind": "Guard", "id": "wf.gr.g", "mode": "repeat", "count": 2,
+                "children": ["wf.gr.s1", "wf.gr.s2"]},
+               {"kind": "WorkflowStep", "id": "wf.gr.s1", "name": "s1"},
+               {"kind": "WorkflowStep", "id": "wf.gr.s2", "name": "s2"}]
+        fault = _structure_fault({n["id"]: n for n in bad})
+        self.assertIsNotNone(fault)
+        self.assertIn("guard_cardinality", fault)
+        self.assertIn("has 2 children", fault)
 
     def test_double_decision_on_one_proposal_is_refused(self):
         out = self._propose([STEP4_OWNS_AUTHZ, AUTHZ])

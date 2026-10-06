@@ -15,10 +15,19 @@
 셋 다 실패하면 **조용히 죽지 않는다.** stderr에 무엇을 시도했는지 적고 나간다 —
 서버가 시작되지 않으면 클라이언트는 "연결 실패"만 보고, 이유는 여기서만 말할 수
 있다.
+
+성공하면 어느 단계가 어느 경로를 골랐는지 stderr에 한 줄 남기고, 같은 내용과
+어휘 digest를 상태 파일(`$LNPL_MCP_STATE`, 기본 `~/.claude/lnpl-plugin/
+mcp-last-start.json`)에 적는다 — `lnpl-doctor`가 CLI와 비교한다(issue #205).
+stdout은 MCP 프로토콜 채널이라 아무것도 쓰지 않는다.
 """
 
+import json
 import os
 import sys
+
+DEFAULT_STATE_PATH = os.path.join(os.path.expanduser("~"), ".claude",
+                                  "lnpl-plugin", "mcp-last-start.json")
 
 
 def _add_impl(path):
@@ -32,12 +41,33 @@ def _add_impl(path):
 def _walk_up_for_impl(start):
     cur = os.path.abspath(start)
     while True:
-        if _add_impl(os.path.join(cur, "impl")):
-            return True
+        candidate = os.path.join(cur, "impl")
+        if _add_impl(candidate):
+            return candidate
         parent = os.path.dirname(cur)
         if parent == cur:
-            return False
+            return None
         cur = parent
+
+
+def _write_state_file(method, path):
+    state_path = os.environ.get("LNPL_MCP_STATE") or DEFAULT_STATE_PATH
+    # A state file the launcher cannot write must never keep the server from
+    # starting: the client would only see "connection failed". `lnpl-doctor`
+    # treats an absent file as "nothing to compare".
+    try:
+        from lnpl import __version__, provenance
+        document = {
+            "discovery": method,
+            "path": path,
+            "lnpl_version": __version__,
+            "vocabulary_digest": provenance._current_vocabulary_digest(),
+        }
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as fh:
+            json.dump(document, fh)
+    except Exception:
+        pass
 
 
 def main():
@@ -46,14 +76,18 @@ def main():
     explicit = os.environ.get("LNPL_IMPL")
     tried.append("$LNPL_IMPL=%r" % explicit)
     if _add_impl(explicit):
-        pass
+        method = "$LNPL_IMPL"
+        resolved_path = os.path.abspath(explicit)
     else:
         try:
-            import lnpl  # noqa: F401
+            import lnpl
             tried.append("import lnpl (installed)")
+            method = "import lnpl (installed)"
+            resolved_path = os.path.dirname(os.path.abspath(lnpl.__file__))
         except ImportError:
             tried.append("import lnpl -> not installed")
-            if not _walk_up_for_impl(os.getcwd()):
+            resolved_path = _walk_up_for_impl(os.getcwd())
+            if resolved_path is None:
                 sys.stderr.write(
                     "lnpl-mcp: could not locate the `lnpl` package.\n"
                     "tried: %s, then walked up from cwd=%s for impl/lnpl.\n"
@@ -61,7 +95,10 @@ def main():
                     "`pip install .` in the linkly checkout.\n"
                     % ("; ".join(tried), os.getcwd()))
                 return 1
+            method = "cwd walk-up"
 
+    sys.stderr.write("lnpl-mcp: resolved via %s -> %s\n" % (method, resolved_path))
+    _write_state_file(method, resolved_path)
     from lnpl.mcp_server import serve
     serve()
     return 0

@@ -184,5 +184,42 @@ class StrictGateTest(RowShapeTestCase):
         self.assertTrue(self.row_shape_diagnostics(out))
 
 
+class OptionalFieldRowShapeTest(unittest.TestCase):
+    """RFC-0053: `row_shape_mismatches` on its own — an `optional` field's
+    absence (missing key or stored null) is the normal shape, but a present
+    value of the wrong type is still a mismatch."""
+
+    ENTITY = {"kind": "Entity", "id": "entity.customer", "name": "Customer",
+              "fields": [{"name": "id", "type": "UUID"},
+                         {"name": "name", "type": "Text"},
+                         {"name": "nickname", "type": "Text", "optional": True}]}
+
+    def mismatches(self, row):
+        from lnpl.interp import row_shape_mismatches
+        return row_shape_mismatches(self.ENTITY, row, {})
+
+    def test_missing_optional_field_is_not_a_mismatch(self):
+        self.assertEqual([], self.mismatches({"id": ACCOUNT_1, "name": "Ada"}))
+
+    def test_null_optional_field_is_not_a_mismatch(self):
+        self.assertEqual([], self.mismatches(
+            {"id": ACCOUNT_1, "name": "Ada", "nickname": None}))
+
+    def test_present_wrong_type_optional_field_is_still_a_type_mismatch(self):
+        self.assertEqual(
+            [{"field": "nickname", "expected_type": "Text", "kind": "type"}],
+            self.mismatches({"id": ACCOUNT_1, "name": "Ada", "nickname": 5}))
+
+    def test_missing_required_field_is_still_reported(self):
+        self.assertEqual(
+            [{"field": "name", "expected_type": "Text", "kind": "missing"}],
+            self.mismatches({"id": ACCOUNT_1}))
+
+    def test_null_required_field_is_still_a_type_mismatch(self):
+        self.assertEqual(
+            [{"field": "name", "expected_type": "Text", "kind": "type"}],
+            self.mismatches({"id": ACCOUNT_1, "name": None}))
+
+
 if __name__ == "__main__":
     unittest.main()

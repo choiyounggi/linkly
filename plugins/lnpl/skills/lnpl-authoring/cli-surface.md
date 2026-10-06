@@ -184,7 +184,7 @@ lnpl config check <source...> [--profile NAME] [--config PATH]
 
 ```
 lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
-           --secret-env LNPL_JWT_SECRET [--ttl 15m]
+           --secret-env LNPL_JWT_SECRET [--ttl 15m] [--role <r>]
 ```
 
 | 플래그 | 뜻 |
@@ -194,6 +194,7 @@ lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
 | `--secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**(시크릿 자체가 아니다) |
 | `--jwt-issuer` | 토큰에 실을 `iss` 클레임(이슈 #119b). 안 주면 `"lnpl"` — `serve --jwt-issuer`로 검증할 값과 맞춰야 한다 |
 | `--ttl` | 액세스 토큰 수명 (기본 `15m`) |
+| `--role` | 토큰에 실을 `role` 클레임(이슈 #202). 생략하면 클레임 집합은 이전과 동일. 내장 `hmac` 전용, 자기 주장(self-asserted) 값이다. `--path`의 서비스가 `security role <r>`을 선언했는데 비어 있거나 다르면 발급 시 stderr 경고(발급은 그래도 된다 — 403 경로를 시험할 수 있어야 한다) |
 
 토큰은 stdout 한 줄로 나온다. `aud`는 경로의 서비스 슬러그에서 유도되므로
 발급과 검증이 같은 함수를 읽는다 — 이웃 서비스용 토큰은 통하지 않는다.
@@ -393,6 +394,10 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 `version`(그 entry-point를 소유한 배포판의 버전, 배포판을 확인할 수 없으면
 `null`)도 함께 실린다(`name`/`loadable`에 대한 additive 확장) — 어느 패키지가
 그 항목을 등록했고 몇 버전인지, `capabilities` 한 번 호출로 알 수 있다.
+문서 최상위에는 `vocabulary_digest`(현재 어휘의 sha256 digest)와
+`package_path`(로드된 `lnpl` 패키지의 파일시스템 경로)도 함께 실린다
+(`lnpl_version`/`slots`에 대한 additive 확장, issue #205) -- 어휘가
+다른 두 컴파일러를 버전 문자열이 같아도 구분하는 용도다.
 정본 함수는 `impl/lnpl/capabilities.py`의 `capabilities_document()`
 이고, `lnpl_capabilities` MCP 툴이 같은 함수를 공유한다. `lnpl-doctor` 스킬
 과는 별개다 — doctor는 CLI 설치·버전 같은 로컬 환경 건강을 보고, `capabilities`
@@ -446,7 +451,12 @@ cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다
 `rollback`을 떼면 사라진다 — 이슈 #112), `retry-on-non-idempotent`(`retry`를
 떼거나 멱등 메서드로 바꾸면 사라진다 — 이슈 #109), `note-cap-exceeded`(`note`를
 16개 이하로 줄이면 사라진다 — 이슈 #111), `event-consume-cycle`(`consume by`를
-떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)), `info`는 고쳐도 사라지지 않는
+떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118),
+`respond-field-missing`(저장된 행에 누락된 필드를 채우면 사라진다 —
+이슈 #198, 데이터를 고치는 쪽이라는 점은 `stored-row-shape-mismatch`와
+같다), `guard-scoped-binding-escape`(리더를 가드 스코프 안으로 옮기거나
+가드 줄을 반복하면 사라진다 — 이슈 #198),
+`optional-field-unguarded-arithmetic`(가드 안으로 옮기면 사라진다 — RFC-0053)), `info`는 고쳐도 사라지지 않는
 플랫폼 상태의 진술이다(`declared-not-enforced`, `declared-measured-only`,
 `authorization-not-verified`, `validation-sample-derived`, `event-source-orphaned`,
 `declared-not-bound`, `predicate-not-pushed-down`(`list where`/`order by`/`limit`이
@@ -478,6 +488,9 @@ cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다
 - **`guard-orphaned-steps`는 예외로 `line N`만 갖는다.** 저자가 옮겨야 하는 것이
   그 스텝이라, 노드 id를 되짚게 하는 대신 줄을 바로 가리킨다(RFC-0023 §5,
   RFC-0024가 손대지 않은 범위다).
+- **`guard-scoped-binding-escape`도 `line N`만 갖는다** — 저자가
+  옮겨야 하는 것이 그 `respond`/`set`/`format`/`emit ... with` 줄이라,
+  줄을 바로 가리킨다(issue #198).
 - **`aggregation-orphaned-list`도 `line N`만 갖는다** — 같은 이유다: 저자가
   고쳐야 하는 것은 그 `set` 줄(또는 그 앞에 `list`를 추가하는 것)이라, 줄을
   바로 가리킨다(RFC-0025 §4).

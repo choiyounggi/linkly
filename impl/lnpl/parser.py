@@ -5,8 +5,8 @@ A top-level keyword closes the previous block; a clause keyword opens a
 sub-section that closes at the next clause or top-level keyword.
 """
 
-from .lexer import (GUARD_ALT_KEYWORD, KEYWORDS_CLAUSE, KEYWORDS_TOP,
-                    SCHEDULE_AT, SCHEDULE_KEYWORD, tokenize)
+from .lexer import (GUARD_ALT_KEYWORD, GUARD_OTHERWISE_KEYWORD, KEYWORDS_CLAUSE,
+                    KEYWORDS_TOP, SCHEDULE_AT, SCHEDULE_KEYWORD, tokenize)
 from .condition import parse_condition, ConditionError
 
 SERVICE_CLAUSES = ("goal", "policy", "security", "performance", "database",
@@ -90,9 +90,11 @@ def _append_workflow_item(decl, line):
             raise ParseError("line %d: `pipeline` takes at most one name" % line.lineno)
         if head == "parallel" and len(line.tokens) > 1:
             raise ParseError("line %d: `parallel` takes no name" % line.lineno)
+        _check_pipeline_layout(decl, line)
         decl.extra.pop("_open_block", None)      # an open pipeline ends here
         block = {"type": head, "lineno": line.lineno, "steps": [],
-                 "name": line.tokens[1] if len(line.tokens) > 1 else None}
+                 "name": line.tokens[1] if len(line.tokens) > 1 else None,
+                 "indent": line.indent}
         _attach(decl, {"item": "block", "block": block}, line)
         decl.extra["_open_block"] = block
         return
@@ -114,7 +116,18 @@ def _append_workflow_item(decl, line):
         if open_block is not None and open_block["type"] == "parallel":
             raise ParseError("line %d: a guard cannot appear inside a `parallel` block "
                              "(close it with `merge` first)" % line.lineno)
+        _check_pipeline_layout(decl, line)
         decl.extra.pop("_open_block", None)      # an open pipeline ends here
+        pending_otherwise = decl.extra.get("_pending_otherwise")
+        if pending_otherwise is not None:
+            # RFC-0060: `otherwise` owns one item and is a guard's sibling, so a
+            # guard there would nest a third level (RFC-0002 §Block structure).
+            raise ParseError("line %d: `%s` follows the `otherwise` on line %d, "
+                             "but `otherwise` owns exactly one step or block — a "
+                             "guard there would nest beyond depth 2 (RFC-0060, "
+                             "RFC-0002 §Block structure); write it as its own "
+                             "guard after the `otherwise` item"
+                             % (line.lineno, head, pending_otherwise["lineno"]))
         pending = decl.extra.get("_pending_guard")
         if pending is not None:
             # Without this, the assignment below would overwrite `pending` and the
@@ -159,7 +172,61 @@ def _append_workflow_item(decl, line):
         # No pending guard: `or` is an ordinary word, unchanged from before
         # this RFC (falls through to the plain step path below).
 
+    if head == GUARD_OTHERWISE_KEYWORD:
+        _otherwise_line(decl, line, open_block)
+        return
+
     _attach(decl, {"item": "step", "line": line}, line)
+
+
+def _otherwise_line(decl, line, open_block):
+    """RFC-0060: an `otherwise` line arms the slot its next item fills.
+
+    Legal only right after a `when` guard's item (that guard's `_otherwise_slot`
+    is still set). `until`/`repeat` have no false branch for it to run on, so
+    they leave `_otherwise_refused` instead and the line is rejected by name.
+    """
+    if len(line.tokens) != 1:
+        raise ParseError("line %d: `otherwise` takes no words — put the item it "
+                         "owns on the next line (RFC-0060)" % line.lineno)
+    if open_block is not None and open_block["type"] == "parallel":
+        raise ParseError("line %d: `otherwise` cannot appear inside a `parallel` "
+                         "block (close it with `merge` first)" % line.lineno)
+    _check_pipeline_layout(decl, line)
+    decl.extra.pop("_open_block", None)      # an open pipeline ends here
+    _check_guard_layout(decl, line)
+    pending_guard = decl.extra.get("_pending_guard")
+    if pending_guard is not None:
+        raise ParseError(
+            "line %d: `otherwise` follows the guard on line %d, which has no "
+            "item yet — write the guarded step or block first, then `otherwise` "
+            "(RFC-0060)" % (line.lineno, pending_guard["lineno"]))
+    pending_otherwise = decl.extra.get("_pending_otherwise")
+    slot = decl.extra.get("_otherwise_slot")
+    first = (pending_otherwise["lineno"] if pending_otherwise is not None
+             else slot["otherwise_lineno"] if slot is not None
+             and slot["otherwise"] is not None else None)
+    if first is not None:
+        raise ParseError(
+            "line %d: a second `otherwise` follows the one on line %d — a guard "
+            "owns at most one `otherwise`, and `otherwise` owns exactly one step "
+            "or block; wrap several steps in a `pipeline` block instead (RFC-0060)"
+            % (line.lineno, first))
+    refused = decl.extra.get("_otherwise_refused")
+    if refused is not None:
+        raise ParseError(
+            "line %d: `otherwise` follows the `%s` guard on line %d, but only a "
+            "`when` guard can own an `otherwise` — `%s` has no false branch for "
+            "it to run on (RFC-0060)"
+            % (line.lineno, refused["mode"], refused["lineno"], refused["mode"]))
+    if slot is None:
+        raise ParseError(
+            "line %d: `otherwise` has no preceding guard — it must immediately "
+            "follow a `when` guard's single step or block, and runs when the "
+            "guard (and its `or` alternatives) are all false (RFC-0060)"
+            % line.lineno)
+    decl.extra["_pending_otherwise"] = {"slot": slot, "lineno": line.lineno,
+                                        "indent": line.indent}
 
 
 def _check_guard_layout(decl, line):
@@ -186,17 +253,68 @@ def _check_guard_layout(decl, line):
         % (line.lineno, visual["mode"], visual["lineno"]))
 
 
+def _check_pipeline_layout(decl, line):
+    """Reject a control keyword indented as if inside the open `pipeline` it
+    actually closes (RFC-0058, issue #211 (3)).
+
+    A `pipeline` closes at the next keyword, never by indentation (RFC-0002
+    §Block structure), so a keyword written deeper than the pipeline's own line
+    looks nested but runs outside it. The two repairs differ by path: a guard
+    (`when`/`until`/`repeat`) can be re-homed by wrapping the following steps in
+    a new `pipeline`; a block opener (`pipeline`/`parallel`) is already a block,
+    so it is offered the dedent only.
+    """
+    open_block = decl.extra.get("_open_block")
+    if open_block is None or open_block["type"] != "pipeline":
+        return
+    if line.indent <= open_block["indent"]:
+        return
+    label = ("`pipeline %s`" % open_block["name"] if open_block["name"]
+             else "the `pipeline` opened on line %d" % open_block["lineno"])
+    if line.head in ("when", "until", "repeat", GUARD_OTHERWISE_KEYWORD):
+        fix = ("Dedent it to the pipeline's own column, or wrap the following "
+               "steps in a new `pipeline` block so a guard can own that instead")
+    else:
+        fix = ("Dedent it to the pipeline's own column if you meant a new "
+               "sibling block here, not one nested inside it")
+    raise ParseError(
+        "line %d: this `%s` is indented as if it were inside %s, but a "
+        "`pipeline` closes at the next keyword, not by indentation — so it "
+        "runs outside the pipeline. %s (RFC-0058, RFC-0002 §Block structure)"
+        % (line.lineno, line.head, label, fix))
+
+
 def _attach(decl, item, line):
-    """Place an item: inside an open block, under a pending guard, or at top level."""
+    """Place an item: inside an open block, as an `otherwise`'s item, under a
+    pending guard, or at top level."""
     open_block = decl.extra.get("_open_block")
     if open_block is not None and item["item"] == "step":
         open_block["steps"].append(line)
         return
+    pending_otherwise = decl.extra.pop("_pending_otherwise", None)
+    if pending_otherwise is not None:
+        # RFC-0060: the item lives on its guard item, which is already in
+        # `decl.items` — appending it again would run it unconditionally.
+        slot = pending_otherwise["slot"]
+        slot["otherwise"] = item
+        slot["otherwise_lineno"] = pending_otherwise["lineno"]
+        if line.indent > pending_otherwise["indent"]:
+            decl.extra["_guard_visual"] = {"column": pending_otherwise["indent"],
+                                           "lineno": pending_otherwise["lineno"],
+                                           "mode": GUARD_OTHERWISE_KEYWORD}
+        return
+    decl.extra.pop("_otherwise_slot", None)
+    decl.extra.pop("_otherwise_refused", None)
     guard = decl.extra.pop("_pending_guard", None)
     if guard is None:
         _check_guard_layout(decl, line)
     else:
-        item = {"item": "guard", "guard": guard, "guarded": item}
+        item = {"item": "guard", "guard": guard, "guarded": item, "otherwise": None}
+        if guard["mode"] == "when":
+            decl.extra["_otherwise_slot"] = item
+        else:
+            decl.extra["_otherwise_refused"] = {"mode": guard["mode"],
+                                                "lineno": guard["lineno"]}
         # Only a guarded item written *deeper* than its guard makes a following
         # deeper line misleading. At the guard's own column — the style
         # `examples/guarded.lnpl` uses — layout and structure already agree.
@@ -431,6 +549,12 @@ def parse(source):
         if d.extra.pop("_pending_guard", None) is not None:
             raise ParseError("declaration %s ends with a guard that guards nothing"
                              % d.name)
+        d.extra.pop("_otherwise_slot", None)     # RFC-0060 scratch state
+        d.extra.pop("_otherwise_refused", None)
+        pending_otherwise = d.extra.pop("_pending_otherwise", None)
+        if pending_otherwise is not None:
+            raise ParseError("declaration %s ends with an `otherwise` that owns "
+                             "nothing (line %d)" % (d.name, pending_otherwise["lineno"]))
         for block in d.extra.get("specs", []):
             block.pop("_opened", None)
             block.pop("_indent", None)

@@ -48,7 +48,7 @@ class TokenProvider:         # security jwt
 lnpl run   <src>.lnpl --backend sqlite:./store.db
 lnpl serve <src>.lnpl --backend sqlite:./store.db --jwt-secret-env LNPL_JWT_SECRET
 lnpl token <src>.lnpl --path /shop/checkout --subject alice \
-                      --secret-env LNPL_JWT_SECRET [--ttl 15m]
+                      --secret-env LNPL_JWT_SECRET [--ttl 15m] [--role <r>]
 ```
 
 | 값 | 뜻 |
@@ -135,9 +135,13 @@ UPDATE lnpl_rows
 ```
 
 영향받은 행이 0이면 읽은 뒤 누군가 먼저 썼다는 뜻이다 — 조용히 덮어쓰는 대신
-`DriverError("write conflict: row changed since read ...")`를 내고, 이는 다른
+`WriteConflictError("write conflict: row changed since read ...")`를 내고, 이는 다른
 드라이버 오류와 같은 경로로 `RunError`가 되어 평범한 실패 실행이 된다(`status:
-failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프로세스
+failed`, `failure_kind: "write-conflict"`, 이슈 #201). `WriteConflictError`는
+`DriverError`의 하위 타입이고 create 충돌의 `ConflictError`와는 형제다(서로의 하위
+타입이 아니다). 외부 드라이버는 `lnpl.drivers`에서 이 타입을 가져와 내는 것으로
+옵트인한다 — 평범한 `DriverError`를 내는 드라이버는 문구가 같아도 종전대로 분류
+없는 실패다. fake 드라이버는 단일 프로세스
 인메모리라 이 충돌이 존재할 수 없으므로 `persist()`가 그대로 no-op이다.
 
 **충돌이 났을 때 누가 재시도하는가.** 한 `WorkflowStep`은 소스 한 줄이라
@@ -147,15 +151,30 @@ failed`, `failure_reason`에 "conflict" 포함). fake 드라이버는 단일 프
 처음부터 다시 읽는다. `policy retry`가 이미 이 효과들을 멱등으로 선언하므로
 (RFC-0003 §Policy Enforcement) 그 호출을 다시 하는 것은 안전하다 — 아무것도
 반영되지 않았으니 중복이 아니고, 선언된 재시도 예산이 몇 번까지 안전한지도 이미
-정해져 있다. 새 개념이 아니라 기존 계약을 그대로 다시 쓰는 것이다. 서빙 표면에서
-409로 매핑하는 것은 이 이슈의 범위 밖이며 `serve.py`는 손대지 않는다 — 후속
-이슈의 몫이다.
+정해져 있다. 새 개념이 아니라 기존 계약을 그대로 다시 쓰는 것이다. 서빙 표면은
+이 실패를 409 `write-conflict`로 답한다(`docs/serving.md` M8c, 이벤트 소비 경로는
+E6의 503) — 재시도는 클라이언트가 워크플로 전체를 다시 부르는 것이다.
+**`policy retry`만으로는 이 충돌에서 복구되지 않는다**: 선언된 예산은 실패한 `set`
+스텝을 같은 낡은 읽기로 다시 시도할 뿐이라(`retry 3`이면 쓰기 4번이 모두 충돌)
+한 번의 `run_workflow` 호출은 예산을 다 쓰고 실패한다 —
+`impl/tests/test_driver_concurrency.py`의
+`test_a_declared_retry_budget_does_not_by_itself_rerun_the_whole_workflow`가 이를
+고정한다.
 
 ### 시드와 flush
 
-`seed()`는 **없을 때만 삽입**(`INSERT OR IGNORE`)한다. 그래야 `repo_policy`의 시드
-규칙(과 그 위에 선 모드 B의 정적 판정)이 영속 저장소에서도 그대로 성립하면서,
-앞선 실행이 쓴 행을 덮지 않는다.
+`seed()`는 **없을 때만 삽입**(`INSERT OR IGNORE`)한다 — 호출하는 쪽이 앞선
+실행이 쓴 행을 덮지 않는다는 뜻이다.
+
+**누가 `seed()`를 부르는가(이슈 #197).** `Interpreter.__init__`은 `self.repo`가
+`FakeRepository` 인스턴스일 때만 요청 payload로 `seed()`를 건다 — `fake`
+백엔드와 spec/diff 러너(둘 다 내부적으로 `FakeRepository`를 쓴다)가 대상이다.
+`sqlite:`나 `lnpl.drivers`로 등록된 영속 드라이버에는 `Interpreter`가 더 이상
+`seed()`를 걸지 않는다: 영속 저장소에서 읽기 동사(`find`/`load`/`read`/
+`authenticate`, bare 또는 `by <ref>`)가 행을 못 찾으면 그 스텝이 타입 있는
+`failure_kind` `not-found`로 실패하고, 요청 payload가 유령 행으로 저장되는
+일이 없다. 영속 드라이버에 데이터를 미리 깔아야 하면 — 테스트든 운영이든 —
+`seed()`를 직접 부르거나 `create` 워크플로를 쓴다.
 
 `persist()`는 RFC-0015의 `set`이 **바인딩된 행에 쓴 값**을 디스크로 내린다. fake는
 바인딩된 dict가 곧 저장된 행이라 no-op이지만, 실제 저장소에서 이 flush가 없으면
@@ -235,7 +254,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | 키 | ≥32바이트(256비트). 환경변수에서 런타임에 읽는다 |
 | 검증 순서 | 3조각 → **alg allowlist** → 서명(`hmac.compare_digest`) → `typ` → `iss` → `aud` → `nbf`/`exp` |
 | leeway | 60초 (RFC 7519가 승인하는 상한은 "몇 분") |
-| 클레임 | `iss`/`aud`/`sub`/`jti`/`iat`/`nbf`/`exp`. payload는 암호문이 아니라 base64이므로 PII를 넣지 않는다 |
+| 클레임 | `iss`/`aud`/`sub`/`jti`/`iat`/`nbf`/`exp`, 그리고 `--role`을 주면 `role`(이슈 #202, 자기 주장). payload는 암호문이 아니라 base64이므로 PII를 넣지 않는다 |
 | 수명 | 기본 15분 |
 
 `alg`는 **서버 측 allowlist**로 판정한다. 토큰이 자기 알고리즘을 고르게 두는 것이
@@ -420,7 +439,10 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 — 구체 클래스가 `unittest.TestCase`와 다중 상속해야 한다. 검증 항목: 읽기·
 쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, 그리고 읽은 행이
 `observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
-#92 — 이 속성이 없으면 이 케이스는 스킵된다).
+#92), 그리고 그 충돌이 `WriteConflictError` 타입인지(이슈 #201) — 이 속성이 없으면
+두 케이스 모두 스킵된다. `observed_version`을 내면서 충돌에 평범한 `DriverError`를
+내던 외부 드라이버는 이 두 번째 케이스에서 실패하므로, `lnpl.drivers`의
+`WriteConflictError`를 내도록 바꿔야 한다.
 
 **`begin`/`commit`/`rollback`(이슈 #79, RFC-0032) — 이슈 #115로 파괴적 변경됨.**
 전에는 셋이 예외 없이 순서대로 호출 가능한지만 확인했고, 기본 계약이 no-op을

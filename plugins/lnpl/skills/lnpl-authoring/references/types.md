@@ -15,7 +15,7 @@
 | `Password` | `s3cret-value` |
 | `DateTime` | `2026-07-31T09:00:00Z` |
 | `Phone` | `+14155550100` |
-| `Money` | `{'amount': '0', 'currency': 'USD'}` |
+| `Money` | `{'amount': '1.00', 'currency': 'USD'}` |
 | `Currency` | `USD` |
 | `GeoLocation` | `{'lat': 0, 'lng': 0}` |
 | `Address` | `{'line1': '1 Main St', 'city': 'Springfield', 'country': 'US'}` |

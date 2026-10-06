@@ -48,6 +48,43 @@ class TestSubcommandWiring(unittest.TestCase):
     def test_spec_run(self):
         self.assertEqual(run_cli(["spec", LOGIN, "--run"]), 0)
 
+    def test_the_issue_203_repro_passes_once_the_money_sample_is_fixed(self):
+        """Issue #203. `given input.quantity 2` is needed independently of
+        the Money sample: `spec`'s default payload only samples the first
+        declared entity plus `validate`d ones (issue #48)."""
+        source = (
+            "entity Product\n"
+            "    field\n"
+            "        id UUID\n"
+            "        price Money\n"
+            "entity Order\n"
+            "    field\n"
+            "        id UUID\n"
+            "        quantity Integer\n"
+            "        total Money derived\n"
+            "service ShopService\n"
+            "workflow PlaceOrder\n"
+            "    find product\n"
+            "    create order as o\n"
+            "    set o.total to product.price * input.quantity\n"
+            "    spec\n"
+            "        given\n"
+            "            valid product\n"
+            "            input.quantity 2\n"
+            "        when\n"
+            "            placeOrder\n"
+            "        expect\n"
+            "            completed\n"
+        )
+        os.makedirs(self.workdir, exist_ok=True)
+        path = os.path.join(self.workdir, "t203-repro.lnpl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = cli.main(["spec", path, "--run"])
+        self.assertEqual(rc, 0, buf.getvalue())
+
     def test_openapi(self):
         self.assertEqual(run_cli(["openapi", LOGIN]), 0)
 
@@ -315,6 +352,83 @@ class TestWorkflowSelection(unittest.TestCase):
         rc, text = run_cli_err(["run", empty])
         self.assertEqual(rc, 1)
         self.assertIn("no workflow to run", text)
+
+
+# RFC-0056 / issue #206: the issue's `Reserve`, with the rejection declared.
+RESERVE_WITH_FAIL = """entity Product
+    field
+        id UUID
+        stock Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+
+service ShopService
+
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+"""
+
+
+class TestRunEndsFailedOnADeclaredRejection(unittest.TestCase):
+    """`lnpl run` exits non-zero when a guarded `fail` is reached, and the
+    typed failure rides the JSON result."""
+
+    def setUp(self):
+        self.workdir = os.path.join(REPO, ".claude", "tmp", "cli-fail")
+        os.makedirs(self.workdir, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.workdir, True)
+        self.src = os.path.join(self.workdir, "reserve.lnpl")
+        with open(self.src, "w", encoding="utf-8") as fh:
+            fh.write(RESERVE_WITH_FAIL)
+
+    def _run(self, stock, quantity):
+        import json
+        payload = os.path.join(self.workdir, "payload.json")
+        with open(payload, "w", encoding="utf-8") as fh:
+            json.dump({"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3308",
+                       "stock": stock, "quantity": quantity}, fh)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["run", self.src, "--payload", payload, "--json"])
+        return rc, json.loads(out.getvalue())["result"]
+
+    def test_a_reached_fail_exits_1_with_the_typed_failure(self):
+        rc, result = self._run(stock=1, quantity=5)
+        self.assertEqual(1, rc)
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("rejected", result["failure_kind"])
+        self.assertEqual("out-of-stock", result["failure_reason"])
+        self.assertEqual("fail out-of-stock", result["failed_step"])
+
+    def test_the_human_report_names_the_code_on_the_fail_step(self):
+        payload = os.path.join(self.workdir, "payload.json")
+        with open(payload, "w", encoding="utf-8") as fh:
+            fh.write('{"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3308", '
+                     '"stock": 1, "quantity": 5}')
+        rc, text = run_cli_err(["run", self.src, "--payload", payload])
+        self.assertEqual(1, rc)
+        self.assertIn("[Rejection code=out-of-stock]", text)
+        self.assertIn("failed at: fail out-of-stock", text)
+
+    def test_a_skipped_fail_exits_0(self):
+        rc, result = self._run(stock=5, quantity=5)
+        self.assertEqual(0, rc)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(["fail out-of-stock"], result["skipped"][0]["steps"])
+
+    def test_an_unguarded_fail_does_not_compile(self):
+        with open(self.src, "w", encoding="utf-8") as fh:
+            fh.write(RESERVE_WITH_FAIL.replace(
+                "    when product.stock < input.quantity\n", ""))
+        rc, text = run_cli_err(["run", self.src])
+        self.assertNotEqual(0, rc)
+        self.assertIn("not guarded", text)
 
 
 if __name__ == "__main__":

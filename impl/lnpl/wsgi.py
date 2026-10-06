@@ -38,13 +38,16 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
                       audience_for_path, open_repository)
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
-from .interp import (Interpreter, caller_view, mask_payload, open_clock,
-                     refinement_index, strip_schema_gen)
+from .condition import PAYLOAD_NAMESPACE
+from .interp import (CALLER_NAMESPACE, Interpreter, RunError, _resolve_lookup_key,
+                     caller_view, mask_payload, open_clock, refinement_index,
+                     strip_schema_gen)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
 from .parser import ParseError
-from .repo_policy import default_rows, event_emissions, repository_calls, row_key
+from .repo_policy import (default_rows, event_emissions, lookup_key_source,
+                          repository_calls, row_key)
 from .tracecontext import new_span_id, new_trace_id, parse_traceparent
 
 # M4: refuse to buffer more than this before reading a byte. The Fake-backend
@@ -430,9 +433,21 @@ def decode_cursor(token):
     return data["v"], data["k"]
 
 
+def _sort_key(value, key):
+    """RFC-0053 §9: the comparison key matching `query_sorted`'s present-
+    then-absent order — `(0, value, key)` for a present value, `(1, key)`
+    for an absent one. The tuples differ in length, which is safe: the first
+    element decides whenever it differs, so a later position is reached only
+    between two keys of the same kind."""
+    if value is None:
+        return (1, key)
+    return (0, value, key)
+
+
 def paginate(rows, field, entity_id, after, limit):
     """`rows` already ordered by `(field, row_key)` ascending (the exact
-    contract `RepositoryDriver.query_sorted` promises) -> `(page, next)`.
+    contract `RepositoryDriver.query_sorted` promises, absent values last —
+    RFC-0053 §9) -> `(page, next)`.
 
     `after` is a decoded `(value, row_key)` pair, or `None` for the first
     page. Raises `CursorError` when `after`'s value cannot be compared
@@ -441,8 +456,9 @@ def paginate(rows, field, entity_id, after, limit):
     """
     if after is not None:
         try:
+            after_key = _sort_key(after[0], after[1])
             rows = [r for r in rows
-                   if (r.get(field), row_key(entity_id, r)) > after]
+                    if _sort_key(r.get(field), row_key(entity_id, r)) > after_key]
         except TypeError as exc:
             raise CursorError(
                 "cursor does not match this field's type") from exc
@@ -772,6 +788,16 @@ def map_result(result):
             return 400, "validation-failed"               # M7
     if result.get("failure_kind") == "conflict":
         return 409, "conflict"                            # M8a
+    if result.get("failure_kind") == "not-found":
+        return 404, "not-found"                           # M8b
+    if result.get("failure_kind") == "write-conflict":
+        return 409, "write-conflict"                      # M8c
+    if result.get("failure_kind") == "id-required":
+        return 400, "id-required"                         # M8d (RFC-0055)
+    if result.get("failure_kind") == "rejected":
+        # RFC-0056: the author's declared business rejection. 422 for every
+        # code (typed by kind, #113); the problem `code` is the author's.
+        return 422, result["failure_reason"]              # M8e
     return 500, "workflow-failed"                         # M8
 
 
@@ -799,8 +825,22 @@ def map_consume_result(result):
     # checked before the effects-based branch below -- otherwise a conflict
     # (explicitly named as permanent by D7) would fall into that branch's
     # "RepositoryCall failed -> transient" reasoning and never dead-letter.
+    # The same is true of `not-found` (issue #197): the failed step's effect
+    # IS `RepositoryCall`, so without this check it would wrongly fall into
+    # the transient (E6) branch below.
     if result.get("failure_kind") == "conflict":
         return 422, "event-rejected"
+    if result.get("failure_kind") in ("not-found", "id-required"):
+        return 422, "event-rejected"
+    # RFC-0056: a reached `fail` rejects the identical event identically.
+    if result.get("failure_kind") == "rejected":
+        return 422, "event-rejected"
+    # issue #201: a version conflict is transient -- a redelivery re-reads
+    # and can succeed. Checked by kind, because the step that fails is a
+    # `set`, whose effect is `Assignment`, not `RepositoryCall`, so the
+    # effects-based branch below would call it permanent.
+    if result.get("failure_kind") == "write-conflict":
+        return 503, "event-retry-later"
     failed = result["failed_step"]
     for entry in result["steps"]:
         if entry["step"] == failed:
@@ -813,14 +853,17 @@ def map_consume_result(result):
 
 _TITLES = {
     "not-found": "no such path",
+    "id-required": "the payload must supply an id for this create",
     "method-not-allowed": "method not allowed",
     "auth-missing": "authorization required",
     "auth-invalid": "authorization token rejected",
     "forbidden": "the caller's role does not permit this",
     "conflict": "the request conflicts with the current state of the target resource",
+    "write-conflict": "a concurrent write changed the row since it was read -- retry is safe",
     "idempotency-in-progress": "a request with this Idempotency-Key is already running",
     "precondition-failed": "the If-Match version no longer matches the stored row",
     "precondition-invalid": "the If-Match header value is not a recognized ETag",
+    "precondition-unsupported": "this workflow's first read cannot be evaluated against If-Match before it runs",
     "body-too-large": "request body too large",
     "body-unreadable": "request body is not a JSON object",
     "deadline-exceeded": "workflow deadline exceeded",
@@ -843,10 +886,11 @@ def problem(status, code, detail, **extras):
 
     `code` is the stable string clients branch on (never the message); extras
     carry the run observables (`correlation_id`, `failed_step`, `skipped`) when
-    a run happened.
+    a run happened. A `fail <code>` code (RFC-0056) is not in `_TITLES` —
+    `lower` refuses every key there — so it takes the generic title.
     """
-    body = {"title": _TITLES[code], "status": status, "code": code,
-            "detail": detail}
+    body = {"title": _TITLES.get(code, "the workflow rejected the request"),
+            "status": status, "code": code, "detail": detail}
     body.update(extras)
     return body
 
@@ -1809,10 +1853,10 @@ class LnplWsgiApp:
                 repository.close()
 
     def _check_if_match(self, doc, workflow_id, payload, repository, if_match,
-                        correlation_id):
+                        correlation_id, claims=None):
         """`None` when the request may proceed; otherwise `(status, body)`
         for the 400/412 response to send instead of running the workflow
-        (issue #113, D13).
+        (issue #113, D13; issue #199 widens this for RFC-0052 `by <ref>`).
 
         Conditions against the FIRST entity the workflow reads
         (`repo_policy.repository_calls`, declared order) -- the workflow
@@ -1822,6 +1866,26 @@ class LnplWsgiApp:
         `observed_version` (D12's same opt-in), has nothing to condition
         on -- skipped, not enforced, matching D12's "no version, no ETag"
         the other direction.
+
+        issue #199: the key is derived through `repo_policy.lookup_key_source`
+        + `interp._resolve_lookup_key` -- the SAME two functions the
+        interpreter's own first-`RepositoryCall` execution calls (never a
+        second key formula). Three outcomes beyond the version check:
+          - no `by` at all (`lookup_key_source` returns `None`) -- today's
+            formula, unchanged, `RunError` categorically impossible here.
+          - `by <ref>` names a binding or network-result alias (anything
+            whose namespace is not `input`/`caller`) -- rejected STATICALLY
+            from the IR, before any read attempt: 400 `precondition-unsupported`.
+          - `by <ref>` is a safe shape (bare name, `input.<field>`,
+            `caller.<claim>`) but its value is absent from THIS request --
+            `_resolve_lookup_key` raises `RunError`, caught here: 400
+            `precondition-unsupported`. (Different from `DriverError` below,
+            which still defers -- a store fault is the workflow's OWN read to
+            report; an unresolvable precondition is this check's own answer
+            and must never be silently skipped or left to crash the request.)
+        A resolved key whose row is absent is itself a false precondition
+        (RFC 9110 §13.1.1, AIP-134): 412, not a skip -- it takes precedence
+        over the 404 the workflow's own read would otherwise produce.
         """
         claimed_version = _parse_if_match(if_match)
         if claimed_version is None:
@@ -1835,14 +1899,34 @@ class LnplWsgiApp:
         if not reads:
             return None
         entity_id = reads[0]
+        lookup_ref = lookup_key_source(doc, workflow_id, entity_id)
+        if lookup_ref is not None and "." in lookup_ref:
+            binding = lookup_ref.partition(".")[0]
+            if binding not in (PAYLOAD_NAMESPACE, CALLER_NAMESPACE):
+                return 400, problem(400, "precondition-unsupported",
+                                    "this workflow's first read uses a key "
+                                    "computed during the run, so If-Match "
+                                    "cannot be evaluated",
+                                    correlation_id=correlation_id)
+        caller = caller_view(claims)
         try:
-            row = repository.execute(entity_id, "read",
-                                     row_key(entity_id, payload))
+            key = _resolve_lookup_key(entity_id, lookup_ref, payload, {}, caller)
+        except RunError:
+            return 400, problem(400, "precondition-unsupported",
+                                "the lookup key %s is absent from the "
+                                "request, so If-Match cannot be evaluated"
+                                % lookup_ref, correlation_id=correlation_id)
+        try:
+            row = repository.execute(entity_id, "read", key)
         except DriverError:
             # Let the workflow's own read surface this the normal way
             # (M8/M14) instead of a second, earlier translation of it.
             return None
-        observed = getattr(row, "observed_version", None) if row is not None else None
+        if row is None:
+            return 412, problem(412, "precondition-failed",
+                                "the row this request's If-Match names "
+                                "does not exist", correlation_id=correlation_id)
+        observed = getattr(row, "observed_version", None)
         if observed is None:
             return None
         if observed != claimed_version:
@@ -1880,7 +1964,8 @@ class LnplWsgiApp:
             # run the workflow below and finalize its outcome before returning.
         if if_match is not None:
             precondition = self._check_if_match(doc, workflow_id, payload,
-                                                repository, if_match, correlation_id)
+                                                repository, if_match, correlation_id,
+                                                claims=claims)
             if precondition is not None:
                 precondition_status, precondition_body = precondition
                 if claim:

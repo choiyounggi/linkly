@@ -512,5 +512,88 @@ class TestModeBEquivalence(unittest.TestCase):
         self.assertTrue(ok, "\n".join(report))
 
 
+OPTIONAL_CUSTOMER_SRC = """capability postgres
+
+entity Customer
+    field
+        id UUID
+        name Text
+        nickname Text optional
+
+service CustomerService
+    policy
+        timeout 5s
+
+workflow RegisterCustomer
+    create customer
+"""
+
+OPTIONAL_CUSTOMER_ID = "0b6f1c2e-1111-4a2b-9c3d-000000000208"
+
+
+class TestOptionalFieldStoredRow(unittest.TestCase):
+    """RFC-0053: a stored row simply omits an absent (or JSON-null) optional
+    field — no invented default. Read back from the raw sqlite payload text,
+    not from `result`, so the key's absence is a fact about the store."""
+
+    def stored_payloads(self, payload, source=OPTIONAL_CUSTOMER_SRC):
+        import json
+        import sqlite3
+
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        doc = compile_doc(source).to_document()
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        interp = Interpreter(doc, repo_rows={}, repository=driver)
+        wf_id = nodes_of(doc, "Workflow")[0]["id"]
+        result = interp.run_workflow(wf_id, payload)
+        self.assertEqual(result["status"], "completed", result.get("failure_reason"))
+        conn = sqlite3.connect(db_path)
+        self.addCleanup(conn.close)
+        rows = conn.execute(
+            "SELECT payload FROM lnpl_rows WHERE entity_id = ?",
+            ("entity.customer",)).fetchall()
+        return [json.loads(text) for (text,) in rows]
+
+    def test_create_omits_an_absent_optional_field_from_the_stored_row(self):
+        rows = self.stored_payloads({"id": OPTIONAL_CUSTOMER_ID, "name": "Ada"})
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("nickname", rows[0])
+        self.assertEqual(rows[0]["name"], "Ada")
+
+    def test_create_omits_a_null_optional_field_from_the_stored_row(self):
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": "Ada", "nickname": None})
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("nickname", rows[0])
+
+    def test_create_stores_a_present_optional_field(self):
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": "Ada", "nickname": "Countess"})
+        self.assertEqual(rows[0]["nickname"], "Countess")
+
+    def test_create_keeps_a_null_non_optional_field_unchanged(self):
+        # Regression: a required field's explicit null, with no `validate`
+        # step in front of it, is still copied into the row as-is.
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": None})
+        self.assertIn("name", rows[0])
+        self.assertIsNone(rows[0]["name"])
+
+    def test_create_drops_null_when_only_the_created_entity_marks_it_optional(self):
+        # `Account.nickname` is required, so the run-wide AND rule keeps the
+        # null in the payload; `create customer`'s own per-entity check is
+        # what keeps it out of Customer's row.
+        source = OPTIONAL_CUSTOMER_SRC.replace(
+            "service CustomerService",
+            "entity Account\n    field\n        id UUID\n"
+            "        nickname Text\n\nservice CustomerService")
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": "Ada", "nickname": None},
+            source=source)
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("nickname", rows[0])
+
+
 if __name__ == "__main__":
     unittest.main()

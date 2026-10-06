@@ -19,6 +19,8 @@ issue #139) — 뒤 두 행은 t-diag·t-gen이 각각 연 그룹을 얹은 것�
 등록되어도(섀도잉) 숨기거나 걸러내지 않고 그대로 나열한다.
 """
 
+import os
+
 from lnpl import __version__
 from lnpl import diagnostics as _diagnostics
 from lnpl import drivers as _drivers
@@ -186,9 +188,18 @@ def capabilities_document():
     """설치 확장 카탈로그. 최상위 키는 고정이다 — 빠지지 않는다.
 
     빈 등록은 `[]`로 실린다 — 빈 카탈로그도 성공이다(rc 0).
+
+    `vocabulary_digest`/`package_path`(issue #205): 버전 문자열이 같아도 어휘가
+    다른 두 컴파일러를 구분한다. digest는 `.lir.json` provenance와 같은 값이다.
     """
+    # Lazy import: `provenance` imports `SLOTS` from this module at its own
+    # module level, so a top-level import here would cycle — same shape as
+    # `lower.WorkflowModule.to_document()`.
+    from lnpl import provenance
     return {
         "lnpl_version": __version__,
+        "vocabulary_digest": provenance._current_vocabulary_digest(),
+        "package_path": os.path.dirname(os.path.abspath(__file__)),
         "slots": {
             slot: {
                 "builtin": list(builtin),

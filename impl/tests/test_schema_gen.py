@@ -20,7 +20,7 @@ import unittest
 from lnpl import cli
 from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import SCHEMA_GEN_KEY, schema_generation, strip_schema_gen
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 from tests.fixtures import VALUE_INVENTORY
 
@@ -95,6 +95,15 @@ class SchemaGenerationDigestTest(unittest.TestCase):
         self.assertEqual(schema_generation(without_derived),
                          schema_generation(with_derived))
 
+    def test_optional_does_not_change_the_hash(self):
+        # RFC-0053: `optional` stays out of the hash, so declaring an existing
+        # field optional never re-stamps or invalidates stored rows.
+        required_field_node = self._node([{"name": "nickname", "type": "Text"}])
+        optional_field_node = self._node(
+            [{"name": "nickname", "type": "Text", "optional": True}])
+        self.assertEqual(schema_generation(required_field_node),
+                         schema_generation(optional_field_node))
+
 
 class StripSchemaGenTest(unittest.TestCase):
 
@@ -154,6 +163,15 @@ class WriteInjectionTest(CliTestCase):
         self.doc = cli.compile_source([self.source])
         self.product_id = _entity_node(self.doc, "Product")["id"]
         self.order_id = _entity_node(self.doc, "Order")["id"]
+        # issue #197: a persistent store is not seeded from the request
+        # payload, so the Product row `PlaceOrder` reads is stored here.
+        target = next(n["id"] for n in self.doc["nodes"] if n["kind"] == "Workflow")
+        driver = SqliteRepositoryDriver(self.db)
+        try:
+            driver.seed(default_rows(self.doc, target,
+                                     {"id": "p-1", "stock": 9, "quantity": 4}))
+        finally:
+            driver.close()
 
     def _raw_row(self, entity_id, key):
         driver = SqliteRepositoryDriver(self.db)

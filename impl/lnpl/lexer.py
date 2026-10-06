@@ -6,6 +6,8 @@ RFC-0002 §Lexical / §Block structure:
   - blocks are delimited by keywords, never by indentation
 """
 
+import re
+
 KEYWORDS_TOP = ("entity", "service", "workflow", "event", "capability", "refine")
 KEYWORDS_CLAUSE = ("field", "goal", "policy", "security", "performance",
                    "database", "expose", "spec", "given", "when", "expect")
@@ -61,6 +63,13 @@ LOGICAL_OPS = ("and",)
 # `when`/`until`/`repeat`, `or` does not open a new guard on its own.
 GUARD_ALT_KEYWORD = "or"
 
+# RFC-0060: the sibling-branch keyword. Recognized by the parser only right
+# after a `when` guard's single item was attached — see
+# `parser._append_workflow_item`'s `_otherwise_slot` state. Not a
+# `KEYWORDS_CONTROL` entry: unlike `when`/`until`/`repeat`, `otherwise` never
+# opens a new guard on its own.
+GUARD_OTHERWISE_KEYWORD = "otherwise"
+
 # RFC-0015 §1 `Presence`: the two existence checks, `<ref> exists|missing`.
 # Moved here from `condition.py` (issue #177) so every guard-condition word
 # the generated reference renders comes from one table module.
@@ -105,6 +114,26 @@ SCHEDULE_ZONES = ("UTC",)
 # warning on every `event` declaration in every existing document — a behaviour
 # change issue #49 does not ask for. RFC-0016 §Open Questions records it.
 EVENT_TRIGGERS = ("schedule",)
+
+# RFC-0056: `fail <code>`'s code must not collide with an existing problem
+# `code` -- mirrors impl/lnpl/wsgi.py's `_TITLES` keys (duplicated here, not
+# imported, because `wsgi.py` imports `lower.py`, which would make the reverse
+# import circular). A conformance test in impl/tests/test_cli_vocab.py asserts
+# these two sets stay equal.
+RESERVED_PROBLEM_CODES = (
+    "auth-invalid", "auth-missing", "body-too-large", "body-unreadable",
+    "cloudevents-invalid", "conflict", "cursor-invalid",
+    "deadline-exceeded", "event-rejected", "event-retry-later",
+    "forbidden", "id-required", "idempotency-in-progress", "limit-invalid",
+    "method-not-allowed", "not-found", "not-ready", "precondition-failed",
+    "precondition-invalid", "precondition-unsupported", "rate-limited",
+    "read-failed", "shutting-down", "validation-failed",
+    "workflow-failed", "write-conflict",
+)
+
+# RFC-0056: the kebab-case shape `fail <code>` requires -- lowercase
+# letters/digits, hyphen-separated, no leading/trailing/double hyphen.
+KEBAB_CODE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 class LexError(Exception):
