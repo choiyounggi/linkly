@@ -63,5 +63,6 @@
 | RFC-0050 숫자 형태 가드 술어 — `is-numeric` / `is-not-numeric` | 외부 응답 값이 숫자가 아니면 RunError 대신 대체 경로로 보내고 싶다 — `is-numeric`/`is-not-numeric` 술어가 무엇을 숫자로 보는지, 왜 `exists`/`missing`과 달리 `and` 안에 쓸 수 있는지, 모드 B가 왜 그 워크플로를 거부하는지 | `rfcs/0050-numeric-guard-predicate.md` |
 | RFC-0051 `set`·가드의 Money 산술 — 같은 통화 부분집합 | Money 필드를 set·가드 산술에 쓰고 싶다 — 어떤 연산이 허용되고 어떤 연산이 여전히 거부되는지, 통화가 다르면 무슨 일이 나는지, 모드 B가 왜 가드 비교를 거부하는지 | `rfcs/0051-money-arithmetic-in-set-and-guards.md` |
 | RFC-0052 조회 키 절 `by <ref>` — read·update·delete가 payload `id` 아닌 키로 행을 지목한다 | find/update/delete가 payload의 id가 아닌 다른 키로 행을 지목하게 하고 싶다(`by <ref>`) — 어떤 참조가 키가 될 수 있고, 값이 없으면 무슨 일이 나며, create는 왜 여전히 as만 받고 모드 B는 왜 거부하는지 | `rfcs/0052-lookup-key-clause.md` |
+| RFC-0053 이벤트 발행 SPI — `lnpl.publishers`, `EventPublisher` 계약, 레퍼런스 릴레이 스킴 디스패치 | 브로커로 이벤트를 보낼 공식 SPI가 필요하다 — `lnpl.publishers` entry-points 그룹과 `EventPublisher` 계약이 무엇을 받는지, `lnpl relay --target`이 스킴으로 어떻게 드라이버를 고르는지, `http(s)://`가 왜 바이트 동일인지, TCK가 발행-전-ack 드라이버를 어떻게 잡는지 | `rfcs/0053-event-publisher-spi.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

@@ -710,6 +710,11 @@ RFC_ROUTES = {
     "0052": ("find/update/delete가 payload의 id가 아닌 다른 키로 행을 지목하게 하고 "
              "싶다(`by <ref>`) — 어떤 참조가 키가 될 수 있고, 값이 없으면 무슨 일이 "
              "나며, create는 왜 여전히 as만 받고 모드 B는 왜 거부하는지", ()),
+    "0053": ("브로커로 이벤트를 보낼 공식 SPI가 필요하다 — `lnpl.publishers` "
+             "entry-points 그룹과 `EventPublisher` 계약이 무엇을 받는지, "
+             "`lnpl relay --target`이 스킴으로 어떻게 드라이버를 고르는지, "
+             "`http(s)://`가 왜 바이트 동일인지, TCK가 발행-전-ack 드라이버를 "
+             "어떻게 잡는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

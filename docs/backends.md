@@ -229,6 +229,15 @@ CLI 계약(`plugins/lnpl/skills/lnpl-authoring/cli-surface.md`에 상세):
 퍼블리시가 확인된 뒤에만 불러야 한다 — 미리 ack하면 퍼블리시가 실패했을 때
 그 emission을 다시 볼 방법이 없다(at-least-once가 깨진다).
 
+**이번 확장(issue #191, RFC-0053).** 위 문단의 "외부 릴레이"가 `lnpl
+relay` 자신일 때는 더 이상 전부 프로세스 밖이 아니다 — `--target`이
+`http(s)://`가 아닌 스킴이면 코어가 소유하는 `lnpl.publishers`
+레지스트리가 등록된 `EventPublisher` 드라이버를 골라, 그 드라이버의
+`publish`가 확인한 뒤에만 ack한다(아래 §15). 실제 브로커 바인딩(카프카
+클라이언트 코드 등)은 여전히 그 드라이버를 구현하는 외부 패키지의
+몫이다 — 바뀐 것은 코어가 "어느 드라이버를 쓸지 고르는 지점"까지
+소유하게 된 것뿐이다.
+
 **하지 않는 것.** HTTP 드레인(`GET /_outbox`)과 웹훅 push는 이슈가 후속으로
 명시한 범위라 `serve.py`를 건드리지 않았다. 브로커 바인딩(kafka 등)은 릴레이
 구현체의 몫이다. `#79`의 워크플로 단위 트랜잭션 경계와의 결합(실패한 실행이
@@ -273,7 +282,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | **트랜잭션 경계 밖 `NetworkCall`의 보상** | `policy rollback`은 저장소 쓰기만 되돌린다(RFC-0032 §Open Questions ②) — `call`/`request`는 이미 나간 뒤라 되돌아가지 않는다. 컴파일러는 그 워크플로마다 `rollback-escapes-network`(warning, 이슈 #112)로 **신고만** 한다. 보상 방식은 RFC-0034(Draft)가 결정했고 구현은 후속(Batch B) |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
-| **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
+| **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 — `lnpl relay` 자신이 그 퍼블리셔 역할을 할 때는 `lnpl.publishers`로 등록된 드라이버를 통해서다(§15, issue #191); 실 드라이버 구현 자체는 여전히 별도 패키지의 몫이다 |
 | **브로커 → `consume by` 인입의 실바인딩(kafka 컨슈머 등)** | #88 원칙을 소비 쪽에 대칭 적용한 것(이슈 #118). 코어가 소유하는 것은 구독 선언(`consume by`)·인입 엔드포인트(`POST /-/events/<slug>`)·멱등/오류-분류 의미론뿐이다 — 브로커에서 읽어 그 엔드포인트를 찌르는 것은 `lnpl relay`(레퍼런스, urllib만) 또는 외부 릴레이 구현체의 몫이다. 실제 kafka 컨슈머 그룹·오프셋 관리는 이 레포 밖 |
 | **`security encrypt <field>`** | 제거됨 — RFC-0035 §D3 참조(issue #127). 실제로 집행할 외부 드라이버가 0건이었던 것이 "드라이버 의존"이 아니라 항상 빈 집합이었다는 이유로, 닫힌 어휘에서 빠졌다. `Password` 마스킹(#43, 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 관측 채널 규칙)은 이 결정과 무관하게 그대로 남는다 |
 | **`NetworkDriver`의 커넥션 풀 실드라이버** | `HttpNetworkDriver`는 매 호출 연결을 열고 닫는다 — RFC-0037(이슈 #109)이 더한 것은 retry/backoff/jitter/서킷브레이커/경로 템플릿뿐이다. `lnpl.networks` entry-points SPI 표면 자체는 이슈 #132가 열었다(§10) — keep-alive 풀이 있는 실드라이버(`urllib3`/`httpx` 기반)를 그 표면에 등록하는 외부 패키지는 여전히 이 레포 밖이다 |
@@ -1017,6 +1026,81 @@ PITR은 WAL 아카이빙 기반의 별도 절차다 — `pg_dump`/`pg_dumpall`
 ([Continuous Archiving and Point-in-Time Recovery (PITR)](https://www.postgresql.org/docs/current/continuous-archiving.html)).
 이 레포는 그 드라이버를 구현하지 않는다 — `RepositoryDriver` SPI(§8)를
 구현하는 쪽의 책임이다.
+
+## 15. SPI: 외부 이벤트 발행자 등록 (issue #191, RFC-0053)
+
+`outbox`가 쌓은 emission을 실제 브로커로 보내는 경계를 연다 — §8/§10과
+같은 규율: 내장 스킴(`http`/`https`)이 entry-points 조회보다 먼저
+검사돼 절대 가려지지 않고, 미등록 스킴의 메시지는 받은 스킴·내장
+목록·등록된 entry-points 목록을 함께 싣되 **대상 URL 전체는 싣지
+않는다**(userinfo로 크리덴셜을 실어 보낼 수 있어서다) — entry-point
+로드 실패는 `ImportError`를 그대로 흘리지 않고 `DriverError`로 번역한다
+("ONE ERROR TYPE OUT").
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.publishers"]
+kafka = "my_lnpl_kafka:make_publisher"
+```
+
+`my_lnpl_kafka.make_publisher`는 `target`(`--target`에 준 전체 URL
+문자열 — 콜론 뒤 나머지가 아니라 scheme까지 포함한 원문 그대로) 하나를
+받아 `EventPublisher`를 반환하는 콜러블이다. `lnpl relay --target
+kafka://broker:9092/topic`이 그 팩토리를 찾아 부른다 — 코어 쪽에 이
+스킴에 대한 if문이 하나도 없다.
+
+`EventPublisher`는 `publish(envelope)`·`publish_batch(envelopes)`·`close()`
+셋이다. `publish`가 예외 없이 돌아오면 ack, `PublishRejected`(영구 거부)면
+ack + dead-letter 경고, 그 외 `DriverError`면 ack하지 않고 다음 드레인이
+재시도한다.
+
+### 내장 스킴은 절대 가려지지 않는다
+
+`open_publisher`는 `http`/`https`를 entry-points 조회보다 **먼저**
+검사한다. 어떤 패키지가 `lnpl.publishers`에 그 두 이름으로 등록해도
+그 등록은 결코 조회되지 않는다 — §8/§10의 `sqlite`/`fake`/`http`와
+같은 이유, 같은 보장이다.
+
+### 미등록 스킴의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 스킴은 `ValueError`로
+거부되며, 메시지가 **받은 스킴**(전체 target이 아니다)·**내장
+목록**(`http`, `https`)·**등록된 entry-points 목록**(없으면 "none")을
+함께 싣는다.
+
+### entry-point 로드 실패
+
+등록은 됐지만 그 값(`module:attr`)을 import할 수 없으면
+`open_publisher`가 `ImportError`를 `DriverError`로 번역한다(원인 체인
+보존) — §8/§9/§10과 같은 규칙.
+
+### TCK로 검증하기
+
+외부 발행 드라이버는 `lnpl.testing.EventPublisherTCK`를 상속해 자기
+CI에서 돌린다:
+
+```python
+import unittest
+from lnpl.testing import EventPublisherTCK
+
+class MyKafkaPublisherTCKTest(EventPublisherTCK, unittest.TestCase):
+    def make_publisher(self, fail_ids=frozenset()):
+        return MyKafkaPublisher(..., fail_ids=fail_ids)
+```
+
+검증 항목: 발행 확인 후에만 ack, 발행 실패는 미ack(다음 드레인이
+재시도), 재시작 뒤 미확인 행 재발행, outbox `seq` 순서 보존. TCK가
+실제로 이것을 잡는다는 증거는 "발행 전에 ack하는" 드라이버와 "오류를
+삼키고 ack하는" 드라이버 둘 다에 같은 케이스를 돌려 실패를 확인한
+discriminating test다(`impl/tests/test_publisher_spi.py`의
+`EventPublisherTCKDiscriminatesTest`, §8의 `RollbackTCKDiscriminatesTest`와
+같은 방식). `make_publisher(fail_ids)`가 돌려주는 객체는 `fail_ids`에 든
+`id`의 `publish`에서 `DriverError`를 던져야 하고, 확인된 봉투 `id`를 발행
+순서대로 담은 `published` 리스트를 노출해야 한다 — 실브로커 드라이버는 이를
+테스트 전용 래퍼로 제공한다.
 
 ## 참고
 
