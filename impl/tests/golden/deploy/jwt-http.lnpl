@@ -1,0 +1,13 @@
+capability jwt
+capability http PaymentGateway
+    method post
+
+entity Note
+    field
+        id UUID
+
+service NoteService
+
+workflow SaveNote
+    call PaymentGateway as paid
+    call OrdersApi as orders

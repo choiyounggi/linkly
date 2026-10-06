@@ -42,8 +42,9 @@ GENERATORS_ENTRY_POINT_GROUP = "lnpl.generators"
 
 # The closed table of built-in generator names `lnpl generate <name>` accepts
 # without an entry-point lookup — `drivers.py`'s `BACKENDS` /
-# `BUILTIN_TOKEN_PROVIDERS` mirrored.
-BUILTIN_GENERATORS = ("openapi",)
+# `BUILTIN_TOKEN_PROVIDERS` mirrored. `compose` and `k8s` are the deployment
+# generators of issue #189 (`deploy_gen.py`).
+BUILTIN_GENERATORS = ("openapi", "compose", "k8s")
 
 
 def _generator_entry_points():
@@ -60,10 +61,15 @@ def _generator_entry_points():
 
 def resolve_generator(name):
     """`<name>` -> a `generate(document, options)` callable, or raise
-    `GeneratorError`. The built-in `openapi` generator always wins over an
-    entry-point of the same name."""
+    `GeneratorError`. The built-in generators (`BUILTIN_GENERATORS`) always
+    win over an entry-point of the same name."""
     if name == "openapi":
         return _openapi.generate_files
+    if name in ("compose", "k8s"):
+        # issue #189: imported here, not at module top -- deploy_gen
+        # imports GeneratorError from this module.
+        from . import deploy_gen
+        return deploy_gen.generate_compose if name == "compose" else deploy_gen.generate_k8s
     for entry_point in _generator_entry_points():
         if entry_point.name == name:
             try:
@@ -77,6 +83,21 @@ def resolve_generator(name):
         % (name, ", ".join(BUILTIN_GENERATORS),
            ", ".join(sorted(ep.name for ep in _generator_entry_points()))
            or "none"))
+
+
+def parse_generator_options(items):
+    """`lnpl generate --set KEY=VALUE` (repeatable, issue #189) -> dict.
+    KEY and VALUE are taken verbatim; VALUE may be empty here (each
+    generator decides whether an empty value is allowed)."""
+    options = {}
+    for item in items or []:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise GeneratorError("--set expects KEY=VALUE, got %r" % item)
+        if key in options:
+            raise GeneratorError("--set %r given more than once" % key)
+        options[key] = value
+    return options
 
 
 def run_generator(generator, document, options, out_dir):

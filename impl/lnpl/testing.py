@@ -640,6 +640,115 @@ class EventPublisherTCK:
                          ["outbox-1", "outbox-2", "outbox-3"])
 
 
+class SecretProviderTCK:
+    """Mix into a `unittest.TestCase` subclass and override the three hooks
+    -- see `SecretProvider`'s docstring (`lnpl.drivers`, issue #192) for
+    the contract::
+
+        import unittest
+        from lnpl.testing import SecretProviderTCK
+
+        class MyVaultTCKTest(SecretProviderTCK, unittest.TestCase):
+            def make_provider(self, initial):
+                return MyVaultProvider(...)   # TCK_KEY holds `initial`
+
+            def rotate(self, provider, new_value):
+                ...                           # test-only: write a new version
+
+            def break_provider(self, provider):
+                ...                           # test-only: make reads fail
+
+    `make_provider(initial)` returns a fresh provider whose `TCK_KEY`
+    currently holds `initial` and has no previous value. `rotate` makes
+    `new_value` current and the old current value the previous one.
+    `break_provider` makes every later `get`/`get_previous` raise
+    `DriverError`. A driver backed by a real store supplies the two
+    test-only hooks through a test wrapper.
+    """
+
+    TCK_KEY = "lnpl-tck-key"
+    TCK_UNKNOWN_KEY = "lnpl-tck-unknown-key"
+    TCK_VALUE_0 = b"lnpl-tck-secret-value-0-" + b"0" * 16
+    TCK_VALUE_1 = b"lnpl-tck-secret-value-1-" + b"1" * 16
+    TCK_VALUE_2 = b"lnpl-tck-secret-value-2-" + b"2" * 16
+
+    def make_provider(self, initial):
+        raise NotImplementedError(
+            "SecretProviderTCK subclasses must override make_provider() "
+            "to return a fresh SecretProvider whose TCK_KEY holds `initial`")
+
+    def rotate(self, provider, new_value):
+        raise NotImplementedError(
+            "SecretProviderTCK subclasses must override rotate() to make "
+            "`new_value` current and the old current value previous")
+
+    def break_provider(self, provider):
+        raise NotImplementedError(
+            "SecretProviderTCK subclasses must override break_provider() "
+            "so that later get/get_previous raise DriverError")
+
+    def _provider(self, initial):
+        provider = self.make_provider(initial)
+        self.addCleanup(provider.close)
+        return provider
+
+    def test_get_returns_the_configured_bytes(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        value = provider.get(self.TCK_KEY)
+
+        self.assertIsInstance(value, bytes)
+        self.assertEqual(value, self.TCK_VALUE_0)
+        self.assertGreaterEqual(len(value), 32)
+
+    def test_get_previous_is_none_before_any_rotation(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.assertIsNone(provider.get_previous(self.TCK_KEY))
+
+    def test_rotation_moves_current_to_previous(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.rotate(provider, self.TCK_VALUE_1)
+
+        self.assertEqual(provider.get(self.TCK_KEY), self.TCK_VALUE_1)
+        self.assertEqual(provider.get_previous(self.TCK_KEY), self.TCK_VALUE_0)
+
+    def test_a_second_rotation_keeps_only_one_previous(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.rotate(provider, self.TCK_VALUE_1)
+        self.rotate(provider, self.TCK_VALUE_2)
+
+        self.assertEqual(provider.get(self.TCK_KEY), self.TCK_VALUE_2)
+        self.assertEqual(provider.get_previous(self.TCK_KEY), self.TCK_VALUE_1)
+
+    def test_an_unknown_key_raises_driver_error(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        with self.assertRaises(DriverError):
+            provider.get(self.TCK_UNKNOWN_KEY)
+        with self.assertRaises(DriverError):
+            provider.get_previous(self.TCK_UNKNOWN_KEY)
+
+    def test_a_broken_provider_raises_driver_error(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.break_provider(provider)
+
+        with self.assertRaises(DriverError):
+            provider.get(self.TCK_KEY)
+        with self.assertRaises(DriverError):
+            provider.get_previous(self.TCK_KEY)
+
+    def test_close_is_idempotent(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        provider.close()
+
+        self.assertIsNone(provider.close())
+
+
 NETWORK_TCK_TARGET = "TckTarget"
 
 

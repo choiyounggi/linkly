@@ -40,7 +40,8 @@ from .vocab import vocabulary_document
 from .agents import run_cycle
 from .config import SecretFileRef, load_config
 from .differential import DifferentialError, verify as verify_modes
-from .generators import GeneratorError, resolve_generator, run_generator
+from .generators import (GeneratorError, parse_generator_options,
+                         resolve_generator, run_generator)
 from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
@@ -727,14 +728,12 @@ def cmd_openapi(args):
 
 
 def cmd_generate(args):
-    # options is fixed at {} (issue #139 D4): no flag exists yet to fill it
-    # from, and inventing one ahead of a real consumer is exactly the
-    # speculative surface this repo's SPIs avoid (drivers.py/wsgi.py/kb.py
-    # all open their entry-points groups the same way, with no options
-    # channel until one was needed).
+    # issue #189: --set KEY=VALUE (repeatable) fills `options`; each
+    # generator validates its own keys (docs/backends.md section 12).
+    options = parse_generator_options(args.set)
     doc = compile_source(args.source)
     generator = resolve_generator(args.name)
-    written = run_generator(generator, doc, {}, args.out)
+    written = run_generator(generator, doc, options, args.out)
     print("wrote %d file(s) to %s" % (len(written), args.out))
     return 0
 
@@ -1890,13 +1889,19 @@ def _build_parser(subparsers_out=None):
     gn = sub.add_parser("generate",
                         help="run a registered generator against the IR "
                              "(lnpl.generators SPI, issue #139)")
-    gn.add_argument("name", help="registered generator name (e.g. openapi)")
+    gn.add_argument("name",
+                    help="generator name: built-in openapi, compose, k8s, or a "
+                         "registered lnpl.generators entry-point")
     gn.add_argument("source", nargs="+",
                     help="one or more .lnpl files (merged in the given order), "
                          "or a single directory (its *.lnpl, filename-sorted — "
                          "RFC-0031, issue #77)")
     gn.add_argument("--out", required=True,
                     help="directory to write the generator's output under")
+    gn.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="generator option (repeatable); compose: image, port, "
+                         "source, postgres_image, redis_image; k8s: image, name, "
+                         "replicas, cpu_request, cpu_limit, memory (issue #189)")
     gn.set_defaults(func=cmd_generate)
 
     sv = sub.add_parser("serve",
@@ -2203,7 +2208,7 @@ def _build_parser(subparsers_out=None):
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "
                               "repository/cache/network/token/exporter/"
-                              "generators/diagnostics/kb/publishers (#134)")
+                              "generators/diagnostics/kb/publishers/secrets (#134)")
     cap.add_argument("--json", action="store_true",
                      help="explicit stable form (default: same document)")
     cap.set_defaults(func=cmd_capabilities)

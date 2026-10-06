@@ -86,6 +86,13 @@ PUBLISHERS = ("http", "https")
 # so a registered entry-point can never shadow them.
 PUBLISHERS_ENTRY_POINT_GROUP = "lnpl.publishers"
 
+# issue #192: the entry-points group an external package registers a
+# SecretProvider factory under (`[project.entry-points."lnpl.secrets"]`).
+# `env` and `file` are the sources core implements inline; a registered
+# entry-point named either is refused, never silently used or ignored.
+SECRETS_ENTRY_POINT_GROUP = "lnpl.secrets"
+BUILTIN_SECRET_SOURCES = ("env", "file")
+
 # Every connection waits this long for a lock instead of raising at once.
 BUSY_TIMEOUT_MS = 5000
 
@@ -449,6 +456,36 @@ class EventPublisher:
         and must not swallow a mid-batch failure."""
         for envelope in envelopes:
             self.publish(envelope)
+
+    def close(self):
+        """Release resources. Safe to call more than once."""
+        raise NotImplementedError
+
+
+class SecretProvider:
+    """The `lnpl.secrets` capability's adapter contract (issue #192).
+    Reads a secret (e.g. the JWT signing key) from an external store such
+    as Vault or a cloud secret manager, so the value never has to live in
+    an environment variable or in lnpl.toml.
+
+    The factory registered under `lnpl.secrets` is called with NO
+    arguments (like `lnpl.tokens`): connection settings (store URL,
+    authentication) are the driver package's own configuration. The
+    `key` arrives per call.
+
+    Values are `bytes` only — a `str` return is a contract violation.
+    Any failure (unknown key, store down, permission) raises
+    `DriverError`, and its text must never carry secret bytes.
+    """
+
+    def get(self, key):
+        """Return the CURRENT value of `key` as bytes."""
+        raise NotImplementedError
+
+    def get_previous(self, key):
+        """Return the value `key` held before its last rotation, as
+        bytes, or None when there is none."""
+        raise NotImplementedError
 
     def close(self):
         """Release resources. Safe to call more than once."""
@@ -2091,3 +2128,70 @@ def open_publisher(target):
         "unknown publisher scheme %r (built-in: %s; registered: %s)"
         % (scheme, ", ".join(PUBLISHERS),
            ", ".join(_registered_publisher_names()) or "none"))
+
+
+def _secret_entry_points():
+    """Every entry-point registered under `lnpl.secrets` -- same stdlib
+    version split `_publisher_entry_points()` handles."""
+    try:
+        return importlib_metadata.entry_points(group=SECRETS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            SECRETS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_secret_provider_names():
+    return sorted(ep.name for ep in _secret_entry_points())
+
+
+def open_secret_provider(name):
+    """A registered `lnpl.secrets` name -> a SecretProvider (issue #192).
+
+    `env` and `file` (`BUILTIN_SECRET_SOURCES`) are sources the core reads
+    inline, never providers. A registration under either name is refused
+    with `DriverError` naming the entry-point (the `lnpl.tokens` `hmac`
+    precedent: the secret source is a trust boundary, so a same-named
+    package must neither win nor be silently ignored); without one, asking
+    for a built-in name is a `ValueError` pointing at the inline forms.
+
+    A matching entry-point is loaded and its factory called with no
+    arguments. A load failure or a raising factory becomes `DriverError`
+    naming only the exception TYPE — no driver exception's own text is
+    ever copied, since a module or factory may put a URL or a secret value
+    in it (and a raising factory's chain is dropped, `from None`, so a
+    formatted traceback cannot print it either). An unregistered name is a
+    `ValueError` listing the built-in names and the registered ones (or
+    "none").
+    """
+    entry_points = list(_secret_entry_points())
+    if name in BUILTIN_SECRET_SOURCES:
+        shadow = next((ep for ep in entry_points if ep.name == name), None)
+        if shadow is not None:
+            raise DriverError(
+                "entry-point %r (registered via %r) attempts to shadow the "
+                "built-in secret source %r; built-in names are reserved "
+                "(lnpl.secrets SPI, docs/backends.md)"
+                % (shadow.name, shadow.value, shadow.name))
+        raise ValueError(
+            "secret provider %r is a built-in source, not a registered "
+            "provider — write jwt = \"ENV_NAME\" or jwt = { file = "
+            "\"/absolute/path\" } instead" % name)
+    for entry_point in entry_points:
+        if entry_point.name == name:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "secret provider %r registered via entry-point %r failed "
+                    "to load (%s)"
+                    % (name, entry_point.value, type(exc).__name__)) from exc
+            try:
+                return factory()
+            except Exception as exc:
+                raise DriverError(
+                    "secret provider %r failed to start (%s)"
+                    % (name, type(exc).__name__)) from None
+    raise ValueError(
+        "unknown secret provider %r (built-in: %s; registered entry-points: %s)"
+        % (name, ", ".join(BUILTIN_SECRET_SOURCES),
+           ", ".join(_registered_secret_provider_names()) or "none"))
