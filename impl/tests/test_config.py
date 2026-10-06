@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import unittest
 
-from lnpl.config import ResolvedConfig, load_config
+from lnpl.config import ResolvedConfig, SecretFileRef, load_config
 from lnpl.serve import WsgiConfigError
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -274,6 +274,105 @@ class MalformedFileTest(ConfigTestCase):
         path = _write(self.dir, "lnpl.toml", '[default]\nendpoints = "nope"\n')
         with self.assertRaises(WsgiConfigError):
             load_config(path=path)
+
+
+class SecretTableFormTest(ConfigTestCase):
+    """issue #192 D1/D2: `[*.secrets] <key> = { file = "<absolute path>" }`
+    is a pointer to a file, loaded as `SecretFileRef`; every other table shape
+    is refused with a value-free message."""
+
+    FORM = '{ file = "<absolute path>" }'
+
+    def _load(self, line):
+        return load_config(path=_write(
+            self.dir, "lnpl.toml", "[default.secrets]\n%s\n" % line))
+
+    def _refused(self, line):
+        with self.assertRaises(WsgiConfigError) as ctx:
+            self._load(line)
+        return str(ctx.exception)
+
+    def test_normal_file_form_loads_a_secret_file_ref(self):
+        cfg = self._load('jwt = { file = "/run/secrets/jwt" }')
+        self.assertEqual(cfg.secrets["jwt"], SecretFileRef("/run/secrets/jwt"))
+
+    def test_normal_tilde_path_is_expanded(self):
+        cfg = self._load('jwt = { file = "~/s" }')
+        self.assertEqual(cfg.secrets["jwt"],
+                         SecretFileRef(os.path.expanduser("~/s")))
+        self.assertTrue(os.path.isabs(cfg.secrets["jwt"].path))
+
+    def test_boundary_name_string_is_unchanged(self):
+        cfg = self._load('jwt = "LNPL_T192_ENV"')
+        self.assertEqual(cfg.secrets["jwt"], "LNPL_T192_ENV")
+        self.assertIsInstance(cfg.secrets["jwt"], str)
+
+    def test_error_relative_path_is_refused(self):
+        text = self._refused('jwt = { file = "./s" }')
+        self.assertIn("default.secrets.jwt.file must be an absolute path", text)
+        self.assertNotIn("./s", text)
+
+    def test_error_file_not_a_string(self):
+        text = self._refused("jwt = { file = 192192192 }")
+        self.assertIn("default.secrets.jwt.file must be a non-empty string (a path)", text)
+        self.assertNotIn("192192192", text)
+
+    def test_boundary_empty_file_string(self):
+        text = self._refused('jwt = { file = "" }')
+        self.assertIn("default.secrets.jwt.file must be a non-empty string (a path)", text)
+
+    def test_error_unknown_key(self):
+        text = self._refused(
+            'jwt = { bogus = "FAKE-SECRET-192-unknown-key-value-aaaaaaaa" }')
+        self.assertIn("default.secrets.jwt", text)
+        self.assertIn(self.FORM, text)
+        self.assertIn("bogus", text)
+        self.assertNotIn("FAKE-SECRET-192", text)
+
+    def test_boundary_empty_table(self):
+        text = self._refused("jwt = {}")
+        self.assertIn(self.FORM, text)
+        self.assertTrue(text.endswith("got key(s) none"), text)
+
+    def test_error_file_and_provider_mixed(self):
+        text = self._refused('jwt = { file = "/a", provider = "p" }')
+        self.assertIn("default.secrets.jwt", text)
+        self.assertIn(self.FORM, text)
+        self.assertIn("file, provider", text)
+
+    def test_error_non_string_non_table_keeps_todays_text(self):
+        text = self._refused("jwt = 42")
+        self.assertIn("default.secrets.jwt must be a string (an environment "
+                      "variable NAME), got int", text)
+
+    def test_normal_profile_overlays_a_file_form_by_key(self):
+        path = _write(self.dir, "lnpl.toml", """
+[default.secrets]
+jwt = "LNPL_T192_ENV"
+
+[prod.secrets]
+jwt = { file = "/run/secrets/jwt" }
+""")
+        self.assertEqual(load_config(path=path).secrets["jwt"], "LNPL_T192_ENV")
+        self.assertEqual(load_config(path=path, profile="prod").secrets["jwt"],
+                         SecretFileRef("/run/secrets/jwt"))
+
+
+class SecretNameEchoTest(ConfigTestCase):
+    """issue #192 D9: a value pasted into the NAME slot is exactly the case
+    where the operator pasted the secret, so the rejection never echoes it."""
+
+    def test_error_value_shaped_name_is_not_echoed(self):
+        path = _write(self.dir, "lnpl.toml", """
+[default.secrets]
+jwt = "FAKE-SECRET-192-looks-like-a-value://x y"
+""")
+        with self.assertRaises(WsgiConfigError) as ctx:
+            load_config(path=path)
+        text = str(ctx.exception)
+        self.assertIn("default.secrets.jwt", text)
+        self.assertIn("looks like a value", text)
+        self.assertNotIn("FAKE-SECRET-192", text)
 
 
 if __name__ == "__main__":

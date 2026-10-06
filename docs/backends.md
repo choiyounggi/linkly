@@ -75,6 +75,13 @@ lnpl token <src>.lnpl --path /shop/checkout --subject alice \
 받지 않는다 — 셸 히스토리와 `ps`에 남기 때문이다. 변수가 없거나 32바이트 미만이면
 **서버가 소켓을 열기 전에** rc 2로 죽고, 메시지는 변수 **이름만** 싣는다.
 
+`lnpl serve --jwt-secret-file PATH`(이슈 #192)는 마운트된 시크릿 파일을 읽는다
+(Kubernetes/Docker secret). 경로는 절대경로여야 하고, 끝의 개행 하나만
+벗긴다. 파일이 없거나 읽히지 않거나 비었거나 32바이트 미만이면 같은 규칙으로
+rc 2이고, 메시지는 플래그 이름(`--jwt-secret-file`)만 싣는다 — 경로도 내용도
+싣지 않는다. `--jwt-secret-env`와 함께 주면 거부한다. 형태·우선순위·오류 문구
+전체는 `docs/serving.md` "시크릿 원천" 절.
+
 ```bash
 export LNPL_JWT_SECRET="…여기에 32바이트 이상의 무작위 값. 이 문자열이 아니라…"
 ```

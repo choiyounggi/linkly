@@ -21,11 +21,13 @@ normative in docs/serving.md.
 
 import base64
 import binascii
+import dataclasses
 import hashlib
 import http.client
 import json
 import math
 import os
+import stat
 import sys
 import threading
 import time
@@ -2393,7 +2395,8 @@ _REASON_FOR_KIND = {
 
 def _raise_config_error(exc):
     """The ONE formatter for every variable's build_app error except
-    LNPL_JWT_SECRET_ENV (carved out in build_app's own except-block).
+    LNPL_JWT_SECRET_ENV (carved out in build_app's own except-block) and
+    LNPL_JWT_SECRET_FILE (`_read_secret_file`'s own role-named texts).
     ALWAYS raises `from None` -- exc.cause can echo a raw spec/DSN/path;
     chaining it would put that text into any traceback a host prints.
     Never returns."""
@@ -2475,11 +2478,83 @@ def _resolve_backend(args, cfg):
 def _resolve_jwt_secret_env(args, cfg):
     """Moved here from cli.py, cfg=None-safe the same way:
     (getattr(cfg, "secrets", None) or {}).get("jwt") in place of
-    cfg.secrets.get("jwt")."""
+    cfg.secrets.get("jwt"). A non-string `[*.secrets].jwt` (issue #192
+    table form) is not an env NAME, so None."""
     value = getattr(args, "jwt_secret_env", None)
     if value is not None:
         return value
-    return (getattr(cfg, "secrets", None) or {}).get("jwt")
+    value = (getattr(cfg, "secrets", None) or {}).get("jwt")
+    return value if isinstance(value, str) else None
+
+
+MAX_SECRET_FILE_BYTES = 65536
+
+
+def _read_secret_file(raw_path, role):
+    """issue #192 D3/D4: the secret bytes from a file, or WsgiConfigError
+    naming `role` only -- never the path, never a byte of content.
+
+    Only a regular file is opened (r1 F2): `os.stat` follows symlinks, and a
+    FIFO, socket, device or directory is refused before `open()`, which
+    would block forever on a FIFO with no writer. A path `os.stat`/`open()`
+    rejects with ValueError (an embedded NUL from lnpl.toml, r1 F1) gets
+    the same "cannot be read" text."""
+    path = os.path.expanduser(raw_path)
+    if not os.path.isabs(path):
+        raise WsgiConfigError("%s must be an absolute path" % role) from None
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise WsgiConfigError(
+                "%s names a file that cannot be read" % role) from None
+        with open(path, "rb") as fh:
+            data = fh.read(MAX_SECRET_FILE_BYTES + 1)
+    except FileNotFoundError:
+        raise WsgiConfigError("%s names a file that does not exist" % role) from None
+    except (OSError, ValueError):
+        raise WsgiConfigError("%s names a file that cannot be read" % role) from None
+    if len(data) > MAX_SECRET_FILE_BYTES:
+        raise WsgiConfigError("%s names a file larger than %d bytes"
+                              % (role, MAX_SECRET_FILE_BYTES)) from None
+    if data.endswith(b"\r\n"):
+        data = data[:-2]
+    elif data.endswith(b"\n"):
+        data = data[:-1]
+    if not data:
+        raise WsgiConfigError("%s names an empty file" % role) from None
+    return data
+
+
+@dataclasses.dataclass(frozen=True)
+class JwtSecretSource:
+    """issue #192 D6: where the JWT signing secret comes from. kind is
+    "env" (value = variable NAME), "file" (value = path) or, from piece
+    t192c, "provider" (value = config.SecretProviderRef); role is the
+    operator-facing name every error uses."""
+    kind: str
+    value: object
+    role: str
+
+
+def _resolve_jwt_secret_source(env_name, file_path, cfg, env_role, file_role):
+    """issue #192 D6, shared by serve and build_app: an explicit env-name
+    and an explicit file together are refused; exactly one explicit kind
+    wins and lnpl.toml is not read; else `[*.secrets].jwt`'s form decides;
+    else None. "Given" is `is not None`, so `""` counts as given."""
+    if env_name is not None and file_path is not None:
+        raise WsgiConfigError(
+            "%s and %s both name the JWT signing secret — give exactly one"
+            % (env_role, file_role)) from None
+    if env_name is not None:
+        return JwtSecretSource("env", env_name, env_role)
+    if file_path is not None:
+        return JwtSecretSource("file", file_path, file_role)
+    from .config import SecretFileRef
+    value = (getattr(cfg, "secrets", None) or {}).get("jwt")
+    if isinstance(value, str):
+        return JwtSecretSource("env", value, "lnpl.toml secrets.jwt")
+    if isinstance(value, SecretFileRef):
+        return JwtSecretSource("file", value.path, "lnpl.toml secrets.jwt.file")
+    return None
 
 
 def _merge_endpoint_args(endpoint_args, cfg_endpoints):
@@ -2503,7 +2578,7 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
               idempotency_ttl_s=None, metrics=None, capture_on_failure=None,
               trust_incoming_trace=None, rate_limit=None, cache=None,
               network=None, token_provider=None, jwt_issuer=None,
-              config=None, profile=None):
+              config=None, profile=None, jwt_secret_file=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
 
@@ -2527,6 +2602,11 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
       jwt_secret_env LNPL_JWT_SECRET_ENV  name of the var holding the HMAC
                                            signing secret; unset -> presence-
                                            checked, not verified (M3, not M3a)
+      jwt_secret_file LNPL_JWT_SECRET_FILE  absolute path of a file holding
+                                           the HMAC secret (issue #192); one
+                                           trailing LF or CRLF is stripped;
+                                           refused together with
+                                           jwt_secret_env/LNPL_JWT_SECRET_ENV
       clock          LNPL_CLOCK           "virtual" (default) or "real"
       endpoints      (no single env var — each `NetworkCall` target reads
                      `LNPL_ENDPOINT_<NAME>`, t101's existing contract)
@@ -2572,6 +2652,10 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
                                            loaded lnpl.toml; has no effect
                                            unless `config`/LNPL_CONFIG is
                                            also set (issue #187 piece B)
+
+    Precedence (issue #192): an explicit env-name and an explicit file are
+    refused together; either one beats lnpl.toml's `[*.secrets].jwt`,
+    whatever its form.
 
     LNPL_EXAMPLE_UNUSED: a name this docstring mentions and build_app
     never reads, kept here only so the parity test's reverse red-proof
@@ -2651,24 +2735,38 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
 
     jwt_secret_env_arg_or_env = (jwt_secret_env if jwt_secret_env is not None
                                  else os.environ.get("LNPL_JWT_SECRET_ENV"))
-    jwt_secret_env = _resolve_jwt_secret_env(
-        types.SimpleNamespace(jwt_secret_env=jwt_secret_env_arg_or_env), cfg)
-    jwt_secret_env = jwt_secret_env or None
+    jwt_secret_file = ((jwt_secret_file or None) if jwt_secret_file is not None
+                       else _env_or_none("LNPL_JWT_SECRET_FILE"))
+    secret_source = _resolve_jwt_secret_source(
+        jwt_secret_env_arg_or_env, jwt_secret_file, cfg,
+        "LNPL_JWT_SECRET_ENV", "LNPL_JWT_SECRET_FILE")
+    jwt_secret_env = (secret_source.value or None
+                      if secret_source is not None and secret_source.kind == "env"
+                      else None)
 
     jwt_issuer = (jwt_issuer or None) if jwt_issuer is not None else _env_or_none("LNPL_JWT_ISSUER")
     token_provider_name = ((token_provider or None) if token_provider is not None
                            else _env_or_none("LNPL_TOKEN_PROVIDER"))
-    try:
-        token_provider = _resolve_token_provider(
-            jwt_secret_env, issuer=jwt_issuer, provider_name=token_provider_name)
-    except _OptionError as exc:
-        if exc.option == "jwt_secret_env":
-            if exc.kind == "secret-missing":
-                raise WsgiConfigError(
-                    "%s is not set in the environment" % jwt_secret_env) from None
+    if (secret_source is not None and secret_source.kind == "file"
+            and (token_provider_name or "hmac") == "hmac"):
+        secret = _read_secret_file(secret_source.value, secret_source.role)
+        try:
+            token_provider = HmacTokenProvider(secret, issuer=jwt_issuer)
+        except TokenError as exc:
             raise WsgiConfigError(
-                "%s (from %s)" % (exc.cause, jwt_secret_env)) from exc.cause
-        _raise_config_error(exc)
+                "%s (from %s)" % (exc, secret_source.role)) from None
+    else:
+        try:
+            token_provider = _resolve_token_provider(
+                jwt_secret_env, issuer=jwt_issuer, provider_name=token_provider_name)
+        except _OptionError as exc:
+            if exc.option == "jwt_secret_env":
+                if exc.kind == "secret-missing":
+                    raise WsgiConfigError(
+                        "%s is not set in the environment" % jwt_secret_env) from None
+                raise WsgiConfigError(
+                    "%s (from %s)" % (exc.cause, jwt_secret_env)) from exc.cause
+            _raise_config_error(exc)
 
     clock_spec = clock if clock is not None else os.environ.get("LNPL_CLOCK", "virtual")
     try:

@@ -17,6 +17,7 @@ import contextlib
 import io
 import json
 import os
+import threading
 import unittest
 from importlib import metadata as importlib_metadata
 from unittest import mock
@@ -215,7 +216,8 @@ class _EnvIsolatedTest(unittest.TestCase):
                 "LNPL_CLOCK", PAYMENT_TOKEN_ENV, "LNPL_METRICS",
                 "LNPL_CAPTURE_ON_FAILURE", "LNPL_TRUST_INCOMING_TRACE",
                 "LNPL_CACHE", "LNPL_NETWORK", "LNPL_TOKEN_PROVIDER",
-                "LNPL_JWT_ISSUER", "LNPL_CONFIG", "LNPL_PROFILE")
+                "LNPL_JWT_ISSUER", "LNPL_CONFIG", "LNPL_PROFILE",
+                "LNPL_JWT_SECRET_FILE")
 
     def setUp(self):
         self._saved = {k: os.environ.pop(k, None) for k in self._ENV_KEYS}
@@ -1291,6 +1293,383 @@ class SecretLeakTest(_EnvIsolatedTest):
         self.assertEqual(body["checks"], ["jwt-secret-env"])
         self.assertNotIn(SUCCESS_SECRET, json.dumps(body))
         self.assertNotIn(SUCCESS_SECRET, err.getvalue())
+
+
+# --- issue #192 piece A: the JWT secret from a file, and the source
+# precedence shared by serve, build_app and `lnpl config check` -----------
+
+FILE_SECRET = b"FAKE-SECRET-192-file-source-aaaaaaaaaaaa"     # 40 bytes
+OTHER_SECRET = b"FAKE-SECRET-192-other-secret-bbbbbbbbbbb"    # 40 bytes
+
+JWT_SRC = """entity Report
+    field
+        id UUID
+
+service Rollup
+    security
+        jwt
+
+workflow GetReport
+    read report
+"""
+JWT_PATH = "/rollup/get-report"
+
+
+NUL_PATH_TAIL = "FAKE-SECRET-192-nul\x00tail"
+
+
+def _fifo(testcase):
+    """A FIFO with no writer: `open()` on it blocks until one appears."""
+    path = os.path.join(_tmp_dir(testcase), "jwt-fifo")
+    os.mkfifo(path)
+    return path
+
+
+def call_with_deadline(testcase, fn, fifo, timeout=5.0):
+    """issue #192 r1 F2: run `fn()` in a daemon thread and fail — instead of
+    hanging the suite — when it is still running after `timeout` seconds,
+    i.e. when it blocked opening `fifo`. A blocked reader is released by
+    opening the FIFO for writing so the thread can finish. Returns
+    `fn()`'s result, or re-raises its exception."""
+    box = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # re-raised in the test thread
+            box["exc"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        try:
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:
+            pass
+        thread.join(timeout)
+        testcase.fail("blocked on a FIFO for more than %.0f s" % timeout)
+    if "exc" in box:
+        raise box["exc"]
+    return box.get("value")
+
+
+def _secret_file(testcase, data, name="jwt-secret"):
+    path = os.path.join(_tmp_dir(testcase), name)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return path
+
+
+class SecretFileReaderTest(unittest.TestCase):
+    """D3/D4: `_read_secret_file` returns the bytes minus ONE trailing
+    newline, or a WsgiConfigError naming only the caller's role."""
+
+    def _refused(self, path):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi._read_secret_file(path, "ROLE-X")
+        exc = cm.exception
+        self.assertIsNone(exc.__cause__)
+        self.assertNotIn(path, str(exc))
+        self.assertNotIn("FAKE-SECRET-192", str(exc))
+        return str(exc)
+
+    def test_normal_returns_the_bytes(self):
+        path = _secret_file(self, FILE_SECRET)
+        self.assertEqual(wsgi._read_secret_file(path, "ROLE-X"), FILE_SECRET)
+
+    def test_boundary_one_trailing_lf_is_stripped(self):
+        path = _secret_file(self, FILE_SECRET + b"\n")
+        self.assertEqual(wsgi._read_secret_file(path, "ROLE-X"), FILE_SECRET)
+
+    def test_boundary_one_trailing_crlf_is_stripped(self):
+        path = _secret_file(self, FILE_SECRET + b"\r\n")
+        self.assertEqual(wsgi._read_secret_file(path, "ROLE-X"), FILE_SECRET)
+
+    def test_boundary_only_one_newline_is_stripped(self):
+        path = _secret_file(self, FILE_SECRET + b"\n\n")
+        self.assertEqual(wsgi._read_secret_file(path, "ROLE-X"), FILE_SECRET + b"\n")
+
+    def test_boundary_lone_cr_is_kept(self):
+        path = _secret_file(self, FILE_SECRET + b"\r")
+        self.assertEqual(wsgi._read_secret_file(path, "ROLE-X"), FILE_SECRET + b"\r")
+
+    def test_boundary_tilde_path_is_expanded(self):
+        path = _secret_file(self, FILE_SECRET)
+        home = os.path.dirname(path)
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            self.assertEqual(wsgi._read_secret_file("~/jwt-secret", "ROLE-X"),
+                             FILE_SECRET)
+
+    def test_error_missing(self):
+        path = os.path.join(_tmp_dir(self), "absent")
+        self.assertEqual(self._refused(path), "ROLE-X names a file that does not exist")
+
+    def test_error_directory_cannot_be_read(self):
+        path = _tmp_dir(self)
+        self.assertEqual(self._refused(path), "ROLE-X names a file that cannot be read")
+
+    def test_error_permission_denied_cannot_be_read(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads a mode-000 file")
+        path = _secret_file(self, FILE_SECRET)
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o600)
+        self.assertEqual(self._refused(path), "ROLE-X names a file that cannot be read")
+
+    def test_error_empty_file(self):
+        path = _secret_file(self, b"")
+        self.assertEqual(self._refused(path), "ROLE-X names an empty file")
+
+    def test_boundary_only_a_newline_is_empty(self):
+        path = _secret_file(self, b"\n")
+        self.assertEqual(self._refused(path), "ROLE-X names an empty file")
+
+    def test_boundary_exactly_the_cap_is_read(self):
+        data = b"k" * wsgi.MAX_SECRET_FILE_BYTES
+        path = _secret_file(self, data)
+        self.assertEqual(wsgi._read_secret_file(path, "ROLE-X"), data)
+
+    def test_error_oversize(self):
+        path = _secret_file(self, b"k" * (wsgi.MAX_SECRET_FILE_BYTES + 1))
+        self.assertEqual(self._refused(path),
+                         "ROLE-X names a file larger than 65536 bytes")
+
+    def test_error_relative_path(self):
+        self.assertEqual(self._refused("rel/secret"), "ROLE-X must be an absolute path")
+
+    def test_error_fifo_is_refused_without_blocking(self):
+        fifo = _fifo(self)
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            call_with_deadline(self, lambda: wsgi._read_secret_file(fifo, "ROLE-X"), fifo)
+        self.assertEqual(str(cm.exception), "ROLE-X names a file that cannot be read")
+        self.assertIsNone(cm.exception.__cause__)
+
+    def test_error_character_device_is_refused(self):
+        # /dev/null used to read as 0 bytes ("empty file"); a device is not
+        # a regular file, so it is refused before any read.
+        self.assertEqual(self._refused("/dev/null"),
+                         "ROLE-X names a file that cannot be read")
+
+    def test_error_nul_in_path_is_a_config_error(self):
+        path = os.path.join(_tmp_dir(self), NUL_PATH_TAIL)
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi._read_secret_file(path, "ROLE-X")
+        self.assertEqual(str(cm.exception), "ROLE-X names a file that cannot be read")
+        self.assertIsNone(cm.exception.__cause__)
+        self.assertNotIn("FAKE-SECRET-192", str(cm.exception))
+
+    def test_normal_symlink_to_a_regular_file_is_followed(self):
+        target = _secret_file(self, FILE_SECRET + b"\n")
+        link = os.path.join(os.path.dirname(target), "jwt-link")
+        os.symlink(target, link)
+        self.assertEqual(wsgi._read_secret_file(link, "ROLE-X"), FILE_SECRET)
+
+    def test_error_symlink_to_a_directory_is_refused(self):
+        box = _tmp_dir(self)
+        link = os.path.join(box, "dir-link")
+        os.symlink(_tmp_dir(self), link)
+        self.assertEqual(self._refused(link), "ROLE-X names a file that cannot be read")
+
+    def test_error_dangling_symlink_does_not_exist(self):
+        box = _tmp_dir(self)
+        link = os.path.join(box, "dangling")
+        os.symlink(os.path.join(box, "absent"), link)
+        self.assertEqual(self._refused(link), "ROLE-X names a file that does not exist")
+
+    def test_boundary_empty_path_is_not_absolute(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi._read_secret_file("", "ROLE-X")
+        self.assertEqual(str(cm.exception), "ROLE-X must be an absolute path")
+
+
+class SecretSourceResolverTest(unittest.TestCase):
+    """D6: the two-tier rule — explicit env-name + explicit file refused;
+    one explicit kind beats lnpl.toml; else the config form decides."""
+
+    def _cfg(self, jwt):
+        from lnpl.config import ResolvedConfig
+        return ResolvedConfig(secrets={} if jwt is None else {"jwt": jwt})
+
+    def _resolve(self, env_name, file_path, cfg):
+        return wsgi._resolve_jwt_secret_source(env_name, file_path, cfg, "ENV-ROLE", "FILE-ROLE")
+
+    def test_error_both_given_refused(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._resolve("SOME_ENV", "/run/secrets/jwt", None)
+        self.assertEqual(str(cm.exception), "ENV-ROLE and FILE-ROLE both name the JWT "
+                                            "signing secret — give exactly one")
+        self.assertIsNone(cm.exception.__cause__)
+
+    def test_boundary_empty_env_counts_as_given(self):
+        with self.assertRaises(wsgi.WsgiConfigError):
+            self._resolve("", "/run/secrets/jwt", None)
+
+    def test_normal_env_only(self):
+        self.assertEqual(self._resolve("SOME_ENV", None, self._cfg("CFG_ENV")),
+                         wsgi.JwtSecretSource("env", "SOME_ENV", "ENV-ROLE"))
+
+    def test_normal_file_only_beats_config(self):
+        self.assertEqual(self._resolve(None, "/run/secrets/jwt", self._cfg("CFG_ENV")),
+                         wsgi.JwtSecretSource("file", "/run/secrets/jwt", "FILE-ROLE"))
+
+    def test_normal_config_name(self):
+        self.assertEqual(self._resolve(None, None, self._cfg("CFG_ENV")),
+                         wsgi.JwtSecretSource("env", "CFG_ENV", "lnpl.toml secrets.jwt"))
+
+    def test_normal_config_file_ref(self):
+        from lnpl.config import SecretFileRef
+        self.assertEqual(
+            self._resolve(None, None, self._cfg(SecretFileRef("/run/secrets/jwt"))),
+            wsgi.JwtSecretSource("file", "/run/secrets/jwt", "lnpl.toml secrets.jwt.file"))
+
+    def test_boundary_nothing_is_none(self):
+        self.assertIsNone(self._resolve(None, None, None))
+        self.assertIsNone(self._resolve(None, None, self._cfg(None)))
+
+    def test_boundary_env_resolver_ignores_a_file_ref(self):
+        import types as _types
+        from lnpl.config import SecretFileRef
+        cfg = self._cfg(SecretFileRef("/run/secrets/jwt"))
+        self.assertIsNone(wsgi._resolve_jwt_secret_env(
+            _types.SimpleNamespace(jwt_secret_env=None), cfg))
+
+
+class BuildAppSecretFileTest(_EnvIsolatedTest):
+    """D5/D6/D8 on the build_app path: `jwt_secret_file` argument,
+    LNPL_JWT_SECRET_FILE and lnpl.toml `jwt = { file }` each yield a
+    verifying provider; errors name LNPL_JWT_SECRET_FILE, never the path."""
+
+    def _src(self):
+        return _write_tmp(self, JWT_SRC)
+
+    def _post(self, app, secret):
+        from lnpl.drivers import audience_for_path
+        token = HmacTokenProvider(secret).issue("u", audience_for_path(JWT_PATH))
+        return call_wsgi(app, "POST", JWT_PATH, body=b"{}",
+                         headers={"Authorization": "Bearer " + token,
+                                  "Content-Type": "application/json"})
+
+    def _assert_verifies_only(self, app, secret):
+        status, _h, _body = self._post(app, secret)
+        self.assertEqual(status, 200)
+        status, _h, body = self._post(app, OTHER_SECRET if secret != OTHER_SECRET else FILE_SECRET)
+        self.assertEqual(status, 401)
+        self.assertEqual(body["code"], "auth-invalid")
+
+    def _refused(self, **kwargs):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], **kwargs)
+        exc = cm.exception
+        self.assertIsNone(exc.__cause__)
+        self.assertNotIn("FAKE-SECRET-192", str(exc))
+        return str(exc)
+
+    def test_normal_argument_verifies(self):
+        app = wsgi.build_app(sources=[self._src()],
+                             jwt_secret_file=_secret_file(self, FILE_SECRET + b"\n"))
+        self.assertIsInstance(app.token_provider, HmacTokenProvider)
+        self._assert_verifies_only(app, FILE_SECRET)
+
+    def test_normal_env_var_verifies(self):
+        os.environ["LNPL_JWT_SECRET_FILE"] = _secret_file(self, FILE_SECRET)
+        app = wsgi.build_app(sources=[self._src()])
+        self._assert_verifies_only(app, FILE_SECRET)
+
+    def test_normal_config_file_form_verifies(self):
+        path = _secret_file(self, FILE_SECRET)
+        toml = _write_toml(self, '[default.secrets]\njwt = { file = "%s" }\n' % path)
+        app = wsgi.build_app(sources=[self._src()], config=toml)
+        self._assert_verifies_only(app, FILE_SECRET)
+
+    def test_normal_argument_beats_env(self):
+        os.environ["LNPL_JWT_SECRET_FILE"] = _secret_file(self, OTHER_SECRET, "other")
+        app = wsgi.build_app(sources=[self._src()],
+                             jwt_secret_file=_secret_file(self, FILE_SECRET))
+        self._assert_verifies_only(app, FILE_SECRET)
+
+    def test_normal_explicit_file_beats_config_name(self):
+        os.environ["LNPL_T192_CFG_SECRET"] = OTHER_SECRET.decode()
+        self.addCleanup(os.environ.pop, "LNPL_T192_CFG_SECRET", None)
+        toml = _write_toml(self, '[default.secrets]\njwt = "LNPL_T192_CFG_SECRET"\n')
+        app = wsgi.build_app(sources=[self._src()], config=toml,
+                             jwt_secret_file=_secret_file(self, FILE_SECRET))
+        self._assert_verifies_only(app, FILE_SECRET)
+
+    def test_boundary_empty_argument_is_unset(self):
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_file="")
+        self.assertIsNone(app.token_provider)
+        self.assertIsNone(app.jwt_secret_env)
+
+    def test_boundary_empty_env_var_is_unset(self):
+        os.environ["LNPL_JWT_SECRET_FILE"] = ""
+        app = wsgi.build_app(sources=[self._src()])
+        self.assertIsNone(app.token_provider)
+
+    def test_error_env_and_file_both_given_refused(self):
+        text = self._refused(jwt_secret_env="LNPL_T192_ANY",
+                             jwt_secret_file=_secret_file(self, FILE_SECRET))
+        self.assertEqual(text, "LNPL_JWT_SECRET_ENV and LNPL_JWT_SECRET_FILE both name "
+                               "the JWT signing secret — give exactly one")
+
+    def test_error_env_vars_both_set_refused(self):
+        os.environ["LNPL_JWT_SECRET_ENV"] = "LNPL_T192_ANY"
+        os.environ["LNPL_JWT_SECRET_FILE"] = _secret_file(self, FILE_SECRET)
+        self.assertIn("give exactly one", self._refused())
+
+    def test_error_missing_file_names_the_variable(self):
+        path = os.path.join(_tmp_dir(self), "absent")
+        text = self._refused(jwt_secret_file=path)
+        self.assertEqual(text, "LNPL_JWT_SECRET_FILE names a file that does not exist")
+        self.assertNotIn(path, text)
+
+    def test_error_relative_path_names_the_variable(self):
+        text = self._refused(jwt_secret_file="rel/secret")
+        self.assertEqual(text, "LNPL_JWT_SECRET_FILE must be an absolute path")
+        self.assertNotIn("rel/secret", text)
+
+    def test_error_config_missing_file_names_the_config_role(self):
+        path = os.path.join(_tmp_dir(self), "absent")
+        toml = _write_toml(self, '[default.secrets]\njwt = { file = "%s" }\n' % path)
+        text = self._refused(config=toml)
+        self.assertEqual(text, "lnpl.toml secrets.jwt.file names a file that does not exist")
+
+    def test_error_short_file_states_minimum(self):
+        path = _secret_file(self, b"FAKE-SEC")
+        text = self._refused(jwt_secret_file=path)
+        self.assertIn("at least 32 bytes, got 8 (from LNPL_JWT_SECRET_FILE)", text)
+        self.assertNotIn(path, text)
+
+    def test_boundary_non_hmac_token_provider_leaves_the_file_unread(self):
+        path = os.path.join(_tmp_dir(self), "absent")
+        with _spi_registered(EXT_TOKEN_EP):
+            app = wsgi.build_app(sources=[self._src()], jwt_secret_file=path,
+                                 token_provider="extprov")
+        self.assertIsInstance(app.token_provider, DemoTokenProvider)
+
+    def test_error_fifo_argument_is_refused_without_blocking(self):
+        fifo = _fifo(self)
+        src = self._src()
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            call_with_deadline(
+                self, lambda: wsgi.build_app(sources=[src], jwt_secret_file=fifo), fifo)
+        self.assertEqual(str(cm.exception),
+                         "LNPL_JWT_SECRET_FILE names a file that cannot be read")
+        self.assertIsNone(cm.exception.__cause__)
+
+    def test_error_nul_in_config_path_is_a_config_error(self):
+        toml = _write_toml(self, '[default.secrets]\njwt = { file = "/run/%s" }\n'
+                           % NUL_PATH_TAIL.replace("\x00", "\\u0000"))
+        text = self._refused(config=toml)
+        self.assertEqual(text, "lnpl.toml secrets.jwt.file names a file that cannot be read")
+
+    def test_boundary_file_source_disables_readyz_check_3(self):
+        app = wsgi.build_app(sources=[self._src()],
+                             jwt_secret_file=_secret_file(self, FILE_SECRET))
+        self.assertIsNone(app.jwt_secret_env)
+        status, _h, body = call_wsgi(app, "GET", "/-/readyz")
+        self.assertEqual(status, 200)
+        self.assertNotIn("jwt-secret-env", json.dumps(body))
 
 
 if __name__ == "__main__":

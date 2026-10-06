@@ -674,7 +674,8 @@ grpc·http 수신을 각각 검증한다(span↔OTel semconv 매핑 정본은 �
 
 `lnpl serve`는 CLI 플래그·개별 환경변수(`LNPL_ENDPOINT_<NAME>`)뿐이던 설정
 통로에 파일 하나를 더한다 — 시크릿 **값**은 절대 담기지 않는다(이슈 #101
-규율 그대로): `[*.secrets]`는 그 값을 담은 환경변수의 **이름**만 받는다.
+규율 그대로): `[*.secrets]`는 그 값을 담은 환경변수의 **이름**, 또는 그 값을
+담은 파일의 절대경로(`{ file = "..." }`, 이슈 #192)만 받는다.
 
 ```toml
 # lnpl.toml — 기본 위치는 cwd, --config로 재지정
@@ -688,6 +689,7 @@ payments = "https://api.example.com/pay"
 
 [default.secrets]
 jwt = "LNPL_JWT_SECRET"          # 값이 아니라 환경변수 이름
+# jwt = { file = "/run/secrets/jwt" }   # 또는 파일 원천(이슈 #192)
 
 [staging]                        # [default] 위에 얕게(1단) 오버레이
 backend = "sqlite:./staging.db"
@@ -722,7 +724,7 @@ payments = "https://staging.example.com/pay"   # payments만 덮는다
 
 | 순위 | 소스 | 비고 |
 |------|------|------|
-| 1 | CLI 플래그 (`--backend`/`--jwt-secret-env`/`--log-format`/`--trace-exporter`/`--endpoint`) | |
+| 1 | CLI 플래그 (`--backend`/`--jwt-secret-env`/`--jwt-secret-file`/`--log-format`/`--trace-exporter`/`--endpoint`) | |
 | 2 | 환경변수 (`LNPL_ENDPOINT_<NAME>`) | 오늘은 endpoint 매핑에만 있다(이슈 #101 계약) |
 | 3 | `lnpl.toml` `[<profile>]` | `--profile`/`LNPL_PROFILE`로 선택 |
 | 4 | `lnpl.toml` `[default]` | |
@@ -731,6 +733,10 @@ payments = "https://staging.example.com/pay"   # payments만 덮는다
 `lnpl.toml`이 없으면(기본 경로 `./lnpl.toml`이 없을 때) 5개 값 전부가 이 파일이
 생기기 전과 바이트 단위로 동일하게 해석된다 — 도입 자체는 회귀가 아니다. 반면
 `--config`로 명시한 경로가 없으면 그건 조작자 실수로 취급해 rc 2다.
+
+`--jwt-secret-env`와 `--jwt-secret-file`(build_app: `LNPL_JWT_SECRET_ENV`/
+`LNPL_JWT_SECRET_FILE`, 인자 포함)을 함께 주면 rc 2/`WsgiConfigError`로
+거부한다. 하나만 주면 lnpl.toml의 `[*.secrets].jwt`(형태 무관)를 이긴다.
 
 ### `${VAR}` 치환
 
@@ -753,7 +759,62 @@ lnpl config check <src>.lnpl... [--profile staging] [--config lnpl.toml]
 선언했다면 `[*.secrets].jwt` 매핑이 있는가. 전부 통과하면 rc 0, 아니면 발견한
 문제 **전부**를 stderr에 나열하고 rc 2 — `--endpoint`/`--jwt-secret-env`는
 받지 않는다(즉석 오버라이드가 아니라 이미 서 있는 lnpl.toml+환경변수 표면만
-진단한다).
+진단한다). `{ file = "..." }` 항목은 (b)에서 파일이 있는지, 일반 파일이고
+읽히는지, 비지 않았는지, 65536바이트 이하인지를 보고, `jwt` 키는 32바이트 이상인지까지 본다
+(이슈 #192) — 메시지는 `lnpl.toml secrets.<key>.file`이라는 역할 이름만 싣고
+경로·내용은 싣지 않는다.
+
+### 시크릿 원천 — 환경변수·파일 (이슈 #192)
+
+JWT 서명 시크릿은 두 원천에서 온다. 어느 쪽이든 설정에 적히는 것은
+**포인터**이고 값이 아니다.
+
+| 원천 | `lnpl serve` | `build_app()` | `lnpl.toml` |
+|------|--------------|---------------|-------------|
+| 환경변수 | `--jwt-secret-env NAME` | `jwt_secret_env` / `LNPL_JWT_SECRET_ENV` | `jwt = "NAME"` |
+| 파일 | `--jwt-secret-file PATH` | `jwt_secret_file` / `LNPL_JWT_SECRET_FILE` | `jwt = { file = "<절대경로>" }` |
+
+파일 원천은 Kubernetes/Docker가 마운트한 시크릿 파일을 그대로 읽는다:
+
+- 경로는 `~`를 펼친 뒤 **절대경로**여야 한다. 상대경로는 거부한다 —
+  cwd는 호스트(gunicorn, 컨테이너)가 정하므로 같은 설정이 다른 파일을
+  가리킬 수 있다. `--jwt-secret-file ""`도 절대경로가 아니므로 거부한다
+  (`build_app()`에서는 `""`가 미설정과 같다).
+- 끝의 개행 **하나**만 벗긴다: `\r\n` 하나, 아니면 `\n` 하나. 그 밖의
+  바이트(공백, 홀로 남은 `\r`, 두 번째 `\n`)는 키의 일부다.
+  `kubectl create secret --from-file`이나 `echo ... > file`이 붙이는 끝
+  개행 때문에 검증이 조용히 실패하는 일을 막는다.
+- **일반 파일**만 연다. 심볼릭 링크는 따라가므로 일반 파일을 가리키는
+  링크(Kubernetes가 마운트하는 형태)는 그대로 읽힌다. 디렉터리·FIFO·소켓·
+  장치(`/dev/zero`, `/dev/null` 포함)는 열기 전에 거부한다 — 쓰는 쪽이 없는
+  FIFO를 `open()`하면 기동이 영원히 멈추기 때문이다.
+- 개행을 벗긴 뒤 0바이트면 오류다. 65536바이트를 넘으면 거기서 읽기를
+  멈추고 거부한다. HMAC 시크릿은 기존 규칙대로 32바이트 이상이어야 한다.
+- 파일은 **기동 시 한 번** 읽는다. 키를 바꾸려면 프로세스를 다시 띄운다.
+  그래서 readyz 검사 ③(환경변수 생존 확인)은 파일 원천에 적용되지 않는다.
+- `--token-provider`가 `hmac`이 아니면 파일을 읽지 않는다(환경변수
+  원천과 같은 규칙 — 외부 프로바이더의 키는 그 프로바이더가 관리한다).
+
+오류 메시지는 **역할 이름**만 싣는다 — `--jwt-secret-file`,
+`LNPL_JWT_SECRET_FILE`, `lnpl.toml secrets.jwt.file` 중 하나. 경로도 파일
+내용도 싣지 않는다(경로 자리에 시크릿을 잘못 붙여 넣은 경우에도 출력에
+남지 않도록). 서버 경로는 `error: ...` 한 줄과 rc 2, `build_app()`은
+`WsgiConfigError`다:
+
+| 상황 | 메시지 (`<role>` = 역할 이름) |
+|------|------------------------------|
+| 상대경로 | `<role> must be an absolute path` |
+| 파일 없음 | `<role> names a file that does not exist` |
+| 일반 파일이 아님(디렉터리·FIFO·소켓·장치)·권한 없음·경로에 NUL 문자 등 | `<role> names a file that cannot be read` |
+| 65536바이트 초과 | `<role> names a file larger than 65536 bytes` |
+| 개행을 벗긴 뒤 비었음 | `<role> names an empty file` |
+| 32바이트 미만 | `the JWT signing secret must be at least 32 bytes, got <n> (from <role>)` |
+| 환경변수 이름과 파일을 함께 줌 | `--jwt-secret-env and --jwt-secret-file both name the JWT signing secret — give exactly one` (build_app: `LNPL_JWT_SECRET_ENV and LNPL_JWT_SECRET_FILE ...`) |
+
+`lnpl.toml`의 `[*.secrets]` 값이 환경변수 이름 모양이 아니면 로드 시점에
+거부하고, 이때 받은 값은 메시지에 싣지 않는다 — 그 자리에 들어온 값이
+시크릿 자체일 수 있기 때문이다. 표 형태가 `{ file = "..." }`가 아니면(다른
+키, 빈 표) 받은 키 이름과 허용 형태만 알린다.
 
 ## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
 
@@ -783,6 +844,7 @@ env-var 대응:
 | `LNPL_SOURCE` | `lnpl serve <src>` | (필수) — 파일들(`os.pathsep` 구분) 또는 디렉터리 1개, t77 `load_sources` 그대로 소비 |
 | `LNPL_BACKEND` | `--backend` | `fake` |
 | `LNPL_JWT_SECRET_ENV` | `--jwt-secret-env` | (미설정 — presence-checked, not verified) |
+| `LNPL_JWT_SECRET_FILE` | `--jwt-secret-file` | (미설정) — 시크릿 파일의 절대경로(이슈 #192). `LNPL_JWT_SECRET_ENV`와 함께 주면 거부 |
 | `LNPL_CLOCK` | (없음 — `serve`에는 `--clock` 플래그가 없다. `serve`의 내장 dev 서버는 항상 virtual clock으로 돌고, `LNPL_CLOCK`은 gunicorn 워커 전용 편의다) | `virtual` |
 | `LNPL_ENDPOINT_<NAME>` | `--endpoint NAME=URL` | (이슈 #101 계약 그대로 재사용 — `build_app()`이 새로 발명하지 않는다) |
 | `LNPL_LOG_FORMAT` | `--log-format` | `text` (이슈 #78) |

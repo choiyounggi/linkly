@@ -16,17 +16,24 @@ Each direction has its own negative control (`test_error_*`).
 """
 
 import ast
+import contextlib
 import inspect
+import io
+import os
 import re
+import tempfile
 import unittest
+from unittest import mock
 
 from lnpl import cli, wsgi
+from lnpl.drivers import HmacTokenProvider, TokenError
 
 PARITY_MAP = {
     ("source",): "LNPL_SOURCE",
     ("--backend",): "LNPL_BACKEND",
     ("--endpoint",): "LNPL_ENDPOINT_<NAME>",
     ("--jwt-secret-env",): "LNPL_JWT_SECRET_ENV",
+    ("--jwt-secret-file",): "LNPL_JWT_SECRET_FILE",
     ("--log-format",): "LNPL_LOG_FORMAT",
     ("--trace-exporter",): "LNPL_TRACE_EXPORTER",
     ("--trust-incoming-trace",): "LNPL_TRUST_INCOMING_TRACE",
@@ -169,6 +176,139 @@ class ParityTest(unittest.TestCase):
             '    c = other("LNPL_NOT_A_READER")\n'
             '    return a, b, c\n')
         self.assertEqual({"LNPL_REAL_A", "LNPL_REAL_B"}, _read_env_names(source))
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+JWT_SRC = """entity Report
+    field
+        id UUID
+
+service Rollup
+    security
+        jwt
+
+workflow GetReport
+    read report
+"""
+JWT_AUDIENCE = "rollup"
+FILE_SECRET = b"FAKE-SECRET-192-file-source-aaaaaaaaaaaa"     # 40 bytes
+ENV_SECRET = b"FAKE-SECRET-192-env-source-ccccccccccccc"      # 40 bytes
+CFG_ENV = "LNPL_T192_PARITY_SECRET"
+
+
+class SecretSourceParityTest(unittest.TestCase):
+    """issue #192 D7: the same secret-source combination driven through
+    `lnpl serve` and `build_app` gives the same outcome — the same accepted
+    token, or the same error once the serve flag names are mapped to their
+    PARITY_MAP variables."""
+
+    ROLE_MAP = {"--jwt-secret-env": "LNPL_JWT_SECRET_ENV",
+                "--jwt-secret-file": "LNPL_JWT_SECRET_FILE"}
+
+    def setUp(self):
+        saved = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+        for name in ("LNPL_JWT_SECRET_ENV", "LNPL_JWT_SECRET_FILE", "LNPL_CONFIG",
+                     "LNPL_PROFILE", "LNPL_TOKEN_PROVIDER", "LNPL_JWT_ISSUER"):
+            os.environ.pop(name, None)
+        os.environ[CFG_ENV] = ENV_SECRET.decode()
+        tmp_root = os.path.join(REPO, ".claude", "tmp")
+        os.makedirs(tmp_root, exist_ok=True)
+        box = tempfile.TemporaryDirectory(dir=tmp_root)
+        self.addCleanup(box.cleanup)
+        self.dir = box.name
+        self.src = self._write("mod.lnpl", JWT_SRC.encode())
+
+    def _write(self, name, data):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def _config_name(self):
+        return self._write("lnpl.toml", ('[default.secrets]\njwt = "%s"\n' % CFG_ENV).encode())
+
+    def _serve(self, *extra):
+        server = mock.Mock()
+        server.server_address = ("127.0.0.1", 0)
+        server.serve_forever.side_effect = KeyboardInterrupt
+        err = io.StringIO()
+        with mock.patch("lnpl.cli.serve", return_value=server) as factory, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = cli.main(["serve", self.src] + list(extra))
+        provider = factory.call_args.kwargs["token_provider"] if factory.called else None
+        # Only the `error:` lines: cmd_serve prints the compile's `info:`
+        # diagnostics first, which build_app has no counterpart for.
+        errors = "".join(line + "\n" for line in err.getvalue().splitlines()
+                         if line.startswith("error:"))
+        return rc, errors, provider
+
+    def _build(self, **kwargs):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return wsgi.build_app(sources=[self.src], **kwargs).token_provider
+
+    def _build_error(self, **kwargs):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._build(**kwargs)
+        return str(cm.exception)
+
+    def _mapped(self, serve_err):
+        text = serve_err
+        for flag, var in self.ROLE_MAP.items():
+            text = text.replace(flag, var)
+        return text
+
+    @staticmethod
+    def _accepts(provider, secret):
+        token = HmacTokenProvider(secret).issue("u", JWT_AUDIENCE)
+        try:
+            provider.verify(token, JWT_AUDIENCE)
+        except TokenError:
+            return False
+        return True
+
+    def test_error_env_and_file_together_refused_identically(self):
+        path = self._write("jwt", FILE_SECRET)
+        rc, err, _p = self._serve("--jwt-secret-env", CFG_ENV, "--jwt-secret-file", path)
+        text = self._build_error(jwt_secret_env=CFG_ENV, jwt_secret_file=path)
+        self.assertEqual(rc, 2)
+        self.assertIn("give exactly one", text)
+        self.assertEqual(self._mapped(err), "error: %s\n" % text)
+
+    def test_normal_explicit_file_beats_config_name_on_both(self):
+        path = self._write("jwt", FILE_SECRET)
+        toml = self._config_name()
+        rc, err, serve_p = self._serve("--config", toml, "--jwt-secret-file", path)
+        build_p = self._build(config=toml, jwt_secret_file=path)
+        self.assertEqual(rc, 0, err)
+        for provider in (serve_p, build_p):
+            self.assertTrue(self._accepts(provider, FILE_SECRET))
+            self.assertFalse(self._accepts(provider, ENV_SECRET))
+
+    def test_normal_config_name_only_is_unchanged_on_both(self):
+        toml = self._config_name()
+        rc, err, serve_p = self._serve("--config", toml)
+        build_p = self._build(config=toml)
+        self.assertEqual(rc, 0, err)
+        for provider in (serve_p, build_p):
+            self.assertTrue(self._accepts(provider, ENV_SECRET))
+            self.assertFalse(self._accepts(provider, FILE_SECRET))
+
+    def test_error_missing_file_fails_identically(self):
+        path = os.path.join(self.dir, "absent")
+        rc, err, _p = self._serve("--jwt-secret-file", path)
+        text = self._build_error(jwt_secret_file=path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(text, "LNPL_JWT_SECRET_FILE names a file that does not exist")
+        self.assertEqual(self._mapped(err), "error: %s\n" % text)
+
+    def test_error_short_file_fails_identically(self):
+        path = self._write("jwt", b"FAKE-SEC")
+        rc, err, _p = self._serve("--jwt-secret-file", path)
+        text = self._build_error(jwt_secret_file=path)
+        self.assertEqual(rc, 2)
+        self.assertIn("at least 32 bytes, got 8", text)
+        self.assertEqual(self._mapped(err), "error: %s\n" % text)
 
 
 if __name__ == "__main__":

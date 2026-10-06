@@ -132,6 +132,7 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--network` | `run`과 같다. 이슈 #101 전에는 `serve`에 이 플래그 자체가 없어서 모든 요청이 `fake` 드라이버로 나갔다 |
 | `--endpoint` | `run`과 같다 — `--network http`에서 소켓을 바인드하기 전에 검사한다(백엔드·jwt 시크릿과 같은 자리). 이슈 #101 |
 | `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |
+| `--jwt-secret-file` | HS256 서명 시크릿이 담긴 파일의 **절대경로**(이슈 #192 — 마운트된 Kubernetes/Docker secret). 끝의 개행 하나(`\n` 또는 `\r\n`)만 벗긴다. `--jwt-secret-env`와 함께 주면 rc 2로 거부하고, 하나만 주면 `lnpl.toml`의 `[*.secrets].jwt`를 이긴다. 오류는 플래그 이름만 싣는다 |
 | `--jwt-issuer` | 검증된 토큰이 실려야 할 기대 `iss` 클레임. 안 주면 기존 `"lnpl"`(이슈 #119b 이전과 바이트 단위로 동일). `--jwt-secret-env`와 함께일 때만 의미가 있다 |
 | `--token-provider` | `security jwt` 검증기를 고른다(이슈 #119b): 내장 `hmac`(기본 — `--jwt-secret-env`/`--jwt-issuer`를 그대로 읽는다) 또는 `lnpl.tokens` entry-points 그룹에 등록된 이름(실제 외부 IdP를 RS256/ES256으로 검증). 등록된 이름이 `hmac`을 가리키면 거부된다(`docs/backends.md`) |
 | `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics, 존재할 때만 trace_id/span_id/notes/effects/input_digest). 이슈 #78/#107/#111 |
@@ -172,7 +173,8 @@ lnpl config check <source...> [--profile NAME] [--config PATH]
 `serve`가 소켓을 바인드하기 전에 실패할 조건 셋을 미리 판정한다: (a) 소스의
 모든 `NetworkCall` 논리명에 `lnpl.toml`/`LNPL_ENDPOINT_<NAME>` 매핑이 있는가,
 (b) `lnpl.toml`의 `[*.secrets]` 항목이 가리키는 환경변수가 실제로 설정돼
-있는가, (c) `security jwt`를 선언했다면 `[*.secrets].jwt` 매핑이 있는가.
+있는가 — `{ file = "<절대경로>" }` 항목(이슈 #192)이면 그 파일이 있고 읽히고
+비지 않았는가(`jwt`는 32바이트 이상인가까지), (c) `security jwt`를 선언했다면 `[*.secrets].jwt` 매핑이 있는가.
 `--endpoint`/`--jwt-secret-env`는 받지 않는다 — `serve` 실행 시 즉석으로 줄
 값이 아니라 `lnpl.toml`+환경변수로 이미 서 있는 표면만 진단한다.
 

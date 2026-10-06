@@ -19,8 +19,8 @@ from . import __version__
 from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
                           extension_diagnostic_records,
                           format_lines_from_records, to_records)
-from .drivers import (DriverError, PublishRejected, TokenError,
-                      audience_for_path, open_cache, open_network,
+from .drivers import (MIN_SECRET_BYTES, DriverError, PublishRejected,
+                      TokenError, audience_for_path, open_cache, open_network,
                       open_publisher, open_repository, open_token_provider,
                       _http_capabilities, _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
@@ -38,7 +38,7 @@ from .cost_model import cost_model_document
 from .grammar import grammar_json_document, render_gbnf
 from .vocab import vocabulary_document
 from .agents import run_cycle
-from .config import load_config
+from .config import SecretFileRef, load_config
 from .differential import DifferentialError, verify as verify_modes
 from .generators import GeneratorError, resolve_generator, run_generator
 from .kb import KbError, KnowledgeBase, resolve_pack_roots
@@ -47,7 +47,8 @@ from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
                    resolve_schedule_triggers, _schedule_events,
                    _validate_rate_limit, _merge_endpoint_args,
-                   _resolve_backend, _resolve_jwt_secret_env)
+                   _read_secret_file, _resolve_backend,
+                   _resolve_jwt_secret_source)
 from .spec import SpecError, extract, run_manifest
 
 
@@ -794,10 +795,23 @@ def cmd_serve(args):
     cache = _open_cache(getattr(args, "cache", "fake"))
     if cache is _REJECTED:
         return 2
-    jwt_secret_env = _resolve_jwt_secret_env(args, cfg)
-    token_provider = _token_provider(jwt_secret_env,
-                                     getattr(args, "jwt_issuer", None),
-                                     getattr(args, "token_provider", None))
+    try:
+        secret_source = _resolve_jwt_secret_source(
+            getattr(args, "jwt_secret_env", None),
+            getattr(args, "jwt_secret_file", None), cfg,
+            "--jwt-secret-env", "--jwt-secret-file")
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    issuer = getattr(args, "jwt_issuer", None)
+    provider_name = getattr(args, "token_provider", None)
+    if secret_source is not None and secret_source.kind == "file":
+        jwt_secret_env = None
+        token_provider = _token_provider_from_file(
+            secret_source.value, secret_source.role, issuer, provider_name)
+    else:
+        jwt_secret_env = secret_source.value if secret_source is not None else None
+        token_provider = _token_provider(jwt_secret_env, issuer, provider_name)
     if token_provider is _REJECTED:
         return 2
     network_spec = getattr(args, "network", "fake")
@@ -1314,9 +1328,9 @@ def cmd_config_check(args):
     """`lnpl config check <source...> [--profile P] [--config PATH]` —
     issue #114 D8: judge, before `lnpl serve` would bind a socket, whether
     (a) every NetworkCall logical target resolves to an endpoint, (b) every
-    `lnpl.toml` `[*.secrets]` entry names a variable that is actually set,
-    and (c) a `security jwt` declaration has a secret mapped. Every failing
-    item is printed — unlike `_open_endpoints`, which stops at the first,
+    `lnpl.toml` `[*.secrets]` entry names a variable that is set or a
+    readable, non-empty file (issue #192), and (c) a `security jwt`
+    declaration has a secret mapped. Every failing item is printed — unlike `_open_endpoints`, which stops at the first,
     because `cmd_serve` only needs one reason to refuse to start, but an
     operator running this diagnostic wants the whole list at once.
 
@@ -1352,11 +1366,22 @@ def cmd_config_check(args):
                 "declares `auth %s from %s`)"
                 % (auth["env"], name, auth["kind"], auth["env"]))
 
-    for key, env_name in sorted(cfg.secrets.items()):
-        if os.environ.get(env_name) is None:
-            problems.append(
-                "lnpl.toml secrets.%s names %s, which is not set in the "
-                "environment" % (key, env_name))
+    for key, value in sorted(cfg.secrets.items()):
+        if isinstance(value, str):
+            if os.environ.get(value) is None:
+                problems.append(
+                    "lnpl.toml secrets.%s names %s, which is not set in the "
+                    "environment" % (key, value))
+        elif isinstance(value, SecretFileRef):
+            try:
+                data = _read_secret_file(value.path, "lnpl.toml secrets.%s.file" % key)
+            except WsgiConfigError as exc:
+                problems.append(str(exc))
+                continue
+            if key == "jwt" and len(data) < MIN_SECRET_BYTES:
+                problems.append(
+                    "the JWT signing secret must be at least %d bytes, got %d "
+                    "(from lnpl.toml secrets.jwt.file)" % (MIN_SECRET_BYTES, len(data)))
 
     if _declares_jwt(doc) and "jwt" not in cfg.secrets:
         problems.append(
@@ -1442,6 +1467,24 @@ def _token_provider(secret_env, issuer=None, provider_name=None):
     except (ValueError, DriverError, TokenError) as exc:
         detail = "%s (from %s)" % (exc, secret_env) if secret_env else str(exc)
         print("error: %s" % detail, file=sys.stderr)
+        return _REJECTED
+
+
+def _token_provider_from_file(path, role, issuer=None, provider_name=None):
+    """issue #192 D8: the file-sourced twin of `_token_provider`. A
+    non-hmac --token-provider never reads the file (same rule as the env
+    secret); hmac keeps open_token_provider's built-in shadow check."""
+    if (provider_name or "hmac") != "hmac":
+        return _token_provider(None, issuer, provider_name)
+    try:
+        secret = _read_secret_file(path, role)
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+    try:
+        return open_token_provider("hmac", secret=secret, issuer=issuer)
+    except (ValueError, DriverError, TokenError) as exc:
+        print("error: %s (from %s)" % (exc, role), file=sys.stderr)
         return _REJECTED
 
 
@@ -1888,6 +1931,12 @@ def _build_parser(subparsers_out=None):
                          "command line. Falls back to lnpl.toml's "
                          "`[*.secrets].jwt` (issue #114) — also a NAME, "
                          "never the secret itself.")
+    sv.add_argument("--jwt-secret-file", default=None, metavar="PATH",
+                    help="absolute path of a file holding the HS256 signing "
+                         "secret (issue #192) -- a mounted Kubernetes/Docker "
+                         "secret; one trailing LF or CRLF is stripped. Refused "
+                         "together with --jwt-secret-env; beats lnpl.toml's "
+                         "[*.secrets].jwt.")
     sv.add_argument("--jwt-issuer", default=None, metavar="ISS",
                     help="expected `iss` claim a verified token must carry "
                          "(issue #119b). Omitted, defaults to the built-in "
