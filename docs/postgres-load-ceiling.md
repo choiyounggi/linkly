@@ -257,6 +257,14 @@ Set `--rate-limit 100` for a postgres-backed `lnpl serve` until the
 scheduled). `--rate-limit` answers `429` with `Retry-After` when the rate is
 exceeded, so overload fails fast instead of queueing (issue #148).
 
+This number is per `lnpl serve` process. With K instances or gunicorn
+workers each running `--rate-limit 100`, the combined admitted rate is
+up to 100 x K, not 100 (`docs/serving.md` "Rate limit" -- the bucket is
+process-local). Put the combined cap at the gateway instead
+(`examples/deploy/nginx.conf`'s `limit_req_zone`/`limit_req`, issue
+#194; directive docs:
+https://nginx.org/en/docs/http/ngx_http_limit_req_module.html).
+
 100 rps is the measured ceiling on the machine above: it was STABLE in both
 runs made at that rate (60 s and 90 s), and 150 rps stalled in all three
 unpatched runs. No rate between 100 and 150 was tested.

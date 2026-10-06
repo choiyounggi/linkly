@@ -499,12 +499,15 @@ gunicorn)도 같은 것을 받는다: `LNPL_METRICS`, `LNPL_TRUST_INCOMING_TRACE
 
 `--rate-limit N` (기본: 미지정 = 무제한, 이슈 #148 이전 동작) — 프로세스
 전역 토큰 버킷 하나, `rate == capacity == N`(초당 N개, 버스트도 N개까지).
-분산/per-IP 한도가 아니다 — 프록시 뒤에서 클라이언트 주소는
-`X-Forwarded-For` 신뢰 문제 없이는 식별할 수 없고, 그건 이 이슈가 아니라
-#143(레디스 캐시) 후속의 범위다. 여러 lnpl serve 프로세스를 앞단
-로드밸런서 뒤에 둔다면, 진짜 전역 한도는 그 게이트웨이(nginx
-`limit_req`, 클라우드 API 게이트웨이 등)에서 걸어야 한다 — 이 프로세스
-내부 버킷은 그 앞단이 없는 단일 인스턴스 배치를 위한 최소 방어선이다.
+인스턴스(또는 gunicorn 워커)가 K개면 실제 허용량은 N × K로 느슨해지고,
+클라이언트별 한도는 전혀 없다 — linkly는 **단일 인스턴스 방어선만
+제공한다**는 것이 이 프로젝트의 공식 입장이다(이슈 #194). 전역 한도와
+클라이언트별 한도는 둘 다 게이트웨이의 일이다 — nginx `limit_req`(공식
+문서: https://nginx.org/en/docs/http/ngx_http_limit_req_module.html,
+참조 설정은 `examples/deploy/nginx.conf`), 클라우드 API 게이트웨이 등.
+공유 저장소 기반의 분산 한도(#143 레디스 캐시 드라이버를 카운터로 쓰는
+방식)는 검토했지만 채택하지 않았다 — 이 프로세스 내부 버킷은 앞단
+게이트웨이가 없는 단일 인스턴스 배치를 위한 최소 방어선일 뿐이다.
 
 **`/-/` 경로는 전부 면제된다** — k8s 프로브가 429를 맞으면 안 되므로
 (위 "운영 표면" 절과 같은 이유).
@@ -814,6 +817,13 @@ issuer(`lnpl`)가 적용된다 — CLI의 `--jwt-issuer ""`는 운영자 오류�
 메시지는 이전 그대로다(시크릿 값이 아니라 변수 이름과 바이트 수만 담는다).
 `build_app()`을 인자로 직접 부를 때는 명시 인자(`None`이 아닌 값)가 환경
 변수를 이긴다 — `metrics=False`는 `LNPL_METRICS=1`을 끈다(이슈 #187).
+
+gunicorn이 여러 워커 프로세스를 띄우면(`--workers K`, 기본 1) 각 워커가
+독립된 OS 프로세스이므로 `LNPL_RATE_LIMIT`의 토큰 버킷도 워커마다 따로
+생긴다 — 위 "Rate limit" 절의 N × 인스턴스 수와 같은 산술이 한 호스트
+안에서도 적용된다: `--workers K`에 `LNPL_RATE_LIMIT=N`이면 그 호스트
+하나가 합산 최대 N × K개/초를 통과시킬 수 있다. 전역 한도는 여기서도
+게이트웨이의 일이다(위 "Rate limit" 절).
 
 해석 순서는 소스 컴파일 → `LNPL_CONFIG`/`LNPL_PROFILE`(파일 로드) →
 `LNPL_BACKEND` → `LNPL_JWT_SECRET_ENV` → `LNPL_TOKEN_PROVIDER`/
