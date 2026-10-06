@@ -46,7 +46,8 @@ from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
                    resolve_schedule_triggers, _schedule_events,
-                   _validate_rate_limit)
+                   _validate_rate_limit, _merge_endpoint_args,
+                   _resolve_backend, _resolve_jwt_secret_env)
 from .spec import SpecError, extract, run_manifest
 
 
@@ -737,17 +738,6 @@ def cmd_generate(args):
     return 0
 
 
-def _resolve_backend(args, cfg):
-    """`--backend` > `lnpl.toml` `backend` > the built-in `"fake"` (issue
-    #114 D6) — CLI wins because `args.backend` is only `None` when the flag
-    was not given (the `serve` subparser's own default moved to `None` so
-    this function can tell "omitted" from "typed fake")."""
-    value = getattr(args, "backend", None)
-    if value is not None:
-        return value
-    return cfg.backend if cfg.backend is not None else "fake"
-
-
 def _resolve_log_format(args, cfg):
     """Same precedence as `_resolve_backend`, for `--log-format`."""
     value = getattr(args, "log_format", None)
@@ -764,39 +754,6 @@ def _resolve_trace_exporter(args, cfg):
     if value is not None:
         return value
     return cfg.trace_exporter
-
-
-def _resolve_jwt_secret_env(args, cfg):
-    """`--jwt-secret-env` > `lnpl.toml` `[*.secrets].jwt` (an ENV NAME,
-    never the secret — issue #101 discipline, enforced by `config.py` at
-    load time) > unset (presence-checked, not verified — the pre-#114
-    default)."""
-    value = getattr(args, "jwt_secret_env", None)
-    if value is not None:
-        return value
-    return cfg.secrets.get("jwt")
-
-
-def _merge_endpoint_args(endpoint_args, cfg_endpoints):
-    """`--endpoint` entries, plus one `NAME=URL` per `lnpl.toml` endpoint
-    that neither `--endpoint` nor `LNPL_ENDPOINT_<NAME>` already covers
-    (issue #114 D6/D7).
-
-    `_open_endpoints` still owns the CLI-vs-ENV judgment call (issue #101) —
-    this only appends the file as a third tier beneath both, by handing it
-    a `--endpoint`-shaped entry it cannot tell apart from one actually typed
-    on the command line. `_open_endpoints`'s signature stays untouched
-    (t109 owns `open_network`; this task does not touch either)."""
-    endpoint_args = list(endpoint_args or [])
-    given_names = {item.partition("=")[0] for item in endpoint_args}
-    merged = list(endpoint_args)
-    for name, url in (cfg_endpoints or {}).items():
-        if name in given_names:
-            continue
-        if os.environ.get("LNPL_ENDPOINT_%s" % name.upper()) is not None:
-            continue
-        merged.append("%s=%s" % (name, url))
-    return merged
 
 
 def cmd_serve(args):

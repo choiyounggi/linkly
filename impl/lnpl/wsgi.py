@@ -29,13 +29,15 @@ import os
 import sys
 import threading
 import time
+import types
 import urllib.parse
 import uuid
 from importlib import metadata as importlib_metadata
 
 from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
                       TokenError, _http_capabilities, _is_url_literal,
-                      audience_for_path, open_repository)
+                      audience_for_path, open_cache, open_network,
+                      open_repository, open_token_provider)
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
 from .condition import PAYLOAD_NAMESPACE
@@ -2358,12 +2360,164 @@ def _validate_rate_limit(value, option):
         raise WsgiConfigError("%s must be a positive number" % option)
 
 
+class _OptionError(Exception):
+    """Raised by every shared validator below; never shown to an operator
+    directly. `kind` is a short machine tag, `option` is the lowercase
+    role name `_ENV_VAR_FOR_ROLE` maps to an LNPL_* display name, `cause`
+    is the original wrapped exception or None. NOT used by cli.py at all:
+    cli._token_provider is UNCHANGED by this task -- its own hmac-shadow-
+    then-length check order stays exactly as it is today."""
+
+    def __init__(self, kind, option, cause=None):
+        super().__init__(kind, option, cause)
+        self.kind = kind
+        self.option = option
+        self.cause = cause
+
+
+_ENV_VAR_FOR_ROLE = {
+    "backend": "LNPL_BACKEND",
+    "cache": "LNPL_CACHE",
+    "network": "LNPL_NETWORK",
+    "token_provider": "LNPL_TOKEN_PROVIDER",
+    "config": "LNPL_CONFIG",
+    "profile": "LNPL_PROFILE",
+}
+_REASON_FOR_KIND = {
+    "selector": "is not a recognized selector",
+    "provider-error": "is not a recognized token provider",
+    "config-error": "is not a valid configuration file",
+    "profile-error": "is not a recognized profile",
+}
+
+
+def _raise_config_error(exc):
+    """The ONE formatter for every variable's build_app error except
+    LNPL_JWT_SECRET_ENV (carved out in build_app's own except-block).
+    ALWAYS raises `from None` -- exc.cause can echo a raw spec/DSN/path;
+    chaining it would put that text into any traceback a host prints.
+    Never returns."""
+    raise WsgiConfigError(
+        "%s %s" % (_ENV_VAR_FOR_ROLE[exc.option], _REASON_FOR_KIND[exc.kind])
+    ) from None
+
+
+def _open_or_raise(opener, spec, option, exc_types, **kwargs):
+    """`opener(spec, **kwargs)`, or `_OptionError("selector", option, exc)`
+    on any of `exc_types` OR any other `Exception` -- the second, broader
+    clause catches a registered factory's own `__init__` raising
+    something neither ValueError nor DriverError (e.g. ConnectionError
+    with a DSN in its text)."""
+    try:
+        return opener(spec, **kwargs)
+    except exc_types as exc:
+        raise _OptionError("selector", option, exc) from exc
+    except Exception as exc:
+        raise _OptionError("selector", option, exc) from exc
+
+
+def _resolve_token_provider(secret_env, issuer=None, provider_name=None):
+    """build_app's OWN mirror of cli._token_provider's rule -- NOT a
+    function cli.py calls. For "hmac", constructs HmacTokenProvider
+    DIRECTLY (today's exact pre-task shape, now threading `issuer`) --
+    NO open_token_provider call, NO entry-point shadow check, on this
+    path: an lnpl.tokens entry-point registered as "hmac" has NO EFFECT
+    on build_app, exactly like today. For any OTHER name, secret stays
+    unread and the request goes through open_token_provider."""
+    name = provider_name or "hmac"
+    if name == "hmac":
+        if secret_env is None:
+            return None
+        secret = os.environ.get(secret_env)
+        if not secret:
+            raise _OptionError("secret-missing", "jwt_secret_env")
+        try:
+            return HmacTokenProvider(secret, issuer=issuer)
+        except TokenError as exc:
+            raise _OptionError("secret-short", "jwt_secret_env", exc) from exc
+    try:
+        return open_token_provider(name, secret=None, issuer=issuer)
+    except (ValueError, DriverError) as exc:
+        raise _OptionError("provider-error", "token_provider", exc) from exc
+    except Exception as exc:
+        # A registered factory's own failure (e.g. a ConnectionError naming
+        # its JWKS URL) is wrapped like `_open_or_raise` does, so its text
+        # never reaches the operator.
+        raise _OptionError("provider-error", "token_provider", exc) from exc
+
+
+def _resolve_network_selected(document, network_spec, merged_endpoints):
+    """`"http"` reuses _resolve_network's OWN unchanged validation, fed
+    merged_endpoints. Anything else (including "fake") mirrors
+    cli._open_endpoints's own `if network_spec != "http": return {},
+    caps` -- endpoint validation skipped outright, capabilities is the
+    FULL _http_capabilities(document) (no observable effect)."""
+    if network_spec == "http":
+        return _resolve_network(document, merged_endpoints)
+    caps = _http_capabilities(document)
+    return _open_or_raise(open_network, network_spec, "network",
+                          (ValueError, DriverError), endpoints={},
+                          capabilities=caps)
+
+
+def _resolve_backend(args, cfg):
+    """Moved here from cli.py. cfg=None is now accepted exactly like an
+    empty ResolvedConfig() was before: getattr(cfg, "backend", None) in
+    place of cfg.backend is the one line that changed from cli.py's own
+    original version."""
+    value = getattr(args, "backend", None)
+    if value is not None:
+        return value
+    cfg_backend = getattr(cfg, "backend", None)
+    return cfg_backend if cfg_backend is not None else "fake"
+
+
+def _resolve_jwt_secret_env(args, cfg):
+    """Moved here from cli.py, cfg=None-safe the same way:
+    (getattr(cfg, "secrets", None) or {}).get("jwt") in place of
+    cfg.secrets.get("jwt")."""
+    value = getattr(args, "jwt_secret_env", None)
+    if value is not None:
+        return value
+    return (getattr(cfg, "secrets", None) or {}).get("jwt")
+
+
+def _merge_endpoint_args(endpoint_args, cfg_endpoints):
+    """Moved here from cli.py; body UNCHANGED -- it already did
+    (cfg_endpoints or {}), so it was already cfg=None-safe before this
+    move."""
+    endpoint_args = list(endpoint_args or [])
+    given_names = {item.partition("=")[0] for item in endpoint_args}
+    merged = list(endpoint_args)
+    for name, url in (cfg_endpoints or {}).items():
+        if name in given_names:
+            continue
+        if os.environ.get("LNPL_ENDPOINT_%s" % name.upper()) is not None:
+            continue
+        merged.append("%s=%s" % (name, url))
+    return merged
+
+
 def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
               endpoints=None, log_format=None, trace_exporter=None,
               idempotency_ttl_s=None, metrics=None, capture_on_failure=None,
-              trust_incoming_trace=None, rate_limit=None):
+              trust_incoming_trace=None, rate_limit=None, cache=None,
+              network=None, token_provider=None, jwt_issuer=None,
+              config=None, profile=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
+
+    Resolution order (issue #187 piece B, stated once, exactly, here):
+    sources/compile -> LNPL_CONFIG/LNPL_PROFILE (loads `cfg`) -> LNPL_BACKEND
+    (consults `cfg`) -> LNPL_JWT_SECRET_ENV (consults `cfg`) ->
+    LNPL_TOKEN_PROVIDER/LNPL_JWT_ISSUER (consumes the just-resolved
+    jwt_secret_env; byte-identical to today's POSITION, right after the
+    secret-env name is known and before clock/cache/network — nothing is
+    opened yet if this raises, so there is nothing to close on failure) ->
+    LNPL_CLOCK -> LNPL_CACHE (needs the clock; closed on ANY later
+    failure, see below) -> LNPL_NETWORK (needs the merged endpoints) ->
+    LNPL_LOG_FORMAT -> LNPL_TRACE_EXPORTER -> LNPL_IDEMPOTENCY_TTL_S -> the
+    3 booleans + LNPL_RATE_LIMIT (t187a, unchanged) -> make_wsgi_app.
 
     Every argument omitted falls back to its environment variable:
 
@@ -2391,15 +2545,43 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
       trust_incoming_trace LNPL_TRUST_INCOMING_TRACE  same boolean vocabulary; default False
       rate_limit         LNPL_RATE_LIMIT      a positive, finite float; default
                                            None (unlimited)
+      cache          LNPL_CACHE           "fake" (implicit, default) or
+                                           "<scheme>[:<arg>]" from a
+                                           registered `lnpl.caches`
+                                           entry-point (issue #187 piece B)
+      network        LNPL_NETWORK         unset (default): the pre-existing
+                                           unconditional resolution below;
+                                           "http" is the same resolution
+                                           named explicitly; "fake" or any
+                                           other registered `lnpl.networks`
+                                           selector skips it (issue #187 B)
+      token_provider LNPL_TOKEN_PROVIDER  "hmac" (default) or an
+                                           `lnpl.tokens` entry-point name
+                                           (issue #187 piece B)
+      jwt_issuer     LNPL_JWT_ISSUER      the expected `iss` claim; "" is
+                                           treated as unset here (default
+                                           issuer applies) -- unlike
+                                           `--jwt-issuer ""` on the CLI,
+                                           which is an operator error
+                                           (issue #187 piece B)
+      config         LNPL_CONFIG          an lnpl.toml path; unset ->
+                                           `load_config` is never called,
+                                           no implicit ./lnpl.toml pickup
+                                           (issue #187 piece B)
+      profile        LNPL_PROFILE         a profile table name inside the
+                                           loaded lnpl.toml; has no effect
+                                           unless `config`/LNPL_CONFIG is
+                                           also set (issue #187 piece B)
 
-    LNPL_CACHE, LNPL_NETWORK, LNPL_TOKEN_PROVIDER, LNPL_JWT_ISSUER,
-    LNPL_CONFIG, LNPL_PROFILE: not read by build_app in this release; see
-    issue #187.
+    LNPL_EXAMPLE_UNUSED: a name this docstring mentions and build_app
+    never reads, kept here only so the parity test's reverse red-proof
+    has a name it can rely on staying docstring-only.
 
     A `sources`/`backend`/`jwt_secret_env`/`clock`/`log_format`/
-    `trace_exporter`/network target that cannot be resolved raises
-    `WsgiConfigError` before any request is served — a failed launch, not a
-    failed first request.
+    `trace_exporter`/network target/`cache`/`network`/`token_provider`/
+    `config`/`profile` that cannot be resolved raises `WsgiConfigError`
+    before any request is served — a failed launch, not a failed first
+    request.
     """
     if sources is None:
         raw = os.environ.get("LNPL_SOURCE")
@@ -2427,32 +2609,66 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     for line in format_lines_from_records(ext_records):
         print(line, file=sys.stderr)
 
-    if backend is None:
-        backend = os.environ.get("LNPL_BACKEND", "fake")
+    config = (config or None) if config is not None else _env_or_none("LNPL_CONFIG")
+    profile = (profile or None) if profile is not None else _env_or_none("LNPL_PROFILE")
+    cfg = None
+    if config is not None:
+        from .config import load_config
+        resolved_profile = profile if profile is not None else "default"
+        try:
+            cfg = load_config(config, "default")
+        except (WsgiConfigError, OSError, UnicodeDecodeError) as exc:
+            _raise_config_error(_OptionError("config-error", "config", exc))
+        if resolved_profile != "default":
+            try:
+                cfg = load_config(config, resolved_profile)
+            except (WsgiConfigError, OSError, UnicodeDecodeError) as exc:
+                _raise_config_error(_OptionError("profile-error", "profile", exc))
+        # build_app applies only the file's backend / secrets.jwt / endpoints;
+        # say so for the two keys it loads and ignores (names, never values).
+        ignored = [(key, env) for key, env in (("log_format", "LNPL_LOG_FORMAT"),
+                                               ("trace_exporter", "LNPL_TRACE_EXPORTER"))
+                   if getattr(cfg, key, None) is not None]
+        if ignored:
+            print("lnpl build_app: LNPL_CONFIG sets %s, which build_app() does "
+                  "not apply from the file -- set %s instead (issue #187)."
+                  % (", ".join(key for key, _env in ignored),
+                     ", ".join(env for _key, env in ignored)),
+                  file=sys.stderr)
+
+    backend_arg_or_env = backend if backend is not None else os.environ.get("LNPL_BACKEND")
+    backend = _resolve_backend(types.SimpleNamespace(backend=backend_arg_or_env), cfg)
     repository_factory = None
     if backend != "fake":
         try:
             probe = open_repository(backend)
         except (ValueError, DriverError) as exc:
-            raise WsgiConfigError("LNPL_BACKEND %r: %s" % (backend, exc)) from exc
+            _raise_config_error(_OptionError("selector", "backend", exc))
         probe.close()
 
         def repository_factory(spec=backend):
             return open_repository(spec)
 
-    if jwt_secret_env is None:
-        jwt_secret_env = os.environ.get("LNPL_JWT_SECRET_ENV")
-    token_provider = None
-    if jwt_secret_env:
-        secret = os.environ.get(jwt_secret_env)
-        if not secret:
+    jwt_secret_env_arg_or_env = (jwt_secret_env if jwt_secret_env is not None
+                                 else os.environ.get("LNPL_JWT_SECRET_ENV"))
+    jwt_secret_env = _resolve_jwt_secret_env(
+        types.SimpleNamespace(jwt_secret_env=jwt_secret_env_arg_or_env), cfg)
+    jwt_secret_env = jwt_secret_env or None
+
+    jwt_issuer = (jwt_issuer or None) if jwt_issuer is not None else _env_or_none("LNPL_JWT_ISSUER")
+    token_provider_name = ((token_provider or None) if token_provider is not None
+                           else _env_or_none("LNPL_TOKEN_PROVIDER"))
+    try:
+        token_provider = _resolve_token_provider(
+            jwt_secret_env, issuer=jwt_issuer, provider_name=token_provider_name)
+    except _OptionError as exc:
+        if exc.option == "jwt_secret_env":
+            if exc.kind == "secret-missing":
+                raise WsgiConfigError(
+                    "%s is not set in the environment" % jwt_secret_env) from None
             raise WsgiConfigError(
-                "%s is not set in the environment" % jwt_secret_env)
-        try:
-            token_provider = HmacTokenProvider(secret)
-        except TokenError as exc:
-            raise WsgiConfigError(
-                "%s (from %s)" % (exc, jwt_secret_env)) from exc
+                "%s (from %s)" % (exc.cause, jwt_secret_env)) from exc.cause
+        _raise_config_error(exc)
 
     clock_spec = clock if clock is not None else os.environ.get("LNPL_CLOCK", "virtual")
     try:
@@ -2460,58 +2676,83 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     except ValueError as exc:
         raise WsgiConfigError(str(exc)) from exc
 
-    network = _resolve_network(document, endpoints)
+    cache_spec = (cache or None) if cache is not None else _env_or_none("LNPL_CACHE")
+    cache = None
+    if cache_spec is not None:
+        try:
+            cache = _open_or_raise(open_cache, cache_spec, "cache",
+                                   (ValueError, DriverError), clock=clock_obj)
+        except _OptionError as exc:
+            _raise_config_error(exc)
 
-    log_format = log_format if log_format is not None else os.environ.get(
-        "LNPL_LOG_FORMAT", "text")
     try:
-        log_format = open_log_format(log_format)
-    except ValueError as exc:
-        raise WsgiConfigError(str(exc)) from exc
-
-    trace_exporter = trace_exporter if trace_exporter is not None else \
-        os.environ.get("LNPL_TRACE_EXPORTER")
-    try:
-        exporter = open_exporter(trace_exporter)
-    except (ValueError, ExporterError) as exc:
-        raise WsgiConfigError(str(exc)) from exc
-
-    if idempotency_ttl_s is None:
-        idempotency_ttl_s = os.environ.get("LNPL_IDEMPOTENCY_TTL_S")
-    try:
-        idempotency_ttl_ms = (DEFAULT_IDEMPOTENCY_TTL_MS
-                              if idempotency_ttl_s is None
-                              else int(idempotency_ttl_s) * 1000)
-    except ValueError as exc:
-        raise WsgiConfigError(
-            "LNPL_IDEMPOTENCY_TTL_S %r is not an integer number of seconds"
-            % idempotency_ttl_s) from exc
-
-    _typecheck_bool_or_none(metrics, "metrics")
-    metrics = (metrics if metrics is not None
-               else (_parse_bool_env(_env_or_none("LNPL_METRICS"), "LNPL_METRICS") or False))
-    _typecheck_bool_or_none(capture_on_failure, "capture_on_failure")
-    capture_on_failure = (capture_on_failure if capture_on_failure is not None
-                          else (_parse_bool_env(_env_or_none("LNPL_CAPTURE_ON_FAILURE"),
-                                                "LNPL_CAPTURE_ON_FAILURE") or False))
-    _typecheck_bool_or_none(trust_incoming_trace, "trust_incoming_trace")
-    trust_incoming_trace = (trust_incoming_trace if trust_incoming_trace is not None
-                            else (_parse_bool_env(_env_or_none("LNPL_TRUST_INCOMING_TRACE"),
-                                                  "LNPL_TRUST_INCOMING_TRACE") or False))
-    if rate_limit is None:
-        rate_limit_raw = _env_or_none("LNPL_RATE_LIMIT")
-        if rate_limit_raw is None:
-            rate_limit = None
+        endpoint_items = ["%s=%s" % (k, v) for k, v in (endpoints or {}).items()]
+        merged_endpoint_items = _merge_endpoint_args(
+            endpoint_items, getattr(cfg, "endpoints", None))
+        merged_endpoints = dict(item.split("=", 1) for item in merged_endpoint_items)
+        network_spec = (network or None) if network is not None else _env_or_none("LNPL_NETWORK")
+        if network_spec is None:
+            network = _resolve_network(document, merged_endpoints)
         else:
             try:
-                rate_limit = float(rate_limit_raw)
-            except ValueError as exc:
-                raise WsgiConfigError("LNPL_RATE_LIMIT is not a number") from exc
-    _validate_rate_limit(rate_limit, "LNPL_RATE_LIMIT")
+                network = _resolve_network_selected(document, network_spec, merged_endpoints)
+            except _OptionError as exc:
+                _raise_config_error(exc)
+
+        log_format = log_format if log_format is not None else os.environ.get(
+            "LNPL_LOG_FORMAT", "text")
+        try:
+            log_format = open_log_format(log_format)
+        except ValueError as exc:
+            raise WsgiConfigError(str(exc)) from exc
+
+        trace_exporter = trace_exporter if trace_exporter is not None else \
+            os.environ.get("LNPL_TRACE_EXPORTER")
+        try:
+            exporter = open_exporter(trace_exporter)
+        except (ValueError, ExporterError) as exc:
+            raise WsgiConfigError(str(exc)) from exc
+
+        if idempotency_ttl_s is None:
+            idempotency_ttl_s = os.environ.get("LNPL_IDEMPOTENCY_TTL_S")
+        try:
+            idempotency_ttl_ms = (DEFAULT_IDEMPOTENCY_TTL_MS
+                                  if idempotency_ttl_s is None
+                                  else int(idempotency_ttl_s) * 1000)
+        except ValueError as exc:
+            raise WsgiConfigError(
+                "LNPL_IDEMPOTENCY_TTL_S %r is not an integer number of seconds"
+                % idempotency_ttl_s) from exc
+
+        _typecheck_bool_or_none(metrics, "metrics")
+        metrics = (metrics if metrics is not None
+                  else (_parse_bool_env(_env_or_none("LNPL_METRICS"), "LNPL_METRICS") or False))
+        _typecheck_bool_or_none(capture_on_failure, "capture_on_failure")
+        capture_on_failure = (capture_on_failure if capture_on_failure is not None
+                              else (_parse_bool_env(_env_or_none("LNPL_CAPTURE_ON_FAILURE"),
+                                                    "LNPL_CAPTURE_ON_FAILURE") or False))
+        _typecheck_bool_or_none(trust_incoming_trace, "trust_incoming_trace")
+        trust_incoming_trace = (trust_incoming_trace if trust_incoming_trace is not None
+                                else (_parse_bool_env(_env_or_none("LNPL_TRUST_INCOMING_TRACE"),
+                                                      "LNPL_TRUST_INCOMING_TRACE") or False))
+        if rate_limit is None:
+            rate_limit_raw = _env_or_none("LNPL_RATE_LIMIT")
+            if rate_limit_raw is None:
+                rate_limit = None
+            else:
+                try:
+                    rate_limit = float(rate_limit_raw)
+                except ValueError as exc:
+                    raise WsgiConfigError("LNPL_RATE_LIMIT is not a number") from exc
+        _validate_rate_limit(rate_limit, "LNPL_RATE_LIMIT")
+    except BaseException:
+        if cache is not None:
+            cache.close()
+        raise
 
     return make_wsgi_app(document, repository_factory=repository_factory,
                          token_provider=token_provider, network=network,
-                         clock=clock_obj, log_format=log_format,
+                         cache=cache, clock=clock_obj, log_format=log_format,
                          exporter=exporter,
                          idempotency_ttl_ms=idempotency_ttl_ms,
                          metrics=metrics, capture_on_failure=capture_on_failure,

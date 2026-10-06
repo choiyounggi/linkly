@@ -13,7 +13,9 @@ gunicorn으로 띄우는 참조 컨테이너다. 이 저장소의 CI/릴리스 �
 필요하면 `LNPL_BACKEND=sqlite:/path/to.db`로 바꾼다(`docs/backends.md`).
 전체 환경 변수 계약(`LNPL_SOURCE`/`LNPL_BACKEND`/`LNPL_JWT_SECRET_ENV`/
 `LNPL_CLOCK`, 그리고 `docker run -e`로 켜는 `LNPL_METRICS`/
-`LNPL_CAPTURE_ON_FAILURE`/`LNPL_TRUST_INCOMING_TRACE`/`LNPL_RATE_LIMIT`)은
+`LNPL_CAPTURE_ON_FAILURE`/`LNPL_TRUST_INCOMING_TRACE`/`LNPL_RATE_LIMIT`,
+`LNPL_CONFIG`/`LNPL_PROFILE`/`LNPL_CACHE`/`LNPL_NETWORK`/
+`LNPL_TOKEN_PROVIDER`/`LNPL_JWT_ISSUER`)은
 `docs/serving.md` "운영 배치" 절이 정본이다 — 이 Dockerfile은 그 계약을
 소비할 뿐 재정의하지 않는다.
 

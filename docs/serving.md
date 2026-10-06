@@ -701,6 +701,21 @@ payments = "https://staging.example.com/pay"   # payments만 덮는다
 전체가 아니라 `endpoints`/`secrets`의 개별 키만 덮이므로, 프로파일이 건드리지
 않은 키는 `[default]`에서 그대로 내려온다. include·상속·조건부는 없다.
 
+`build_app()`(gunicorn) 경로도 이 파일을 쓸 수 있다(이슈 #187):
+`LNPL_CONFIG`/`LNPL_PROFILE` 환경 변수(또는 `config`/`profile` 인자)를 주면
+`backend`/`jwt_secret_env`/`endpoints`가 `lnpl serve`와 **같은 방식**으로
+얹힌다. 다른 점은 셋이다. 첫째, 이 경로에는 CLI 플래그가 없으므로 아래 표의
+1순위는 `build_app()`의 명시 인자와 `LNPL_BACKEND`/`LNPL_JWT_SECRET_ENV` 같은
+환경 변수가 대신한다. 둘째, `lnpl serve`는 `--config`가 없으면 cwd의
+`./lnpl.toml`을 읽지만 `build_app()`은 cwd의 `lnpl.toml`을 **절대 저절로 읽지
+않는다** — `LNPL_CONFIG`/`config`를 명시했을 때만 읽는다. 셋째, 파일의
+`log_format`/`trace_exporter`는 이 경로에서 적용되지 않는다 — 그 값은
+`LNPL_LOG_FORMAT`/`LNPL_TRACE_EXPORTER`(또는 `log_format`/`trace_exporter`
+인자)로 준다. 파일이 둘 중 하나라도 정하면 `build_app()`은 기동 시 stderr에
+한 줄(`lnpl build_app: LNPL_CONFIG sets ...`)로 적용하지 않은 키 이름과 대신
+쓸 환경 변수를 알린다 — 값은 싣지 않는다. `LNPL_PROFILE`만 주고
+`LNPL_CONFIG`가 없으면 아무 효과가 없다.
+
 ### 우선순위 (정본)
 
 값 하나를 결정할 때, 위에서부터 먼저 있는 것이 이긴다:
@@ -777,12 +792,31 @@ env-var 대응:
 | `LNPL_CAPTURE_ON_FAILURE` | `--capture-on-failure` | (미설정 = 꺼짐) — 같은 불리언 표기 |
 | `LNPL_TRUST_INCOMING_TRACE` | `--trust-incoming-trace` | (미설정 = 꺼짐) — 같은 불리언 표기 |
 | `LNPL_RATE_LIMIT` | `--rate-limit` | (미설정 = 무제한) — 0보다 큰 유한한 수 |
+| `LNPL_CONFIG` | `--config` | (미설정 — `lnpl.toml`을 읽지 않는다. cwd의 `./lnpl.toml`도 자동으로 읽지 않는다) — `lnpl.toml` 파일 경로 |
+| `LNPL_PROFILE` | `--profile` | `default` — 읽은 `lnpl.toml` 안의 프로파일 이름. `LNPL_CONFIG`가 없으면 효과가 없다 |
+| `LNPL_CACHE` | `--cache` | (미설정 = 내장 `fake` 캐시) — `<scheme>[:<arg>]`, `lnpl.caches` entry-point |
+| `LNPL_NETWORK` | `--network` | (미설정 = 기존 해석 그대로: 논리명 target마다 endpoint 매핑을 검사) — `fake`, `http`, 또는 `lnpl.networks` entry-point `<scheme>[:<arg>]` |
+| `LNPL_TOKEN_PROVIDER` | `--token-provider` | `hmac` — 또는 `lnpl.tokens` entry-point 이름. 시크릿은 `hmac`일 때만 읽는다 |
+| `LNPL_JWT_ISSUER` | `--jwt-issuer` | `lnpl` — 기대하는 `iss` 클레임, 임의의 비지 않은 문자열 |
 
-표의 마지막 네 변수(`LNPL_METRICS`부터)는 빈 문자열을 미설정으로 본다. 닫힌 목록
+표의 마지막 열 변수(`LNPL_METRICS`부터 `LNPL_JWT_ISSUER`까지)는 빈 문자열을
+미설정으로 본다 — 그 위의 변수들은 이전 동작 그대로다. 닫힌 목록
 밖의 불리언 표기, 숫자가 아니거나 0 이하·`nan`·`inf`인 `LNPL_RATE_LIMIT`은
-그 변수 이름을 담은 `WsgiConfigError`로 기동이 실패한다. `build_app()`을
-인자로 직접 부를 때는 명시 인자(`None`이 아닌 값)가 환경 변수를 이긴다 —
-`metrics=False`는 `LNPL_METRICS=1`을 끈다(이슈 #187).
+그 변수 이름을 담은 `WsgiConfigError`로 기동이 실패한다. 이슈 #187로 더한
+여섯 변수의 잘못된 값도 기동 실패이고, 메시지는 변수 이름만 담고 **값은
+담지 않는다**(DSN 비밀번호·경로가 로그에 남지 않게): 알 수 없는 선택자는
+`LNPL_CACHE is not a recognized selector`/`LNPL_NETWORK is not a recognized
+selector`, 알 수 없는 토큰 제공자는 `LNPL_TOKEN_PROVIDER is not a recognized
+token provider`, 없거나 읽을 수 없거나 문법이 틀린 파일은 `LNPL_CONFIG is not a
+valid configuration file`, 파일에 없는 프로파일은 `LNPL_PROFILE is not a
+recognized profile`. `LNPL_JWT_ISSUER`만은 잘못된 값이라는 것이 없다 —
+issuer는 자유 문자열이라 그대로 받는다. `LNPL_PROFILE`은 `LNPL_CONFIG`도
+설정돼 있지 않으면 효과가 없다. 빈 `LNPL_JWT_ISSUER`는 미설정으로 보고 기본
+issuer(`lnpl`)가 적용된다 — CLI의 `--jwt-issuer ""`는 운영자 오류로 거부되는
+것과 다르다. `LNPL_JWT_SECRET_ENV`가 가리키는 시크릿이 없거나 짧을 때의 두
+메시지는 이전 그대로다(시크릿 값이 아니라 변수 이름과 바이트 수만 담는다).
+`build_app()`을 인자로 직접 부를 때는 명시 인자(`None`이 아닌 값)가 환경
+변수를 이긴다 — `metrics=False`는 `LNPL_METRICS=1`을 끈다(이슈 #187).
 
 gunicorn이 여러 워커 프로세스를 띄우면(`--workers K`, 기본 1) 각 워커가
 독립된 OS 프로세스이므로 `LNPL_RATE_LIMIT`의 토큰 버킷도 워커마다 따로
@@ -791,8 +825,25 @@ gunicorn이 여러 워커 프로세스를 띄우면(`--workers K`, 기본 1) 각
 하나가 합산 최대 N × K개/초를 통과시킬 수 있다. 전역 한도는 여기서도
 게이트웨이의 일이다(위 "Rate limit" 절).
 
-해석 실패(존재하지 않는 소스, 알 수 없는 backend/clock 선택자, 미설정
-JWT secret, 매핑되지 않은 network target)는 `lnpl.wsgi.WsgiConfigError`를
+해석 순서는 소스 컴파일 → `LNPL_CONFIG`/`LNPL_PROFILE`(파일 로드) →
+`LNPL_BACKEND` → `LNPL_JWT_SECRET_ENV` → `LNPL_TOKEN_PROVIDER`/
+`LNPL_JWT_ISSUER` → `LNPL_CLOCK` → `LNPL_CACHE` → `LNPL_NETWORK` → 나머지다.
+`LNPL_CACHE`로 연 캐시는 그 뒤 단계가 실패하면 닫고 나서 기동이 실패한다.
+
+### 기존 배치에 생기는 변화 — 정확히 둘 (이슈 #187)
+
+이슈 #187(`build_app()`이 `serve` 옵션을 모두 받게 한 작업)이 위 변수를
+하나도 설정하지 않은 기존 gunicorn 배치에서 바꾸는 동작은 이 둘뿐이다:
+
+1. readyz 검사 ③이 `build_app()` 경로에서도 돈다 — 위 "운영 표면" 절의 검사
+   목록 ③에 적혀 있다.
+2. 알 수 없는 `LNPL_BACKEND` 값의 기동 실패 메시지가 값을 담지 않는다:
+   `LNPL_BACKEND is not a recognized selector`(이전에는
+   `"LNPL_BACKEND %r: %s"`로 값과 내부 오류 문장을 그대로 실었다).
+
+해석 실패(존재하지 않는 소스, 알 수 없는 backend/clock/cache/network 선택자·
+토큰 제공자, 읽을 수 없는 설정 파일, 미설정 JWT secret, 매핑되지 않은 network
+target)는 `lnpl.wsgi.WsgiConfigError`를
 내며 **요청이 아니라 기동이 실패한다** — `cli.cmd_serve`가 이미 CLI 경로에서
 세운 것과 같은 원칙(첫 요청에서야 발견되는 게 아니라 뜨지 않는다).
 

@@ -27,9 +27,12 @@ from lnpl import diagnostics as diagnostics_module
 from lnpl.diagnostics import ExtensionDiagnosticsError
 from lnpl.drivers import HmacTokenProvider
 
+from tests.cache_spi_fixture import DemoCacheDriver
+from tests.network_spi_fixture import DemoNetworkDriver
 from tests.test_network_driver import _ServerTestCase
 from tests.test_network_resilience import _make_fail_n_handler
 from tests.test_wsgi_contract import call_wsgi
+from tests.token_spi_fixture import DemoTokenProvider
 
 EXT_GROUP = diagnostics_module.DIAGNOSTICS_ENTRY_POINT_GROUP
 
@@ -210,7 +213,9 @@ class _EnvIsolatedTest(unittest.TestCase):
 
     _ENV_KEYS = ("LNPL_SOURCE", "LNPL_BACKEND", "LNPL_JWT_SECRET_ENV",
                 "LNPL_CLOCK", PAYMENT_TOKEN_ENV, "LNPL_METRICS",
-                "LNPL_CAPTURE_ON_FAILURE", "LNPL_TRUST_INCOMING_TRACE")
+                "LNPL_CAPTURE_ON_FAILURE", "LNPL_TRUST_INCOMING_TRACE",
+                "LNPL_CACHE", "LNPL_NETWORK", "LNPL_TOKEN_PROVIDER",
+                "LNPL_JWT_ISSUER", "LNPL_CONFIG", "LNPL_PROFILE")
 
     def setUp(self):
         self._saved = {k: os.environ.pop(k, None) for k in self._ENV_KEYS}
@@ -305,13 +310,17 @@ class BuildAppErrorTest(_EnvIsolatedTest):
             wsgi.build_app(sources=[os.path.join(REPO, "examples", "does-not-exist.lnpl")])
 
     def test_error_unknown_backend_selector_fails_the_launch(self):
-        with self.assertRaises(wsgi.WsgiConfigError):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
             wsgi.build_app(sources=[SHORTEN], backend="not-a-real-backend")
+        self.assertEqual(str(cm.exception),
+                         "LNPL_BACKEND is not a recognized selector")
 
     def test_error_lnpl_backend_env_unknown_selector_fails_the_launch(self):
         os.environ["LNPL_BACKEND"] = "not-a-real-backend"
-        with self.assertRaises(wsgi.WsgiConfigError):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
             wsgi.build_app(sources=[SHORTEN])
+        self.assertEqual(str(cm.exception),
+                         "LNPL_BACKEND is not a recognized selector")
 
     def test_error_jwt_secret_env_names_an_unset_variable(self):
         with self.assertRaises(wsgi.WsgiConfigError):
@@ -596,6 +605,692 @@ class RetryPassthroughWsgiTest(_ServerTestCase):
 
         self.assertEqual(cap["breaker"], {"threshold": 5, "window_ms": 60000})
         self.assertEqual(cap["path"], "/pay/{}")
+
+
+# --- issue #187 piece B: cache / network / token_provider / jwt_issuer /
+# config / profile on the build_app() path --------------------------------
+
+OPEN_SRC = """entity Report
+    field
+        id UUID
+
+service Rollup
+
+workflow GetReport
+    read report
+"""
+
+GUARDED = os.path.join(REPO, "examples", "guarded.lnpl")
+
+CALL_SRC = """
+capability http PaymentGateway
+    method post
+entity Order
+    field
+        id UUID
+service Checkout
+workflow Pay
+    call PaymentGateway as p
+"""
+
+SHORT_SECRET_CANARY = "LEAK9f3a"                      # 8 bytes
+DSN_CANARY = "LEAK-DSN-9f3a1b2c"                       # 17 bytes
+SUCCESS_SECRET = "LEAK-SUCCESS-" + "x" * 20            # 33 bytes
+
+
+def _spi_registered(*entry_points):
+    """Patch `importlib.metadata.entry_points` group-aware: unlike
+    `registered()` above, a cache/network/token entry-point must not also
+    show up in `build_app`'s extension-diagnostics pass (same module
+    object, different group)."""
+    def entry_points_for(group=None, **_kwargs):
+        return [ep for ep in entry_points if ep.group == group]
+    return mock.patch.object(importlib_metadata, "entry_points", entry_points_for)
+
+
+def _spi_entry_point(name, value, group):
+    return importlib_metadata.EntryPoint(name=name, value=value, group=group)
+
+
+def _tmp_dir(testcase):
+    import tempfile
+    tmp_root = os.path.join(REPO, ".claude", "tmp")
+    os.makedirs(tmp_root, exist_ok=True)
+    box = tempfile.TemporaryDirectory(dir=tmp_root)
+    testcase.addCleanup(box.cleanup)
+    return box.name
+
+
+def _write_toml(testcase, text, name="lnpl.toml"):
+    return _write(_tmp_dir(testcase), name, text)
+
+
+class RecordingCacheDriver(DemoCacheDriver):
+    """A registered cache whose `close()` is observable, so a later build
+    failure can be shown to release it."""
+
+    instances = []
+
+    def __init__(self, arg=None):
+        super().__init__(arg)
+        self.closed = False
+        RecordingCacheDriver.instances.append(self)
+
+    def close(self):
+        self.closed = True
+
+
+def make_recording_cache(arg=None):
+    return RecordingCacheDriver(arg)
+
+
+def make_angry_cache(arg=None):
+    raise ConnectionError("refused: cache host unreachable")
+
+
+def make_failing_token_provider():
+    raise ConnectionError("refused: tokens host secret=FAKE-MARKER-187")
+
+
+CACHE_GROUP = "lnpl.caches"
+NETWORK_GROUP = "lnpl.networks"
+TOKEN_GROUP = "lnpl.tokens"
+DEMO_CACHE_EP = _spi_entry_point(
+    "demo", "tests.cache_spi_fixture:make_demo_cache", CACHE_GROUP)
+RECORDING_CACHE_EP = _spi_entry_point(
+    "recording", "%s:make_recording_cache" % __name__, CACHE_GROUP)
+ANGRY_CACHE_EP = _spi_entry_point(
+    "angry", "%s:make_angry_cache" % __name__, CACHE_GROUP)
+CUSTOM_NETWORK_EP = _spi_entry_point(
+    "customnet", "tests.network_spi_fixture:make_demo_network", NETWORK_GROUP)
+BROKEN_NETWORK_EP = _spi_entry_point(
+    "brokennet", "tests.no_such_fixture_module:make_network", NETWORK_GROUP)
+EXT_TOKEN_EP = _spi_entry_point(
+    "extprov", "tests.token_spi_fixture:make_demo_token_provider", TOKEN_GROUP)
+FAILING_TOKEN_EP = _spi_entry_point(
+    "failprov", "%s:make_failing_token_provider" % __name__, TOKEN_GROUP)
+
+
+class BuildAppPieceBEnvKeysTest(_EnvIsolatedTest):
+
+    def test_normal_env_isolation_covers_the_six_new_variables(self):
+        for name in ("LNPL_CACHE", "LNPL_NETWORK", "LNPL_TOKEN_PROVIDER",
+                     "LNPL_JWT_ISSUER", "LNPL_CONFIG", "LNPL_PROFILE"):
+            self.assertIn(name, self._ENV_KEYS)
+
+
+class BuildAppImportTest(unittest.TestCase):
+
+    def test_normal_fresh_subprocess_import_succeeds(self):
+        # The config -> serve -> wsgi cycle only shows on a module's FIRST
+        # import, so this one must run in a fresh interpreter.
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, "-c", "import lnpl.wsgi"],
+            env={**os.environ, "PYTHONPATH": os.path.join(REPO, "impl")},
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
+
+class BuildAppConfigTest(_EnvIsolatedTest):
+
+    def _src(self):
+        return _write_tmp(self, OPEN_SRC)
+
+    def test_normal_build_app_lnpl_config_backend_overlay(self):
+        toml = _write_toml(self, '[default]\nbackend = "doesnotexist:spec"\n')
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], config=toml)
+        self.assertEqual(str(cm.exception), "LNPL_BACKEND is not a recognized selector")
+
+    def test_normal_lnpl_config_loads_the_file(self):
+        from lnpl import config as config_module
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        with mock.patch("lnpl.config.load_config",
+                        wraps=config_module.load_config) as spy:
+            wsgi.build_app(sources=[self._src()], config=toml)
+        self.assertEqual(spy.call_count, 1)
+
+    def test_normal_lnpl_config_env_loads_the_file(self):
+        from lnpl import config as config_module
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        os.environ["LNPL_CONFIG"] = toml
+        with mock.patch("lnpl.config.load_config",
+                        wraps=config_module.load_config) as spy:
+            wsgi.build_app(sources=[self._src()])
+        self.assertEqual(spy.call_args_list, [mock.call(toml, "default")])
+
+    def test_boundary_lnpl_config_unset_cwd_lnpl_toml_not_read(self):
+        source = self._src()
+        cwd = _tmp_dir(self)
+        _write(cwd, "lnpl.toml", '[default]\nbackend = "doesnotexist:spec"\n')
+        previous = os.getcwd()
+        os.chdir(cwd)
+        self.addCleanup(os.chdir, previous)
+        app = wsgi.build_app(sources=[source])
+        self.assertIsNone(app.repository_factory)
+
+    def test_boundary_lnpl_profile_empty_with_config_set_is_default(self):
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        os.environ["LNPL_PROFILE"] = ""
+        app = wsgi.build_app(sources=[self._src()], config=toml)
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+
+    def test_boundary_lnpl_profile_alone_without_lnpl_config_is_ignored(self):
+        os.environ["LNPL_PROFILE"] = "ghost-profile-nothing-here"
+        app = wsgi.build_app(sources=[self._src()])
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+
+    def test_error_lnpl_config_malformed_toml_names_config(self):
+        toml = _write_toml(self, "[default\nbackend = \n")
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], config=toml, profile="prod")
+        self.assertEqual(str(cm.exception), "LNPL_CONFIG is not a valid configuration file")
+
+    def test_error_lnpl_config_missing_file_names_config(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], config="/no/such/file.toml",
+                           profile="prod")
+        self.assertEqual(str(cm.exception), "LNPL_CONFIG is not a valid configuration file")
+
+    def test_error_lnpl_profile_missing_from_valid_file_names_profile(self):
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], config=toml, profile="ghost")
+        self.assertEqual(str(cm.exception), "LNPL_PROFILE is not a recognized profile")
+
+    def test_error_lnpl_profile_env_missing_from_valid_file_names_profile(self):
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        os.environ["LNPL_CONFIG"] = toml
+        os.environ["LNPL_PROFILE"] = "ghost"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()])
+        self.assertEqual(str(cm.exception), "LNPL_PROFILE is not a recognized profile")
+
+    def test_error_lnpl_config_directory_path_wrapped(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], config=_tmp_dir(self))
+        self.assertEqual(str(cm.exception), "LNPL_CONFIG is not a valid configuration file")
+
+    def test_error_lnpl_config_bad_utf8_wrapped(self):
+        path = os.path.join(_tmp_dir(self), "lnpl.toml")
+        with open(path, "wb") as fh:
+            fh.write(b'[default]\nlog_format = "\xff\xfe"\n')
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], config=path)
+        self.assertEqual(str(cm.exception), "LNPL_CONFIG is not a valid configuration file")
+
+    def test_normal_config_argument_beats_invalid_env(self):
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        os.environ["LNPL_CONFIG"] = "/no/such/env/config.toml"
+        app = wsgi.build_app(sources=[self._src()], config=toml)
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+
+    def test_normal_profile_argument_beats_env(self):
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        os.environ["LNPL_PROFILE"] = "ghost-env-profile"
+        app = wsgi.build_app(sources=[self._src()], config=toml, profile="default")
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+
+    def test_normal_config_empty_string_explicit_arg_is_unset(self):
+        from lnpl import config as config_module
+        with mock.patch("lnpl.config.load_config",
+                        wraps=config_module.load_config) as spy:
+            app = wsgi.build_app(sources=[self._src()], config="")
+        self.assertEqual(spy.call_count, 0)
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+
+    def test_normal_profile_empty_string_explicit_arg_is_default(self):
+        toml = _write_toml(self, '[default]\nlog_format = "json"\n')
+        app = wsgi.build_app(sources=[self._src()], config=toml, profile="")
+        self.assertIsInstance(app, wsgi.LnplWsgiApp)
+
+    def test_normal_cfg_endpoints_reaches_resolve_network(self):
+        os.environ.pop("LNPL_ENDPOINT_PAYMENTGATEWAY", None)
+        toml = _write_toml(
+            self, '[default.endpoints]\nPaymentGateway = "http://cfg-endpoint.example/pay"\n')
+        app = wsgi.build_app(sources=[_write_tmp(self, CALL_SRC)], config=toml)
+        self.assertIsNotNone(app.network)
+
+    def test_normal_cfg_secrets_jwt_tier_turns_on_verification(self):
+        os.environ["LNPL_TEST_T187_CFG_SECRET"] = "c" * 32
+        self.addCleanup(os.environ.pop, "LNPL_TEST_T187_CFG_SECRET", None)
+        toml = _write_toml(self, '[default.secrets]\njwt = "LNPL_TEST_T187_CFG_SECRET"\n')
+        app = wsgi.build_app(sources=[self._src()], config=toml)
+        self.assertIsInstance(app.token_provider, HmacTokenProvider)
+        self.assertEqual(app.jwt_secret_env, "LNPL_TEST_T187_CFG_SECRET")
+
+    def _two_profile_toml(self):
+        db = os.path.join(_tmp_dir(self), "prod.db")
+        return _write_toml(
+            self, '[default]\nbackend = "fake"\n\n[prod]\nbackend = "sqlite:%s"\n' % db)
+
+    def test_normal_default_profile_keeps_the_default_backend(self):
+        app = wsgi.build_app(sources=[self._src()], config=self._two_profile_toml())
+        self.assertIsNone(app.repository_factory)
+
+    def test_normal_profile_argument_applies_its_overlay(self):
+        app = wsgi.build_app(sources=[self._src()], config=self._two_profile_toml(),
+                             profile="prod")
+        self.assertIsNotNone(app.repository_factory)
+        repo = app.repository_factory()
+        self.addCleanup(repo.close)
+
+    def test_normal_lnpl_profile_env_applies_its_overlay(self):
+        os.environ["LNPL_PROFILE"] = "prod"
+        app = wsgi.build_app(sources=[self._src()], config=self._two_profile_toml())
+        self.assertIsNotNone(app.repository_factory)
+        repo = app.repository_factory()
+        self.addCleanup(repo.close)
+
+
+NOTICE_PREFIX = "lnpl build_app: LNPL_CONFIG sets "
+
+
+class BuildAppConfigIgnoredKeysTest(_EnvIsolatedTest):
+    """The file's `log_format`/`trace_exporter` are not applied on the
+    build_app() path (only backend / secrets.jwt / endpoints are); that
+    scope cut is announced on stderr, naming keys, never values."""
+
+    def _build(self, toml_text):
+        toml = _write_toml(self, toml_text)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            app = wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)], config=toml)
+        notices = [line for line in err.getvalue().splitlines()
+                   if line.startswith(NOTICE_PREFIX)]
+        return app, notices
+
+    def test_normal_notice_names_both_ignored_keys_and_their_env_vars(self):
+        app, notices = self._build(
+            '[default]\nlog_format = "json"\ntrace_exporter = "stderr-json"\n')
+        self.assertEqual(len(notices), 1)
+        for name in ("log_format", "trace_exporter",
+                     "LNPL_LOG_FORMAT", "LNPL_TRACE_EXPORTER"):
+            self.assertIn(name, notices[0])
+        self.assertNotIn("json", notices[0])
+        self.assertEqual(app.log_format, "text")
+        self.assertIsNone(app.exporter)
+
+    def test_boundary_notice_names_only_the_key_the_file_sets(self):
+        app, notices = self._build('[default]\ntrace_exporter = "stderr-json"\n')
+        self.assertEqual(len(notices), 1)
+        self.assertIn("trace_exporter", notices[0])
+        self.assertNotIn("log_format", notices[0])
+        self.assertIsNone(app.exporter)
+
+    def test_boundary_no_notice_when_the_file_sets_neither_key(self):
+        app, notices = self._build('[default]\nbackend = "fake"\n')
+        self.assertEqual(notices, [])
+        self.assertEqual(app.log_format, "text")
+
+    def test_error_notice_never_carries_the_values(self):
+        _app, notices = self._build(
+            '[default]\nlog_format = "json"\ntrace_exporter = "no-such-exporter-x9"\n')
+        self.assertEqual(len(notices), 1)
+        self.assertNotIn("no-such-exporter-x9", notices[0])
+
+
+class BuildAppBackendOverlayTest(_EnvIsolatedTest):
+
+    def test_normal_explicit_backend_beats_config_file(self):
+        toml = _write_toml(self, '[default]\nbackend = "doesnotexist:spec"\n')
+        app = wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)], config=toml,
+                             backend="fake")
+        self.assertIsNone(app.repository_factory)
+
+
+class BuildAppCacheTest(_EnvIsolatedTest):
+
+    def setUp(self):
+        super().setUp()
+        RecordingCacheDriver.instances.clear()
+
+    def _src(self):
+        return _write_tmp(self, OPEN_SRC)
+
+    def test_normal_registered_cache_driver_receives_a_write(self):
+        import socket
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        dead_port = probe.getsockname()[1]
+        probe.close()
+        with _spi_registered(DEMO_CACHE_EP):
+            app = wsgi.build_app(
+                sources=[GUARDED],
+                endpoints={"token": "http://127.0.0.1:%d/" % dead_port},
+                cache="demo:hello")
+        self.assertIsInstance(app.cache, DemoCacheDriver)
+        body = json.dumps({"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                           "cachedAt": "2026-07-31T09:00:00Z",
+                           "retryBudget": 1}).encode("utf-8")
+        call_wsgi(app, "POST", "/token-service/retrieve-with-cache", body=body)
+        self.assertTrue(app.cache.store, "the registered cache never received a write")
+
+    def test_normal_lnpl_cache_env_selects_the_registered_driver(self):
+        os.environ["LNPL_CACHE"] = "demo:from-env"
+        with _spi_registered(DEMO_CACHE_EP):
+            app = wsgi.build_app(sources=[self._src()])
+        self.assertIsInstance(app.cache, DemoCacheDriver)
+        self.assertEqual(app.cache.arg, "from-env")
+
+    def test_error_unknown_cache_selector_fails_the_launch(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], cache="redis:host")
+        self.assertEqual(str(cm.exception), "LNPL_CACHE is not a recognized selector")
+
+    def test_error_lnpl_cache_env_unknown_selector_fails_the_launch(self):
+        os.environ["LNPL_CACHE"] = "redis:host"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()])
+        self.assertEqual(str(cm.exception), "LNPL_CACHE is not a recognized selector")
+
+    def test_error_broken_cache_factory_wrapped_value_free(self):
+        with _spi_registered(ANGRY_CACHE_EP):
+            with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                wsgi.build_app(sources=[self._src()], cache="angry:x")
+        self.assertEqual(str(cm.exception), "LNPL_CACHE is not a recognized selector")
+
+    def test_boundary_lnpl_cache_empty_string_is_unset(self):
+        app = wsgi.build_app(sources=[self._src()], cache="")
+        self.assertIsNone(app.cache)
+
+    def test_boundary_lnpl_cache_env_empty_string_is_unset(self):
+        os.environ["LNPL_CACHE"] = ""
+        app = wsgi.build_app(sources=[self._src()])
+        self.assertIsNone(app.cache)
+
+    def test_normal_cache_argument_beats_invalid_env(self):
+        os.environ["LNPL_CACHE"] = "also-nonexistent"
+        app = wsgi.build_app(sources=[self._src()], cache="fake")
+        self.assertIsNone(app.cache)
+
+    def test_normal_cache_closed_on_later_build_failure(self):
+        with _spi_registered(RECORDING_CACHE_EP):
+            with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                wsgi.build_app(sources=[self._src()], cache="recording:x",
+                               network="bogus-selector")
+        self.assertEqual(str(cm.exception), "LNPL_NETWORK is not a recognized selector")
+        self.assertEqual(len(RecordingCacheDriver.instances), 1)
+        self.assertIs(RecordingCacheDriver.instances[0].closed, True)
+
+    def test_normal_cache_left_open_on_a_successful_build(self):
+        with _spi_registered(RECORDING_CACHE_EP):
+            app = wsgi.build_app(sources=[self._src()], cache="recording:x")
+        self.assertIs(app.cache, RecordingCacheDriver.instances[0])
+        self.assertIs(app.cache.closed, False)
+
+
+class BuildAppNetworkTest(_EnvIsolatedTest):
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("LNPL_ENDPOINT_PAYMENTGATEWAY", None)
+
+    def test_normal_lnpl_network_fake_skips_endpoint_validation_even_with_declared_targets(self):
+        app = wsgi.build_app(sources=[_write_tmp(self, UNBOUND_CALL_SOURCE)],
+                             network="fake")
+        self.assertIsNone(app.network)
+
+    def test_normal_lnpl_network_env_fake_skips_endpoint_validation(self):
+        os.environ["LNPL_NETWORK"] = "fake"
+        app = wsgi.build_app(sources=[_write_tmp(self, UNBOUND_CALL_SOURCE)])
+        self.assertIsNone(app.network)
+
+    def test_normal_unset_lnpl_network_still_validates_unmapped_targets(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[_write_tmp(self, UNBOUND_CALL_SOURCE)])
+        self.assertIn("PaymentGateway", str(cm.exception))
+        self.assertIn("LNPL_ENDPOINT_PAYMENTGATEWAY", str(cm.exception))
+
+    def test_normal_network_http_explicit_with_endpoints(self):
+        app = wsgi.build_app(sources=[_write_tmp(self, UNBOUND_CALL_SOURCE)],
+                             network="http",
+                             endpoints={"PaymentGateway": "http://example.invalid/pay"})
+        self.assertIsInstance(app.network, wsgi.HttpNetworkDriver)
+
+    def test_error_network_http_explicit_still_validates_unmapped_targets(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[_write_tmp(self, UNBOUND_CALL_SOURCE)],
+                           network="http")
+        self.assertIn("LNPL_ENDPOINT_PAYMENTGATEWAY", str(cm.exception))
+
+    def test_normal_registered_network_entrypoint_beyond_fake(self):
+        with _spi_registered(CUSTOM_NETWORK_EP):
+            app = wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)],
+                                 network="customnet:myarg")
+        self.assertIsInstance(app.network, DemoNetworkDriver)
+        self.assertEqual(app.network.arg, "myarg")
+
+    def test_error_unknown_network_selector_fails_the_launch(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)], network="bogus:spec")
+        self.assertEqual(str(cm.exception), "LNPL_NETWORK is not a recognized selector")
+
+    def test_error_lnpl_network_env_unknown_selector_fails_the_launch(self):
+        os.environ["LNPL_NETWORK"] = "bogus:spec"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)])
+        self.assertEqual(str(cm.exception), "LNPL_NETWORK is not a recognized selector")
+
+    def test_error_broken_network_entrypoint_wrapped_value_free(self):
+        with _spi_registered(BROKEN_NETWORK_EP):
+            with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)],
+                               network="brokennet:arg")
+        self.assertEqual(str(cm.exception), "LNPL_NETWORK is not a recognized selector")
+
+    def test_boundary_lnpl_network_empty_string_is_unset(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[_write_tmp(self, UNBOUND_CALL_SOURCE)], network="")
+        self.assertIn("PaymentGateway", str(cm.exception))
+        self.assertIn("LNPL_ENDPOINT_PAYMENTGATEWAY", str(cm.exception))
+
+    def test_normal_network_argument_beats_invalid_env(self):
+        os.environ["LNPL_NETWORK"] = "bogus-network-invalid"
+        app = wsgi.build_app(sources=[_write_tmp(self, OPEN_SRC)], network="fake")
+        self.assertIsNone(app.network)
+
+
+class BuildAppTokenProviderTest(_EnvIsolatedTest):
+
+    def _src(self):
+        return _write_tmp(self, OPEN_SRC)
+
+    def _secret(self, name, value="k" * 32):
+        os.environ[name] = value
+        self.addCleanup(os.environ.pop, name, None)
+        return name
+
+    def _iss(self, app):
+        token = app.token_provider.issue("alice", "aud")
+        return app.token_provider.verify(token, "aud")["iss"]
+
+    def test_normal_external_token_provider_builds_with_secret_env_unset(self):
+        with _spi_registered(EXT_TOKEN_EP):
+            app = wsgi.build_app(sources=[self._src()], token_provider="extprov")
+        self.assertIsInstance(app.token_provider, DemoTokenProvider)
+
+    def test_normal_lnpl_token_provider_env_selects_the_external_provider(self):
+        os.environ["LNPL_TOKEN_PROVIDER"] = "extprov"
+        with _spi_registered(EXT_TOKEN_EP):
+            app = wsgi.build_app(sources=[self._src()])
+        self.assertIsInstance(app.token_provider, DemoTokenProvider)
+
+    def test_normal_hmac_with_secret_env_unset_builds_with_no_token_provider(self):
+        app = wsgi.build_app(sources=[self._src()], token_provider="hmac")
+        self.assertIsNone(app.token_provider)
+
+    def test_error_lnpl_token_provider_missing_secret_byte_identical(self):
+        os.environ.pop("LNPL_TEST_T187_SECRET_MISSING", None)
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()],
+                           jwt_secret_env="LNPL_TEST_T187_SECRET_MISSING")
+        self.assertEqual(str(cm.exception),
+                         "LNPL_TEST_T187_SECRET_MISSING is not set in the environment")
+
+    def test_error_lnpl_token_provider_short_secret_byte_identical(self):
+        name = self._secret("LNPL_TEST_T187_SHORT", "short")
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], jwt_secret_env=name)
+        self.assertEqual(
+            str(cm.exception),
+            "the JWT signing secret must be at least 32 bytes, got 5 "
+            "(from LNPL_TEST_T187_SHORT)")
+
+    def test_boundary_lnpl_jwt_secret_env_empty_string_is_unset(self):
+        os.environ["LNPL_JWT_SECRET_ENV"] = ""
+        app = wsgi.build_app(sources=[self._src()])
+        self.assertIsNone(app.token_provider)
+        os.environ.pop("LNPL_JWT_SECRET_ENV")
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env="")
+        self.assertIsNone(app.token_provider)
+
+    def test_normal_positive_jwt_issuer_reaches_minted_token(self):
+        name = self._secret("LNPL_TEST_K5_SECRET")
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name,
+                             jwt_issuer="my-custom-issuer")
+        self.assertEqual(self._iss(app), "my-custom-issuer")
+
+    def test_normal_lnpl_jwt_issuer_env_reaches_minted_token(self):
+        name = self._secret("LNPL_TEST_K5_ENV_SECRET")
+        os.environ["LNPL_JWT_ISSUER"] = "env-issuer"
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name)
+        self.assertEqual(self._iss(app), "env-issuer")
+
+    def test_boundary_lnpl_jwt_issuer_empty_is_default_issuer(self):
+        name = self._secret("LNPL_TEST_K5_SECRET_2", "m" * 32)
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name, jwt_issuer="")
+        self.assertEqual(self._iss(app), "lnpl")
+
+    def test_boundary_lnpl_jwt_issuer_env_empty_is_default_issuer(self):
+        name = self._secret("LNPL_TEST_K5_SECRET_3", "n" * 32)
+        os.environ["LNPL_JWT_ISSUER"] = ""
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name)
+        self.assertEqual(self._iss(app), "lnpl")
+
+    def test_boundary_lnpl_token_provider_empty_is_hmac_default(self):
+        name = self._secret("LNPL_TEST_T187_TP_EMPTY")
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name,
+                             token_provider="")
+        self.assertIsInstance(app.token_provider, HmacTokenProvider)
+
+    def test_boundary_resolve_token_provider_empty_name_is_hmac_default(self):
+        # build_app's inline "" collapse already hands None here; this pins
+        # the resolver's own guard, which the build_app-level test above
+        # cannot see on its own.
+        name = self._secret("LNPL_TEST_T187_TP_RESOLVER")
+        self.assertIsNone(wsgi._resolve_token_provider(None, provider_name=""))
+        self.assertIsInstance(wsgi._resolve_token_provider(name, provider_name=""),
+                              HmacTokenProvider)
+
+    def test_boundary_lnpl_token_provider_env_empty_is_hmac_default(self):
+        name = self._secret("LNPL_TEST_T187_TP_ENV_EMPTY")
+        os.environ["LNPL_TOKEN_PROVIDER"] = ""
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name)
+        self.assertIsInstance(app.token_provider, HmacTokenProvider)
+
+    def test_error_unknown_token_provider_fails_the_launch(self):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()], token_provider="bogus")
+        self.assertEqual(str(cm.exception),
+                         "LNPL_TOKEN_PROVIDER is not a recognized token provider")
+
+    def test_error_lnpl_token_provider_env_unknown_fails_the_launch(self):
+        os.environ["LNPL_TOKEN_PROVIDER"] = "bogus"
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()])
+        self.assertEqual(str(cm.exception),
+                         "LNPL_TOKEN_PROVIDER is not a recognized token provider")
+
+    def test_normal_token_provider_argument_beats_invalid_env(self):
+        name = self._secret("LNPL_TEST_T187_TP_ARG")
+        os.environ["LNPL_TOKEN_PROVIDER"] = "bogus-provider-invalid"
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name,
+                             token_provider="hmac")
+        self.assertIsInstance(app.token_provider, HmacTokenProvider)
+
+    def test_normal_jwt_issuer_argument_beats_env(self):
+        name = self._secret("LNPL_TEST_T187_ISS_ARG")
+        os.environ["LNPL_JWT_ISSUER"] = "env-issuer-should-be-overridden"
+        app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name,
+                             jwt_issuer="arg-issuer")
+        self.assertEqual(self._iss(app), "arg-issuer")
+
+    def test_error_broken_token_provider_factory_wrapped_value_free(self):
+        import traceback
+        with _spi_registered(FAILING_TOKEN_EP):
+            with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                wsgi.build_app(sources=[self._src()], token_provider="failprov")
+        exc = cm.exception
+        self.assertEqual(str(exc),
+                         "LNPL_TOKEN_PROVIDER is not a recognized token provider")
+        formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        self.assertNotIn("FAKE-MARKER-187", formatted)
+
+
+class SecretLeakTest(_EnvIsolatedTest):
+    """No secret value — the JWT secret, a DSN password inside LNPL_BACKEND
+    or LNPL_CACHE — reaches an error's text, its FULL formatted traceback
+    (a chained `__cause__` would carry it there), captured stderr, or a
+    /-/readyz body."""
+
+    def _src(self):
+        return _write_tmp(self, OPEN_SRC)
+
+    def _failing_build(self, **kwargs):
+        import traceback
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                wsgi.build_app(sources=[self._src()], **kwargs)
+        exc = cm.exception
+        formatted = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        return exc, formatted, err.getvalue()
+
+    def test_error_canary_absent_from_secret_short_failure(self):
+        os.environ["LNPL_TEST_LEAK_SECRET"] = SHORT_SECRET_CANARY
+        self.addCleanup(os.environ.pop, "LNPL_TEST_LEAK_SECRET", None)
+        exc, formatted, err = self._failing_build(jwt_secret_env="LNPL_TEST_LEAK_SECRET")
+        self.assertIn("LNPL_TEST_LEAK_SECRET", str(exc))
+        self.assertNotIn(SHORT_SECRET_CANARY, str(exc))
+        self.assertNotIn(SHORT_SECRET_CANARY, formatted)
+        self.assertNotIn(SHORT_SECRET_CANARY, err)
+
+    def test_error_canary_absent_from_backend_dsn_failure(self):
+        exc, formatted, err = self._failing_build(
+            backend="postgres://user:%s@nonexistent-host/db" % DSN_CANARY)
+        self.assertEqual(str(exc), "LNPL_BACKEND is not a recognized selector")
+        self.assertIsNone(exc.__cause__)
+        self.assertNotIn(DSN_CANARY, formatted)
+        self.assertNotIn(DSN_CANARY, err)
+
+    def test_error_canary_absent_from_cache_spec_failure(self):
+        exc, formatted, err = self._failing_build(
+            cache="redis://:%s@nonexistent-host:1/0" % DSN_CANARY)
+        self.assertEqual(str(exc), "LNPL_CACHE is not a recognized selector")
+        self.assertIsNone(exc.__cause__)
+        self.assertNotIn(DSN_CANARY, formatted)
+        self.assertNotIn(DSN_CANARY, err)
+
+    def test_normal_canary_absent_from_readyz_200_then_503(self):
+        os.environ["LNPL_TEST_LEAK_SUCCESS"] = SUCCESS_SECRET
+        self.addCleanup(os.environ.pop, "LNPL_TEST_LEAK_SUCCESS", None)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            app = wsgi.build_app(sources=[self._src()],
+                                 jwt_secret_env="LNPL_TEST_LEAK_SUCCESS")
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+            self.assertEqual(status, 200)
+            self.assertNotIn(SUCCESS_SECRET, json.dumps(body))
+            del os.environ["LNPL_TEST_LEAK_SUCCESS"]
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+        self.assertEqual(status, 503)
+        self.assertEqual(body["checks"], ["jwt-secret-env"])
+        self.assertNotIn(SUCCESS_SECRET, json.dumps(body))
+        self.assertNotIn(SUCCESS_SECRET, err.getvalue())
 
 
 if __name__ == "__main__":

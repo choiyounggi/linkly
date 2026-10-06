@@ -34,14 +34,6 @@ PARITY_MAP = {
     ("--idempotency-ttl",): "LNPL_IDEMPOTENCY_TTL_S",
     ("--capture-on-failure",): "LNPL_CAPTURE_ON_FAILURE",
     ("--rate-limit",): "LNPL_RATE_LIMIT",
-}
-EXCLUDED = {
-    ("-h", "--help"): "argparse auto-added; not an operational option",
-    ("--host",): "gunicorn owns bind address",
-    ("--port",): "gunicorn owns port",
-    ("--grace-period",): "gunicorn --graceful-timeout owns shutdown grace",
-}
-PENDING_T187 = {
     ("--cache",): "LNPL_CACHE",
     ("--network",): "LNPL_NETWORK",
     ("--config",): "LNPL_CONFIG",
@@ -49,6 +41,13 @@ PENDING_T187 = {
     ("--jwt-issuer",): "LNPL_JWT_ISSUER",
     ("--token-provider",): "LNPL_TOKEN_PROVIDER",
 }
+EXCLUDED = {
+    ("-h", "--help"): "argparse auto-added; not an operational option",
+    ("--host",): "gunicorn owns bind address",
+    ("--port",): "gunicorn owns port",
+    ("--grace-period",): "gunicorn --graceful-timeout owns shutdown grace",
+}
+PENDING_T187 = {}
 REVERSE_ONLY = {
     "LNPL_CLOCK": ("no serve --clock flag exists; serve's embedded dev "
                    "server always runs the virtual clock, LNPL_CLOCK is "
@@ -141,14 +140,15 @@ class ParityTest(unittest.TestCase):
         self.assertEqual([], violations)
 
     def test_error_scan_catches_a_name_build_app_never_reads(self):
-        # LNPL_CACHE occurs in build_app's docstring and nowhere else in it —
-        # the case a substring search over the source would wave through.
-        self.assertIn("LNPL_CACHE", wsgi.build_app.__doc__)
+        # LNPL_EXAMPLE_UNUSED occurs in build_app's docstring and nowhere
+        # else in it (a permanent placeholder) — the case a substring search
+        # over the source would wave through.
+        self.assertIn("LNPL_EXAMPLE_UNUSED", wsgi.build_app.__doc__)
         mutated = dict(PARITY_MAP)
-        mutated[("--rate-limit",)] = "LNPL_CACHE"
+        mutated[("--rate-limit",)] = "LNPL_EXAMPLE_UNUSED"
         violations = _reverse_violations(mutated, REVERSE_ONLY, self._read_names())
         self.assertEqual(
-            ["LNPL_CACHE (mapped from ('--rate-limit',)) is never read by build_app"],
+            ["LNPL_EXAMPLE_UNUSED (mapped from ('--rate-limit',)) is never read by build_app"],
             violations)
 
     def test_boundary_the_three_lists_are_disjoint_and_name_no_stale_entry(self):
