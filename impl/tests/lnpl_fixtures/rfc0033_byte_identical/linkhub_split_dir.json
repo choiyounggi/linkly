@@ -335,6 +335,7 @@
       "generators": [],
       "kb": [],
       "network": [],
+      "publishers": [],
       "repository": [],
       "token": []
     },

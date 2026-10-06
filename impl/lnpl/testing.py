@@ -63,6 +63,7 @@ import base64
 import json
 import os
 
+from lnpl.cli import _relay_drain_once_via_publisher
 from lnpl.drivers import DriverError, TokenError
 from lnpl.generators import GeneratorError, run_generator
 
@@ -528,6 +529,92 @@ class CacheDriverTCK:
         self.cache.invalidate("k6")
 
         self.assertIsNone(self.cache.get("k6"))
+
+
+_TCK_EVENT_NAMES = {"event.tck.emitted": "TckEmitted"}
+
+
+class _TckOutbox:
+    """Minimal outbox fixture EventPublisherTCK owns itself -- not a
+    RepositoryDriver, just the two methods
+    `_relay_drain_once_via_publisher` calls."""
+
+    def __init__(self, rows):
+        self._rows = {r["seq"]: dict(r, delivered=False) for r in rows}
+
+    def drain_outbox(self):
+        return [dict(r) for r in self._rows.values() if not r["delivered"]]
+
+    def ack_outbox(self, seqs):
+        for s in seqs:
+            self._rows[s]["delivered"] = True
+
+
+class EventPublisherTCK:
+    """Mix into a `unittest.TestCase` subclass, override
+    `make_publisher()` -- see `EventPublisher`'s docstring (`lnpl.
+    drivers`) for the contract. Tests the SAME drain-publish-ack glue
+    `cmd_relay` calls in production (`cli._relay_drain_once_via_publisher`,
+    imported above), against a tiny outbox fixture this TCK owns
+    itself -- no real `RepositoryDriver` needed.
+
+    `make_publisher(fail_ids)` must return a fresh publisher that raises
+    `DriverError` from `publish` for every envelope whose `id` is in
+    `fail_ids`, and that exposes `published`: the list of confirmed
+    envelope ids, in publish order (the ordering case reads it). A driver
+    backed by a real broker supplies both through a test-only wrapper.
+    """
+
+    DRAIN_ONCE = staticmethod(_relay_drain_once_via_publisher)
+
+    def make_publisher(self, fail_ids=frozenset()):
+        raise NotImplementedError(
+            "EventPublisherTCK subclasses must override make_publisher() "
+            "to return a fresh EventPublisher, honoring fail_ids")
+
+    def test_publish_then_ack(self):
+        repo = _TckOutbox([{"seq": 1, "event": "event.tck.emitted",
+                            "payload": {"x": 1}}])
+        publisher = self.make_publisher()
+
+        acked = self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck", publisher)
+
+        self.assertEqual(acked, 1)
+        self.assertEqual(repo.drain_outbox(), [])
+
+    def test_failure_leaves_the_row_unacked(self):
+        repo = _TckOutbox([{"seq": 1, "event": "event.tck.emitted",
+                            "payload": {"x": 1}}])
+        publisher = self.make_publisher(fail_ids={"outbox-1"})
+
+        acked = self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck", publisher)
+
+        self.assertEqual(acked, 0)
+        self.assertEqual(len(repo.drain_outbox()), 1)
+
+    def test_a_restart_republishes_the_unacked_row(self):
+        repo = _TckOutbox([{"seq": 1, "event": "event.tck.emitted",
+                            "payload": {"x": 1}}])
+        self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck",
+                        self.make_publisher(fail_ids={"outbox-1"}))
+
+        acked = self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck",
+                                self.make_publisher())
+
+        self.assertEqual(acked, 1)
+        self.assertEqual(repo.drain_outbox(), [])
+
+    def test_ordering_preserved(self):
+        repo = _TckOutbox([
+            {"seq": 1, "event": "event.tck.emitted", "payload": {}},
+            {"seq": 2, "event": "event.tck.emitted", "payload": {}},
+            {"seq": 3, "event": "event.tck.emitted", "payload": {}}])
+        publisher = self.make_publisher()
+
+        self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck", publisher)
+
+        self.assertEqual(publisher.published,
+                         ["outbox-1", "outbox-2", "outbox-3"])
 
 
 NETWORK_TCK_TARGET = "TckTarget"

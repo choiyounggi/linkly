@@ -10,8 +10,9 @@
 새 발견 로직을 만들지 않고, 그 함수들의 시그니처도 바꾸지 않는다. 슬롯 이름은
 계약이다: `repository`/`cache`/`network`/`token`/`exporter`/`kb`(issue #134 plan
 D1), `diagnostics`(`lnpl.diagnostics`, issue #138)·`generators`(`lnpl.generators`,
-issue #139) — 뒤 두 행은 t-diag·t-gen이 각각 연 그룹을 얹은 것으로, 카탈로그
-표 형태(슬롯·그룹·내장·발견 함수 4-튜플)는 바뀌지 않는다(additive).
+issue #139)·`publishers`(`lnpl.publishers`, issue #191) — 뒤 세 행은 각 이슈가
+연 그룹을 얹은 것으로, 카탈로그 표 형태(슬롯·그룹·내장·발견 함수 4-튜플)는
+바뀌지 않는다(additive).
 
 로드 가능 여부는 여기서 독립적으로 판정한다: 각 entry point에 `.load()`를
 시도하고, 실패는 예외를 전파하지 않고 `loadable: false`로만 나열한다 —
@@ -44,6 +45,8 @@ SLOTS = (
     ("diagnostics", _diagnostics.DIAGNOSTICS_ENTRY_POINT_GROUP, (),
      _diagnostics._extension_entry_points),
     ("kb", _kb.KB_ENTRY_POINT_GROUP, (), _kb._kb_pack_entry_points),
+    ("publishers", _drivers.PUBLISHERS_ENTRY_POINT_GROUP, _drivers.PUBLISHERS,
+     _drivers._publisher_entry_points),
 )
 
 

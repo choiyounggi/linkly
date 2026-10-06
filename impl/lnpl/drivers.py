@@ -34,6 +34,7 @@ import random
 import sqlite3
 import threading
 import time
+import urllib.parse
 import uuid
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -73,6 +74,17 @@ CACHES_ENTRY_POINT_GROUP = "lnpl.caches"
 # its own pyproject.toml), `lnpl.drivers` mirrored. Built-ins (`NETWORKS`,
 # above) are matched first and always win.
 NETWORKS_ENTRY_POINT_GROUP = "lnpl.networks"
+
+# The closed table of built-in `--target` schemes the reference relay
+# already implements inline (byte-identical, untouched by this SPI).
+PUBLISHERS = ("http", "https")
+
+# issue #191, RFC-0053: the entry-points group an external package
+# registers an EventPublisher factory under
+# (`[project.entry-points."lnpl.publishers"]` in its own pyproject.toml).
+# Built-in http/https are matched before this group is ever consulted,
+# so a registered entry-point can never shadow them.
+PUBLISHERS_ENTRY_POINT_GROUP = "lnpl.publishers"
 
 # Every connection waits this long for a lock instead of raising at once.
 BUSY_TIMEOUT_MS = 5000
@@ -122,6 +134,15 @@ class TokenError(DriverError):
 class ConflictError(DriverError):
     """A write collided with existing state. Not retryable: retrying the same
     non-idempotent effect only reproduces the same conflict."""
+
+
+class PublishRejected(DriverError):
+    """A publisher permanently rejected one envelope (mirrors RFC-0040
+    D7's 422 bucket). The caller acks the row anyway and emits one
+    dead-letter stderr line -- retrying an identical envelope can never
+    turn a permanent rejection into a success. Any OTHER DriverError (or
+    plain DriverError) means "could not confirm, leave un-acked, try
+    again next drain" (mirrors the 503/no-response bucket)."""
 
 
 # --------------------------------------------------------------------------
@@ -380,6 +401,40 @@ class NetworkDriver:
         forever" (RFC-0003 §Execution Model).
         """
         raise NotImplementedError
+
+    def close(self):
+        """Release resources. Safe to call more than once."""
+        raise NotImplementedError
+
+
+class EventPublisher:
+    """The `lnpl.publishers` capability's adapter contract (issue #191,
+    RFC-0053). Carries one outbox emission, already shaped as a
+    CloudEvents structured-mode envelope dict (the same shape
+    `_relay_drain_once` already builds for http(s): specversion/id/
+    source/type/data), to a broker/topic.
+
+    Ack-after-confirm (RFC-0053 D1): the caller acks an outbox row ONLY
+    when `publish`/`publish_batch` returns without raising. Raising
+    `PublishRejected` signals a permanent rejection (caller acks +
+    dead-letters); raising any other `DriverError` signals "could not
+    confirm" (caller leaves the row un-acked for the next drain).
+    """
+
+    def publish(self, envelope):
+        """Publish one CloudEvents envelope. Returns None on confirmed
+        publish. Raises `PublishRejected` for a permanent rejection, or
+        `DriverError` for any other failure."""
+        raise NotImplementedError
+
+    def publish_batch(self, envelopes):
+        """Default: `publish` each envelope in order, stopping at the
+        first raise (ordering preserved; the rest are left exactly as
+        the default per-envelope loop would leave them). A driver may
+        override this for a real batch API, but must preserve order
+        and must not swallow a mid-batch failure."""
+        for envelope in envelopes:
+            self.publish(envelope)
 
     def close(self):
         """Release resources. Safe to call more than once."""
@@ -1960,3 +2015,58 @@ def open_network(spec, endpoints=None, capabilities=None):
     raise ValueError(
         "unknown network %r (built-in: %s; registered entry-points: %s)"
         % (spec, ", ".join(NETWORKS), ", ".join(_registered_network_names()) or "none"))
+
+
+def _publisher_entry_points():
+    """Every entry-point registered under `lnpl.publishers` -- same
+    stdlib version split `_cache_entry_points()` handles."""
+    try:
+        return importlib_metadata.entry_points(group=PUBLISHERS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            PUBLISHERS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_publisher_names():
+    return sorted(ep.name for ep in _publisher_entry_points())
+
+
+def open_publisher(target):
+    """`--target`'s value -> an EventPublisher, or None for an
+    `http(s)://` target (the relay's own existing byte-identical
+    urllib path handles it -- `cli._relay_drain_once`/`_relay_post`,
+    untouched by this SPI).
+
+    Beyond the two built-in schemes, `urllib.parse.urlsplit(target)
+    .scheme.lower()` is looked up in the `lnpl.publishers`
+    entry-points group -- an external package registers `scheme =
+    "module:factory"`, and a matching selector loads that factory and
+    calls it with the FULL original `target` string (not a
+    colon-split remainder -- a URL-shaped value is for the factory's
+    own `urlsplit`, unlike a cache DSN). `http`/`https` are matched
+    first and always win: the check runs before any entry-point
+    lookup, so a package cannot register either name and shadow it.
+
+    An unregistered scheme raises `ValueError` naming the bare scheme
+    (never the full `target`, which may carry `user:pass@` userinfo),
+    `PUBLISHERS`, and `_registered_publisher_names()` (or "none"). An
+    entry-point whose `.load()` raises becomes `DriverError` (cause
+    chain preserved), not a raw `ImportError`.
+    """
+    scheme = urllib.parse.urlsplit(target).scheme.lower()
+    if scheme in ("http", "https"):
+        return None
+    for entry_point in _publisher_entry_points():
+        if entry_point.name == scheme:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "publisher scheme %r registered via entry-point "
+                    "%r failed to load: %s"
+                    % (scheme, entry_point.value, exc)) from exc
+            return factory(target)
+    raise ValueError(
+        "unknown publisher scheme %r (built-in: %s; registered: %s)"
+        % (scheme, ", ".join(PUBLISHERS),
+           ", ".join(_registered_publisher_names()) or "none"))

@@ -241,13 +241,16 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
 ```
 
 `outbox drain`(발행 쪽)과 `POST /-/events/<slug>`(소비 쪽, `consume by`)를
-잇는 최소 구현 — 브로커 없이 두 `lnpl serve` 인스턴스 사이에서 이벤트
-계약을 실측한다. `stdlib urllib`만 쓴다(브로커·HTTP 클라이언트 의존 없음).
+잇는 최소 구현 — `http(s)://`는 브로커 없이 두 `lnpl serve` 인스턴스
+사이에서 이벤트 계약을 실측한다(`stdlib urllib`만 쓴다, 바이트 동일
+유지). `--target`이 다른 스킴이면 등록된 `lnpl.publishers` 드라이버로
+발행한다(issue #191, RFC-0053) — 코어는 스킴 선택 레지스트리만 소유하고
+실제 브로커 바인딩은 여전히 외부 패키지의 몫이다.
 
 | 플래그 | 뜻 |
 |--------|-----|
 | `--backend` | 필수. 드레인할 영속 백엔드(`sqlite:<path>`). `fake`는 outbox가 없어 거부(rc 2) |
-| `--target` | 필수. 소비 인스턴스의 base URL — 봉투는 `<--target>/-/events/<slug>`로 POST된다 |
+| `--target` | 필수. `http(s)://<base-url>`이면 소비 인스턴스의 base URL — 봉투는 `<--target>/-/events/<slug>`로 POST된다(바이트 동일). 그 외 스킴(예: `kafka://…`)이면 등록된 `lnpl.publishers` 드라이버가 발행한다 — 미등록 스킴은 rc!=0 + 스킴/등록 목록을 담은 에러(크리덴셜은 절대 로그에 남지 않는다) |
 | `--once` | 한 번 드레인·POST하고 종료(rc 0) — 테스트나 cron이 미는 모양. 기본은 무한 반복(폴링 간격 1초) |
 | (위치 인자) `source` | 컴파일만 한다(재실행 아님) — emission의 이벤트 id를 이벤트의 선언된 이름(슬러그/`type`)으로 되돌리는 데만 쓴다 |
 
@@ -256,7 +259,9 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
 offset-commit discipline): 200 → ack. 422 → ack(재시도해도 같은 결과이므로
 dead-letter, stderr에 경고 한 줄) + ack. 503 또는 응답 없음(연결 실패) →
 ack 안 함 — 다음 드레인이 같은 행을 다시 시도한다(at-least-once). 그 외
-상태 코드도 안전한 쪽으로 ack 안 함.
+상태 코드도 안전한 쪽으로 ack 안 함. 등록 드라이버 경로도 같은 두 갈래다:
+`publish`가 예외 없이 돌아오면 ack, `PublishRejected`면 ack + dead-letter,
+그 밖의 `DriverError`면 ack 안 함.
 
 상태코드 3갈래(200/503/422)의 정본은 `docs/serving.md`§이벤트 소비.
 
@@ -383,7 +388,7 @@ declarations·types 넷을 생성한다)가 같은 함수를 공유한다.
 |--------|-----|
 | `--json` | 명시적 안정형 — bare와 같은 문서를 낸다 |
 
-`repository`/`cache`/`network`/`token`/`exporter`/`kb` 6슬롯 각각의 내장 이름과
+`repository`/`cache`/`network`/`token`/`exporter`/`generators`/`diagnostics`/`kb`/`publishers` 9슬롯 각각의 내장 이름과
 등록된 entry-point 이름·로드 가능 여부를 한 JSON 문서로 낸다(`pg_available_
 extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 `--trace-exporter`에 틀린 값을 줘서 실패를 읽는 대신 미리 나열해서 본다. 로드

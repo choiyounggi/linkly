@@ -322,11 +322,12 @@ class CapabilitiesToolTest(unittest.TestCase):
         res = call("lnpl_capabilities", {})
         self.assertIs(res["result"]["isError"], False)
 
-    def test_it_reports_the_eight_contract_slots(self):
+    def test_it_reports_the_nine_contract_slots(self):
         body = payload_of(call("lnpl_capabilities", {}))
         self.assertEqual(set(body["slots"]),
                          {"repository", "cache", "network", "token",
-                          "exporter", "kb", "generators", "diagnostics"})
+                          "exporter", "kb", "generators", "diagnostics",
+                          "publishers"})
 
 
 class KbRouteToolTest(unittest.TestCase):

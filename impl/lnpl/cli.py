@@ -19,8 +19,9 @@ from . import __version__
 from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
                           extension_diagnostic_records,
                           format_lines_from_records, to_records)
-from .drivers import (DriverError, TokenError, audience_for_path, open_cache,
-                      open_network, open_repository, open_token_provider,
+from .drivers import (DriverError, PublishRejected, TokenError,
+                      audience_for_path, open_cache, open_network,
+                      open_publisher, open_repository, open_token_provider,
                       _http_capabilities, _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
@@ -1025,6 +1026,42 @@ def _relay_drain_once(repository, event_names, source, target):
     return len(acked)
 
 
+def _relay_drain_once_via_publisher(repository, event_names, source, publisher):
+    """One outbox drain -> publish -> ack cycle through a registered
+    `EventPublisher` (issue #191, RFC-0053) -- the non-http(s) sibling
+    of `_relay_drain_once`: same envelope shape, same `seq`-ascending
+    drain order, same "ack only after confirmed success or a
+    confirmed permanent rejection" discipline (RFC-0040 §7 mirrored
+    via `PublishRejected`).
+    """
+    acked = []
+    for emission in repository.drain_outbox():
+        name = event_names.get(emission["event"])
+        if name is None:
+            print("relay: seq=%d references event id %r, which this "
+                 "document does not declare -- left un-acked"
+                 % (emission["seq"], emission["event"]), file=sys.stderr)
+            continue
+        envelope = {"specversion": "1.0", "id": "outbox-%d" % emission["seq"],
+                   "source": source, "type": name, "data": emission["payload"]}
+        try:
+            publisher.publish(envelope)
+        except PublishRejected as exc:
+            acked.append(emission["seq"])
+            print("relay: dead-letter -- seq=%d event=%s rejected: %s"
+                 % (emission["seq"], name, exc), file=sys.stderr)
+        except DriverError as exc:
+            print("relay: seq=%d event=%s publish failed: %s -- left "
+                 "un-acked for the next drain"
+                 % (emission["seq"], name, exc), file=sys.stderr)
+            continue
+        else:
+            acked.append(emission["seq"])
+    if acked:
+        repository.ack_outbox(acked)
+    return len(acked)
+
+
 def cmd_relay(args):
     """`lnpl relay <source...> --backend sqlite:... --target <base-url>
     [--once]` (issue #118, D8) -- the reference relay: drains this
@@ -1036,6 +1073,9 @@ def cmd_relay(args):
     `source` is compiled (never re-executed) only to map an emission's
     event id back to the event's declared NAME -- the `type`/routing-slug
     CloudEvents needs and the outbox row does not itself carry.
+
+    '--target' may also name a registered 'lnpl.publishers' scheme
+    (RFC-0053) -- http(s) stays byte-identical.
     """
     doc, _, module_name, diagnostics = _compile(args.source)
     _emit_diagnostics(diagnostics)
@@ -1050,18 +1090,37 @@ def cmd_relay(args):
               file=sys.stderr)
         return 2
     try:
-        while True:
-            acked = _relay_drain_once(repository, event_names, module_name,
-                                      args.target)
-            if args.once:
-                print("relay: acked %d emission(s)" % acked)
-                return 0
-            time.sleep(RELAY_POLL_INTERVAL_S)
+        publisher = open_publisher(args.target)
+    except (ValueError, DriverError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        repository.close()
+        return 2
+    try:
+        if publisher is None:
+            while True:
+                acked = _relay_drain_once(repository, event_names,
+                                          module_name, args.target)
+                if args.once:
+                    print("relay: acked %d emission(s)" % acked)
+                    return 0
+                time.sleep(RELAY_POLL_INTERVAL_S)
+        else:
+            while True:
+                acked = _relay_drain_once_via_publisher(
+                    repository, event_names, module_name, publisher)
+                if args.once:
+                    print("relay: acked %d emission(s)" % acked)
+                    return 0
+                time.sleep(RELAY_POLL_INTERVAL_S)
     except DriverError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
     finally:
-        repository.close()
+        try:
+            if publisher is not None:
+                publisher.close()
+        finally:
+            repository.close()
 
 
 def cmd_migrate(args):
@@ -2080,8 +2139,8 @@ def _build_parser(subparsers_out=None):
 
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "
-                              "repository/cache/network/token/exporter/kb "
-                              "(#134)")
+                              "repository/cache/network/token/exporter/"
+                              "generators/diagnostics/kb/publishers (#134)")
     cap.add_argument("--json", action="store_true",
                      help="explicit stable form (default: same document)")
     cap.set_defaults(func=cmd_capabilities)
