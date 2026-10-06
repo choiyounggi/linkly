@@ -395,8 +395,9 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     a fill-source entity (RFC-0055 §Mode B), one that reaches a `fail` step
     (RFC-0056 §Mode B), one that answers a `respond` aggregate or list term
     (RFC-0059 §Mode B), one whose guard reads a field an earlier step
-    assigns, one whose guard owns an `otherwise` item (RFC-0060 §Mode B)
-    and, last, one using the numeric-shape predicate (RFC-0050 §Mode B).
+    assigns, one whose guard owns an `otherwise` item (RFC-0060 §Mode B),
+    one that reads with `cached` (RFC-0062 §Mode B) and, last, one using
+    the numeric-shape predicate (RFC-0050 §Mode B).
     These are checked in that order — matching `backend.build()`'s own
     order (`_refuse_unsupported_guards`, then `_refuse_numeric_predicate`),
     so the two commands report the same first-refusal RFC for any workflow
@@ -457,6 +458,11 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
         raise DifferentialError(
             "workflow %r uses `otherwise` — mode B has no compiled branch for "
             "it (RFC-0060 §Mode B, recorded exemption); differential "
+            "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_cached_read(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r reads with `cached` — mode B has no cache state to "
+            "consult (RFC-0062 §Mode B, recorded exemption); differential "
             "comparison is not attempted" % workflow_id)
     if backend.workflow_uses_numeric_predicate(document, workflow_id):
         raise DifferentialError(

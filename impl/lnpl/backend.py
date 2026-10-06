@@ -1000,6 +1000,27 @@ def workflow_uses_otherwise(document, workflow_id):
     return _otherwise_offender(document, workflow_id) is not None
 
 
+def _cached_read_offender(document, workflow_id):
+    """`(step_name, entity_id)` of the first reachable RepositoryCall of
+    `workflow_id` carrying a `cached` read-through clause (issue #188), or
+    None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is not None and effect["kind"] == "RepositoryCall"
+                    and effect.get("cached")):
+                return step["name"], effect["entity"]
+    return None
+
+
+def workflow_uses_cached_read(document, workflow_id):
+    """RFC-0062 §Mode B: does any reachable RepositoryCall of `workflow_id`
+    carry `cached`? Mode B has no cache state, so it refuses; this is
+    asked by `differential.verify` before the toolchain check."""
+    return _cached_read_offender(document, workflow_id) is not None
+
+
 def _refuse_unsupported_guards(document, workflow_id):
     """RFC-0051/0052/0053/0054 §Mode B: refuse, by name, a Money-guard,
     lookup-key, optional-field-guard or Text-guard workflow — called by
@@ -1012,8 +1033,9 @@ def _refuse_unsupported_guards(document, workflow_id):
     (RFC-0055, `_fill_source_create_offender`) is refused next, then a `fail`
     step (RFC-0056, `_fail_offender`), then a `respond` aggregate or list
     term (RFC-0059, `_respond_term_offender`), then a guard reading a field
-    an earlier step assigns and, last, a guard owning an `otherwise` item
-    (RFC-0060, `_assigned_guard_offender`, `_otherwise_offender`), in the
+    an earlier step assigns, a guard owning an `otherwise` item
+    (RFC-0060, `_assigned_guard_offender`, `_otherwise_offender`) and,
+    last, a `cached` read (RFC-0062, `_cached_read_offender`), in the
     same positions in both.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
     here either — it depends on `_lnpl_ops`'s seed/payload-truncated ops
@@ -1088,6 +1110,13 @@ def _refuse_unsupported_guards(document, workflow_id):
             "step %s: guard %r owns an `otherwise` item, which mode B has no "
             "compiled branch for (RFC-0060 §Mode B, recorded exemption) — run "
             "it in mode A" % (step_name, guard_text))
+    cached_offender = _cached_read_offender(document, workflow_id)
+    if cached_offender is not None:
+        step_name, entity_id = cached_offender
+        raise BackendError(
+            "step %s: %s is read with `cached`, and mode B has no cache state "
+            "to consult (RFC-0062 §Mode B, recorded exemption) — run it in "
+            "mode A" % (step_name, entity_id))
 
 
 def encode_condition_value(value):
