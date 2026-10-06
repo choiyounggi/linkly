@@ -2154,7 +2154,7 @@ def _build_parser(subparsers_out=None):
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "
                               "repository/cache/network/token/exporter/"
-                              "generators/diagnostics/kb/publishers (#134)")
+                              "generators/diagnostics/kb/publishers/secrets (#134)")
     cap.add_argument("--json", action="store_true",
                      help="explicit stable form (default: same document)")
     cap.set_defaults(func=cmd_capabilities)

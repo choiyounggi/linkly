@@ -10,7 +10,8 @@
 새 발견 로직을 만들지 않고, 그 함수들의 시그니처도 바꾸지 않는다. 슬롯 이름은
 계약이다: `repository`/`cache`/`network`/`token`/`exporter`/`kb`(issue #134 plan
 D1), `diagnostics`(`lnpl.diagnostics`, issue #138)·`generators`(`lnpl.generators`,
-issue #139)·`publishers`(`lnpl.publishers`, issue #191) — 뒤 세 행은 각 이슈가
+issue #139)·`publishers`(`lnpl.publishers`, issue #191)·`secrets`(`lnpl.secrets`,
+issue #192) — 뒤 네 행은 각 이슈가
 연 그룹을 얹은 것으로, 카탈로그 표 형태(슬롯·그룹·내장·발견 함수 4-튜플)는
 바뀌지 않는다(additive).
 
@@ -49,6 +50,8 @@ SLOTS = (
     ("kb", _kb.KB_ENTRY_POINT_GROUP, (), _kb._kb_pack_entry_points),
     ("publishers", _drivers.PUBLISHERS_ENTRY_POINT_GROUP, _drivers.PUBLISHERS,
      _drivers._publisher_entry_points),
+    ("secrets", _drivers.SECRETS_ENTRY_POINT_GROUP, _drivers.BUILTIN_SECRET_SOURCES,
+     _drivers._secret_entry_points),
 )
 
 

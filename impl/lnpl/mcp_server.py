@@ -268,9 +268,9 @@ TOOLS = [
     {
         "name": "lnpl_capabilities",
         "description": (
-            "Return the installed-extension catalog: for each of the nine "
+            "Return the installed-extension catalog: for each of the ten "
             "slots (repository, cache, network, token, exporter, generators, "
-            "diagnostics, kb, publishers), the "
+            "diagnostics, kb, publishers, secrets), the "
             "built-in names and every registered entry-point name with "
             "whether it actually loads. Use this instead of trying a "
             "`--backend`/`--cache`/`--network`/`--token-provider`/"

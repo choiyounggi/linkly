@@ -1124,6 +1124,111 @@ discriminating test다(`impl/tests/test_publisher_spi.py`의
 순서대로 담은 `published` 리스트를 노출해야 한다 — 실브로커 드라이버는 이를
 테스트 전용 래퍼로 제공한다.
 
+## 16. SPI: 외부 시크릿 프로바이더 등록 (issue #192)
+
+JWT 서명 키 같은 시크릿을 환경변수나 `lnpl.toml`이 아니라 Vault·클라우드
+시크릿 매니저 같은 외부 저장소에서 읽는 경계를 연다 — §10/§15와 같은
+규율이되, 내장 이름의 처리는 `lnpl.tokens`(§9)를 따른다: 시크릿 원천은
+신뢰 경계라서 같은 이름의 등록을 조용히 무시하지 않고 **거부한다**.
+어떤 오류 메시지에도 드라이버 예외의 원문은 실리지 않는다 — 모듈이나
+팩토리가 URL이나 시크릿 값을 메시지에 넣을 수 있어서다.
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.secrets"]
+vault = "lnpl_vault:make_provider"
+```
+
+`lnpl_vault.make_provider`는 **인자 없이** 불려 `SecretProvider`를 반환하는
+콜러블이다(`lnpl.tokens`와 같은 모양). 저장소 주소·인증 같은 연결 설정은
+드라이버 패키지 자신의 설정이고, 읽을 `key`는 호출마다 넘어온다.
+
+### 계약
+
+`SecretProvider`(`lnpl.drivers`)는 셋이다:
+
+- `get(key) -> bytes` — 현재 값
+- `get_previous(key) -> bytes 또는 None` — 마지막 교체 직전의 값, 없으면 `None`
+- `close()` — 자원 해제, 여러 번 불려도 안전
+
+값은 `bytes`만이다(`str` 반환은 계약 위반). 실패(없는 키, 저장소 장애,
+권한)는 전부 `DriverError`이고, 그 메시지에 시크릿 바이트가 실리면 안 된다.
+
+### 내장 이름은 절대 가려지지 않는다
+
+`env`와 `file`은 코어가 직접 읽는 원천이지 프로바이더가 아니다
+(`BUILTIN_SECRET_SOURCES`). `lnpl.secrets`에 그 이름으로 등록된 entry-point가
+있으면 `open_secret_provider`는 로드하지 않고 `DriverError`로 거부한다:
+
+```text
+entry-point 'file' (registered via 'my_pkg:make') attempts to shadow the built-in secret source 'file'; built-in names are reserved (lnpl.secrets SPI, docs/backends.md)
+```
+
+그런 등록이 없을 때 내장 이름을 프로바이더로 요청하면 인라인 형태를
+가리키는 `ValueError`다:
+
+```text
+secret provider 'file' is a built-in source, not a registered provider — write jwt = "ENV_NAME" or jwt = { file = "/absolute/path" } instead
+```
+
+### 미등록 이름의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 이름은 `ValueError`로
+거부되며, 받은 이름·내장 목록·등록된 entry-points 목록(없으면 "none")을
+함께 싣는다:
+
+```text
+unknown secret provider 'nope' (built-in: env, file; registered entry-points: vault)
+```
+
+### entry-point 로드 실패
+
+등록은 됐지만 그 값(`module:attr`)을 import할 수 없으면, 또는 팩토리가
+예외를 던지면 `DriverError`로 번역된다. 둘 다 **예외 타입 이름만** 싣고
+드라이버 자신의 메시지는 절대 옮기지 않는다 — 팩토리 실패는 원인 체인도
+끊어(`from None`) 포맷된 traceback에도 남지 않는다:
+
+```text
+secret provider 'vault' registered via entry-point 'lnpl_vault:make_provider' failed to load (ModuleNotFoundError)
+secret provider 'vault' failed to start (RuntimeError)
+```
+
+### TCK로 검증하기
+
+외부 시크릿 드라이버는 `lnpl.testing.SecretProviderTCK`를 상속해 자기
+CI에서 돌린다. 훅은 셋이다 — `make_provider(initial)`은 `TCK_KEY`의 현재
+값이 `initial`이고 이전 값이 없는 새 프로바이더를, `rotate`는 새 값을
+현재로·옛 현재 값을 이전으로 만드는 테스트 전용 조작을, `break_provider`는
+이후 `get`/`get_previous`가 `DriverError`를 던지게 하는 테스트 전용 조작을
+제공한다:
+
+```python
+import unittest
+from lnpl.testing import SecretProviderTCK
+
+class MyVaultTCKTest(SecretProviderTCK, unittest.TestCase):
+    def make_provider(self, initial):
+        return MyVaultProvider(...)   # TCK_KEY에 initial을 써 둔 저장소
+
+    def rotate(self, provider, new_value):
+        ...                           # 새 버전 쓰기
+
+    def break_provider(self, provider):
+        ...                           # 이후 읽기가 실패하게
+```
+
+검증 항목(7): 설정한 바이트를 그대로 돌려줌(32바이트 이상), 교체 전
+`get_previous`는 `None`, 교체하면 현재 값이 이전으로 이동, 두 번 교체해도
+이전 값은 하나만, 없는 키는 두 메서드 모두 `DriverError`, 고장 난
+프로바이더도 두 메서드 모두 `DriverError`, `close()` 두 번 호출 안전. TCK가
+실제로 잡는다는 증거는 "이전 값으로 현재 값을 돌려주는" 프로바이더와 "없는
+키에서 `KeyError`를 흘리는" 프로바이더에 같은 케이스를 돌려 실패를 확인한
+discriminating test다(`impl/tests/test_secret_spi.py`의
+`SecretProviderTCKDiscriminatesTest`).
+
 ## 참고
 
 - 마이그레이션(expand-contract) 절차와 `lnpl migrate`: `docs/migration.md`
