@@ -10,9 +10,12 @@ See examples/deploy/README.md for the same procedure run by hand, with the
 measured build/run/curl log this test automates.
 """
 
+import http.client
 import json
 import pathlib
+import re
 import shutil
+import ssl
 import subprocess
 import time
 import unittest
@@ -202,6 +205,238 @@ class NginxConfigTest(unittest.TestCase):
         )
         assert result.returncode != 0, "a broken directive should fail nginx -t"
         assert "not_a_real_directive" in result.stderr, result.stderr
+
+
+_UNVERIFIED_TLS = ssl.create_default_context()
+_UNVERIFIED_TLS.check_hostname = False
+_UNVERIFIED_TLS.verify_mode = ssl.CERT_NONE
+
+
+def _wait_until_ready(port, path, timeout=15, tls=False):
+    scheme = "https" if tls else "http"
+    deadline = time.time() + timeout
+    last_exc = None
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(
+                f"{scheme}://127.0.0.1:{port}{path}", timeout=1,
+                context=_UNVERIFIED_TLS if tls else None)
+            return
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(0.2)
+    raise AssertionError(f"port {port}{path} never answered: {last_exc}")
+
+
+@unittest.skipUnless(shutil.which("docker") and shutil.which("openssl"),
+                     "docker and openssl both required")
+class TwoInstanceGatewayRateLimitTest(unittest.TestCase):
+    """issue #194: `--rate-limit`/`LNPL_RATE_LIMIT` is a per-process token
+    bucket (docs/serving.md "Rate limit") -- with K instances behind a
+    load balancer the combined admitted rate is N x K, no shared cap, and
+    there is no per-client limit either. This proves the documented fix on
+    the SHIPPED reference: the gateway config under test is
+    examples/deploy/nginx.conf itself, read at test time, with only two
+    things changed -- an `upstream` block naming the two linkly containers
+    is prepended, and the two `proxy_pass http://127.0.0.1:8000;` lines
+    point at it. `limit_req_zone`/`limit_req`/`limit_req_status` are the
+    file's own, so deleting them from the shipped file turns this red.
+    TLS is kept: the throwaway certificate is mounted and requests go over
+    https with an unverified context.
+
+    Arithmetic (nginx leaky bucket with `nodelay`,
+    ngx_http_limit_req_module,
+    https://nginx.org/en/docs/http/ngx_http_limit_req_module.html):
+    the zone keeps an "excess" counter in 1/1000-request units. Each
+    request adds 1000, and the counter decays by `rate` units per ms
+    (rate=20r/s -> 20 units/ms). A request is rejected once excess would
+    exceed `burst * 1000`. So the first request plus `burst` more are
+    admitted at once (burst + 1 = 11 for burst=10), and every further
+    1000 units of decay -- 1000 / rate = 50 ms at 20r/s, one token per
+    50 ms -- admits one more. (The time for a FULL burst to decay is
+    burst * 50 = 500 ms; that is not the bound that matters here.) The
+    number admitted out of 20 back-to-back requests is therefore
+        burst + 1 <= admitted <= burst + 1 + floor(elapsed_ms / 50)
+    where elapsed_ms is the measured wall-clock time of the whole burst.
+    The test asserts that range, not an exact 11, so a slow host cannot
+    make correct code fail; at least one 429 must remain. Measured
+    2026-10-06 on an idle laptop: 11 admitted / 9 rejected, 11-17 ms for
+    12 requests.
+
+    `rate` and `burst` are parsed from the shipped file, so retuning it
+    does not break the test (as long as burst + 1 < 20, the request count). Short fixed per-call tags (not
+    `self._testMethodName`) name every docker resource below: an nginx
+    `upstream { server <name>:8000; }` name is DNS-resolved at nginx
+    startup, and a long name can pass the 63-character DNS label limit
+    (RFC 1035), which makes nginx exit with `host not found in upstream`
+    -- seen by the test only as a bare ConnectionRefusedError.
+    """
+
+    IMAGE = "linkly-two-instance-smoke-test"
+    NGINX_CONF = REPO_ROOT / "examples" / "deploy" / "nginx.conf"
+    PROXY_PASS = "proxy_pass http://127.0.0.1:8000;"
+    COUNT = 20
+
+    @classmethod
+    def setUpClass(cls):
+        subprocess.run(
+            [
+                "docker", "build",
+                "-f", "examples/deploy/Dockerfile",
+                "--build-context", "repo=.",
+                "-t", cls.IMAGE,
+                "examples/deploy",
+            ],
+            cwd=REPO_ROOT, check=True, capture_output=True, timeout=300,
+        )
+        cls.certs_dir = REPO_ROOT / ".claude" / "tmp" / "t194-gw-certs"
+        cls.certs_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+             "-keyout", str(cls.certs_dir / "privkey.pem"),
+             "-out", str(cls.certs_dir / "fullchain.pem"),
+             "-days", "1", "-nodes", "-subj", "/CN=localhost"],
+            check=True, capture_output=True, timeout=30,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run(["docker", "rmi", cls.IMAGE], capture_output=True)
+        shutil.rmtree(cls.certs_dir, ignore_errors=True)
+
+    def _shipped_conf_for(self, upstream_names):
+        """The shipped nginx.conf with only the upstream swapped in."""
+        text = self.NGINX_CONF.read_text()
+        assert text.count(self.PROXY_PASS) == 2, (
+            f"expected exactly 2 `{self.PROXY_PASS}` lines in the shipped "
+            f"nginx.conf, found {text.count(self.PROXY_PASS)}")
+        upstream = "upstream linkly_upstream {\n" + "".join(
+            f"    server {name}:8000;\n" for name in upstream_names) + "}\n\n"
+        return upstream + text.replace(
+            self.PROXY_PASS, "proxy_pass http://linkly_upstream;")
+
+    def _shipped_limits(self):
+        text = self.NGINX_CONF.read_text()
+        rate = re.search(r"limit_req_zone\s.*\brate=(\d+)r/s;", text)
+        burst = re.search(r"^\s*limit_req\s+zone=\S+\s+burst=(\d+)\s+nodelay;",
+                          text, re.MULTILINE)
+        assert rate and burst, (
+            "shipped nginx.conf has no `limit_req_zone ... rate=Nr/s;` / "
+            "`limit_req zone=... burst=N nodelay;` pair")
+        return int(rate.group(1)), int(burst.group(1))
+
+    def _start_stack(self, tag):
+        """Fresh scratch network + 2 linkly containers + 1 nginx gateway
+        for this call alone; everything created here is removed via
+        addCleanup regardless of how the test ends."""
+        network = f"linkly-t194-net-{tag}"
+        subprocess.run(["docker", "network", "create", network],
+                       check=True, capture_output=True, timeout=30)
+        self.addCleanup(subprocess.run, ["docker", "network", "rm", network],
+                        capture_output=True)
+
+        upstream_names = []
+        for suffix in ("a", "b"):
+            name = f"linkly-t194-{tag}-{suffix}"
+            subprocess.run(
+                ["docker", "run", "-d", "--rm", "--name", name,
+                 "--network", network, self.IMAGE],
+                cwd=REPO_ROOT, check=True, capture_output=True, timeout=30,
+            )
+            self.addCleanup(subprocess.run, ["docker", "stop", name],
+                            capture_output=True)
+            upstream_names.append(name)
+
+        gw_port = _PORT_COUNTER[0]
+        _PORT_COUNTER[0] += 1
+        gw_name = f"linkly-t194-{tag}-gw"
+        conf_dir = REPO_ROOT / ".claude" / "tmp" / f"t194-gw-conf-{tag}"
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, conf_dir, ignore_errors=True)
+        (conf_dir / "default.conf").write_text(
+            self._shipped_conf_for(upstream_names))
+        subprocess.run(
+            ["docker", "run", "-d", "--rm", "--name", gw_name,
+             "--network", network, "-p", f"{gw_port}:443",
+             "-v", f"{conf_dir / 'default.conf'}:/etc/nginx/conf.d/default.conf:ro",
+             "-v", f"{self.certs_dir}:/etc/nginx/certs:ro",
+             "nginx:alpine"],
+            cwd=REPO_ROOT, check=True, capture_output=True, timeout=30,
+        )
+        self.addCleanup(subprocess.run, ["docker", "stop", gw_name],
+                        capture_output=True)
+        _wait_until_ready(gw_port, "/-/healthz", tls=True)
+        return gw_port
+
+    def _send_burst(self, port, tls, path="/link-hub-service/save-bookmark"):
+        """Returns (statuses, elapsed_ms) for COUNT back-to-back POSTs over
+        one already-connected connection (connect time is not counted)."""
+        if tls:
+            conn = http.client.HTTPSConnection(
+                "127.0.0.1", port, context=_UNVERIFIED_TLS)
+        else:
+            conn = http.client.HTTPConnection("127.0.0.1", port)
+        conn.connect()
+        statuses = []
+        started = time.perf_counter()
+        for _ in range(self.COUNT):
+            conn.request(
+                "POST", path, body=SAVE_BOOKMARK_BODY,
+                headers={"Authorization": "Bearer any",
+                         "Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            resp.read()
+            statuses.append(resp.status)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        conn.close()
+        return statuses, elapsed_ms
+
+    def test_combined_admitted_count_is_bounded_by_the_gateway_limit(self):
+        rate, burst = self._shipped_limits()
+        port = self._start_stack("comb")
+        statuses, elapsed_ms = self._send_burst(port, tls=True)
+        admitted = statuses.count(200)
+        rejected = statuses.count(429)
+        ms_per_token = 1000 / rate
+        upper = burst + 1 + int(elapsed_ms // ms_per_token)
+        detail = f"{statuses} in {elapsed_ms:.1f} ms"
+        assert admitted + rejected == self.COUNT, detail
+        assert rejected >= 1, f"the gateway never rejected: {detail}"
+        assert burst + 1 <= admitted <= upper, (
+            f"expected {burst + 1} <= admitted <= {upper}, got {admitted}: "
+            f"{detail}")
+
+    def test_healthz_is_never_rate_limited_at_the_gateway(self):
+        port = self._start_stack("hz")
+        self._send_burst(port, tls=True)  # saturate the shared zone first
+        conn = http.client.HTTPSConnection(
+            "127.0.0.1", port, context=_UNVERIFIED_TLS)
+        healthz_statuses = []
+        for _ in range(self.COUNT):
+            conn.request("GET", "/-/healthz")
+            resp = conn.getresponse()
+            resp.read()
+            healthz_statuses.append(resp.status)
+        conn.close()
+        assert healthz_statuses == [200] * self.COUNT, healthz_statuses
+
+    def test_single_instance_without_a_gateway_admits_every_request(self):
+        port = _PORT_COUNTER[0]
+        _PORT_COUNTER[0] += 1
+        name = "linkly-t194-solo-direct"
+        subprocess.run(
+            ["docker", "run", "-d", "--rm", "--name", name,
+             "-p", f"{port}:8000", self.IMAGE],
+            cwd=REPO_ROOT, check=True, capture_output=True, timeout=30,
+        )
+        self.addCleanup(subprocess.run, ["docker", "stop", name],
+                        capture_output=True)
+        _wait_until_ready(port, "/-/healthz")
+        statuses, _ = self._send_burst(port, tls=False)
+        assert statuses == [200] * self.COUNT, (
+            f"expected all {self.COUNT} admitted with no gateway in front "
+            f"and no LNPL_RATE_LIMIT set, got {statuses}")
 
 
 if __name__ == "__main__":

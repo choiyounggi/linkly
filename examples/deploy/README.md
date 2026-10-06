@@ -146,6 +146,21 @@ curl -sk https://127.0.0.1/-/healthz
 문서에 있다: 롤링 업데이트 중 gunicorn이 드레인을 마칠 시간을 nginx가
 먼저 포기하고 502를 내지 않게 하기 위해서다.
 
+전역 레이트 리밋도 같은 `nginx.conf`에 들어간다(이슈 #194) — 인스턴스나
+gunicorn 워커가 여러 개면 `--rate-limit`/`LNPL_RATE_LIMIT`는 프로세스마다
+따로 걸려 실제 허용량이 N × 개수로 느슨해진다(`docs/serving.md` "Rate
+limit" 절). `limit_req_zone`(http 컨텍스트, 파일 상단) + `location /` 안의
+`limit_req`/`limit_req_status`(공식 문서:
+https://nginx.org/en/docs/http/ngx_http_limit_req_module.html)가 게이트웨이
+수준에서 합산 한도를 건다. `/-/` 경로는 그 location에 `limit_req`가 없어서
+그대로 면제된다(위 `/-/` 패스스루와 같은 이유).
+
+`test_deploy.py::TwoInstanceGatewayRateLimitTest`가 세 경우를 검증한다 —
+linkly 컨테이너 2개 + nginx 게이트웨이 1개로 합산 허용량이 burst+1(=11)에서
+막히는 것, 그사이 `/-/healthz`는 전부 200인 것, 같은 요청을 게이트웨이 없이
+인스턴스 하나에 직접 보내면 20개가 전부 통과하는 것(게이트웨이가 없으면
+보호가 없다는 뜻).
+
 ## 이 참조가 다루지 않는 것
 
 이미지 레지스트리 push는 더 이상 범위 밖이 아니다 — `docker/Dockerfile`과
