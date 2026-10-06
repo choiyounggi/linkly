@@ -124,9 +124,12 @@ class ContractTestCase(unittest.TestCase):
         rows = default_rows(doc, target, payload) if seed else {}
         if repository is None:
             repository = self._repository(backend)
-        # The Interpreter seeds the driver it is handed; seeding here too would
-        # hide a driver that ignored the rows it was given.
-        interp = Interpreter(doc, repo_rows=rows, repository=repository)
+        if rows:
+            # issue #197: `Interpreter` no longer seeds a persistent driver,
+            # so both backends get their rows the same way -- through the
+            # SPI method every driver implements.
+            repository.seed(rows)
+        interp = Interpreter(doc, repo_rows={}, repository=repository)
         return interp.run_workflow(target, payload), interp
 
 
@@ -736,6 +739,7 @@ class DriverFaultTranslationTest(ContractTestCase):
         doc = compile_source(VALUE_INVENTORY)
         target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
         payload = {"id": "p-1", "stock": 9, "quantity": 4}
+        driver.seed(default_rows(doc, target, payload))
         interp = Interpreter(doc, repo_rows=default_rows(doc, target, payload),
                              repository=driver)
 

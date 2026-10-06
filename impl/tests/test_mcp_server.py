@@ -17,7 +17,9 @@
 import io
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 from importlib import metadata as importlib_metadata
 from unittest import mock
@@ -157,6 +159,23 @@ class CompileToolTest(unittest.TestCase):
         self.assertEqual(record["code"], "unknown-verb")
         self.assertEqual(record["severity"], "warning")
         self.assertEqual(record["subject"], "return")
+
+    def test_it_carries_the_same_vocabulary_digest_and_package_path_capabilities_reports(self):
+        # issue #205: a compile answer says which compiler produced it.
+        from lnpl.capabilities import capabilities_document
+        body = payload_of(call("lnpl_compile", {"text": CLEAN}))
+        caps = capabilities_document()
+        self.assertEqual(body["vocabulary_digest"], caps["vocabulary_digest"])
+        self.assertEqual(body["package_path"], caps["package_path"])
+        # additive: the five existing keys are all still there
+        self.assertLessEqual({"source", "nodes", "diagnostics", "counts",
+                              "unknown_verbs"}, set(body))
+
+    def test_a_failed_compile_is_still_a_tool_error_without_the_new_keys(self):
+        # error path unchanged: a parse failure stays `isError`, not a payload
+        res = call("lnpl_compile", {"text": "entity\n"})
+        self.assertIs(res["result"]["isError"], True)
+        self.assertNotIn("vocabulary_digest", res["result"]["content"][0]["text"])
 
     def test_a_clean_source_reports_nothing(self):
         body = payload_of(call("lnpl_compile", {"text": CLEAN}))
@@ -322,6 +341,15 @@ class CapabilitiesToolTest(unittest.TestCase):
         res = call("lnpl_capabilities", {})
         self.assertIs(res["result"]["isError"], False)
 
+    def test_it_reports_the_vocabulary_digest_and_package_path(self):
+        from lnpl.capabilities import capabilities_document
+        body = payload_of(call("lnpl_capabilities", {}))
+        caps = capabilities_document()
+        self.assertTrue(body["vocabulary_digest"].startswith("sha256:"))
+        self.assertEqual(body["vocabulary_digest"], caps["vocabulary_digest"])
+        self.assertEqual(body["package_path"], caps["package_path"])
+        self.assertTrue(os.path.isfile(os.path.join(body["package_path"], "__init__.py")))
+
     def test_it_reports_the_nine_contract_slots(self):
         body = payload_of(call("lnpl_capabilities", {}))
         self.assertEqual(set(body["slots"]),
@@ -407,6 +435,11 @@ class ProtocolErrorTest(unittest.TestCase):
 LAUNCHER = os.path.join(PLUGIN, "server.py")
 INITIALIZE = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                          "params": {}}) + "\n"
+# The launcher records its resolution in a state file (issue #205). Every test
+# run points it here so the suite never writes the real
+# ~/.claude/lnpl-plugin/mcp-last-start.json that `lnpl-doctor` reads.
+LAUNCHER_STATE_DIR = os.path.join(REPO, ".claude", "tmp", "launchertest-state")
+LAUNCHER_STATE = os.path.join(LAUNCHER_STATE_DIR, "state.json")
 
 
 def run_launcher(env, cwd):
@@ -416,7 +449,7 @@ def run_launcher(env, cwd):
     을 건너뛴다. 그 해석이 이 파일의 전부이므로 프로세스로 돌려야 한다.
     설치된 lnpl을 우연히 집지 않도록 PATH와 PYTHONPATH를 비운 환경에서 돈다.
     """
-    base = {"PATH": "/usr/bin:/bin"}
+    base = {"PATH": "/usr/bin:/bin", "LNPL_MCP_STATE": LAUNCHER_STATE}
     base.update(env)
     return subprocess.run(["python3", LAUNCHER], input=INITIALIZE,
                           capture_output=True, text=True, env=base, cwd=cwd)
@@ -430,6 +463,10 @@ class LauncherResolutionTest(unittest.TestCase):
     깨지면 서버는 뜨지 않고, 클라이언트는 "연결 실패"만 본다.
     """
 
+    def setUp(self):
+        shutil.rmtree(LAUNCHER_STATE_DIR, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, LAUNCHER_STATE_DIR, True)
+
     def _initialized(self, proc):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(proc.stdout.strip(), "런처가 아무것도 내지 않았다")
@@ -440,12 +477,54 @@ class LauncherResolutionTest(unittest.TestCase):
         result = self._initialized(proc)
         self.assertEqual(result["serverInfo"]["name"], "lnpl")
         self.assertEqual(result["serverInfo"]["version"], __version__)
+        # issue #205: one stderr line naming the step and the path; stdout
+        # (the protocol channel) carries only the initialize response.
+        self.assertEqual(proc.stderr, "lnpl-mcp: resolved via $LNPL_IMPL -> %s\n"
+                         % os.path.join(REPO, "impl"))
+        self.assertEqual(len(proc.stdout.splitlines()), 1, proc.stdout)
 
     def test_it_walks_up_from_the_working_directory(self):
         # LNPL_IMPL 없이, 레포 안의 하위 디렉터리에서 띄운다.
         proc = run_launcher({}, cwd=os.path.join(REPO, "examples"))
         result = self._initialized(proc)
         self.assertEqual(result["serverInfo"]["version"], __version__)
+        self.assertEqual(proc.stderr, "lnpl-mcp: resolved via cwd walk-up -> %s\n"
+                         % os.path.join(REPO, "impl"))
+        self.assertEqual(len(proc.stdout.splitlines()), 1, proc.stdout)
+
+    def test_the_state_file_records_the_resolved_digest(self):
+        from lnpl import provenance
+        os.makedirs(os.path.join(REPO, ".claude", "tmp"), exist_ok=True)
+        tmp = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        state = os.path.join(tmp, "nested", "state.json")
+        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl"),
+                             "LNPL_MCP_STATE": state}, cwd="/")
+        self._initialized(proc)
+        with open(state, encoding="utf-8") as fh:
+            recorded = json.load(fh)
+        self.assertEqual(recorded["vocabulary_digest"],
+                         provenance._current_vocabulary_digest())
+        self.assertEqual(recorded["discovery"], "$LNPL_IMPL")
+        self.assertEqual(recorded["path"], os.path.join(REPO, "impl"))
+        self.assertEqual(recorded["lnpl_version"], __version__)
+
+    def test_a_write_failure_in_the_state_file_does_not_block_the_server(self):
+        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl"),
+                             "LNPL_MCP_STATE": os.path.join("/nonexistent-xyz-t205",
+                                                            "state.json")},
+                            cwd="/")
+        result = self._initialized(proc)
+        self.assertEqual(result["serverInfo"]["name"], "lnpl")
+        self.assertFalse(os.path.exists("/nonexistent-xyz-t205"))
+        self.assertEqual(proc.stderr.count("\n"), 1, proc.stderr)
+
+    def test_the_failure_path_announces_nothing_and_writes_no_state(self):
+        # boundary: no package found -> fail-loud text only, no success line
+        proc = run_launcher({}, cwd="/")
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("resolved via", proc.stderr)
+        self.assertFalse(os.path.exists(LAUNCHER_STATE))
 
     def test_walk_up_beats_nothing_but_lnpl_impl_beats_walk_up(self):
         # 둘 다 가능한 자리에서 LNPL_IMPL이 이겨야 한다 — 명시가 추론을 이긴다.

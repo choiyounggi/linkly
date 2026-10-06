@@ -16,7 +16,8 @@ import json
 import os
 import unittest
 
-from lnpl.lower import LowerError, lower
+from lnpl.lower import (KEYWORD_DID_YOU_MEAN, VERB_ALIASES, VERB_LEXICON,
+                        LowerError, lower)
 from lnpl.parser import parse
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -106,6 +107,19 @@ entity User
 workflow Login
     validate input
     zzz token
+"""
+
+
+# RFC-0060: `else` is what an author reaches for when they mean `otherwise`
+# (issue #211 (4)); difflib's closest VERB_LEXICON match is `delete`.
+ELSE_WORD = """
+entity User
+    field
+        id UUID
+        email Email
+workflow Login
+    validate input
+    else
 """
 
 
@@ -251,6 +265,22 @@ class TestDidYouMean(unittest.TestCase):
         diag = compile_module(SPELLING_TYPO).diagnostics.by_code("unknown-verb")[0]
         self.assertEqual(diag.suggestion, "create")
         self.assertIn("did you mean 'create'?", diag.message)
+
+    def test_else_suggests_the_otherwise_keyword_not_a_verb(self):
+        diag = compile_module(ELSE_WORD).diagnostics.by_code("unknown-verb")[0]
+        self.assertEqual(diag.subject, "else")
+        self.assertEqual(diag.suggestion, "otherwise")
+        self.assertIn("did you mean 'otherwise'?", diag.message)
+        self.assertNotIn("delete", diag.message)
+
+    def test_keyword_suggestions_never_shadow_a_verb_or_an_alias(self):
+        """A keyword suggestion is checked first, so a key that is also a
+        verb or alias would silently change that word's suggestion."""
+        self.assertTrue(KEYWORD_DID_YOU_MEAN)
+        for word in KEYWORD_DID_YOU_MEAN:
+            with self.subTest(word=word):
+                self.assertNotIn(word, VERB_LEXICON)
+                self.assertNotIn(word, VERB_ALIASES)
 
     def test_an_unrelated_word_gets_no_suggestion(self):
         diag = compile_module(NO_SUGGESTION).diagnostics.by_code("unknown-verb")[0]

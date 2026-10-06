@@ -16,6 +16,7 @@ LNPL은 **의도(what)를 선언**하는 언어다. 구현(how)은 컴파일러�
 | 지금 하려는 일 | 읽을 것 |
 |----------------|---------|
 | 잘 쓴 완성품을 보고 형태를 익힌다 | [examples/linkhub.lnpl](../../../../examples/linkhub.lnpl) — 따라 쓸 예제 |
+| 조건이 두 단계 이상 이어지는 흐름을 쓴다 (재고 확인 → 결제 → 확정 같은) | [examples/staged.lnpl](../../../../examples/staged.lnpl) + [references/patterns.md](references/patterns.md) — 가드된 파이프라인 연쇄 |
 | 워크플로 스텝을 쓴다 (`validate input`, `cache user` …) | [references/verbs.md](references/verbs.md) |
 | `policy` / `security` / `performance`를 선언한다 | [references/declarations.md](references/declarations.md) |
 | 필드 타입이나 `refine`을 정한다 | [references/types.md](references/types.md) |
@@ -58,7 +59,8 @@ lnpl compile <파일>
 `aggregation-orphaned-list`, `event-source-mismatch`, `event-source-orphaned`,
 `derived-never-assigned`, `declared-not-bound`, `stored-row-shape-mismatch`,
 `rollback-escapes-network`, `retry-on-non-idempotent`, `note-cap-exceeded`,
-`event-consume-cycle`, `predicate-not-pushed-down` 중 하나라도 나오면, 그게
+`event-consume-cycle`, `predicate-not-pushed-down`, `respond-field-missing`,
+`guard-scoped-binding-escape`, `optional-field-unguarded-arithmetic` 중 하나라도 나오면, 그게
 의도한 것인지 사용자에게 확인하고 넘어간다. 조용히 무시하지 않는다.
 
 `guard-orphaned-steps`는 특히 조용히 넘기지 마라 — 가드는 **다음 항목 하나**만

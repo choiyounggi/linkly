@@ -79,7 +79,7 @@ NETWORKS_ENTRY_POINT_GROUP = "lnpl.networks"
 # already implements inline (byte-identical, untouched by this SPI).
 PUBLISHERS = ("http", "https")
 
-# issue #191, RFC-0053: the entry-points group an external package
+# issue #191, RFC-0061: the entry-points group an external package
 # registers an EventPublisher factory under
 # (`[project.entry-points."lnpl.publishers"]` in its own pyproject.toml).
 # Built-in http/https are matched before this group is ever consulted,
@@ -136,6 +136,14 @@ class ConflictError(DriverError):
     non-idempotent effect only reproduces the same conflict."""
 
 
+class WriteConflictError(DriverError):
+    """An optimistic-version write collided with a write that landed first.
+
+    Unlike `ConflictError` (a duplicate `create`, never resolved by retrying
+    the same call), this one IS retryable: a caller that re-reads and
+    re-runs the whole workflow can succeed (issue #92, #201)."""
+
+
 class PublishRejected(DriverError):
     """A publisher permanently rejected one envelope (mirrors RFC-0040
     D7's 422 bucket). The caller acks the row anyway and emits one
@@ -173,9 +181,10 @@ class RepositoryDriver:
     def seed(self, rows):
         """Populate `{entity_id: {row_key: row}}`, INSERTING ONLY WHERE ABSENT.
 
-        Insert-if-absent is what lets the seed rule (`repo_policy`) stay true
-        for a persistent store: run N re-seeds the entities the workflow reads,
-        and a row run N-1 wrote is left exactly as it was found.
+        Insert-if-absent leaves a row an earlier run wrote exactly as it was
+        found. The interpreter calls this per run only on the Fake (issue
+        #197): a persistent store is seeded by whoever sets it up -- a test,
+        an operator -- and a read that finds no row there fails its step.
         """
         raise NotImplementedError
 
@@ -209,7 +218,8 @@ class RepositoryDriver:
         (compiler-validated, never raw text), `op` one of `<`/`<=`/`>`/
         `>=`/`==`/`!=`, `value` the already-resolved concrete value to bind.
         `order` is `(field, desc)` or `None`. `limit` is a positive `int` or
-        `None`.
+        `None`. Under `order`, a row lacking the field (or holding null)
+        comes last in both directions, in `row_key` order (RFC-0053 §9).
         """
         raise NotImplementedError
 
@@ -261,7 +271,8 @@ class RepositoryDriver:
     def query_sorted(self, entity_id, field):
         """Every row for `entity_id`, ordered by `field` ascending, `row_key`
         (`repo_policy.row_key`) the tiebreaker for equal values (issue #99,
-        D3/D7 — the `expose list` GET surface).
+        D3/D7 — the `expose list` GET surface). A row lacking `field` (or
+        holding null) comes last, in `row_key` order (RFC-0053 §9).
 
         Same empty-list-never-None contract as `query`. `field` names a
         top-level key of the JSON `payload` — never SQL text: the statement
@@ -328,6 +339,9 @@ class CacheDriver:
 
     def close(self):
         raise NotImplementedError
+
+
+ROLE_CLAIM = "role"
 
 
 class TokenProvider:
@@ -409,12 +423,12 @@ class NetworkDriver:
 
 class EventPublisher:
     """The `lnpl.publishers` capability's adapter contract (issue #191,
-    RFC-0053). Carries one outbox emission, already shaped as a
+    RFC-0061). Carries one outbox emission, already shaped as a
     CloudEvents structured-mode envelope dict (the same shape
     `_relay_drain_once` already builds for http(s): specversion/id/
     source/type/data), to a broker/topic.
 
-    Ack-after-confirm (RFC-0053 D1): the caller acks an outbox row ONLY
+    Ack-after-confirm (RFC-0061 D1): the caller acks an outbox row ONLY
     when `publish`/`publish_batch` returns without raising. Raising
     `PublishRejected` signals a permanent rejection (caller acks +
     dead-letters); raising any other `DriverError` signals "could not
@@ -463,8 +477,11 @@ _SELECT_ALL_ROWS = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
 # other varying value here (STATEMENT TEXT IS CONSTANT, module docstring).
 # `payload` carries no per-field column (D7: the existing schema is
 # unchanged), so the sort key is extracted from the JSON blob at read time.
+# RFC-0053 §9: the leading `IS NULL` column puts a row lacking the field
+# last; it is never reversed by `DESC`, so that holds in both directions.
 _SELECT_SORTED = ("SELECT payload FROM lnpl_rows WHERE entity_id = ? "
-                  "ORDER BY json_extract(payload, ?), row_key")
+                  "ORDER BY (json_extract(payload, ?) IS NULL), "
+                  "json_extract(payload, ?), row_key")
 # issue #116, D5/D6: `list where`/`order by`/`limit` pushdown, assembled from
 # fixed literal fragments only — never a document-supplied field name or
 # value (STATEMENT TEXT IS CONSTANT, module docstring). A predicate term's
@@ -477,7 +494,8 @@ _SELECT_PREDICATE_OPS = {
 }
 _SELECT_PREDICATE_BASE = "SELECT payload FROM lnpl_rows WHERE entity_id = ?"
 _SELECT_PREDICATE_TERM = " AND json_extract(payload, ?) %s ?"
-_SELECT_PREDICATE_ORDER = " ORDER BY json_extract(payload, ?)%s, row_key"
+_SELECT_PREDICATE_ORDER = (" ORDER BY (json_extract(payload, ?) IS NULL), "
+                           "json_extract(payload, ?)%s, row_key")
 _SELECT_PREDICATE_ORDER_DEFAULT = " ORDER BY row_key"
 _SELECT_PREDICATE_LIMIT = " LIMIT ?"
 _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, payload) "
@@ -906,7 +924,8 @@ class SqliteRepositoryDriver(RepositoryDriver):
             if order is not None:
                 field, desc = order
                 parts.append(_SELECT_PREDICATE_ORDER % (" DESC" if desc else ""))
-                params.append("$." + field)
+                params.append("$." + field)    # the IS NULL column
+                params.append("$." + field)    # the value column
             else:
                 parts.append(_SELECT_PREDICATE_ORDER_DEFAULT)
             if limit is not None:
@@ -922,7 +941,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
     def query_sorted(self, entity_id, field):
         try:
             found = self._conn.execute(
-                _SELECT_SORTED, (entity_id, "$." + field)).fetchall()
+                _SELECT_SORTED, (entity_id, "$." + field, "$." + field)).fetchall()
         except sqlite3.Error as exc:
             raise DriverError("cannot query %s sorted by %s: %s"
                               % (entity_id, field, exc)) from exc
@@ -947,7 +966,7 @@ class SqliteRepositoryDriver(RepositoryDriver):
                 # becomes a `RunError` and the run is decided failed.
                 if not self._in_transaction:
                     self._conn.rollback()
-                raise DriverError(
+                raise WriteConflictError(
                     "write conflict: row changed since read (%s %s)"
                     % (entity_id, key))
             # Issue #174: the UPDATE above bumped `_version`, so the row this
@@ -1204,7 +1223,7 @@ class HmacTokenProvider(TokenProvider):
 
     # -- contract ----------------------------------------------------------
 
-    def issue(self, subject, audience, ttl_ms=None):
+    def issue(self, subject, audience, ttl_ms=None, role=None):
         now = int(time.time())
         # `is not None`, not `or`: ttl_ms=0 is a legitimate request for an
         # already-expiring token, and `or` would silently hand back the
@@ -1214,6 +1233,8 @@ class HmacTokenProvider(TokenProvider):
         claims = {"iss": self._issuer, "aud": audience, "sub": subject,
                   "jti": uuid.uuid4().hex, "iat": now, "nbf": now,
                   "exp": now + ttl_s}
+        if role is not None:
+            claims[ROLE_CLAIM] = role
         signing_input = "%s.%s" % (
             _b64u_encode(json.dumps(header, sort_keys=True).encode("utf-8")),
             _b64u_encode(json.dumps(claims, sort_keys=True).encode("utf-8")))

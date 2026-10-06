@@ -516,6 +516,91 @@ def subscribe_negatives():
     ]
 
 
+OPTIONAL_FIELD_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "customers",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.customer",
+            "name": "Customer",
+            "fields": [
+                {"name": "id", "type": "UUID"},
+                {"name": "nickname", "type": "Text", "optional": True},
+            ],
+        },
+    ],
+}
+
+
+def optional_negatives():
+    """RFC-0053 — `optional` is a single boolean field, same shape
+    `subscribe_negatives()` uses for `Event.subscribe`."""
+    n1 = copy.deepcopy(OPTIONAL_FIELD_FIXTURE)
+    n1["nodes"][0]["fields"][1]["optional"] = "yes"  # type 불일치 — boolean 아님
+
+    return [
+        ("fields[].optional is not a boolean: 'yes'", n1),
+    ]
+
+
+DERIVED_FIELD_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "orders",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.order",
+            "name": "Order",
+            "fields": [
+                {"name": "id", "type": "UUID"},
+                {"name": "total", "type": "Integer", "derived": True},
+            ],
+        },
+    ],
+}
+
+
+FILL_SOURCE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "audit",
+    "nodes": [
+        {
+            "kind": "Entity",
+            "id": "entity.audit.entry",
+            "name": "AuditEntry",
+            "fields": [
+                {"name": "id", "type": "UUID", "derived": True,
+                 "fill_source": "generated"},
+                {"name": "at", "type": "DateTime", "derived": True,
+                 "fill_source": "clock"},
+                {"name": "action", "type": "Text"},
+            ],
+        },
+    ],
+}
+
+
+def fill_source_negatives():
+    """issue #95 `derived` (admitted at last) and RFC-0055 `fill_source`, a
+    closed enum. Which base a marker needs is a compiler check (the field's
+    `type` may be a refinement name), not a schema one."""
+    n1 = copy.deepcopy(DERIVED_FIELD_FIXTURE)
+    n1["nodes"][0]["fields"][1]["derived"] = "yes"  # boolean 아님
+
+    n2 = copy.deepcopy(FILL_SOURCE_FIXTURE)
+    n2["nodes"][0]["fields"][0]["fill_source"] = "uuid4"  # enum 밖
+
+    n3 = copy.deepcopy(FILL_SOURCE_FIXTURE)
+    n3["nodes"][0]["fields"][1]["fill_source"] = 1  # 문자열 아님
+
+    return [
+        ("fields[].derived is not a boolean: 'yes'", n1),
+        ("fields[].fill_source outside the closed set: 'uuid4'", n2),
+        ("fields[].fill_source is not a string: 1", n3),
+    ]
+
+
 CONSUME_EVENT_FIXTURE = {
     "lir_version": "0.1",
     "module": "orders",
@@ -608,6 +693,62 @@ def alt_guard_negatives():
         ("alternatives item is not a string: 1", n2),
         ("alternatives on a repeat guard", n3),
         ("undeclared property on a Guard: altCondition", n4),
+    ]
+
+
+GUARD_OTHERWISE_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "guard_otherwise",
+    "nodes": [
+        {
+            "kind": "Workflow",
+            "id": "wf.settle",
+            "name": "Settle",
+            "children": ["wf.settle.guard.1"],
+        },
+        {
+            "kind": "Guard",
+            "id": "wf.settle.guard.1",
+            "mode": "when",
+            "condition": "a > 0",
+            "children": ["wf.settle.step.1", "wf.settle.step.2"],
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.settle.step.1",
+            "name": "create payment",
+        },
+        {
+            "kind": "WorkflowStep",
+            "id": "wf.settle.step.2",
+            "name": "fail declined",
+        },
+    ],
+}
+
+
+def guard_otherwise_negatives():
+    """RFC-0060 — a `Guard` owns its guarded item plus at most one `otherwise`
+    item, so `children` holds 1 or 2 ids. One negative per bound the
+    `children` constraint turns on: a third child (`maxItems`), none at all
+    (`minItems`), and a second child on an `until`/`repeat` guard, which has
+    no false branch for an `otherwise` item to run on.
+    """
+    n1 = copy.deepcopy(GUARD_OTHERWISE_FIXTURE)
+    n1["nodes"][1]["children"].append("wf.settle.step.3")     # 3번째 자식
+
+    n2 = copy.deepcopy(GUARD_OTHERWISE_FIXTURE)
+    n2["nodes"][1]["children"] = []                            # 자식 없음
+
+    n3 = copy.deepcopy(GUARD_OTHERWISE_FIXTURE)
+    n3["nodes"][1]["mode"] = "repeat"
+    n3["nodes"][1]["count"] = 2
+    del n3["nodes"][1]["condition"]                            # repeat엔 otherwise 없음
+
+    return [
+        ("Guard with 3 children (guarded + 2 otherwise)", n1),
+        ("Guard with 0 children", n2),
+        ("otherwise child on a repeat guard", n3),
     ]
 
 
@@ -833,6 +974,14 @@ def self_test():
          SUBSCRIBE_EVENT_FIXTURE),
         ("CONSUME_EVENT_FIXTURE (issue #118 Event.consume)",
          CONSUME_EVENT_FIXTURE),
+        ("OPTIONAL_FIELD_FIXTURE (RFC-0053 optional field)",
+         OPTIONAL_FIELD_FIXTURE),
+        ("DERIVED_FIELD_FIXTURE (issue #95 derived field)",
+         DERIVED_FIELD_FIXTURE),
+        ("FILL_SOURCE_FIXTURE (RFC-0055 fill_source markers)",
+         FILL_SOURCE_FIXTURE),
+        ("GUARD_OTHERWISE_FIXTURE (RFC-0060 Guard otherwise child)",
+         GUARD_OTHERWISE_FIXTURE),
     ]
     for label, doc in positives:
         errors = list(validator.iter_errors(doc))
@@ -873,7 +1022,8 @@ def self_test():
       + rowset_negatives() + network_negatives() + alt_guard_negatives() \
       + respond_negatives() + create_negatives() + expose_negatives() \
       + capability_http_negatives() + subscribe_negatives() \
-      + consume_negatives() + lookup_negatives()
+      + consume_negatives() + lookup_negatives() + optional_negatives() \
+      + fill_source_negatives() + guard_otherwise_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

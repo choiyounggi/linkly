@@ -64,7 +64,8 @@ import json
 import os
 
 from lnpl.cli import _relay_drain_once_via_publisher
-from lnpl.drivers import DriverError, TokenError
+from lnpl.drivers import (ConflictError, DriverError, TokenError,
+                          WriteConflictError)
 from lnpl.generators import GeneratorError, run_generator
 
 
@@ -374,6 +375,28 @@ class RepositoryDriverTCK:
         # attempt above never reached the row.
         self.assertEqual(
             self.driver.execute("widget", "read", "w-v1")["n"], 1)
+
+    def test_a_stale_write_raises_the_typed_write_conflict_error(self):
+        """Issue #201: the conflict is told apart by TYPE, not by message
+        text — a driver opts in by raising `WriteConflictError`, a sibling
+        of the create-conflict `ConflictError`, never a subclass of it."""
+        self.driver.seed({"widget": {"w-v3": {"id": "w-v3", "n": 0}}})
+        first_read = self.driver.execute("widget", "read", "w-v3")
+        if not hasattr(first_read, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        second_driver = self.make_driver()
+        self.addCleanup(second_driver.close)
+        stolen = second_driver.execute("widget", "read", "w-v3")
+        stolen["n"] = 1
+        second_driver.persist("widget", "w-v3", stolen)
+
+        first_read["n"] = first_read["n"] + 1
+        with self.assertRaises(WriteConflictError) as caught:
+            self.driver.persist("widget", "w-v3", first_read)
+        self.assertNotIsInstance(caught.exception, ConflictError)
 
     def test_two_consecutive_persists_on_one_read_row_both_succeed(self):
         self.driver.seed({"widget": {"w-v2": {"id": "w-v2", "n": 0}}})

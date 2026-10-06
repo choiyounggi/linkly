@@ -201,5 +201,71 @@ class FakeBackendRejectedTest(DbCheckTestCase):
         self.assertIn("db check", err)
 
 
+OPTIONAL_SOURCE = SOURCE.replace("        label Text\n",
+                                 "        label Text\n        nickname Text optional\n")
+
+
+class OptionalFieldDbCheckTest(DbCheckTestCase):
+    """RFC-0053: `db check` does not count an absent optional field as a
+    mismatch; a missing required field is still reported. The store lives
+    under `.claude/tmp`, never the system temp directory."""
+
+    def setUp(self):
+        import shutil
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        base = os.path.join(repo_root, ".claude", "tmp")
+        os.makedirs(base, exist_ok=True)
+        self.dir = tempfile.mkdtemp(prefix="lnpl-t208-", dir=base)
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.source = os.path.join(self.dir, "account.lnpl")
+        with open(self.source, "w", encoding="utf-8") as fh:
+            fh.write(OPTIONAL_SOURCE)
+        self.db = os.path.join(self.dir, "store.db")
+        doc = cli.compile_source([self.source])
+        self.entity_id = next(n["id"] for n in doc["nodes"]
+                              if n["kind"] == "Entity")
+
+    def test_rows_without_the_optional_field_are_clean(self):
+        self.seed(MATCHING_ROW)
+
+        rc, out, err = self.check()
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual([], json.loads(out))
+
+    def test_a_stored_null_optional_field_is_clean(self):
+        # Boundary: a stored null is the same as an absent key.
+        self.seed({"id": ACCOUNT_2, "label": "w", "cardSecret": "t",
+                   "nickname": None})
+
+        rc, out, err = self.check()
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual([], json.loads(out))
+
+    def test_a_wrong_typed_optional_field_is_still_reported(self):
+        self.seed({"id": ACCOUNT_3, "label": "w", "cardSecret": "t",
+                   "nickname": SECRET_VALUE})
+
+        rc, out, err = self.check()
+
+        self.assertEqual(1, rc, err)
+        findings = json.loads(out)
+        self.assertEqual([("nickname", "type")],
+                         [(f["field"], f["kind"]) for f in findings])
+        self.assertNotIn(str(SECRET_VALUE), out)
+
+    def test_a_missing_required_field_is_still_reported(self):
+        self.seed(STALE_ROW)
+
+        rc, out, err = self.check()
+
+        self.assertEqual(1, rc, err)
+        findings = json.loads(out)
+        self.assertEqual(["cardSecret"], [f["field"] for f in findings])
+        self.assertEqual("missing", findings[0]["kind"])
+
+
 if __name__ == "__main__":
     unittest.main()

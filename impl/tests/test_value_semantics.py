@@ -223,15 +223,22 @@ workflow W
                                          "    set product.stock 1"),
                            "needs `to`")
 
-    def test_a_guard_reading_an_assigned_field_is_refused(self):
-        # RFC-0015's mode-equivalence rule: mode B fixes condition fields at
-        # entry, so this program would compare a different number there.
-        self.compile_fails(
-            self.workflow("    read product\n"
-                          "    set product.stock to product.stock - 1\n"
-                          "    when product.stock > 0\n"
-                          "    create product"),
-            "which an earlier step assigns", "Move the guard above")
+    def test_a_guard_reading_an_assigned_field_compiles_and_mode_b_refuses_it(self):
+        # Was `test_a_guard_reading_an_assigned_field_is_refused`, asserting
+        # RFC-0015's compile error. RFC-0060 resolved RFC-0015 Open Question 1:
+        # mode A now reads the current value, and the mode-equivalence rule
+        # (mode B fixes condition fields at entry) moved to mode B, which
+        # refuses the same program as a recorded exemption.
+        from lnpl import backend
+        doc = compile_doc(self.workflow("    read product\n"
+                                        "    set product.stock to product.stock - 1\n"
+                                        "    when product.stock > 0\n"
+                                        "    create product"), "m")
+        self.assertTrue(backend.workflow_uses_assigned_guard_field(doc, "wf.w"))
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, "wf.w")
+        self.assertIn("which an earlier step assigns", str(ctx.exception))
+        self.assertIn("RFC-0060", str(ctx.exception))
 
     def test_presence_inside_and_is_refused(self):
         self.compile_fails(self.workflow("    read product\n"
@@ -394,10 +401,13 @@ class TestMoneyDimension(unittest.TestCase):
             "set product.price to product.stock + 1"),
             "to product.price (money)", "RFC-0051")
 
-    def test_an_undeclared_right_hand_side_is_left_to_the_runtime(self):
+    def test_a_bare_right_hand_side_is_left_to_the_runtime(self):
         # Boundary: a bare reference has no declared type, so the new
-        # target/RHS check has nothing to compare and must not refuse.
-        doc = compile_doc(self.assignment("set product.price to amount"), "m")
+        # target/RHS check has nothing to compare and must not refuse —
+        # `stock` is Integer as a field, yet the bare input name is untyped.
+        # (RFC-0055 §7: the name must be declared somewhere; `amount` was
+        # not, and an undeclared bare name is now a compile error.)
+        doc = compile_doc(self.assignment("set product.price to stock"), "m")
         self.assertEqual(1, len(nodes_of(doc, "Assignment")))
 
     # ---- Decimal stays refused --------------------------------------------
@@ -554,6 +564,16 @@ class TestAssignmentRuntime(unittest.TestCase):
         self.assertEqual(
             seed["entity.product"][row_key("entity.product", payload)]["stock"], 5,
             "the caller's seed must be untouched")
+
+
+def _with_bare_inputs(source):
+    """RFC-0055 §7: a bare operand must name a declared field. These names
+    are declared Text on an entity no workflow touches, so the operand stays
+    untyped for lowering and its runtime shape is the payload's."""
+    return source.replace("service S\n", "entity Inputs\n    field\n"
+                          "        id UUID\n        extra Text\n"
+                          "        left Text\n        right Text\n\n"
+                          "service S\n", 1)
 
 
 MONEY_RUNTIME = """capability postgres
@@ -723,9 +743,9 @@ class TestMoneyRuntime(unittest.TestCase):
         self.assertIn("money-encode-precision", result["failure_reason"])
 
     def test_a_money_payload_value_meeting_an_integer_fails_the_run(self):
-        # An undeclared ref can carry Money where lowering could not see it.
-        doc = compile_doc(MONEY_RUNTIME.replace(
-            "set order.net to input.net", "set order.qty to order.qty + extra"),
+        # A bare (input) ref can carry Money where lowering could not see it.
+        doc = compile_doc(_with_bare_inputs(MONEY_RUNTIME.replace(
+            "set order.net to input.net", "set order.qty to order.qty + extra")),
             "money")
         [wf] = [n for n in doc["nodes"] if n.get("name") == "Carry"]
         key = row_key("entity.order", {"id": PRODUCT_ID})
@@ -738,10 +758,10 @@ class TestMoneyRuntime(unittest.TestCase):
         self.assertEqual(1, interp.repo.rows["entity.order"][key]["qty"])
 
     def _run_bare(self, expression, payload):
-        """`set order.qty to <expression>` over undeclared (payload) refs —
+        """`set order.qty to <expression>` over bare (payload) refs —
         lowering cannot see their shapes, so the refusal is the runtime's."""
-        doc = compile_doc(MONEY_RUNTIME.replace(
-            "set order.net to input.net", "set order.qty to " + expression),
+        doc = compile_doc(_with_bare_inputs(MONEY_RUNTIME.replace(
+            "set order.net to input.net", "set order.qty to " + expression)),
             "money")
         [wf] = [n for n in doc["nodes"] if n.get("name") == "Carry"]
         key = row_key("entity.order", {"id": PRODUCT_ID})

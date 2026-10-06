@@ -25,7 +25,7 @@ from .drivers import (DriverError, PublishRejected, TokenError,
                       _http_capabilities, _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
-from .lexer import LexError
+from .lexer import LexError, RESERVED
 from .lower import LowerError, load_sources, lower
 from .migrate import MigrateError, run_migration
 from .parser import ParseError
@@ -326,10 +326,15 @@ def _dry_run_plan(doc, workflow_id):
         if kind == "WorkflowStep":
             return {"kind": "step", "name": node["name"], "line": node.get("line")}
         if kind == "Guard":
-            return {"kind": "guard", "mode": node["mode"],
-                    "condition": node.get("condition"), "count": node.get("count"),
-                    "line": node.get("line"),
-                    "children": [_walk(node["children"][0])]}
+            entry = {"kind": "guard", "mode": node["mode"],
+                     "condition": node.get("condition"), "count": node.get("count"),
+                     "line": node.get("line"),
+                     "children": [_walk(node["children"][0])]}
+            # RFC-0060: the `otherwise` item, keyed apart from `children` so a
+            # reader never mistakes it for a second guarded item.
+            if len(node["children"]) > 1:
+                entry["otherwise"] = _walk(node["children"][1])
+            return entry
         if kind == "Concurrency":
             return {"kind": "parallel",
                     "children": [_walk(c) for c in node["children"]]}
@@ -371,6 +376,9 @@ def _print_dry_run_plan_node(node, indent):
             print("%sguard %s %s" % (prefix, node["mode"], node["condition"] or ""))
         for child in node["children"]:
             _print_dry_run_plan_node(child, indent + 1)
+        if "otherwise" in node:
+            print("%sotherwise" % prefix)
+            _print_dry_run_plan_node(node["otherwise"], indent + 1)
     elif node["kind"] == "parallel":
         print("%sparallel" % prefix)
         for child in node["children"]:
@@ -502,9 +510,16 @@ def _print_human(result, interp, log_level="warn"):
     for record in skipped:
         # The guard's own text, so the reader learns WHY the step did not run
         # rather than only that something did not.
-        print("  skipped by `%s %s`: %s"
-              % (record["mode"], record["condition"] or "",
-                 ", ".join(record["steps"]) or "(no step)"))
+        if record["mode"] == "otherwise":
+            # RFC-0060: `condition` is the guard that HELD — not a condition
+            # of the `otherwise` itself.
+            print("  skipped by `otherwise` (`when %s` held): %s"
+                  % (record["condition"],
+                     ", ".join(record["steps"]) or "(no step)"))
+        else:
+            print("  skipped by `%s %s`: %s"
+                  % (record["mode"], record["condition"] or "",
+                     ", ".join(record["steps"]) or "(no step)"))
         for e in record.get("evaluations") or []:
             # Issue #83: the same evaluations[] the JSON trace carries (already
             # masked), printed for a reader who never asked for --json. No new
@@ -1028,7 +1043,7 @@ def _relay_drain_once(repository, event_names, source, target):
 
 def _relay_drain_once_via_publisher(repository, event_names, source, publisher):
     """One outbox drain -> publish -> ack cycle through a registered
-    `EventPublisher` (issue #191, RFC-0053) -- the non-http(s) sibling
+    `EventPublisher` (issue #191, RFC-0061) -- the non-http(s) sibling
     of `_relay_drain_once`: same envelope shape, same `seq`-ascending
     drain order, same "ack only after confirmed success or a
     confirmed permanent rejection" discipline (RFC-0040 §7 mirrored
@@ -1075,7 +1090,7 @@ def cmd_relay(args):
     CloudEvents needs and the outbox row does not itself carry.
 
     '--target' may also name a registered 'lnpl.publishers' scheme
-    (RFC-0053) -- http(s) stays byte-identical.
+    (RFC-0061) -- http(s) stays byte-identical.
     """
     doc, _, module_name, diagnostics = _compile(args.source)
     _emit_diagnostics(diagnostics)
@@ -1473,8 +1488,19 @@ def _token_provider(secret_env, issuer=None, provider_name=None):
         return _REJECTED
 
 
+def _is_valid_role(role):
+    """Exactly the character set `security role <r>` accepts at parse
+    time (`lexer.tokenize` + `lower._parse_security_line`): non-empty,
+    no whitespace, no '#', not a RESERVED word. No Unicode-category
+    exclusion, no length cap — mirrors the grammar exactly."""
+    if not role or any(ch.isspace() for ch in role) or "#" in role:
+        return False
+    return role not in RESERVED
+
+
 def cmd_token(args):
-    """Issue a bearer token for one served path (issue #25).
+    """Issue a bearer token for one served path (issue #25, extended by
+    issue #202's `--role`).
 
     The audience is derived from the path rather than configured, so the token
     this prints and the check `lnpl serve` runs read the same function and
@@ -1488,15 +1514,37 @@ def cmd_token(args):
         print("error: --path %r is not served (valid: %s)"
               % (args.path, ", ".join(sorted(routes))), file=sys.stderr)
         return 2
+    role = args.role
+    if role is not None and not _is_valid_role(role):
+        print("error: --role %r is not a value `security role <r>` can "
+              "parse (no whitespace, no '#', not a reserved word: if, "
+              "for, while, switch)" % role, file=sys.stderr)
+        return 2
     provider = _token_provider(args.secret_env, getattr(args, "jwt_issuer", None))
     if provider is _REJECTED:
         return 2
     try:
         ttl_ms = _duration_ms(args.ttl)
-        print(provider.issue(args.subject, audience_for_path(args.path), ttl_ms))
+        token = provider.issue(args.subject, audience_for_path(args.path),
+                               ttl_ms, role=role)
     except (TokenError, ValueError) as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2
+    route = routes[args.path]
+    required_role = route.get("role")
+    role_enforced = bool(route.get("auth")) and bool(required_role)
+    if role_enforced:
+        if role is None:
+            print("warning: the service at %r requires role %r; this "
+                  "token carries no role, so the request will be "
+                  "refused with 403" % (args.path, required_role),
+                  file=sys.stderr)
+        elif role != required_role:
+            print("warning: the service at %r requires role %r; this "
+                  "token carries role %r, so the request will be "
+                  "refused with 403" % (args.path, required_role, role),
+                  file=sys.stderr)
+    print(token)
     return 0
 
 
@@ -1969,6 +2017,15 @@ def _build_parser(subparsers_out=None):
                          "--jwt-issuer` value under test.")
     tk.add_argument("--ttl", default="15m",
                     help="access-token lifetime (default: 15m)")
+    tk.add_argument("--role", default=None, metavar="ROLE",
+                    help="the `role` claim to mint (issue #202). Self-asserted, "
+                         "built-in `hmac` provider only — not a production "
+                         "identity check. Omitted, the claim set is byte-"
+                         "identical to before this flag existed. If `--path`'s "
+                         "service declares `security role <r>` and this is "
+                         "absent or different, a warning is printed to stderr "
+                         "(the token is still minted — the 403 path must stay "
+                         "testable)")
     tk.set_defaults(func=cmd_token)
 
     ob = sub.add_parser("outbox",

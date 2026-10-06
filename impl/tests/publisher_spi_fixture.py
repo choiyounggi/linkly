@@ -1,5 +1,5 @@
 """A minimal `EventPublisher` used only to prove the `lnpl.publishers`
-entry-points discovery path works end-to-end (issue #191, RFC-0053) —
+entry-points discovery path works end-to-end (issue #191, RFC-0061) —
 registration wiring, not broker correctness. `cache_spi_fixture.py` is the
 `lnpl.caches` precedent this mirrors.
 

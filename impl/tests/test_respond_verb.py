@@ -22,6 +22,7 @@ import glob
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -228,6 +229,241 @@ class TestRespondBoundaries(unittest.TestCase):
         # "list them all" does not create an exception to the masking rule.
         with self.assertRaises(LowerError):
             compile_doc(src)
+
+
+GUARD_SKIP_RESPOND_SRC = """entity Product
+    field
+        id UUID
+        stock Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+
+service ShopService
+
+workflow PlaceOrder
+    find product
+    when product.stock >= input.quantity
+    create order as o
+    respond o.id
+"""
+
+FIELD_MISSING = "respond-field-missing"
+
+
+class TestRespondOmitsAGuardSkippedBinding(ServerTestCase):
+    """Issue #198: `o` was never created because its guard was false — the
+    run still completes, `skipped` explains it, `response` omits `o`
+    entirely. No traceback on the interpreter, the CLI or serve."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(
+            prefix="lnpl-respond-skip-", dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
+        self.src_path = os.path.join(self.workdir, "placeorder.lnpl")
+        with open(self.src_path, "w", encoding="utf-8") as fh:
+            fh.write(GUARD_SKIP_RESPOND_SRC)
+
+    def _payload_path(self, payload):
+        path = os.path.join(self.workdir, "payload.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        return path
+
+    def _interp(self, stock, quantity):
+        doc = compile_doc(GUARD_SKIP_RESPOND_SRC)
+        payload = {"id": RUN_ID, "stock": stock, "quantity": quantity}
+        rows = {"entity.product": {row_key("entity.product", payload):
+                                   {"id": RUN_ID, "stock": stock}}}
+        return Interpreter(doc, repo_rows=rows), payload
+
+    def test_run_completes_with_no_o_in_response(self):
+        interp, payload = self._interp(stock=1, quantity=5)
+        result = interp.run_workflow("wf.place.order", payload)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(["create order as o"], result["skipped"][0]["steps"])
+        self.assertEqual({}, result["response"])
+        # D1: `skipped[]` already explains it — no second diagnostic.
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
+
+    def test_the_guard_holding_still_responds_with_o(self):
+        # The control for the test above: same source, the guard holds, so
+        # the omission is the guard's doing and not a blanket drop of `o`.
+        interp, payload = self._interp(stock=5, quantity=1)
+        result = interp.run_workflow("wf.place.order", payload)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(["id"], list(result["response"]["o"]))
+
+    def test_cli_run_exits_zero_without_a_traceback(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["run", self.src_path, "--payload",
+                           self._payload_path(
+                               {"id": RUN_ID, "stock": 1, "quantity": 5}),
+                           "--json"])
+        self.assertEqual(0, rc)
+        result = json.loads(out.getvalue())["result"]
+        self.assertEqual("completed", result["status"])
+        self.assertTrue(result["skipped"])
+        self.assertNotIn("o", result["response"])
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_serve_200_with_no_o_in_response(self):
+        port = self.start(compile_doc(GUARD_SKIP_RESPOND_SRC))
+        resp, body = self.post_json(
+            port, "/shop-service/place-order",
+            {"id": RUN_ID, "stock": 1, "quantity": 5})
+        self.assertEqual(200, resp.status)
+        self.assertEqual("completed", body["status"])
+        self.assertTrue(body["skipped"])
+        self.assertNotIn("o", body["response"])
+
+
+class TestRespondOmitsAMissingField(ServerTestCase):
+    """Issue #198: the bound row exists but lacks a field `respond` names —
+    the ref is omitted and exactly one `respond-field-missing` names it."""
+
+    def setUp(self):
+        self.workdir = tempfile.mkdtemp(
+            prefix="lnpl-respond-field-", dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
+
+    def _run(self, source, row):
+        doc = compile_doc(source)
+        payload = {"id": RUN_ID}
+        rows = {"entity.order": {row_key("entity.order", payload): row}}
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, interp.run_workflow("wf.show.order", payload)
+
+    def test_an_absent_field_is_omitted_with_one_warning(self):
+        interp, result = self._run(
+            RESPOND_SRC, {"id": RUN_ID, "total": 100, "secret": "s"})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual({"order": {"id": RUN_ID, "total": 100}},
+                         result["response"])
+        found = interp.diagnostics.by_code(FIELD_MISSING)
+        self.assertEqual(["order.status"], [d.subject for d in found])
+        self.assertEqual("warning", found[0].severity)
+        self.assertEqual("ShowOrder", found[0].where)
+        self.assertIn("respond order.status", found[0].message)
+
+    def test_each_absent_field_gets_its_own_warning(self):
+        interp, result = self._run(RESPOND_SRC, {"id": RUN_ID, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID}}, result["response"])
+        self.assertEqual(
+            ["order.status", "order.total"],
+            [d.subject for d in interp.diagnostics.by_code(FIELD_MISSING)])
+
+    def test_a_ref_repeated_in_respond_is_reported_once(self):
+        src = RESPOND_SRC.replace(RESPOND_STEP,
+                                  "respond order.status order.status")
+        interp, result = self._run(src, {"id": RUN_ID, "total": 100})
+        self.assertEqual({}, result["response"])
+        self.assertEqual(
+            ["order.status"],
+            [d.subject for d in interp.diagnostics.by_code(FIELD_MISSING)])
+
+    def test_a_present_null_field_is_kept_and_not_reported(self):
+        # Boundary: a stored `null` is a value, not an absence.
+        interp, result = self._run(
+            RESPOND_SRC,
+            {"id": RUN_ID, "status": None, "total": 0, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID, "status": None, "total": 0}},
+                         result["response"])
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
+
+    def test_cli_run_exits_zero_and_strict_warning_gates_it(self):
+        src_path = os.path.join(self.workdir, "respond.lnpl")
+        with open(src_path, "w", encoding="utf-8") as fh:
+            fh.write(RESPOND_SRC)
+        payload_path = os.path.join(self.workdir, "payload.json")
+        with open(payload_path, "w", encoding="utf-8") as fh:
+            json.dump({"id": RUN_ID, "status": "new"}, fh)   # no `total`
+        argv = ["run", src_path, "--payload", payload_path, "--json"]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(argv)
+        self.assertEqual(0, rc)
+        result = json.loads(out.getvalue())["result"]
+        self.assertEqual({"order": {"id": RUN_ID, "status": "new"}},
+                         result["response"])
+        self.assertNotIn("Traceback", err.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(2, cli.main(argv + ["--strict=warning"]))
+
+    def test_serve_200_omits_the_absent_field(self):
+        port = self.start(compile_doc(RESPOND_SRC))
+        resp, body = self.post_json(port, "/orders/show-order",
+                                    {"id": RUN_ID, "status": "new"})
+        self.assertEqual(200, resp.status)
+        self.assertEqual({"order": {"id": RUN_ID, "status": "new"}},
+                         body["response"])
+
+
+OPTIONAL_RESPOND_SRC = RESPOND_SRC.replace("status Text", "status Text optional")
+
+CREATE_AS_OPTIONAL_SRC = OPTIONAL_RESPOND_SRC.replace(
+    "    find order\n    " + RESPOND_STEP,
+    "    create order as newOrder\n"
+    "    respond newOrder.id newOrder.status newOrder.total")
+
+
+class TestRespondOmitsAnOptionalField(unittest.TestCase):
+    """RFC-0053: an absent or null `optional` field is simply omitted from
+    the response — it is the declared shape, so no `respond-field-missing`."""
+
+    def _run(self, source, row):
+        doc = compile_doc(source)
+        payload = {"id": RUN_ID}
+        rows = {"entity.order": {row_key("entity.order", payload): row}}
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, interp.run_workflow("wf.show.order", payload)
+
+    def test_respond_omits_absent_optional_field_no_diagnostic(self):
+        interp, result = self._run(OPTIONAL_RESPOND_SRC,
+                                   {"id": RUN_ID, "total": 100, "secret": "s"})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual({"order": {"id": RUN_ID, "total": 100}},
+                         result["response"])
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
+
+    def test_respond_omits_null_optional_field_no_diagnostic(self):
+        interp, result = self._run(
+            OPTIONAL_RESPOND_SRC,
+            {"id": RUN_ID, "status": None, "total": 100, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID, "total": 100}},
+                         result["response"])
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
+
+    def test_respond_keeps_a_present_optional_field(self):
+        _interp, result = self._run(
+            OPTIONAL_RESPOND_SRC,
+            {"id": RUN_ID, "status": "new", "total": 100, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID, "status": "new", "total": 100}},
+                         result["response"])
+
+    def test_respond_absent_non_optional_field_still_warns(self):
+        # Regression: `total` is required, so its absence is still reported.
+        interp, result = self._run(OPTIONAL_RESPOND_SRC,
+                                   {"id": RUN_ID, "secret": "s"})
+        self.assertEqual({"order": {"id": RUN_ID}}, result["response"])
+        self.assertEqual(["order.total"],
+                         [d.subject for d in interp.diagnostics.by_code(FIELD_MISSING)])
+
+    def test_respond_omits_an_optional_field_of_a_create_as_alias(self):
+        # The alias is not an entity's default binding name, so the entity is
+        # found through the created row's own `entity_id`.
+        doc = compile_doc(CREATE_AS_OPTIONAL_SRC)
+        interp = Interpreter(doc, repo_rows={})
+        result = interp.run_workflow("wf.show.order", {"id": RUN_ID, "total": 7})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual({"newOrder": {"id": RUN_ID, "total": 7}},
+                         result["response"])
+        self.assertEqual([], interp.diagnostics.by_code(FIELD_MISSING))
 
 
 class TestRespondOpenApi(unittest.TestCase):

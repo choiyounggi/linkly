@@ -32,11 +32,12 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | invalidate | CacheAccess | operation `invalidate` |
 | call | NetworkCall | 대상이 없으면 `unspecified` |
 | request | NetworkCall | 대상이 없으면 `unspecified` |
-| emit | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 — 목적어 뒤에 `with <ref> <ref>...`를 더하면(issue #178, RFC-0049) 그 참조들로 발행 payload를 구성한다(`payloadMap`, 저자 순서 그대로): 참조는 `create ... as`/read 바인딩의 non-`derived` 필드, `input.<field>`, `call ... as <name>` 네트워크 결과 바인딩(선언된 형태가 없어 무검사로 허용) 셋 중 하나여야 한다 — 그 외에는 컴파일 에러다: 맨 이름, `derived` 필드(RFC-0030 §3 — 서버 계산 전용, `create` payload로 시드되지 않는다), Password 계열 필드(마스킹 chokepoint #43 우회 차단, respond와 같은 규칙), 같은 매핑 필드명을 두 번 쓰는 것, `with <ref>...`가 아닌 나머지 trailing 단어(이전에는 조용히 버려졌다 — 지금은 컴파일 에러). `with` 없는 `emit`은 이 RFC 이전과 바이트 동일 |
-| publish | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 — 목적어 뒤에 `with <ref> <ref>...`를 더하면(issue #178, RFC-0049) 그 참조들로 발행 payload를 구성한다(`payloadMap`, 저자 순서 그대로): 참조는 `create ... as`/read 바인딩의 non-`derived` 필드, `input.<field>`, `call ... as <name>` 네트워크 결과 바인딩(선언된 형태가 없어 무검사로 허용) 셋 중 하나여야 한다 — 그 외에는 컴파일 에러다: 맨 이름, `derived` 필드(RFC-0030 §3 — 서버 계산 전용, `create` payload로 시드되지 않는다), Password 계열 필드(마스킹 chokepoint #43 우회 차단, respond와 같은 규칙), 같은 매핑 필드명을 두 번 쓰는 것, `with <ref>...`가 아닌 나머지 trailing 단어(이전에는 조용히 버려졌다 — 지금은 컴파일 에러). `with` 없는 `publish`는 이 RFC 이전과 바이트 동일 |
+| emit | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 — 목적어 뒤에 `with <ref> <ref>...`를 더하면(issue #178, RFC-0049) 그 참조들로 발행 payload를 구성한다(`payloadMap`, 저자 순서 그대로): 참조는 `create ... as`/read 바인딩의 선언된 필드(`derived` 필드는 앞선 `set`/`format`이 채웠을 때만), `input.<field>`, `call ... as <name>` 네트워크 결과 바인딩(선언된 형태가 없어 무검사로 허용) 셋 중 하나여야 한다 — 그 외에는 컴파일 에러다: 맨 이름, `derived` 필드인데 같은 바인딩·필드를 채우는 `set`/`format`이 같은 가드 스코프에서 이 `emit`보다 앞에 없는 경우(RFC-0030 §3 — 서버 계산 전용, `create` payload로 시드되지 않는다; 앞서 채웠으면 허용된다, issue #204), Password 계열 필드(마스킹 chokepoint #43 우회 차단, respond와 같은 규칙), 같은 매핑 필드명을 두 번 쓰는 것, `with <ref>...`가 아닌 나머지 trailing 단어(이전에는 조용히 버려졌다 — 지금은 컴파일 에러). `with` 없는 `emit`은 이 RFC 이전과 바이트 동일 |
+| publish | EventEmit | 발행할 이벤트를 목적어로 요구한다. 없으면 컴파일 에러 — 목적어 뒤에 `with <ref> <ref>...`를 더하면(issue #178, RFC-0049) 그 참조들로 발행 payload를 구성한다(`payloadMap`, 저자 순서 그대로): 참조는 `create ... as`/read 바인딩의 선언된 필드(`derived` 필드는 앞선 `set`/`format`이 채웠을 때만), `input.<field>`, `call ... as <name>` 네트워크 결과 바인딩(선언된 형태가 없어 무검사로 허용) 셋 중 하나여야 한다 — 그 외에는 컴파일 에러다: 맨 이름, `derived` 필드인데 같은 바인딩·필드를 채우는 `set`/`format`이 같은 가드 스코프에서 이 `emit`보다 앞에 없는 경우(RFC-0030 §3 — 서버 계산 전용, `create` payload로 시드되지 않는다; 앞서 채웠으면 허용된다, issue #204), Password 계열 필드(마스킹 chokepoint #43 우회 차단, respond와 같은 규칙), 같은 매핑 필드명을 두 번 쓰는 것, `with <ref>...`가 아닌 나머지 trailing 단어(이전에는 조용히 버려졌다 — 지금은 컴파일 에러). `with` 없는 `publish`는 이 RFC 이전과 바이트 동일 |
 | authorize | Authorization | requirement를 **기록만** 한다 — §B의 `security` 항목과 같은 간극 |
-| respond | Response | 목적어가 엔티티명이 아니라 `<binding>.<field>` Reference 목록이다(`respond order.id order.status`). 다른 Effect와 달리 상태를 바꾸지 않는다 — 워크플로가 성공적으로 끝난 시점에 바인딩값을 읽어 `response` 절로 조립할 뿐이다. Password 계열 참조는 컴파일 에러 — 마스킹 chokepoint(#43)를 respond로 우회하는 경로를 막는다. OpenAPI 200 스키마가 이 목록에서 유도된다 — issue #96 |
+| respond | Response | 목적어가 엔티티명이 아니라 `<binding>.<field>` Reference 목록이다(`respond order.id order.status`). 다른 Effect와 달리 상태를 바꾸지 않는다 — 워크플로가 성공적으로 끝난 시점에 바인딩값을 읽어 `response` 절로 조립할 뿐이다. Password 계열 참조는 컴파일 에러 — 마스킹 chokepoint(#43)를 respond로 우회하는 경로를 막는다. OpenAPI 200 스키마가 이 목록에서 유도된다 — issue #96. RFC-0059: 이름 붙인 집계 항 `<name> as <func> <ref>`(`sum`/`count`/`avg`/`min`/`max` 5종만, `respond orderCount as count order`)를 같은 줄에 섞어 쓸 수 있다 — `set`과 같은 집계 타입 규칙과 `aggregation-orphaned-list` 경고를 받고, 응답의 평면 키로 실린다. 목록 항 `respond list <binding>`은 그 줄에 혼자 쓰며 RowSet을 `{items, next}` 봉투로 싣는다(`next`는 항상 null) — 그 RowSet을 채우는 `list ... where`에 `limit`이 없으면 컴파일 에러다. 두 항 모두 행을 쓰지 않는다. 모드 B는 두 항을 거부한다(`build`·`diff` 같은 순서, `fail` 다음) |
 | note | Annotation | 목적어가 엔티티명이 아니라 `"<template>" [with <ref>...]`다(`note "picked-tier-{}" with customer.tier`) — `format`의 저장 표현식 파서(`condition._parse_format_rhs`)를 그대로 재사용한다. respond와 같은 이유로 Effect가 아니다: 상태를 바꾸지 않고 현재 span에 구조화 어노테이션 하나를 남길 뿐이다. 참조는 컴파일 타임에 검증하지 않는다 — 미바인딩 참조는 실행 실패가 아니라 값 `null`(관측이 실행을 죽이면 안 된다), Password 계열 값은 `mask_payload` chokepoint(#43)로 마스킹된 채로만 실린다. 워크플로당 16개 초과 시 `note-cap-exceeded` 경고 — issue #111 |
+| fail | Rejection | 목적어가 엔티티명이 아니라 kebab-case 코드 하나다(`fail out-of-stock`). 도달하면 실행이 `failed`로 끝나고 `failure_kind = "rejected"`, `failure_reason` = 그 코드, 앞선 쓰기는 RFC-0032 경계가 롤백한다. `when`/`until` 가드가 소유하지 않는 `fail`(`repeat N` 아래 포함 — 본문이 언제나 실행된다), kebab-case가 아닌 코드, 코드 누락, 코드 뒤 낱말, 서버가 이미 쓰는 problem `code`(`not-found` 등)와 같은 코드는 전부 컴파일 에러다. 재시도하지 않는다. serve는 422 + `code` = 그 코드, `consume by`는 E7(422 `event-rejected`), mode B는 거부 — RFC-0056, issue #206 |
 
 ### 사전 밖 동사
 
@@ -156,6 +157,9 @@ capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
 | note-cap-exceeded | warning | 워크플로 하나에 `note`가 16개를 초과할 때 — "필요한 로그만"을 어휘 차원에서 지킨다 (issue #111) | 컴파일 타임 — lowering |
 | event-consume-cycle | warning | `event <E> consume by <W>`가 선언돼 있고, `W`(그 자식 워크플로 포함)가 결국 `E`를 다시 `emit`/`publish`할 때 — 런타임 무한 재디스패치의 정적 신호. 가드가 실제로는 그 경로를 막을 수 있어 에러가 아니라 경고다 (issue #118) | 컴파일 타임 — lowering, 모든 워크플로를 다 내린 뒤 |
 | predicate-not-pushed-down | info | `list where`/`order by`/`limit`이 있는 `list <Entity>`가 `supports_predicate`를 선언하지 않은 드라이버로 실행돼, 코어가 전체 행을 fetch한 뒤 로컬에서 필터/정렬/자르기를 했을 때 (issue #164) | 런타임 — 인터프리터 |
+| respond-field-missing | warning | `respond`가 가리키는 바인딩은 있는데, 그 바인딩이 가리키는 필드가 저장된 행에 없을 때 — 그 참조는 응답에서 빠지고 진단이 하나 남는다 (issue #198) | 런타임 — 인터프리터 |
+| guard-scoped-binding-escape | warning | 가드(또는 가드된 `parallel`/`pipeline` 블록) 안의 `create ... as`/`call ... as`/`request ... as`가 만든 바인딩을, 그 가드 스코프 밖의 `respond`/`set`/`format`/`emit ... with`가 읽을 때 (issue #198) | 컴파일 타임 — lowering |
+| optional-field-unguarded-arithmetic | warning | `set`/가드 산술이 `optional` 필드를 읽는데, 그 필드의 존재(`exists`)를 확인하는 가드가 이 스텝을 소유하지 않을 때 (RFC-0053) | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -169,7 +173,11 @@ capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
 사라진다 — 이슈 #112) · `retry-on-non-idempotent`(`retry`를 떼거나 멱등
 메서드로 바꾸면 사라진다 — 이슈 #109) · `note-cap-exceeded`(`note`를 16개
 이하로 줄이면 사라진다 — 이슈 #111) · `event-consume-cycle`(`consume by`를
-떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118)),
+떼거나 그 워크플로의 `emit`을 떼면 사라진다 — 이슈 #118) ·
+`respond-field-missing`(저장된 행에 누락된 필드를 채우면 사라진다 — 이슈 #198,
+RFC-0021 질문의 데이터판) · `guard-scoped-binding-escape`(리더를 가드 스코프
+안으로 옮기거나 가드 줄을 반복하면 사라진다 — 이슈 #198) ·
+`optional-field-unguarded-arithmetic`(가드 안으로 옮기면 사라진다 — RFC-0053)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

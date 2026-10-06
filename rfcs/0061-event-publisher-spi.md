@@ -1,4 +1,4 @@
-# RFC-0053: 이벤트 발행 SPI — `lnpl.publishers`, `EventPublisher` 계약, 레퍼런스 릴레이 스킴 디스패치
+# RFC-0061: 이벤트 발행 SPI — `lnpl.publishers`, `EventPublisher` 계약, 레퍼런스 릴레이 스킴 디스패치
 
 ## Status
 
@@ -9,8 +9,10 @@ RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 4에 
 최종 텍스트**를 §8에 싣는다. RFC-0040은 이 RFC 외에 어떤 갱신도 받은 적이 없어
 직전 갱신 RFC를 함께 지목할 필요가 없다.
 
-번호가 0053인 이유: 0052까지 점유됐다(RFC-0052, 조회 키 절). RFC-0007 §3은 번호
-재사용을 금지한다.
+번호가 0061인 이유: 이 RFC는 원래 0053으로 등록됐으나(issue #191), 같은 번호를 쓴
+origin/main의 PR #217이 0053부터 0060까지 먼저 병합되어 겹쳤다. RFC-0007 §3은
+신규 RFC에 고유한 순차 번호를 부여하므로, 겹친 자리를 재사용하지 않고 0061로
+재번호했다.
 
 ## Motivation
 
@@ -172,7 +174,7 @@ structured 모드만 쓰고 RFC-0040 §5의 봉투 검증을 그대로 재사용
 > 브로커에서 읽어 그 엔드포인트를 찌르는 것은 릴레이의 몫이다.
 > 발행 쪽에서는 코어가 어느 발행 드라이버를 쓸지 고르는 레지스트리 지점
 > (`lnpl.publishers`)도 소유한다 — 실제 브로커 드라이버는 여전히 외부의 몫이다
-> (RFC-0053).
+> (RFC-0061).
 
 #### 8.2 §Reference-level Specification/7. 오류 분류 — 3갈래 (D7)
 
@@ -205,7 +207,7 @@ effect를 갖지만(생성 충돌도 결국 그 effect다), D7이 명시적으�
 
 (추가) 위 표와 규칙은 **소비 쪽** 분류다. 발행 쪽의 대칭 계약 —
 `PublishRejected` -> ack + dead-letter, 그 외 `DriverError` -> 미ack — 은
-RFC-0053 §4가 정의한다.
+RFC-0061 §4가 정의한다.
 
 #### 8.3 §Reference-level Specification/8. 레퍼런스 릴레이 — `lnpl relay` (D8)
 
@@ -223,7 +225,7 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url|scheme://...> 
 2. 각 emission을 CloudEvents 봉투로: `id="outbox-<seq>"`(안정값 — 같은
    행은 항상 같은 멱등성 키), `source`=모듈명, `type`=이벤트 선언 이름,
    `data`=emission의 payload.
-3. `<target>`이 `http(s)://`이면 그대로 POST한다(바이트 동일); 그 외 스킴이면 RFC-0053 §2/§3이 정의한 `open_publisher`/스킴 디스패치로 발행한다.
+3. `<target>`이 `http(s)://`이면 그대로 POST한다(바이트 동일); 그 외 스킴이면 RFC-0061 §2/§3이 정의한 `open_publisher`/스킴 디스패치로 발행한다.
 4. 응답별 ack 결정: 200 → ack. 422 → ack + stderr에 dead-letter 경고 한
    줄(재시도해도 같은 결과이므로). 503 또는 응답 없음(연결 실패) → ack 안
    함, 다음 드레인이 재시도(at-least-once, 성공 후에만 커밋하는
@@ -238,7 +240,7 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url|scheme://...> 
 브로커 의존 없음. `lnpl-relay-kafka` 같은 실바인딩은 이 RFC의 범위 밖 —
 드라이버 SPI(#75/#132)와 같은 판단.
 
-(추가) 등록된 발행 드라이버 경로의 ack 결정은 RFC-0053 §4다.
+(추가) 등록된 발행 드라이버 경로의 ack 결정은 RFC-0061 §4다.
 
 #### 8.4 §Reference-level Specification/9. 문서 — `subscribe` vs `consume by` (D9)
 
@@ -261,7 +263,7 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url|scheme://...> 
 
 | # | 검토한 대안 | 기각 사유 |
 |---|------------|----------|
-| 5 | **`lnpl relay`에 `--interval`/`--concurrency` 등 운영 튜닝 플래그** | 이슈가 요구한 것은 `--once` 하나뿐이다. 레퍼런스 구현이 프로덕션 운영 도구로 확장되기 시작하면 범위가 무한정 넓어진다 — 실제 운영 규모의 릴레이는 애초에 별도 패키지(§8, `lnpl-relay-kafka`류)의 몫이다. 스킴 디스패치는 운영 튜닝 플래그가 아니라 레지스트리 지점이므로 이 기각을 다시 열지 않는다(RFC-0053) |
+| 5 | **`lnpl relay`에 `--interval`/`--concurrency` 등 운영 튜닝 플래그** | 이슈가 요구한 것은 `--once` 하나뿐이다. 레퍼런스 구현이 프로덕션 운영 도구로 확장되기 시작하면 범위가 무한정 넓어진다 — 실제 운영 규모의 릴레이는 애초에 별도 패키지(§8, `lnpl-relay-kafka`류)의 몫이다. 스킴 디스패치는 운영 튜닝 플래그가 아니라 레지스트리 지점이므로 이 기각을 다시 열지 않는다(RFC-0061) |
 
 ## Examples
 

@@ -23,7 +23,7 @@ import unittest
 from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.lower import lower
 from lnpl.parser import parse
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 from tests.fixtures import VALUE_INVENTORY
 
@@ -69,9 +69,23 @@ class ProcessBoundaryTest(unittest.TestCase):
         return next(n["id"] for n in doc["nodes"]
                     if n["kind"] == "Entity" and n["name"] == "Product")
 
+    def _seed_product(self, db=None):
+        """Store the Product row the run reads. A persistent store is not
+        seeded from the request payload (issue #197), so the row is put there
+        the way an operator would have: before the run, through the driver."""
+        doc = lower(parse(VALUE_INVENTORY), "inventory").to_document()
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        payload = {"id": "p-1", "stock": INITIAL_STOCK, "quantity": QUANTITY}
+        driver = SqliteRepositoryDriver(db or self.db)
+        try:
+            driver.seed(default_rows(doc, target, payload))
+        finally:
+            driver.close()
+
     # -- the evidence ------------------------------------------------------
 
     def test_a_first_process_completes_and_deducts_the_stock(self):
+        self._seed_product()
         proc = self.lnpl("--backend", "sqlite:" + self.db)
 
         self.assertEqual(0, proc.returncode, proc.stderr)
@@ -80,9 +94,10 @@ class ProcessBoundaryTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.db))
 
     def test_a_second_process_meets_the_first_processs_write(self):
-        """The whole point. `Order` is created, never read, so the seed rule
-        leaves it empty — and the only way the second process can conflict on
-        it is if the first process's create outlived the first process."""
+        """The whole point. `Order` is created, never read, and nothing here
+        stores one — so the only way the second process can conflict on it is
+        if the first process's create outlived the first process."""
+        self._seed_product()
         first = self.lnpl("--backend", "sqlite:" + self.db)
         self.assertEqual(0, first.returncode, first.stderr)
 
@@ -105,6 +120,7 @@ class ProcessBoundaryTest(unittest.TestCase):
     def test_the_stored_row_carries_the_value_the_first_process_wrote(self):
         """Key survival and value survival are different facts. The conflict
         above proves a row exists; only this proves `set` reached the disk."""
+        self._seed_product()
         self.assertEqual(0, self.lnpl("--backend", "sqlite:" + self.db).returncode)
         entity_id = self.product_entity_id()
 
@@ -117,11 +133,13 @@ class ProcessBoundaryTest(unittest.TestCase):
 
     def test_a_fresh_store_runs_clean_again(self):
         """Separates "the store said no" from "the workflow is broken": the
-        same command against an empty file completes."""
+        same command against a store that holds no Order completes."""
+        self._seed_product()
         self.assertEqual(0, self.lnpl("--backend", "sqlite:" + self.db).returncode)
         self.assertEqual(1, self.lnpl("--backend", "sqlite:" + self.db).returncode)
 
         elsewhere = os.path.join(self.dir, "second-store.db")
+        self._seed_product(db=elsewhere)
 
         self.assertEqual(0, self.lnpl("--backend", "sqlite:" + elsewhere).returncode)
 
@@ -153,6 +171,7 @@ class ProcessBoundaryTest(unittest.TestCase):
     def test_the_run_leaves_nothing_outside_its_own_directory(self):
         """The store goes where it was told and nowhere else — no stray
         journal or scratch file in the repository."""
+        self._seed_product()
         before = set(os.listdir(REPO))
 
         self.assertEqual(0, self.lnpl("--backend", "sqlite:" + self.db).returncode)

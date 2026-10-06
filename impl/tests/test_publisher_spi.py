@@ -1,4 +1,4 @@
-"""`lnpl relay --target`'s publisher SPI (issue #191, RFC-0053): a scheme
+"""`lnpl relay --target`'s publisher SPI (issue #191, RFC-0061): a scheme
 other than the built-in `http`/`https` is looked up in the `lnpl.publishers`
 entry-points group — the same shape `test_cache_spi.py` proves for
 `lnpl.caches` (issue #131).

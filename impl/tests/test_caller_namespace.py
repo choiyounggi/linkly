@@ -135,8 +135,8 @@ class TokenAcceptedFalsyTrapTest(unittest.TestCase):
         self.assertTrue(captured["status"].startswith("401"))
 
     def test_normal_a_verified_token_with_no_extra_claims_is_not_read_as_rejected(self):
-        # `HmacTokenProvider.issue` mints only its own fixed claim set (no
-        # `role`) — the resulting claims dict is non-empty (iss/aud/sub/...)
+        # `HmacTokenProvider.issue` without `role=` mints only its fixed claim
+        # set (no `role`) — the resulting claims dict is non-empty (iss/aud/sub/...)
         # but carries nothing `caller_view` turns into a role. The point of
         # this case is the RETURN SHAPE, not the role value: success must
         # read as success regardless of what caller_view later does with it.
@@ -209,8 +209,8 @@ class GuardReadsCallerTest(unittest.TestCase):
                          body=b'{"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "approvals": 0}', headers=headers)
 
     def test_normal_a_token_carrying_role_lets_the_guarded_step_run(self):
-        # `issue()` mints only the fixed claim set — forge the role claim by
-        # hand the same way test_token_provider.py's own tests do, using the
+        # Forge the role claim by hand, independent of `issue(role=...)`
+        # (issue #202), the same way test_token_provider.py's own tests do, using the
         # provider's real signing key so verification genuinely succeeds.
         import base64, hmac, hashlib, time
         now = int(time.time())

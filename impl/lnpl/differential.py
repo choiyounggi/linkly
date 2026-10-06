@@ -390,13 +390,19 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     exemption (RFC-0051 §Mode B): mode B refuses to build it, so there is
     nothing to compare. A workflow whose repository call carries a `by <ref>`
     lookup key is the same kind of exemption (RFC-0052 §Mode B), and so is
-    one using the numeric-shape predicate (RFC-0050 §Mode B). These three
-    are checked in that order — Money, then lookup key, then numeric
-    predicate — matching `backend.build()`/`backend.emit_mlir()`'s own
-    order, so the two commands report the same first-refusal RFC for any
-    workflow exempted on more than one ground (issue #185). None of the
-    three depends on whether a toolchain happens to be installed, so all
-    three are checked before the toolchain-availability check below.
+    one whose guard reads an `optional` field (RFC-0053 §Mode B), one whose
+    guard compares a Text-family field (RFC-0054 §Mode B), one that creates
+    a fill-source entity (RFC-0055 §Mode B), one that reaches a `fail` step
+    (RFC-0056 §Mode B), one that answers a `respond` aggregate or list term
+    (RFC-0059 §Mode B), one whose guard reads a field an earlier step
+    assigns, one whose guard owns an `otherwise` item (RFC-0060 §Mode B)
+    and, last, one using the numeric-shape predicate (RFC-0050 §Mode B).
+    These are checked in that order — matching `backend.build()`'s own
+    order (`_refuse_unsupported_guards`, then `_refuse_numeric_predicate`),
+    so the two commands report the same first-refusal RFC for any workflow
+    exempted on more than one ground (issue #185). None of them depends on
+    whether a toolchain happens to be installed, so all are checked before
+    the toolchain-availability check below.
     """
     if backend.workflow_uses_money_guard(document, workflow_id):
         raise DifferentialError(
@@ -409,6 +415,49 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "mode B has no compiled evaluator for it (RFC-0052 §Mode B, "
             "recorded exemption); differential comparison is not attempted"
             % workflow_id)
+    if backend.workflow_uses_optional_guard(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses an `optional` field in a guard (Presence or "
+            "comparison) — mode B has no compiled evaluator for it "
+            "(RFC-0053 §Mode B, recorded exemption); differential "
+            "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_text_guard(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r compares a Text-family field in a guard — mode B "
+            "has no compiled evaluator for it (RFC-0054 §Mode B, recorded "
+            "exemption); differential comparison is not attempted"
+            % workflow_id)
+    if backend.workflow_uses_fill_source_create(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r creates a row of entity %s, which fills a `derived "
+            "generated`/`derived clock` field from the run — mode B has no "
+            "channel for it (RFC-0055 §Mode B, recorded exemption); "
+            "differential comparison is not attempted"
+            % (workflow_id,
+               backend._fill_source_create_offender(document, workflow_id)[1]))
+    if backend.workflow_uses_fail(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses `fail` — mode B has no compiled evaluator for "
+            "it (RFC-0056 §Mode B, recorded exemption); differential "
+            "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_respond_aggregate_or_list(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r answers a `respond` %s term — mode B has no "
+            "compiled evaluator for it (RFC-0059 §Mode B, recorded "
+            "exemption); differential comparison is not attempted"
+            % (workflow_id,
+               backend._respond_term_offender(document, workflow_id)[1]))
+    if backend.workflow_uses_assigned_guard_field(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r has a guard that reads a field an earlier step "
+            "assigns — mode B fixes condition fields at entry (RFC-0060 §Mode "
+            "B, recorded exemption); differential comparison is not attempted"
+            % workflow_id)
+    if backend.workflow_uses_otherwise(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses `otherwise` — mode B has no compiled branch for "
+            "it (RFC-0060 §Mode B, recorded exemption); differential "
+            "comparison is not attempted" % workflow_id)
     if backend.workflow_uses_numeric_predicate(document, workflow_id):
         raise DifferentialError(
             "workflow %r uses the numeric-shape predicate (is-numeric/"

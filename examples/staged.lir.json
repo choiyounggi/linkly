@@ -1,0 +1,204 @@
+{
+  "lir_version": "0.1",
+  "module": "staged",
+  "nodes": [
+    {
+      "kind": "Entity",
+      "id": "entity.product",
+      "name": "Product",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "name",
+          "type": "Text"
+        },
+        {
+          "name": "stock",
+          "type": "Integer"
+        },
+        {
+          "name": "price",
+          "type": "Money"
+        }
+      ],
+      "line": 29
+    },
+    {
+      "kind": "Entity",
+      "id": "entity.order",
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "type": "UUID"
+        },
+        {
+          "name": "quantity",
+          "type": "Integer"
+        },
+        {
+          "name": "total",
+          "type": "Money"
+        },
+        {
+          "name": "status",
+          "type": "Text"
+        },
+        {
+          "name": "placedAt",
+          "type": "DateTime"
+        }
+      ],
+      "line": 36
+    },
+    {
+      "kind": "Workflow",
+      "id": "wf.place.order",
+      "name": "PlaceOrder",
+      "children": [
+        "wf.place.order.step.1",
+        "wf.place.order.guard.1",
+        "wf.place.order.guard.2"
+      ],
+      "line": 44
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.1",
+      "name": "find product",
+      "children": [
+        "wf.place.order.step.1.repo"
+      ],
+      "line": 45
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.place.order.step.1.repo",
+      "entity": "entity.product",
+      "operation": "read",
+      "line": 45
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.2",
+      "name": "create order as o",
+      "children": [
+        "wf.place.order.step.2.repo"
+      ],
+      "line": 48
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.place.order.step.2.repo",
+      "entity": "entity.order",
+      "operation": "create",
+      "result": "o",
+      "line": 48
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.3",
+      "name": "call PaymentGateway as pay",
+      "children": [
+        "wf.place.order.step.3.net"
+      ],
+      "line": 49
+    },
+    {
+      "kind": "NetworkCall",
+      "id": "wf.place.order.step.3.net",
+      "target": "PaymentGateway",
+      "result": "pay",
+      "line": 49
+    },
+    {
+      "kind": "Pipeline",
+      "id": "wf.place.order.pipeline.1",
+      "name": "place",
+      "children": [
+        "wf.place.order.step.2",
+        "wf.place.order.step.3"
+      ],
+      "line": 47
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.place.order.guard.1",
+      "children": [
+        "wf.place.order.pipeline.1"
+      ],
+      "line": 46,
+      "mode": "when",
+      "condition": "product.stock >= input.quantity"
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.4",
+      "name": "format o.status from \"confirmed\"",
+      "children": [
+        "wf.place.order.step.4.assign"
+      ],
+      "line": 52
+    },
+    {
+      "kind": "Assignment",
+      "id": "wf.place.order.step.4.assign",
+      "target": "o.status",
+      "expression": "format \"confirmed\"",
+      "entity": "entity.order",
+      "line": 52
+    },
+    {
+      "kind": "WorkflowStep",
+      "id": "wf.place.order.step.5",
+      "name": "update order",
+      "children": [
+        "wf.place.order.step.5.repo"
+      ],
+      "line": 53
+    },
+    {
+      "kind": "RepositoryCall",
+      "id": "wf.place.order.step.5.repo",
+      "entity": "entity.order",
+      "operation": "update",
+      "line": 53
+    },
+    {
+      "kind": "Pipeline",
+      "id": "wf.place.order.pipeline.2",
+      "name": "confirm",
+      "children": [
+        "wf.place.order.step.4",
+        "wf.place.order.step.5"
+      ],
+      "line": 51
+    },
+    {
+      "kind": "Guard",
+      "id": "wf.place.order.guard.2",
+      "children": [
+        "wf.place.order.pipeline.2"
+      ],
+      "line": 50,
+      "mode": "when",
+      "condition": "pay.status == 200"
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.postgres",
+      "name": "postgres",
+      "line": 24
+    },
+    {
+      "kind": "Capability",
+      "id": "cap.payment.gateway",
+      "name": "PaymentGateway",
+      "line": 26,
+      "method": "post"
+    }
+  ]
+}

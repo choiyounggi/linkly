@@ -71,6 +71,10 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M6 | 실행 실패 ∧ `failure_reason`이 `deadline`으로 시작 | 504 | `deadline-exceeded` |
 | M7 | 실행 실패 ∧ 실패 스텝의 효과에 `Validation` 포함 | 400 | `validation-failed` |
 | M8a | 실행 실패 ∧ 저장소 create가 기존 키와 충돌(`failure_kind == "conflict"`, 이슈 #113) | 409 | `conflict` |
+| M8b | 실행 실패 ∧ 영속 백엔드에서 읽기 동사가 행을 못 찾음(`failure_kind == "not-found"`, 이슈 #197) | 404 | `not-found` |
+| M8c | 실행 실패 ∧ 낙관적 버전 쓰기 충돌(`failure_kind == "write-conflict"`, 이슈 #92/#201) — 다시 읽고 재시도하면 풀릴 수 있다 | 409 | `write-conflict` |
+| M8d | 실행 실패 ∧ `create`의 payload에 `id`가 없고 대상 엔티티의 `id`가 `derived generated`도 아님(`failure_kind == "id-required"`, RFC-0055) — 쓰기 전에 거부 | 400 | `id-required` |
+| M8e | 실행 실패 ∧ `fail <code>`로 종결(저자가 선언한 업무 거절, `failure_kind == "rejected"`, 이슈 #206/RFC-0056) | 422 | 저자가 선언한 코드(예: `out-of-stock`) |
 | M8 | 실행 실패 (그 외 전부) | 500 | `workflow-failed` |
 | M9 | `status == completed` — 가드 거부 포함 | 200 | — |
 | M10 | GET 단건: 경로는 있으나 행이 없음(부재 또는 백엔드 미설정) | 404 | `not-found` |
@@ -91,6 +95,18 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   M7로 400이 되고, 없는 워크플로는 그대로 실행된다.
 - M6이 M7보다 먼저다: validate 스텝 직전에 데드라인이 소진된 실행은 타임아웃이지
   payload 거부가 아니다.
+- M8a/M8b/M8c/M8d는 M8보다 먼저다: 모두 저장소 실패를 `failure_kind`로
+  유형별로 가른다(이슈 #113/#197/#201, RFC-0055) — 그 외의 모든 실패만 M8(500)로 떨어진다.
+  판정은 예외 타입에서 오고 메시지 문구를 읽지 않는다: 외부 드라이버가 버전 충돌에
+  `lnpl.drivers.WriteConflictError`를 내면 M8c, 평범한 `DriverError`를 내면 같은
+  문구라도 M8(500)이다. 같은 409라도 `code`가 `conflict`(create 충돌 — 같은 요청을
+  다시 보내도 또 충돌한다)와 `write-conflict`(다시 보내면 성공할 수 있다)로 갈린다.
+  `Retry-After` 헤더는 싣지 않는다.
+- **M8e는 가드 거부가 아니라 선언된 거절이다**(RFC-0056). 가드가 참이어서 도달한
+  `fail <code>` 스텝만 422가 되고, 가드가 거짓이라 스킵된 `fail`은 M9(200)다. 상태는
+  코드와 무관하게 422이며 판정은 `failure_kind`로 한다. `code`는 저자의 코드이고
+  `detail`도 그 코드다. 저자 코드는 서버의 예약 `code`와 겹칠 수 없으므로(컴파일
+  에러) `title`은 공통 문구 `the workflow rejected the request`다.
 
 에러 본문은 전 엔드포인트 단일 형태(RFC 9457 problem+json,
 `Content-Type: application/problem+json`): `title`/`status`/`code`/`detail` +
@@ -118,6 +134,7 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
   HS256이고 그 키를 쥔 쪽이 곧 발급자다 — **SPI가 열렸다는 것과 외부 IdP가
   실제로 붙었다는 것은 다르다.** 내장 프로바이더만으로는 "이 역할 클레임을
   누가 왜 믿어도 되는가"라는 질문에 여전히 제3자의 답이 없다.
+  `lnpl token --role <r>`로 role 클레임을 함께 실을 수 있다 — 이 값도 자기 주장이다(이슈 #202).
 - **`lnpl.tokens` SPI로 등록된 프로바이더를 `--token-provider <name>`으로
   선택하면**(예: RS256/ES256으로 Keycloak·Auth0·사내 IdP의 서명을 검증하는
   외부 패키지) 신원 근거가 외부로 옮겨간다 — 그 IdP만 아는 개인키로 서명한
@@ -197,14 +214,27 @@ linkly가 따르는 규범 문서는 없다.
 상태 변경 워크플로(`POST`)에 `If-Match`가 있으면, 그 워크플로가 **처음
 `read`하는 엔티티**의 저장된 버전과 비교한다 — 워크플로 엔드포인트에는
 REST의 PUT/PATCH가 갖는 단일 대상 리소스가 없어서, 이전 GET의 ETag가
-나온 그 행을 기준으로 삼는다. 불일치 → 412. 조건을 걸 대상이 없으면(읽는
-스텝이 없거나, 드라이버가 `observed_version`을 안 낸다 — `fake` 백엔드가
-그렇다, D12와 같은 옵트인) 검사를 건너뛴다 — 강제하지 않는다.
+나온 그 행을 기준으로 삼는다. 그 읽기가 `by <ref>`(RFC-0052)를 쓰면 키도
+그 읽기가 실제로 쓰는 값으로 해석한다 — payload `id`로 고정하지 않는다.
+불일치 → 412(M19). 조회 키 자체를 이 요청만으로 미리 평가할 수 없으면
+(참조가 바인딩·네트워크 결과를 가리키거나, 그 값이 이 요청에 없으면)
+워크플로를 실행하지 않고 400으로 거부한다(M20) — 평가하지 못한 조건을
+조용히 통과시키지 않는다. 키는 평가됐지만 그 키의 행이 없으면 412로
+답한다(M21) — "이 버전의 행을 기대한다"는 요청에 행이 없다는 것은 조건
+거짓이다. 검사를 건너뛰는 경우는 정확히 둘뿐이다: 읽는 스텝이 아예 없는
+워크플로, 그리고 드라이버가 `observed_version`을 내지 않는 경우(`fake`
+백엔드가 그렇다, D12와 같은 옵트인).
 
 | # | 관측 조건 | HTTP | error `code` |
 |---|-----------|------|--------------|
 | M18 | `If-Match` 값이 이 서버가 낸 ETag 형식이 아님(형식 오류) | 400 | `precondition-invalid` |
 | M19 | `If-Match`가 있고 조건을 걸 행이 있는데, 저장된 버전과 불일치 | 412 | `precondition-failed` |
+| M20 | `If-Match`가 있고 첫 읽기의 조회 키를 이 요청만으로 미리 평가할 수 없음(참조가 바인딩·네트워크 결과를 가리키거나, 그 값이 이 요청에 없음) | 400 | `precondition-unsupported` |
+| M21 | `If-Match`가 있고 조회 키는 평가됐는데 그 키의 행이 없음 | 412 | `precondition-failed` |
+
+평가 순서: 인증(M3/M3a/M3b, `_respond` 전에 이미 끝남) → M18(형식) →
+M20(조회 키 미평가) → M21(행 없음) → M19(버전 불일치) → 워크플로 실행.
+M21은 `If-Match` 없는 같은 요청이 받는 404(M8b)보다 앞선다.
 
 `If-Match`가 없으면 현행 그대로다(회귀 없음). `If-None-Match`/304는
 범위 밖이다 — 이슈가 요구하지 않는다.
@@ -275,8 +305,8 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 | E3 | `data`가 있는데 JSON object가 아님 | 400 | `cloudevents-invalid` |
 | E4 | 같은 `id`로 이미 실행 중(#113과 같은 충돌 신호) | 409 | `idempotency-in-progress` |
 | E5 | 실행 완료 | 200 | — |
-| E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
-| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`, create 충돌) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
+| E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열), 또는 낙관적 버전 쓰기 충돌(`failure_kind == "write-conflict"`, 이슈 #201 — 실패 스텝이 `set`이라 효과가 `Assignment`여도 여기다) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
+| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`(저자가 선언한 `fail <code>` — `failure_kind == "rejected"`, RFC-0056), create 충돌, 영속 백엔드 읽기 미스 `not-found`(이슈 #197), `id` 없는 create `id-required`(RFC-0055)) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
 
 **멱등성 (D6)** — CloudEvents `id`가 멱등성 키다. `lnpl_idempotency`(이슈
 #113)를 **그대로** 재사용한다 — 두 번째 저장소를 만들지 않는다. 200과
@@ -293,7 +323,7 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 (소비)를 잇는 최소 구현. `--target http(s)://...`는 브로커 의존 없이 두
 인스턴스 사이에서 계약을 실측한다(바이트 동일). `--target`이 다른
 스킴이면 등록된 `lnpl.publishers` 드라이버로 발행한다(issue #191,
-RFC-0053, `docs/backends.md` §15) — 이 절(소비 쪽 계약)은 바뀌지
+RFC-0061, `docs/backends.md` §15) — 이 절(소비 쪽 계약)은 바뀌지
 않는다. 자세한 ack 규율은 `lnpl relay --help`와 이슈 #118 D8 참조.
 
 ## 계약 한계 (이 서버가 아닌 것)

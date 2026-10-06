@@ -285,6 +285,91 @@ class TestModeAEvaluation(unittest.TestCase):
                                    {"a": 0, "b": 999}))
 
 
+class TestTextTermsChainLikeAnyOtherTerm(unittest.TestCase):
+    """RFC-0054: `!=` and `and` with a Text term, run end to end."""
+
+    def _run(self, condition, status, total=10):
+        interp = text_chain_interp(
+            "    when %s\n    update order" % condition, status, total)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        return interp, result
+
+    def test_text_not_equal_compiles_and_runs(self):
+        _interp, result = self._run("order.status != cancelled", "pending")
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(["find order", "update order"],
+                         [s["step"] for s in result["steps"]])
+
+    def test_text_not_equal_skips_when_equal(self):
+        _interp, result = self._run("order.status != cancelled", "cancelled")
+        self.assertEqual(1, len(result["skipped"]))
+        self.assertEqual([{"ref": "order.status", "value": "cancelled", "op": "!=",
+                           "expected": "cancelled", "holds": False}],
+                         result["skipped"][0]["evaluations"])
+
+    def test_and_chain_with_a_text_term_and_a_numeric_term_compiles_and_runs(self):
+        _interp, result = self._run("order.status == pending and order.total > 0",
+                                    "pending")
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(["find order", "update order"],
+                         [s["step"] for s in result["steps"]])
+
+    def test_and_chain_skips_on_the_text_side(self):
+        _interp, result = self._run("order.status == pending and order.total > 0",
+                                    "paid")
+        self.assertEqual(
+            [("order.status", False), ("order.total", True)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+    def test_and_chain_skips_on_the_numeric_side(self):
+        _interp, result = self._run("order.status == pending and order.total > 0",
+                                    "pending", total=0)
+        self.assertEqual(
+            [("order.status", True), ("order.total", False)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+
+class TestAlternativeGuardRuntimeWithATextTerm(unittest.TestCase):
+    """RFC-0054 + RFC-0028: an `or` alternative may carry a Text term."""
+
+    BODY = ("    when order.total > 1000000\n"
+            "    or order.status == pending\n"
+            "    update order")
+
+    def test_the_text_alternative_fires_and_the_trace_names_it(self):
+        interp = text_chain_interp(self.BODY, "pending", 10)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual([], result["skipped"])
+        matched = [log for log in interp.trace.to_dict()["logs"]
+                   if log["message"] == "guard alternative matched"]
+        self.assertEqual(["order.status == pending"],
+                         [log["condition"] for log in matched])
+
+    def test_both_the_primary_and_the_text_alternative_false_skip(self):
+        interp = text_chain_interp(self.BODY, "cancelled", 10)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual(
+            [("order.total", False), ("order.status", False)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+    def test_a_text_primary_with_a_numeric_alternative(self):
+        # Mirror: the recorded operands follow the text index, so the Text
+        # term in position 0 and the numeric one in position 1 each evaluate
+        # with their own entry.
+        body = ("    when order.status == paid\n"
+                "    or order.total > 5\n"
+                "    update order")
+        interp = text_chain_interp(body, "pending", 10)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual([], result["skipped"])
+        interp = text_chain_interp(body, "pending", 1)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual(
+            [("order.status", False), ("order.total", False)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+
 class TestAlternativeGuardRuntime(unittest.TestCase):
     """D7 boundary: each branch of the alt guard, `skipped[]` observed."""
 
@@ -337,6 +422,31 @@ class TestAlternativeGuardRuntime(unittest.TestCase):
         self.assertEqual(refs, {("input.channel", False), ("input.amount", False)})
 
 
+TEXT_CHAIN_SOURCE = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+        total Integer
+service OrderService
+workflow CancelOrder
+    find order
+%s
+"""
+
+ORDER_ID = "00000000-0000-4000-8000-000000000207"
+
+
+def text_chain_interp(body, status, total):
+    doc = compile_doc(TEXT_CHAIN_SOURCE % body, "shop")
+    return Interpreter(doc, repo_rows={"entity.order": {
+        row_key("entity.order", {"id": ORDER_ID}): {
+            "id": ORDER_ID, "status": status, "total": total}}})
+
+
 class TestIrSchemaGate(unittest.TestCase):
     """The Guard.alternatives field against schemas/lir.schema.json."""
 
@@ -346,6 +456,30 @@ class TestIrSchemaGate(unittest.TestCase):
                   encoding="utf-8") as fh:
             schema = json.load(fh)
         jsonschema.validate(compile_doc(ALT_GUARD_APPROVE, "approve"), schema)
+
+    def _schema(self):
+        with open(os.path.join(REPO_ROOT, "schemas", "lir.schema.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_guard_with_text_equality_operands_validates_against_the_schema(self):
+        import jsonschema
+        doc = json.loads(json.dumps(compile_doc(TEXT_CHAIN_SOURCE % (
+            "    when order.status == paid\n    update order"), "shop")))
+        guards = [n for n in nodes_of(doc, "Guard") if "textEqualityOperands" in n]
+        self.assertEqual([["order.status", "paid"]],
+                         guards[0]["textEqualityOperands"])
+        jsonschema.validate(doc, self._schema())
+
+    def test_a_malformed_text_equality_operands_is_rejected_by_the_schema(self):
+        import jsonschema
+        doc = json.loads(json.dumps(compile_doc(TEXT_CHAIN_SOURCE % (
+            "    when order.status == paid\n    update order"), "shop")))
+        guard = [n for n in nodes_of(doc, "Guard") if "textEqualityOperands" in n][0]
+        for bad in ([[1]], ["order.status"], "order.status"):
+            guard["textEqualityOperands"] = bad
+            with self.assertRaises(jsonschema.ValidationError, msg=repr(bad)):
+                jsonschema.validate(doc, self._schema())
 
     def test_the_schema_self_test_passes_including_the_new_negatives(self):
         proc = subprocess.run(
