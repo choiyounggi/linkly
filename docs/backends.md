@@ -34,6 +34,8 @@ class TokenProvider:         # security jwt
 같은 계약 스위트(`impl/tests/test_driver_contract.py`)가 fake와 sqlite를 **같은
 단언으로** 통과시킨다.
 
+읽기 동사의 `cached` 절(RFC-0062, issue #188)은 `CacheDriver.get`을 실제로 부르는 첫 표면이다. hit이면 저장소를 읽지 않고, miss면 저장소에서 읽은 행을 같은 키로 `set`(TTL = `performance cache` 예산)한다. 같은 문서가 그 엔티티를 `update`/`delete`/`set`으로 쓰면 그 키를 `invalidate`하고, 실행이 롤백되면 그 실행이 기록한 키를 `invalidate`한다. 드라이버가 구현할 메서드는 늘지 않는다 — 읽기 경유 캐시가 기대는 `get`/`set`/`invalidate` 동작은 `CacheDriverTCK`가 이미 검사한다(그 테스트 메서드 7개가 모두 결과를 `get`으로 관측한다).
+
 ### 실패는 한 종류로 나간다
 
 드라이버의 모든 실패는 `DriverError`(토큰은 그 하위 `TokenError`)로 나가고,

@@ -259,6 +259,20 @@ class GeneratorTest(unittest.TestCase):
             with self.subTest(verb=verb):
                 self.assertEqual("`by <ref>`" in row, verb in lookup_verbs, row)
 
+    def test_the_cached_clause_rows_follow_the_lexicon_operation(self):
+        """issue #188 / RFC-0062: exactly the four read verbs carry the
+        optional `cached` clause in their row."""
+        from lnpl.lower import VERB_LEXICON
+        with open(os.path.join(REFS, "verbs.md"), encoding="utf-8") as fh:
+            rows = {m.group(1): m.group(0) for m in
+                    re.finditer(r"^\| `(\w+)` \|.*$", fh.read(), re.M)}
+        read_verbs = {v for v, e in VERB_LEXICON.items()
+                      if e[1].get("operation") == "read"}
+        self.assertEqual(read_verbs, {"find", "read", "load", "authenticate"})
+        for verb, row in rows.items():
+            with self.subTest(verb=verb):
+                self.assertEqual("`cached`" in row, verb in read_verbs, row)
+
     def test_every_enforcement_row_reaches_the_document(self):
         from lnpl.diagnostics import ENFORCEMENT
         with open(os.path.join(REFS, "declarations.md"), encoding="utf-8") as fh:
