@@ -1,0 +1,12 @@
+capability postgres
+capability redis
+
+entity Note
+    field
+        id UUID
+        body Text
+
+service NoteService
+
+workflow SaveNote
+    create note

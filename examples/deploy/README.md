@@ -163,14 +163,42 @@ linkly 컨테이너 2개 + nginx 게이트웨이 1개로 합산 허용량이 bur
 인스턴스 하나에 직접 보내면 20개가 전부 통과하는 것(게이트웨이가 없으면
 보호가 없다는 뜻).
 
+## 생성기로 만든 compose/k8s (이슈 #189)
+
+`lnpl generate compose|k8s`가 선언된 capability로부터 매니페스트를 쓴다
+(옵션·자리표시자는 `docs/backends.md` §12). 손으로 확인하는 순서 — 저장소
+루트에서, 이미지는 `docker/Dockerfile`로 먼저 빌드한다:
+
+```bash
+docker build -f docker/Dockerfile -t linkly-compose-smoke-test .
+PYTHONPATH=impl python -m lnpl generate compose examples/linkhub.lnpl --out <dir> \
+    --set image=linkly-compose-smoke-test --set source=<examples/linkhub.lnpl의 절대 경로>
+POSTGRES_PASSWORD=... docker compose -f <dir>/compose.yaml up -d --wait
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/-/readyz   # 200
+POSTGRES_PASSWORD=... docker compose -f <dir>/compose.yaml down -v --rmi local
+```
+
+공식 이미지는 코어 런타임만 담으므로 앱은 `fake` 백엔드로 뜬다 — 이 확인은
+기동·프로브 경로·백킹 서비스·정리를 증명하지, 드라이버 연결은 증명하지
+않는다. k8s는 클러스터 없이 kubeconform으로 검사한다(`kubectl apply
+--dry-run=client`는 API 서버가 필요하다):
+
+```bash
+PYTHONPATH=impl python -m lnpl generate k8s examples/linkhub.lnpl --out <dir>
+docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - < <dir>/k8s.yaml
+```
+
+`test_deploy.py`가 이를 `ComposeGeneratorSmokeTest`(2케이스)와
+`K8sKubeconformTest`(2케이스)로 자동화한다.
+
 ## 이 참조가 다루지 않는 것
 
 이미지 레지스트리 push는 더 이상 범위 밖이 아니다 — `docker/Dockerfile`과
 `release.yml`의 `image` 잡이 처리한다(issue #190). 공식 이미지는 코어
 런타임만 담으며, `postgres`·`redis`·`otel` 드라이버는 파생 이미지로
 얹는 방식을 권장한다(`docs/RELEASING.md` 5단계 참고). 이 예제 자체의 CI
-오케스트레이션과 k8s 매니페스트는 여전히 범위 밖이다(#87 out-of-scope —
-후속 이슈로 남는다; k8s 매니페스트 생성은 별도로 issue #189의
-compose/k8s 생성기가 다룬다). 워커 풀 관리는 `docs/serving.md`가 이미
+오케스트레이션은 여전히 범위 밖이다(#87 out-of-scope — 후속 이슈로
+남는다). compose/k8s 매니페스트는 생성기가 만든다 — 위
+"생성기로 만든 compose/k8s" 절을 보라. 워커 풀 관리는 `docs/serving.md`가 이미
 명시한 대로 gunicorn의 책임이지 이 Dockerfile의 책임이 아니다 — TLS
 종단은 위 "TLS 종단" 절의 `nginx.conf`가 참조를 준다.

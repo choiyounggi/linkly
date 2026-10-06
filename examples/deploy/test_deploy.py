@@ -12,11 +12,13 @@ measured build/run/curl log this test automates.
 
 import http.client
 import json
+import os
 import pathlib
 import re
 import shutil
 import ssl
 import subprocess
+import sys
 import time
 import unittest
 import urllib.error
@@ -25,6 +27,13 @@ import urllib.request
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 IMAGE = "linkly-deploy-smoke-test"
 _PORT_COUNTER = [18110]
+
+# issue #189: generated compose / k8s checks (run by hand like the rest).
+SMOKE_IMAGE = "linkly-compose-smoke-test"
+KUBECONFORM_IMAGE = "ghcr.io/yannh/kubeconform:v0.6.7"
+BACKING_IMAGES = ("postgres:16", "redis:7")
+LINKHUB = REPO_ROOT / "examples" / "linkhub.lnpl"
+SMOKE_ENV = dict(os.environ, POSTGRES_PASSWORD="compose-smoke-only")
 
 SAVE_BOOKMARK_BODY = json.dumps({
     "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
@@ -437,6 +446,123 @@ class TwoInstanceGatewayRateLimitTest(unittest.TestCase):
         assert statuses == [200] * self.COUNT, (
             f"expected all {self.COUNT} admitted with no gateway in front "
             f"and no LNPL_RATE_LIMIT set, got {statuses}")
+
+
+def _image_present(ref):
+    return subprocess.run(["docker", "image", "inspect", ref],
+                          capture_output=True).returncode == 0
+
+
+def _lnpl_generate(name, out_dir, *sets):
+    """`lnpl generate <name> examples/linkhub.lnpl --out <out_dir> --set ...`
+    running this worktree's code (PYTHONPATH=impl)."""
+    cmd = [sys.executable, "-m", "lnpl", "generate", name, str(LINKHUB),
+           "--out", str(out_dir)]
+    cmd += [x for s in sets for x in ("--set", s)]
+    return subprocess.run(
+        cmd, cwd=REPO_ROOT, env=dict(os.environ, PYTHONPATH=str(REPO_ROOT / "impl")),
+        check=True, capture_output=True, timeout=120)
+
+
+def _scratch_dir(test, tag):
+    path = REPO_ROOT / ".claude" / "tmp" / ("deploy-%s-%d" % (tag, _PORT_COUNTER[0]))
+    path.mkdir(parents=True, exist_ok=True)
+    test.addCleanup(shutil.rmtree, path, True)
+    return path
+
+
+@unittest.skipUnless(shutil.which("docker"), "docker not on PATH")
+class ComposeGeneratorSmokeTest(unittest.TestCase):
+    """issue #189: generated compose boots to readyz 200 (by hand)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.had = {ref: _image_present(ref) for ref in BACKING_IMAGES}
+        subprocess.run(
+            ["docker", "build", "-f", "docker/Dockerfile", "-t", SMOKE_IMAGE, "."],
+            cwd=REPO_ROOT, check=True, capture_output=True, timeout=600)
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run(["docker", "rmi", SMOKE_IMAGE], capture_output=True)
+        for ref in BACKING_IMAGES:
+            if not cls.had[ref]:
+                subprocess.run(["docker", "rmi", ref], capture_output=True)
+
+    def test_generated_compose_boots_to_readyz_200(self):
+        port = _PORT_COUNTER[0]
+        _PORT_COUNTER[0] += 1
+        out = _scratch_dir(self, "compose")
+        project = "linkly-compose-smoke-%d" % port
+        _lnpl_generate("compose", out, "image=" + SMOKE_IMAGE,
+                       "port=%d" % port, "source=" + str(LINKHUB))
+        compose = ["docker", "compose", "-p", project, "-f", str(out / "compose.yaml")]
+        # LIFO: `down` runs before the scratch dir is removed.
+        self.addCleanup(subprocess.run, compose + ["down", "-v", "--rmi", "local"],
+                        env=SMOKE_ENV, capture_output=True, timeout=180)
+        up = subprocess.run(
+            compose + ["up", "-d", "--wait", "--wait-timeout", "120"],
+            env=SMOKE_ENV, capture_output=True, text=True, timeout=300)
+        self.assertEqual(up.returncode, 0, up.stderr)
+        with urllib.request.urlopen("http://127.0.0.1:%d/-/readyz" % port,
+                                    timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+        ps = subprocess.run(
+            compose + ["ps", "--format", "{{.Service}} {{.Health}}"],
+            env=SMOKE_ENV, capture_output=True, text=True, timeout=60)
+        self.assertEqual(sorted(ps.stdout.split("\n")[:-1]),
+                         ["app healthy", "postgres healthy", "redis healthy"])
+
+    def test_compose_config_round_trips_a_hostile_image(self):
+        hostile = "a: b # c 'q' \"dq\"\n- *x &y !z {w} [v] $HOME \\ \t \u00e9 \u2028"
+        out = _scratch_dir(self, "hostile")
+        _lnpl_generate("compose", out, "image=" + hostile)
+        done = subprocess.run(
+            ["docker", "compose", "-f", str(out / "compose.yaml"), "config",
+             "--format", "json"],
+            env=SMOKE_ENV, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # `docker compose config` prints `$` in its escaped `$$` form.
+        self.assertEqual(json.loads(done.stdout)["services"]["app"]["image"],
+                         hostile.replace("$", "$$"))
+
+
+@unittest.skipUnless(shutil.which("docker"), "docker not on PATH")
+class K8sKubeconformTest(unittest.TestCase):
+    """issue #189: `kubectl apply --dry-run=client` needs an API server for
+    discovery even with --validate=false, so the no-cluster check is
+    kubeconform (needs network for its schemas)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.had = _image_present(KUBECONFORM_IMAGE)
+
+    @classmethod
+    def tearDownClass(cls):
+        if not cls.had:
+            subprocess.run(["docker", "rmi", KUBECONFORM_IMAGE], capture_output=True)
+
+    def _kubeconform(self, data):
+        return subprocess.run(
+            ["docker", "run", "--rm", "-i", KUBECONFORM_IMAGE, "-strict",
+             "-summary", "-"],
+            input=data, capture_output=True, timeout=300)
+
+    def _generated(self):
+        out = _scratch_dir(self, "k8s")
+        _lnpl_generate("k8s", out)
+        return (out / "k8s.yaml").read_bytes()
+
+    def test_generated_k8s_passes_kubeconform(self):
+        result = self._kubeconform(self._generated())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(b"Invalid: 0, Errors: 0", result.stdout)
+
+    def test_reverse_control_a_misspelled_field_fails(self):
+        data = self._generated().replace(b"terminationGracePeriodSeconds",
+                                         b"terminationGracePeriodSecond")
+        result = self._kubeconform(data)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

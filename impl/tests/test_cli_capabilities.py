@@ -161,7 +161,8 @@ class TestCliCapabilities(unittest.TestCase):
         doc = json.loads(out)
         self.assertEqual(doc["slots"]["repository"]["builtin"], ["fake", "sqlite"])
         self.assertEqual(doc["slots"]["kb"]["builtin"], [])
-        self.assertEqual(doc["slots"]["generators"]["builtin"], ["openapi"])
+        self.assertEqual(doc["slots"]["generators"]["builtin"],
+                         ["openapi", "compose", "k8s"])
         self.assertEqual(doc["slots"]["diagnostics"]["builtin"], [])
 
     def test_a_reporting_driver_gets_an_additive_enforcement_key(self):
