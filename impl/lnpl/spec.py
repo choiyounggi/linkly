@@ -134,10 +134,16 @@ def _expect_duration(phrase, result, _interp):
 
 
 def _expect_cache(phrase, _result, interp):
-    """`cache written` — whether the run wrote at least one cache entry."""
+    """`cache written` — whether the run wrote at least one cache entry;
+    `cache hit` / `cache miss` — whether a `cached` read (RFC-0062) hit or
+    missed at least once in the run."""
     tokens = phrase.split()
     if len(tokens) == 2 and tokens[1] == "written":
         return len(interp.cache.store) > 0, "cache entries=%d" % len(interp.cache.store)
+    if len(tokens) == 2 and tokens[1] == "hit":
+        return interp.cache.hits > 0, "cache hits=%d" % interp.cache.hits
+    if len(tokens) == 2 and tokens[1] == "miss":
+        return interp.cache.misses > 0, "cache misses=%d" % interp.cache.misses
     raise SpecError("unsupported cache expectation: %r" % phrase)
 
 

@@ -18,7 +18,7 @@
 | `steps` | `steps <N>` — the number of steps the run executed. |
 | `slo` | `slo met` — whether the run's SLO was satisfied. |
 | `duration` | `duration <op> <limit>` — wall time against a comparator (`<`, `<=`, `>`, `>=`) and a duration literal (e.g. `50ms`). |
-| `cache` | `cache written` — whether the run wrote at least one cache entry. |
+| `cache` | `cache written` — whether the run wrote at least one cache entry; `cache hit` / `cache miss` — whether a `cached` read (RFC-0062) hit or missed at least once in the run. |
 | `attempts` | `attempts <N>` — the highest attempt count any step needed. |
 | `result` | `result <ref> <op> <value>` / `result <ref> exists\|missing`. |
 | `rows` | `rows <Entity> <N>` — the store's state after the run. |

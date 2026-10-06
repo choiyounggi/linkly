@@ -388,6 +388,34 @@ def lookup_negatives():
         ("required field removed: RepositoryCall.entity (lookup field present)", n2),
     ]
 
+CACHED_FIXTURE = {
+    "lir_version": "0.1",
+    "module": "find_cached",
+    "nodes": [
+        {"kind": "Workflow", "id": "wf.find.product", "name": "FindProduct",
+         "children": ["wf.find.product.step.1"]},
+        {"kind": "WorkflowStep", "id": "wf.find.product.step.1",
+         "name": "find product cached",
+         "children": ["wf.find.product.step.1.repo"]},
+        {"kind": "RepositoryCall", "id": "wf.find.product.step.1.repo",
+         "entity": "entity.product", "operation": "read", "cached": True},
+    ],
+}
+
+
+def cached_negatives():
+    """issue #188 / RFC-0062 — `RepositoryCall.cached`, an optional boolean
+    on the read branch: one negative for the field's own `type`, one proving
+    `required` still applies while `cached` is present."""
+    n1 = copy.deepcopy(CACHED_FIXTURE)
+    n1["nodes"][2]["cached"] = "yes"                       # type 위반 — boolean이 아님
+    n2 = copy.deepcopy(CACHED_FIXTURE)
+    del n2["nodes"][2]["entity"]                          # required 누락
+    return [
+        ("cached is not a boolean: RepositoryCall.cached = 'yes'", n1),
+        ("required field removed: RepositoryCall.entity (cached field present)", n2),
+    ]
+
 CAPABILITY_HTTP_FIXTURE = {
     "lir_version": "0.1",
     "module": "capability_http",
@@ -967,6 +995,7 @@ def self_test():
         ("RESPOND_FIXTURE (issue #96 Response.refs)", RESPOND_FIXTURE),
         ("CREATE_FIXTURE (issue #97 RepositoryCall.result)", CREATE_FIXTURE),
         ("LOOKUP_FIXTURE (issue #175 RepositoryCall.lookup)", LOOKUP_FIXTURE),
+        ("CACHED_FIXTURE (issue #188 RepositoryCall.cached)", CACHED_FIXTURE),
         ("EXPOSE_FIXTURE (issue #99 Expose)", EXPOSE_FIXTURE),
         ("CAPABILITY_HTTP_FIXTURE (issue #101 Capability.method/auth)",
          CAPABILITY_HTTP_FIXTURE),
@@ -1023,7 +1052,8 @@ def self_test():
       + respond_negatives() + create_negatives() + expose_negatives() \
       + capability_http_negatives() + subscribe_negatives() \
       + consume_negatives() + lookup_negatives() + optional_negatives() \
-      + fill_source_negatives() + guard_otherwise_negatives()
+      + fill_source_negatives() + guard_otherwise_negatives() \
+      + cached_negatives()
 
     for label, doc in negatives:
         if validator.is_valid(doc):

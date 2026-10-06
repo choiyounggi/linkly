@@ -1385,6 +1385,8 @@ def lower(decls, module_name):
     # `owner_of` (above) can answer "does this workflow's service claim
     # rollback?" for `_check_rollback_escapes_network` below.
     rollback_services = set()
+    # issue #188: id(service decl) -> declares a `performance cache` budget
+    cache_budget_by_service = {}
     service_nodes, constraint_nodes = [], []
     for d in by_kind["service"]:
         sid = derive_id(d.name, "Service")
@@ -1421,6 +1423,8 @@ def lower(decls, module_name):
                 mod.diagnostics, "performance",
                 [(b["metric"], line.lineno)
                  for b, line in zip(budgets, d.clauses["performance"])], perfid)
+            cache_budget_by_service[id(d)] = any(
+                b["metric"] == "cache" for b in budgets)
         # issue #99, D2: `expose list <Entity> by <field>` -> one Expose node
         # per line, ids scoped under the service the same way `goal` lines
         # become numbered BusinessRule nodes below. Expose nodes ride in
@@ -1570,7 +1574,9 @@ def lower(decls, module_name):
     for d in by_kind["workflow"]:
         wid = derive_id(d.name, "Workflow")
         ctx = _WfContext(wid, registry, mod.diagnostics, http_caps, base_of,
-                         namespace=d.namespace)
+                         namespace=d.namespace,
+                         has_cache_budget=cache_budget_by_service.get(
+                             id(owner_of.get(id(d))), False))
         top_ids = [ctx.plan(item) for item in d.items]
         mod.add(_node("Workflow", wid, name=d.name, children=top_ids or None,
                       line=d.lineno))
@@ -1590,6 +1596,7 @@ def lower(decls, module_name):
         _check_optional_unguarded_arithmetic(ctx.emitted, top_ids, registry,
                                              d.name, mod.diagnostics)
         _check_parallel_write_conflict(ctx.emitted, registry, d.name)
+        _check_cached_read_not_written(ctx.emitted, registry, d.name)
         _check_event_source_mismatch(ctx.emitted, top_ids, event_sources,
                                      d.name, mod.diagnostics)
         _check_derived_never_assigned(ctx.emitted, registry, d.name,
@@ -1624,8 +1631,9 @@ class _WfContext:
     """Turns one workflow body into nodes, numbering ids as it goes."""
 
     def __init__(self, wid, registry, diagnostics, http_caps=None, base_of=None,
-                namespace=None):
+                namespace=None, has_cache_budget=False):
         self.wid = wid
+        self.has_cache_budget = has_cache_budget
         self.registry = registry
         self.diagnostics = diagnostics
         # RFC-0033 §Reference-level "짧은 이름 해소": the declaring workflow's
@@ -1737,7 +1745,8 @@ class _WfContext:
                                      http_caps=self.http_caps,
                                      verb_sink=self.network_verbs,
                                      base_of=self.base_of,
-                                     namespace=self.namespace)
+                                     namespace=self.namespace,
+                                     has_cache_budget=self.has_cache_budget)
         if derived is None:
             # R1 derived nothing, which is correct. Saying nothing about it is
             # what issue #36 reports, so the fact leaves as a diagnostic while
@@ -1867,6 +1876,36 @@ def _written_entity(step_node, by_id):
         if child["kind"] == "RepositoryCall" and child.get("operation") in WRITE_OPS:
             return child.get("entity")
     return None
+
+
+def _check_cached_read_not_written(emitted, registry, workflow_name):
+    """issue #188 / RFC-0062: a workflow that reads entity E with `cached`
+    must not also write E (`update`/`delete`, or `set`/`format` on E's
+    default binding) — a cache hit carries no optimistic version (issue
+    #92), so a write through it would be unconditional. `create E as
+    <name>` writes a different binding and stays legal."""
+    cached = {}
+    for node in emitted:
+        if node["kind"] == "RepositoryCall" and node.get("cached"):
+            cached.setdefault(node["entity"], node)
+    if not cached:
+        return
+    for node in emitted:
+        entity = node.get("entity")
+        if entity not in cached:
+            continue
+        writes = (node["kind"] == "RepositoryCall"
+                  and node.get("operation") in ("update", "delete"))
+        if node["kind"] == "Assignment":
+            writes = (node["target"].split(".", 1)[0]
+                      == binding_name(registry[entity]))
+        if writes:
+            raise LowerError(
+                "workflow %s: line %s reads %s with `cached` and line %s "
+                "writes it — a row this workflow modifies must be read "
+                "without `cached` (RFC-0062)"
+                % (workflow_name, cached[entity].get("line"), entity,
+                   node.get("line")))
 
 
 def _check_parallel_write_conflict(emitted, registry, workflow_name):
@@ -3736,14 +3775,17 @@ def _build_payload_map(arg_tokens, lineno, clause_label):
 
 def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
                    diagnostics=None, step_text=None, http_caps=None,
-                   verb_sink=None, base_of=None, namespace=None):
+                   verb_sink=None, base_of=None, namespace=None,
+                   has_cache_budget=False):
     """R1: closed-lexicon lookup. Returns an Effect node dict, or None.
 
     `rest` is the step line's tokens past the object (`tokens[2:]`).
     `NetworkCall` and `create`/`insert` read an `as <name>` trailing clause
     there (RFC-0027 §2, extended to `create` by issue #97 / RFC-0012
     Updates); the read family, `update` and `delete` accept only a
-    `by <ref>` lookup-key clause (issue #175, RFC-0052). `NetworkCall` also
+    `by <ref>` lookup-key clause (issue #175, RFC-0052). The read family
+    alone also accepts a trailing `cached` (after an optional `by <ref>`;
+    issue #188, RFC-0062). `NetworkCall` also
     reads an optional leading `with <ref>...` clause there (issue #109, D6).
 
     `diagnostics`/`step_text` (issue #91) let `_resolve_entity` report an
@@ -3831,14 +3873,37 @@ def _derive_effect(step_id, verb, obj, registry, lineno, rest=(),
             # issue #175 / RFC-0052: `<verb> <Entity> by <ref>` addresses the
             # row under the ref's value instead of the payload's `id`. Any
             # other trailing word used to be dropped silently; it is refused.
+            # issue #188 / RFC-0062: the read family may end with `cached`.
             from .condition import _is_reference_name
-            if len(rest) == 2 and rest[0] == "by" and _is_reference_name(rest[1]):
-                return _node(kind, eid, entity=ent["id"],
-                            operation=fixed["operation"], lookup=rest[1],
-                            line=lineno)
-            raise LowerError(
-                "line %d: `%s %s` accepts either no trailing words or "
-                "`by <ref>`, got %r" % (lineno, verb, obj, tuple(rest)))
+            tail = list(rest)
+            lookup = None
+            if len(tail) >= 2 and tail[0] == "by" and _is_reference_name(tail[1]):
+                lookup = tail[1]
+                tail = tail[2:]
+            cached = None
+            if fixed["operation"] == "read" and tail == ["cached"]:
+                # issue #188 / RFC-0062: a read-through needs the owning
+                # service's `performance cache` budget as its TTL.
+                if not has_cache_budget:
+                    raise LowerError(
+                        "line %d: `%s %s ... cached` needs a `performance "
+                        "cache <duration>` budget on the owning service — "
+                        "every cache key carries a TTL (RFC-0003, RFC-0062)"
+                        % (lineno, verb, obj))
+                cached = True
+                tail = []
+            if tail:
+                if fixed["operation"] == "read":
+                    raise LowerError(
+                        "line %d: `%s %s` accepts either no trailing words, "
+                        "`by <ref>`, `cached`, or `by <ref> cached`, got %r"
+                        % (lineno, verb, obj, tuple(rest)))
+                raise LowerError(
+                    "line %d: `%s %s` accepts either no trailing words or "
+                    "`by <ref>`, got %r" % (lineno, verb, obj, tuple(rest)))
+            return _node(kind, eid, entity=ent["id"],
+                        operation=fixed["operation"], lookup=lookup,
+                        cached=cached, line=lineno)
         return _node(kind, eid, entity=ent["id"], operation=fixed["operation"],
                     line=lineno)
 
