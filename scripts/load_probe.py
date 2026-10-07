@@ -13,10 +13,16 @@ run it prints a summary (warm-up excluded) and one line per 10-second bucket:
     p50=1.02ms p95=2.48ms p99=6.78ms
     error_rate=0.00%
     bucket=0-10s mean=1.19ms max=10.86ms n=1000
+    verdict=STABLE worst_bucket_ratio=1.024x
 
 Buckets are counted from the end of the warm-up, so `0-10s` is the first ten
 seconds that count. A bucket's mean and max use 2xx responses only; failed
 requests show up in `error_rate` instead.
+
+The last line is the verdict: STABLE when the error rate is 0 and every bucket
+mean is at most 2 times the first bucket's mean (docs/postgres-load-ceiling.md),
+UNSTABLE otherwise, NO-DATA when nothing counted after the warm-up. The verdict
+never changes the exit code.
 
 Exit codes: 0 the run finished (whatever the server answered), 2 invalid
 arguments.
@@ -121,6 +127,34 @@ def format_bucket(bucket, bucket_s):
     return "%s mean=%.2fms max=%.2fms n=%d" % (label, mean_ms, max_ms, n)
 
 
+STABLE_RATIO = 2.0
+
+
+def stability_verdict(summary, buckets):
+    """`(verdict, worst_ratio)` for one run, by the rule in docs/postgres-load-ceiling.md.
+
+    STABLE when the error rate is 0 and every 10-second bucket mean is at most
+    STABLE_RATIO times the first bucket's mean. NO-DATA when nothing counted
+    after the warm-up. A bucket with no 2xx sample makes the run UNSTABLE with
+    no ratio, because flatness cannot be shown for it.
+    """
+    if not summary["post_warmup"] or not buckets:
+        return "NO-DATA", None
+    means = [bucket[1] for bucket in buckets]
+    first = means[0]
+    if first is None or first <= 0 or any(mean is None for mean in means):
+        return "UNSTABLE", None
+    worst = max(means) / first
+    if summary["errors"] == 0 and worst <= STABLE_RATIO:
+        return "STABLE", worst
+    return "UNSTABLE", worst
+
+
+def format_verdict(verdict, worst_ratio):
+    ratio = "-" if worst_ratio is None else "%.3fx" % worst_ratio
+    return "verdict=%s worst_bucket_ratio=%s" % (verdict, ratio)
+
+
 def write_csv(rows, f):
     w = csv.writer(f)
     w.writerow(["t_start", "status", "latency_ms", "error"])
@@ -209,8 +243,10 @@ def main(argv=None):
     if s["post_warmup"]:
         print("p50=%.2fms p95=%.2fms p99=%.2fms" % (s["p50"], s["p95"], s["p99"]))
         print("error_rate=%.2f%%" % s["error_rate"])
-    for bucket in bucket_table(rows, args.warmup, args.seconds):
+    buckets = bucket_table(rows, args.warmup, args.seconds)
+    for bucket in buckets:
         print(format_bucket(bucket, 10))
+    print(format_verdict(*stability_verdict(s, buckets)))
     return 0
 
 

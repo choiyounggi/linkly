@@ -1,0 +1,82 @@
+name: Weekly load report
+
+# issue #195: absolute load numbers vary from runner to runner, so they are
+# reported here once a week and never gate a PR. The PR-blocking performance
+# gate is the deterministic counter test impl/tests/test_perf_counters.py,
+# which runs inside ci.yml's test-suite job.
+on:
+  schedule:
+    - cron: "0 7 * * 1"  # weekly, Monday 07:00 UTC
+  workflow_dispatch:  # on-demand run of the same job
+
+jobs:
+  load-weekly:
+    name: load-weekly (report-only, never required)
+    runs-on: ubuntu-latest
+    # 2 backends x 4 rates x 55 s of load = about 8 minutes, plus install.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install . gunicorn==26.2.0
+
+      - name: Measure (gunicorn sync x2, fake and sqlite backends)
+        env:
+          LNPL_SOURCE: examples/linkhub.lnpl
+          BODY: '{"id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","url":"https://example.com/postgres-load-probe","title":"postgres load probe fixture","owner":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","savedAt":"2026-01-01T00:00:00Z","visits":0}'
+        run: |
+          BASE=http://127.0.0.1:18195
+          DURATION=55
+          WARMUP=5
+          for BACKEND in fake "sqlite:$RUNNER_TEMP/load-weekly.db"; do
+            NAME="${BACKEND%%:*}"
+            LNPL_BACKEND="$BACKEND" gunicorn "lnpl.wsgi:build_app()" --bind 127.0.0.1:18195 \
+              --workers 2 --worker-class sync --no-control-socket > "server-$NAME.log" 2>&1 &
+            PID=$!
+            BOOTED=no
+            for _ in $(seq 1 50); do
+              if curl -s -o /dev/null "$BASE/-/healthz"; then BOOTED=yes; break; fi
+              sleep 0.2
+            done
+            if [ "$BOOTED" != yes ]; then
+              echo "server did not boot (backend $NAME) - harness fault, not a load result"
+              cat "server-$NAME.log"
+              exit 1
+            fi
+            curl -s -o /dev/null -X POST "$BASE/link-hub-service/save-bookmark" \
+              -H "Content-Type: application/json" -d "$BODY"
+            for RATE in 50 100 200 400; do
+              echo "point backend=$NAME workers=2 class=sync rate=$RATE seconds=$DURATION warmup=$WARMUP" >> load_report.txt
+              python scripts/load_probe.py --url "$BASE/link-hub-service/get-bookmark" \
+                --rps "$RATE" --seconds "$DURATION" --warmup "$WARMUP" --method POST --body "$BODY" \
+                --out "probe-$NAME-$RATE.csv" >> load_report.txt
+            done
+            kill -TERM "$PID"
+            wait "$PID"
+          done
+
+      - name: Publish report to the job summary
+        if: always()
+        run: |
+          {
+            echo "## Weekly load report (report-only, never gates a PR)"
+            echo '```'
+            cat load_report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: load-weekly-report
+          path: |
+            load_report.txt
+            server-*.log
+          retention-days: 90

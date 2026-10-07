@@ -24,6 +24,8 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | `test-quality` | AI | `_ai-gate.yml`(t5) | advisory | 자기 코드를 자기가 평가하는 테스트(구현/평가 미분리), 가짜 통과 |
 | `prose-factcheck` | AI | `_ai-gate.yml`(t5) | advisory | PR 산문(설명·주석)이 실제 diff와 어긋나는 주장 |
 | 컨테이너 이미지 배선(`test_release_workflow.py`의 `image` 잡 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 비활성 유지 회귀 |
+| 요청당 결정적 카운터(`test_perf_counters.py`) | 결정론 | `ci.yml` — 테스트 스위트(matrix) 잡 안의 한 모듈 | blocking(`gate` 잡 경유) | 요청 1건당 DB 연결 생성·닫힘 수, 저장소 문장 수, 드라이버 생성 수의 회귀(예: 요청마다 연결을 하나 더 여는 변경) |
+| 주간 부하 리포트(`load-weekly.yml`) | 결정론 | `load-weekly.yml` — `schedule`(월요일 07:00 UTC) + `workflow_dispatch` | report-only(비-required) | 절대 처리량·지연 추이(gunicorn sync 워커 2개, fake·sqlite 백엔드, 50/100/200/400 rps). 판정으로 쓰지 않는다 |
 
 AI 게이트 4종은 전부 이 문서가 만든 재사용 워크플로 `_ai-gate.yml`(`on:
 workflow_call`) 위에 얹힌다. 게이트별 워크플로는 `gate_name`·`prompt_file`만
@@ -181,6 +183,11 @@ red/green)이고, 주간 `mutation-weekly` 잡은 SURVIVED 뮤테이션을 이�
 리포트할 뿐 PR을 막지 않는다. 자세한 내용은 아래 "뮤테이션 테스팅 2단계"
 절을 참고.
 
+주간 부하 리포트(`load-weekly`, issue #195)도 이 목록에 없다 — 절대 수치는
+러너마다 달라 PR 판정에 쓸 수 없고, 이 잡은 `pull_request`로 깨어나지도
+않는다. 성능 회귀의 PR 차단은 `gate` 잡 안의 결정적 카운터 테스트가 맡는다
+(아래 "성능 회귀 — 결정적 카운터와 주간 부하 리포트" 절).
+
 ## 뮤테이션 테스팅 2단계
 
 `impl/tests/mutation_check.py`(77개 뮤테이션 + no-op 컨트롤, 전체 실행
@@ -207,6 +214,32 @@ red/green)이고, 주간 `mutation-weekly` 잡은 SURVIVED 뮤테이션을 이�
 
 뮤테이션 스코어 임계치 게이트(예: "80% 이상 캐치해야 통과")는 이 issue의
 명시적 비목표다 — SURVIVED는 항상 리포트일 뿐 실패 조건이 아니다.
+
+## 성능 회귀 — 결정적 카운터와 주간 부하 리포트 (issue #195)
+
+처리량·지연의 절대 수치는 같은 코드라도 러너의 CPU·이웃 잡에 따라 달라진다.
+그런 수치로 PR을 막으면 코드와 무관한 실패가 생기므로, PR 차단 게이트는
+실행마다 똑같이 나오는 **결정적 카운터**만 단언한다:
+
+- `impl/tests/test_perf_counters.py`가 요청 1건이 하는 일을 센다 — DB 연결
+  생성 수(`sqlite3.connect`), 연결 닫힘 수, 저장소 문장 수(`execute`),
+  드라이버 생성 수(`repository_factory` 호출). sqlite 경로·fake 경로·
+  `build_app()` 경로에서 정확한 값(`== 1` 등)으로 단언하고, 저장소에 닿지
+  않은 요청(0)도 실패로 잡는다. 일반 unittest 스위트의 한 모듈이므로
+  `ci.yml`의 `gate` 잡이 그대로 실행한다(네트워크·도커 없음).
+- 같은 파일의 `DegradedDoubleControlTest`가 문장마다 연결을 하나 더 여는
+  드라이버(`_ConnectPerCallDriver`)로 카운터가 실제로 회귀를 본다는 것을
+  매 실행 증명한다. 그 드라이버를 게이트 테스트에 넣으면 세 테스트가
+  `1 != 3`/`1 != 2`로 실패한다.
+
+절대 수치는 `.github/workflows/load-weekly.yml`이 주 1회(월요일 07:00 UTC,
+수동 `workflow_dispatch`도 가능) 리포트만 남긴다: gunicorn sync 워커 2개로
+fake·sqlite 백엔드를 50/100/200/400 rps로 잰 `scripts/load_probe.py`의 출력
+(판정 줄 `verdict=` 포함)을 잡 요약과 아티팩트(`load-weekly-report`, 90일
+보관)에 올린다. 측정값이 어떻든 잡은 실패하지 않는다. 서버가 뜨지 않는
+경우만 하네스 결함으로 잡을 실패시킨다 — "측정 결과"가 아니라 "측정 불능"
+이기 때문이다. 로컬 한 대에서 잰 상한표는 `docs/gunicorn-load-measurement.md`
+에 있다.
 
 ## `skip-ai-gate` 라벨
 
