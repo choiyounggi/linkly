@@ -176,7 +176,7 @@ lnpl config check <source...> [--profile NAME] [--config PATH]
 모든 `NetworkCall` 논리명에 `lnpl.toml`/`LNPL_ENDPOINT_<NAME>` 매핑이 있는가,
 (b) `lnpl.toml`의 `[*.secrets]` 항목이 가리키는 환경변수가 실제로 설정돼
 있는가 — `{ file = "<절대경로>" }` 항목(이슈 #192)이면 그 파일이 있고 읽히고
-비지 않았는가(`jwt`는 32바이트 이상인가까지), (c) `security jwt`를 선언했다면 `[*.secrets].jwt` 매핑이 있는가.
+비지 않았는가(`jwt`는 32바이트 이상인가까지), `{ provider = "<이름>", key = "<키>" }` 항목(이슈 #192)이면 그 `lnpl.secrets` 프로바이더를 열어 현재 키 + 이전 키를 읽고 닫았을 때 실패가 없는가(`jwt`는 두 값 모두 32바이트 이상인가까지 — 메시지는 프로바이더 이름만 싣고 값은 싣지 않는다), (c) `security jwt`를 선언했다면 `[*.secrets].jwt` 매핑이 있는가.
 `--endpoint`/`--jwt-secret-env`는 받지 않는다 — `serve` 실행 시 즉석으로 줄
 값이 아니라 `lnpl.toml`+환경변수로 이미 서 있는 표면만 진단한다.
 

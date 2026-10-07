@@ -37,7 +37,8 @@ _VAR_REF_RE = re.compile(r"\$\{([^}]*)\}")
 
 _SCALAR_KEYS = ("backend", "log_format", "trace_exporter")
 _SECTION_KEYS = ("endpoints", "secrets")
-_SECRET_TABLE_FORMS = ('{ file = "<absolute path>" }',)
+_SECRET_TABLE_FORMS = ('{ file = "<absolute path>" }',
+                       '{ provider = "<name>", key = "<key>" }')
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,6 +60,15 @@ class SecretFileRef:
     """`[*.secrets] <key> = { file = "<absolute path>" }` (issue #192): a
     pointer to a file holding the secret, never the secret itself."""
     path: str
+
+
+@dataclasses.dataclass(frozen=True)
+class SecretProviderRef:
+    """`[*.secrets] <key> = { provider = "<name>", key = "<key>" }` (issue
+    #192): a pointer to a registered `lnpl.secrets` provider and the key it
+    resolves, never the value."""
+    provider: str
+    key: str
 
 
 def _substitute(value, path):
@@ -97,9 +107,15 @@ def _validate_secret_name(value, path):
 
 
 def _load_secret_table(table, path):
-    """issue #192 D1/D2: a `[*.secrets]` table value -> `SecretFileRef`.
-    No message carries a value from the table — the operator may have pasted
-    the secret into it."""
+    """issue #192 D1/D2: a `[*.secrets]` table value -> `SecretFileRef` or
+    `SecretProviderRef`. No message carries a value from the table — the
+    operator may have pasted the secret into it."""
+    if set(table) == {"provider", "key"}:
+        for field in ("provider", "key"):
+            if not isinstance(table[field], str) or not table[field]:
+                raise WsgiConfigError(
+                    "%s.%s must be a non-empty string" % (path, field))
+        return SecretProviderRef(table["provider"], table["key"])
     if set(table) != {"file"}:
         raise WsgiConfigError(
             "%s must be an environment variable NAME string or one of: %s"

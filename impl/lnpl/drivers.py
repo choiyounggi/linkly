@@ -120,6 +120,18 @@ BUILTIN_TOKEN_PROVIDERS = ("hmac",)
 LEEWAY_S = 60
 # 256 bits of key material, matching the digest HS256 signs with.
 MIN_SECRET_BYTES = 32
+# issue #192 D15: a provider-sourced key pair is re-read lazily, on the first
+# verify()/issue() after this many seconds, and also forced by every
+# /-/readyz probe. No timer and no jitter: traffic triggers the re-read, so
+# workers do not expire together.
+SECRET_REFRESH_S = 60.0
+# issue #192 review C1: /-/readyz is unauthenticated and exempt from
+# --rate-limit, so a probe re-reads the provider only when the last read
+# (success or failure) is at least this old; otherwise it reports that read's
+# result. 5 s is half the kubelet's default probe period (10 s), so every
+# real probe still reads, while a loop of probes costs at most one
+# provider read pair per 5 s per worker.
+READYZ_REFRESH_FLOOR_S = 5.0
 # Access tokens are short-lived because the revocation gap equals their
 # lifetime: there is no session store here to check a denylist against, so
 # expiry is the only thing that ends a token's life.
@@ -1222,21 +1234,16 @@ class HmacTokenProvider(TokenProvider):
     constant-time comparison. What is written here is the encoding and the
     verification checklist, neither of which is a cryptographic algorithm.
 
-    Refresh tokens, rotation, and revocation are deliberately absent — all
-    three need a server-side session store this platform does not have, and a
-    refresh flow without one would be a longer-lived access token wearing a
-    different name. `docs/backends.md` records that.
+    Refresh tokens and revocation are deliberately absent; signing-key
+    rotation is supported only as current + previous key (issue #192,
+    `previous_secret`) — refresh and revocation need a server-side session
+    store this platform does not have, and a refresh flow without one would
+    be a longer-lived access token wearing a different name.
+    `docs/backends.md` records that.
     """
 
-    def __init__(self, secret, issuer=None):
-        if isinstance(secret, str):
-            secret = secret.encode("utf-8")
-        # Measured in bytes, not characters: "é" * 16 is 16 characters and 32
-        # bytes of key material, and it is the bytes that HMAC consumes.
-        if len(secret) < MIN_SECRET_BYTES:
-            raise TokenError(
-                "the JWT signing secret must be at least %d bytes, got %d"
-                % (MIN_SECRET_BYTES, len(secret)))
+    def __init__(self, secret, issuer=None, previous_secret=None):
+        self._set_keys(secret, previous_secret)
         # issue #119b, D3: `issuer` replaces the module-level `ISSUER` hard-
         # coding. `None` (the default, e.g. `--jwt-issuer` unset) keeps the
         # pre-existing `"lnpl"` behavior byte-identical — the module constant
@@ -1256,7 +1263,26 @@ class HmacTokenProvider(TokenProvider):
         # `lnpl.tokens` SPI provider built on this same checklist carry its
         # own allowlist without this method changing.
         self._accepted_algs = ACCEPTED_ALGS
-        self._secret = secret
+
+    def _set_keys(self, current, previous):
+        """Validate both keys, then install them as ONE tuple, so a
+        concurrent verify() sees either the old pair or the new pair, never
+        a mix; on error the old pair stays (issue #192 D14)."""
+        if isinstance(current, str):
+            current = current.encode("utf-8")
+        if isinstance(previous, str):
+            previous = previous.encode("utf-8")
+        # Measured in bytes, not characters: "é" * 16 is 16 characters and 32
+        # bytes of key material, and it is the bytes that HMAC consumes.
+        if len(current) < MIN_SECRET_BYTES:
+            raise TokenError(
+                "the JWT signing secret must be at least %d bytes, got %d"
+                % (MIN_SECRET_BYTES, len(current)))
+        if previous is not None and len(previous) < MIN_SECRET_BYTES:
+            raise TokenError(
+                "the previous JWT signing secret must be at least %d bytes, "
+                "got %d" % (MIN_SECRET_BYTES, len(previous)))
+        self._keys = (current, previous)
 
     # -- contract ----------------------------------------------------------
 
@@ -1331,14 +1357,119 @@ class HmacTokenProvider(TokenProvider):
         `RepositoryDriverTCK`'s `_NoOpRollbackDriver` uses against
         `rollback()`. The call site in `verify()` did not move, so this is
         not a checklist-order change: the algorithm is still settled first,
-        this still runs before any claim is trusted."""
-        expected = self._sign("%s.%s" % (encoded_header, encoded_claims))
-        if not hmac.compare_digest(expected, _b64u_decode(encoded_signature)):
+        this still runs before any claim is trusted. The previous key
+        (issue #192) is accepted for verification only; both MACs are
+        always computed, with no early exit."""
+        given = _b64u_decode(encoded_signature)
+        signing_input = "%s.%s" % (encoded_header, encoded_claims)
+        matched = False
+        for key in self._keys:
+            if key is not None and hmac.compare_digest(
+                    self._sign(signing_input, key), given):
+                matched = True
+        if not matched:
             raise TokenError("token signature does not verify")
 
-    def _sign(self, signing_input):
-        return hmac.new(self._secret, signing_input.encode("ascii"),
+    def _sign(self, signing_input, key=None):
+        key = self._keys[0] if key is None else key
+        return hmac.new(key, signing_input.encode("ascii"),
                         hashlib.sha256).digest()
+
+
+class RotatingHmacTokenProvider(HmacTokenProvider):
+    """An `HmacTokenProvider` whose current + previous key come from a
+    `SecretProvider` (issue #192 D15). The pair is re-read lazily on the
+    first verify()/issue() once `refresh_s` seconds have passed (single-
+    flight: a thread that cannot take the lock keeps the current keys), on
+    every `refresh_keys()`, and by `refresh_for_probe()` (/-/readyz) when the
+    last read is at least `READYZ_REFRESH_FLOOR_S` old; a failed lazy re-read
+    keeps the last good keys silently. TokenError (a DriverError) from a
+    short value is also kept out."""
+
+    def __init__(self, secret_provider, key, issuer=None,
+                 refresh_s=SECRET_REFRESH_S, monotonic=time.monotonic):
+        self._secret_provider = secret_provider
+        self._secret_key = key
+        self._refresh_s = refresh_s
+        self._monotonic = monotonic
+        self._refresh_lock = threading.Lock()
+        self._closed = False
+        current, previous = self._read_pair()
+        super().__init__(current, issuer=issuer, previous_secret=previous)
+        self._read_at = monotonic()
+        self._last_read_ok = True
+
+    def _read_pair(self):
+        try:
+            current = self._secret_provider.get(self._secret_key)
+            previous = self._secret_provider.get_previous(self._secret_key)
+        except Exception:
+            raise DriverError(
+                "the secret provider failed to return the secret") from None
+        if not isinstance(current, bytes) or (
+                previous is not None and not isinstance(previous, bytes)):
+            raise DriverError(
+                "the secret provider returned a value that is not bytes")
+        return current, previous
+
+    def refresh_keys(self):
+        """Re-read now (blocking). Raises the value-free DriverError /
+        TokenError on failure; the keys are unchanged then."""
+        with self._refresh_lock:
+            self._read_and_install()
+
+    def refresh_for_probe(self, floor_s=READYZ_REFRESH_FLOOR_S):
+        """/-/readyz check 5 (issue #192 D16, review C1): re-read unless
+        the last read (success or failure) is younger than `floor_s`, and
+        return whether the last read succeeded. Never raises."""
+        with self._refresh_lock:
+            if self._monotonic() - self._read_at >= floor_s:
+                try:
+                    self._read_and_install()
+                except DriverError:
+                    pass
+            return self._last_read_ok
+
+    def _read_and_install(self):
+        """Stamp, read, install; record the outcome. Caller holds the lock."""
+        self._read_at = self._monotonic()
+        try:
+            current, previous = self._read_pair()
+            self._set_keys(current, previous)
+        except DriverError:
+            self._last_read_ok = False
+            raise
+        self._last_read_ok = True
+
+    def _refresh_if_stale(self):
+        if self._monotonic() - self._read_at < self._refresh_s:
+            return
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
+            try:
+                self._read_and_install()
+            except DriverError:
+                pass  # last good keys stay; /-/readyz reports `secret-provider`
+        finally:
+            self._refresh_lock.release()
+
+    def issue(self, subject, audience, ttl_ms=None, role=None):
+        self._refresh_if_stale()
+        return super().issue(subject, audience, ttl_ms=ttl_ms, role=role)
+
+    def verify(self, token, audience):
+        self._refresh_if_stale()
+        return super().verify(token, audience)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._secret_provider.close()
+        except Exception:
+            pass
 
 
 def audience_for_path(path):

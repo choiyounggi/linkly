@@ -37,9 +37,10 @@ import uuid
 from importlib import metadata as importlib_metadata
 
 from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
-                      TokenError, _http_capabilities, _is_url_literal,
-                      audience_for_path, open_cache, open_network,
-                      open_repository, open_token_provider)
+                      RotatingHmacTokenProvider, TokenError,
+                      _http_capabilities, _is_url_literal, audience_for_path,
+                      open_cache, open_network, open_repository,
+                      open_secret_provider, open_token_provider)
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
 from .condition import PAYLOAD_NAMESPACE
@@ -1696,7 +1697,7 @@ class LnplWsgiApp:
     def _readyz(self, start_response):
         """issue #110, D4/D5/D11: readiness. Shutdown (D11) is checked
         first and short-circuits the rest — a server told to drain has
-        nothing left worth probing. Otherwise the closed list of four
+        nothing left worth probing. Otherwise the closed list of five
         (`_readyz_broken`). 503 + problem+json naming every broken check:
         unlike 401/403 this is operator-facing, not attacker-facing, so
         D5 does not withhold the specifics the way M3a/M3b do.
@@ -1721,7 +1722,7 @@ class LnplWsgiApp:
                               content_type="application/json")
 
     def _readyz_broken(self):
-        """issue #110, D4's closed list of four, by name — extending this
+        """issue #110, D4's closed list of five, by name — extending this
         list is a decision (D4 says so explicitly), not a one-line patch:
 
           1. routing<->OpenAPI contract  — `build_routes` already asserted
@@ -1734,6 +1735,13 @@ class LnplWsgiApp:
           4. `--network http`'s logical-name endpoint mapping is resolved
              — like (1), `_resolve_network` already asserted this at
              construction time (`WsgiConfigError` otherwise).
+          5. a provider-sourced JWT secret (issue #192) re-reads
+             current+previous from its lnpl.secrets provider -- the same read
+             verification depends on -- unless the last read (success or
+             failure) is younger than READYZ_REFRESH_FLOOR_S (5 s), in which
+             case that read's result is reported without a provider call
+             (review C1: readyz is unauthenticated); failure keeps the last
+             good keys and reports `secret-provider`.
 
         Returns the broken ones' names, in the order above; empty means
         ready.
@@ -1748,6 +1756,9 @@ class LnplWsgiApp:
                 repository.close()
         if self.jwt_secret_env and not os.environ.get(self.jwt_secret_env):
             broken.append("jwt-secret-env")
+        if (isinstance(self.token_provider, RotatingHmacTokenProvider)
+                and not self.token_provider.refresh_for_probe()):
+            broken.append("secret-provider")
         return broken
 
     def _metrics(self, start_response):
@@ -2524,6 +2535,26 @@ def _read_secret_file(raw_path, role):
     return data
 
 
+def _build_rotating_token_provider(ref, role, issuer=None):
+    """issue #192 D17, shared by cmd_serve and build_app: open the
+    `lnpl.secrets` provider `ref` names and build a RotatingHmacTokenProvider
+    over `ref.key`. Every failure is a WsgiConfigError with no cause and no
+    driver text (a driver message may hold a URL or a value); a provider
+    opened before the failure is closed."""
+    try:
+        provider = open_secret_provider(ref.provider)
+    except (ValueError, DriverError) as exc:
+        raise WsgiConfigError("lnpl.toml secrets.jwt: %s" % exc) from None
+    try:
+        return RotatingHmacTokenProvider(provider, ref.key, issuer=issuer)
+    except DriverError as exc:
+        try:
+            provider.close()
+        except Exception:
+            pass
+        raise WsgiConfigError("%s (from %s)" % (exc, role)) from None
+
+
 @dataclasses.dataclass(frozen=True)
 class JwtSecretSource:
     """issue #192 D6: where the JWT signing secret comes from. kind is
@@ -2548,12 +2579,15 @@ def _resolve_jwt_secret_source(env_name, file_path, cfg, env_role, file_role):
         return JwtSecretSource("env", env_name, env_role)
     if file_path is not None:
         return JwtSecretSource("file", file_path, file_role)
-    from .config import SecretFileRef
+    from .config import SecretFileRef, SecretProviderRef
     value = (getattr(cfg, "secrets", None) or {}).get("jwt")
     if isinstance(value, str):
         return JwtSecretSource("env", value, "lnpl.toml secrets.jwt")
     if isinstance(value, SecretFileRef):
         return JwtSecretSource("file", value.path, "lnpl.toml secrets.jwt.file")
+    if isinstance(value, SecretProviderRef):
+        return JwtSecretSource("provider", value,
+                               "lnpl.toml secrets.jwt provider %r" % value.provider)
     return None
 
 
@@ -2657,6 +2691,13 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     refused together; either one beats lnpl.toml's `[*.secrets].jwt`,
     whatever its form.
 
+    Provider source (issue #192, config-only): lnpl.toml
+    `jwt = { provider = "<name>", key = "<key>" }` opens that registered
+    `lnpl.secrets` provider (hmac only) and verifies with its current and
+    previous key, re-read after 60 s on verify and on a /-/readyz probe
+    (at most once per 5 s); this path has no close hook, so the provider lives for the
+    process.
+
     LNPL_EXAMPLE_UNUSED: a name this docstring mentions and build_app
     never reads, kept here only so the parity test's reverse red-proof
     has a name it can rely on staying docstring-only.
@@ -2755,6 +2796,10 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
         except TokenError as exc:
             raise WsgiConfigError(
                 "%s (from %s)" % (exc, secret_source.role)) from None
+    elif (secret_source is not None and secret_source.kind == "provider"
+            and (token_provider_name or "hmac") == "hmac"):
+        token_provider = _build_rotating_token_provider(
+            secret_source.value, secret_source.role, issuer=jwt_issuer)
     else:
         try:
             token_provider = _resolve_token_provider(

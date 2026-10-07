@@ -822,5 +822,218 @@ class ConfigCheckSecretFileTest(_ServeSecretTestCase):
                               "cannot be read\n")
 
 
+SECRETS_GROUP = "lnpl.secrets"
+
+
+def _secrets_registered(*named_factories):
+    """Patch entry-point discovery group-aware: `lnpl.secrets` returns the
+    given (name, fixture factory) registrations, every other group none."""
+    from importlib import metadata as importlib_metadata
+    from unittest import mock
+
+    from lnpl import drivers as drivers_module
+    eps = [importlib_metadata.EntryPoint(
+        name=name, value="tests.secret_spi_fixture:%s" % factory,
+        group=SECRETS_GROUP) for name, factory in named_factories]
+
+    def entry_points(group=None, **_kwargs):
+        return [ep for ep in eps if ep.group == group]
+
+    return mock.patch.object(drivers_module.importlib_metadata,
+                             "entry_points", entry_points)
+
+
+DEMO_SECRET = ("demo", "make_demo_secret_provider")
+
+
+class _SecretProviderFixtureCase(_ServeSecretTestCase):
+    def setUp(self):
+        super().setUp()
+        from tests import secret_spi_fixture
+        self.fixture = secret_spi_fixture
+        secret_spi_fixture.INSTANCES.clear()
+
+    def provider_toml(self, provider, key="jwt", extra=""):
+        return self.write(
+            "lnpl.toml", '[default.secrets]\njwt = { provider = "%s", key = "%s" }\n%s'
+            % (provider, key, extra))
+
+
+class ServeSecretProviderTest(_SecretProviderFixtureCase):
+    """issue #192 D17 on the serve path: lnpl.toml's provider form builds a
+    RotatingHmacTokenProvider, provider failures are one value-free
+    `error:` line with rc 2, and the provider is closed at shutdown."""
+
+    def test_normal_provider_secret_verifies_and_is_closed_at_shutdown(self):
+        from lnpl.drivers import RotatingHmacTokenProvider
+        from tests.secret_spi_fixture import DEMO_SECRET_K0
+        with _secrets_registered(DEMO_SECRET):
+            rc, out, err, factory = self._mocked_serve(
+                "--config", self.provider_toml("demo"))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("jwt=verified", out)
+        kwargs = factory.call_args.kwargs
+        self.assertIsNone(kwargs["jwt_secret_env"])
+        self.assertIsInstance(kwargs["token_provider"], RotatingHmacTokenProvider)
+        self.assert_verifies_only(kwargs["token_provider"], DEMO_SECRET_K0,
+                                  OTHER_SECRET)
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def test_error_unregistered_provider_rc2(self):
+        with _secrets_registered():
+            rc, out, err, factory = self._mocked_serve(
+                "--config", self.provider_toml("nope"))
+        line = self.assert_refused(rc, out, err, factory)
+        self.assertEqual(
+            line, "error: lnpl.toml secrets.jwt: unknown secret provider 'nope' "
+                  "(built-in: env, file; registered entry-points: none)")
+
+    def test_error_shadowed_builtin_rc2(self):
+        with _secrets_registered(("file", "make_demo_secret_provider")):
+            rc, out, err, factory = self._mocked_serve(
+                "--config", self.provider_toml("file"))
+        line = self.assert_refused(rc, out, err, factory)
+        self.assertIn("attempts to shadow the built-in secret source 'file'", line)
+        self.assertEqual(self.fixture.INSTANCES, [])
+
+    def test_error_raising_provider_rc2_value_free(self):
+        with _secrets_registered(("raising", "make_raising_secret_provider")):
+            rc, out, err, factory = self._mocked_serve(
+                "--config", self.provider_toml("raising"))
+        line = self.assert_refused(rc, out, err, factory)
+        self.assertEqual(
+            line, "error: the secret provider failed to return the secret "
+                  "(from lnpl.toml secrets.jwt provider 'raising')")
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def test_boundary_flag_file_beats_config_provider(self):
+        from lnpl.drivers import HmacTokenProvider
+        with _secrets_registered(DEMO_SECRET):
+            rc, _out, err, factory = self._mocked_serve(
+                "--config", self.provider_toml("demo"),
+                "--jwt-secret-file", self.secret_file(FILE_SECRET))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.fixture.INSTANCES, [])
+        provider = factory.call_args.kwargs["token_provider"]
+        self.assertIs(type(provider), HmacTokenProvider)
+        self.assert_verifies_only(provider, FILE_SECRET, OTHER_SECRET)
+
+
+def make_short_previous_secret_provider():
+    """A provider whose previous `jwt` value is too short (9 bytes)."""
+    from tests import secret_spi_fixture
+    provider = secret_spi_fixture.DemoSecretProvider(
+        {"jwt": secret_spi_fixture.DEMO_SECRET_K0})
+    provider.previous["jwt"] = b"FAKE-SECR"
+    secret_spi_fixture.INSTANCES.append(provider)
+    return provider
+
+
+def make_str_secret_provider():
+    """A provider that breaks the bytes-only contract (returns a str)."""
+    from tests import secret_spi_fixture
+    provider = secret_spi_fixture.DemoSecretProvider(
+        {"jwt": "FAKE-SECRET-192-a-str-not-bytes-aaaaaaaaa"})
+    secret_spi_fixture.INSTANCES.append(provider)
+    return provider
+
+
+class ConfigCheckSecretProviderTest(_SecretProviderFixtureCase):
+    """issue #192 D18: `lnpl config check` opens, reads and closes every
+    `{ provider, key }` entry, lists each problem by name only, and checks
+    the length only for `jwt`."""
+
+    def _check(self, toml, *registrations):
+        source = self.write("mod.lnpl", JWT_SOURCE)
+        with _secrets_registered(*registrations):
+            rc, out, err = self.run_cli(["config", "check", source, "--config", toml])
+        self.assertNotIn("FAKE-SECRET-192", out + err)
+        return rc, out, err
+
+    def test_normal_good_provider_prints_ok(self):
+        rc, out, err = self._check(self.provider_toml("demo"), DEMO_SECRET)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "ok\n")
+        self.assertEqual(self.fixture.INSTANCES[-1].get_calls, 1)
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def test_error_unregistered_listed_with_other_problems(self):
+        os.environ.pop("LNPL_T192_UNSET", None)
+        rc, out, err = self._check(
+            self.provider_toml("nope", extra='other = "LNPL_T192_UNSET"\n'))
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertEqual(err.splitlines(), [
+            "error: lnpl.toml secrets.jwt: unknown secret provider 'nope' "
+            "(built-in: env, file; registered entry-points: none)",
+            "error: lnpl.toml secrets.other names LNPL_T192_UNSET, which is not "
+            "set in the environment",
+        ])
+
+    def test_error_raising_provider_value_free(self):
+        rc, _out, err = self._check(
+            self.provider_toml("raising"),
+            ("raising", "make_raising_secret_provider"))
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err, "error: the secret provider failed to return the secret "
+                 "(from lnpl.toml secrets.jwt provider 'raising')\n")
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def test_error_short_jwt_value(self):
+        rc, _out, err = self._check(
+            self.provider_toml("short"), ("short", "make_short_secret_provider"))
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err, "error: the JWT signing secret must be at least 32 bytes, got 21 "
+                 "(from lnpl.toml secrets.jwt provider 'short')\n")
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def _local(self, name, factory):
+        """Register a factory defined in this module (not the fixture)."""
+        from importlib import metadata as importlib_metadata
+        from unittest import mock
+
+        from lnpl import drivers as drivers_module
+        ep = importlib_metadata.EntryPoint(
+            name=name, value="%s:%s" % (__name__, factory), group=SECRETS_GROUP)
+        return mock.patch.object(
+            drivers_module.importlib_metadata, "entry_points",
+            lambda group=None, **_kw: [ep] if group == SECRETS_GROUP else [])
+
+    def test_error_short_previous_jwt_value(self):
+        source = self.write("mod.lnpl", JWT_SOURCE)
+        with self._local("prev", "make_short_previous_secret_provider"):
+            rc, out, err = self.run_cli(["config", "check", source, "--config",
+                                         self.provider_toml("prev")])
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err, "error: the previous JWT signing secret must be at least 32 "
+                 "bytes, got 9 (from lnpl.toml secrets.jwt provider 'prev')\n")
+        self.assertNotIn("FAKE-SECR", out + err)
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def test_error_non_bytes_value(self):
+        source = self.write("mod.lnpl", JWT_SOURCE)
+        with self._local("strs", "make_str_secret_provider"):
+            rc, out, err = self.run_cli(["config", "check", source, "--config",
+                                         self.provider_toml("strs")])
+        self.assertEqual(rc, 2)
+        self.assertEqual(
+            err, "error: the secret provider returned a value that is not bytes "
+                 "(from lnpl.toml secrets.jwt provider 'strs')\n")
+        self.assertNotIn("FAKE-SECRET-192", out + err)
+
+    def test_boundary_short_value_under_another_key_is_ok(self):
+        toml = self.write(
+            "lnpl.toml", '[default.secrets]\njwt = { file = "%s" }\n'
+            'other = { provider = "short", key = "jwt" }\n'
+            % self.secret_file(FILE_SECRET))
+        rc, out, err = self._check(toml, ("short", "make_short_secret_provider"))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "ok\n")
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

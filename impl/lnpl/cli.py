@@ -20,9 +20,11 @@ from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
                           extension_diagnostic_records,
                           format_lines_from_records, to_records)
 from .drivers import (MIN_SECRET_BYTES, DriverError, PublishRejected,
-                      TokenError, audience_for_path, open_cache, open_network,
-                      open_publisher, open_repository, open_token_provider,
-                      _http_capabilities, _is_url_literal)
+                      RotatingHmacTokenProvider, TokenError,
+                      audience_for_path, open_cache, open_network,
+                      open_publisher, open_repository, open_secret_provider,
+                      open_token_provider, _http_capabilities,
+                      _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
 from .lexer import LexError, RESERVED
@@ -38,7 +40,7 @@ from .cost_model import cost_model_document
 from .grammar import grammar_json_document, render_gbnf
 from .vocab import vocabulary_document
 from .agents import run_cycle
-from .config import SecretFileRef, load_config
+from .config import SecretFileRef, SecretProviderRef, load_config
 from .differential import DifferentialError, verify as verify_modes
 from .generators import (GeneratorError, parse_generator_options,
                          resolve_generator, run_generator)
@@ -48,8 +50,8 @@ from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
                    resolve_schedule_triggers, _schedule_events,
                    _validate_rate_limit, _merge_endpoint_args,
-                   _read_secret_file, _resolve_backend,
-                   _resolve_jwt_secret_source)
+                   _build_rotating_token_provider, _read_secret_file,
+                   _resolve_backend, _resolve_jwt_secret_source)
 from .spec import SpecError, extract, run_manifest
 
 
@@ -808,6 +810,19 @@ def cmd_serve(args):
         jwt_secret_env = None
         token_provider = _token_provider_from_file(
             secret_source.value, secret_source.role, issuer, provider_name)
+    elif secret_source is not None and secret_source.kind == "provider":
+        # issue #192 D17: config-only, hmac-only; a non-hmac --token-provider
+        # ignores the source and the provider is never opened (D8's rule).
+        jwt_secret_env = None
+        if (provider_name or "hmac") != "hmac":
+            token_provider = _token_provider(None, issuer, provider_name)
+        else:
+            try:
+                token_provider = _build_rotating_token_provider(
+                    secret_source.value, secret_source.role, issuer=issuer)
+            except WsgiConfigError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 2
     else:
         jwt_secret_env = secret_source.value if secret_source is not None else None
         token_provider = _token_provider(jwt_secret_env, issuer, provider_name)
@@ -867,6 +882,8 @@ def cmd_serve(args):
         pass
     finally:
         server.server_close()
+        if isinstance(token_provider, RotatingHmacTokenProvider):
+            token_provider.close()
     return 0
 
 
@@ -1327,8 +1344,9 @@ def cmd_config_check(args):
     """`lnpl config check <source...> [--profile P] [--config PATH]` —
     issue #114 D8: judge, before `lnpl serve` would bind a socket, whether
     (a) every NetworkCall logical target resolves to an endpoint, (b) every
-    `lnpl.toml` `[*.secrets]` entry names a variable that is set or a
-    readable, non-empty file (issue #192), and (c) a `security jwt`
+    `lnpl.toml` `[*.secrets]` entry names a variable that is set, a
+    readable, non-empty file, or a registered provider that returns the
+    value (issue #192; opened, read and closed), and (c) a `security jwt`
     declaration has a secret mapped. Every failing item is printed — unlike `_open_endpoints`, which stops at the first,
     because `cmd_serve` only needs one reason to refuse to start, but an
     operator running this diagnostic wants the whole list at once.
@@ -1381,6 +1399,44 @@ def cmd_config_check(args):
                 problems.append(
                     "the JWT signing secret must be at least %d bytes, got %d "
                     "(from lnpl.toml secrets.jwt.file)" % (MIN_SECRET_BYTES, len(data)))
+        elif isinstance(value, SecretProviderRef):
+            # issue #192 D18: the same open + read `lnpl serve` does, with
+            # the same value-free texts; every opened provider is closed.
+            role = "lnpl.toml secrets.%s provider %r" % (key, value.provider)
+            try:
+                provider = open_secret_provider(value.provider)
+            except (ValueError, DriverError) as exc:
+                problems.append("lnpl.toml secrets.%s: %s" % (key, exc))
+                continue
+            try:
+                current = provider.get(value.key)
+                previous = provider.get_previous(value.key)
+            except Exception:
+                problems.append(
+                    "the secret provider failed to return the secret (from %s)"
+                    % role)
+                continue
+            finally:
+                try:
+                    provider.close()
+                except Exception:
+                    pass
+            if not isinstance(current, bytes) or (
+                    previous is not None and not isinstance(previous, bytes)):
+                problems.append(
+                    "the secret provider returned a value that is not bytes "
+                    "(from %s)" % role)
+                continue
+            if key == "jwt" and len(current) < MIN_SECRET_BYTES:
+                problems.append(
+                    "the JWT signing secret must be at least %d bytes, got %d "
+                    "(from %s)" % (MIN_SECRET_BYTES, len(current), role))
+            if (key == "jwt" and previous is not None
+                    and len(previous) < MIN_SECRET_BYTES):
+                problems.append(
+                    "the previous JWT signing secret must be at least %d "
+                    "bytes, got %d (from %s)"
+                    % (MIN_SECRET_BYTES, len(previous), role))
 
     if _declares_jwt(doc) and "jwt" not in cfg.secrets:
         problems.append(

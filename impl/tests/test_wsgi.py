@@ -18,6 +18,7 @@ import io
 import json
 import os
 import threading
+import traceback
 import unittest
 from importlib import metadata as importlib_metadata
 from unittest import mock
@@ -1670,6 +1671,115 @@ class BuildAppSecretFileTest(_EnvIsolatedTest):
         status, _h, body = call_wsgi(app, "GET", "/-/readyz")
         self.assertEqual(status, 200)
         self.assertNotIn("jwt-secret-env", json.dumps(body))
+
+
+SECRETS_GROUP = "lnpl.secrets"
+
+
+def _secret_ep(name, factory):
+    return _spi_entry_point(
+        name, "tests.secret_spi_fixture:%s" % factory, SECRETS_GROUP)
+
+
+DEMO_SECRET_EP = _secret_ep("demo", "make_demo_secret_provider")
+
+
+class BuildAppSecretProviderTest(_EnvIsolatedTest):
+    """issue #192 D17 on the build_app path: lnpl.toml `jwt = { provider,
+    key }` builds a RotatingHmacTokenProvider that verifies the provider's
+    current and previous keys; every provider failure is a value-free
+    WsgiConfigError with no cause; an explicit file still wins."""
+
+    def setUp(self):
+        super().setUp()
+        from tests import secret_spi_fixture
+        self.fixture = secret_spi_fixture
+        secret_spi_fixture.INSTANCES.clear()
+
+    def _toml(self, provider):
+        return _write_toml(
+            self, '[default.secrets]\njwt = { provider = "%s", key = "jwt" }\n'
+            % provider)
+
+    def _build(self, provider, *entry_points, **kwargs):
+        with _spi_registered(*entry_points):
+            return wsgi.build_app(sources=[_write_tmp(self, JWT_SRC)],
+                                  config=self._toml(provider), **kwargs)
+
+    def _refused(self, provider, *entry_points):
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            self._build(provider, *entry_points)
+        exc = cm.exception
+        self.assertIsNone(exc.__cause__)
+        formatted = "".join(traceback.format_exception(type(exc), exc,
+                                                       exc.__traceback__))
+        self.assertNotIn("FAKE-SECRET-192", formatted)
+        return str(exc)
+
+    def _status(self, app, secret):
+        from lnpl.drivers import audience_for_path
+        token = HmacTokenProvider(secret).issue("u", audience_for_path(JWT_PATH))
+        status, _h, _body = call_wsgi(
+            app, "POST", JWT_PATH, body=b"{}",
+            headers={"Authorization": "Bearer " + token,
+                     "Content-Type": "application/json"})
+        return status
+
+    def test_normal_current_and_previous_keys_verify(self):
+        from lnpl.drivers import RotatingHmacTokenProvider
+        from tests.secret_spi_fixture import (DEMO_SECRET_K0, DEMO_SECRET_K1,
+                                              DEMO_SECRET_K2)
+        app = self._build("demo", DEMO_SECRET_EP)
+        self.assertIsInstance(app.token_provider, RotatingHmacTokenProvider)
+        self.assertIsNone(app.jwt_secret_env)
+        self.assertEqual(self._status(app, DEMO_SECRET_K0), 200)
+
+        self.fixture.INSTANCES[-1].rotate("jwt", DEMO_SECRET_K1)
+        app.token_provider.refresh_keys()
+
+        self.assertEqual(self._status(app, DEMO_SECRET_K1), 200)
+        self.assertEqual(self._status(app, DEMO_SECRET_K0), 200)
+        self.assertEqual(self._status(app, DEMO_SECRET_K2), 401)
+
+    def test_error_unregistered_provider(self):
+        text = self._refused("nope")
+        self.assertIn("lnpl.toml secrets.jwt: unknown secret provider 'nope'", text)
+        self.assertIn("env, file", text)
+
+    def test_error_raising_provider_is_value_free(self):
+        text = self._refused(
+            "raising", _secret_ep("raising", "make_raising_secret_provider"))
+        self.assertEqual(
+            text, "the secret provider failed to return the secret "
+                  "(from lnpl.toml secrets.jwt provider 'raising')")
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def test_error_short_provider_value(self):
+        text = self._refused(
+            "short", _secret_ep("short", "make_short_secret_provider"))
+        self.assertEqual(
+            text, "the JWT signing secret must be at least 32 bytes, got 21 "
+                  "(from lnpl.toml secrets.jwt provider 'short')")
+        self.assertEqual(self.fixture.INSTANCES[-1].close_calls, 1)
+
+    def test_error_broken_factory(self):
+        text = self._refused("broken", _secret_ep("broken", "make_broken_factory"))
+        self.assertIn("failed to start (RuntimeError)", text)
+        self.assertEqual(self.fixture.INSTANCES, [])
+
+    def test_normal_explicit_file_beats_config_provider(self):
+        app = self._build("demo", DEMO_SECRET_EP,
+                          jwt_secret_file=_secret_file(self, FILE_SECRET))
+        self.assertEqual(self.fixture.INSTANCES, [])
+        self.assertIs(type(app.token_provider), HmacTokenProvider)
+        self.assertEqual(self._status(app, FILE_SECRET), 200)
+        self.assertEqual(self._status(app, OTHER_SECRET), 401)
+
+    def test_boundary_non_hmac_token_provider_leaves_provider_unopened(self):
+        app = self._build("demo", DEMO_SECRET_EP, EXT_TOKEN_EP,
+                          token_provider="extprov")
+        self.assertIsInstance(app.token_provider, DemoTokenProvider)
+        self.assertEqual(self.fixture.INSTANCES, [])
 
 
 if __name__ == "__main__":

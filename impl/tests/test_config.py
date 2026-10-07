@@ -10,7 +10,8 @@ import shutil
 import tempfile
 import unittest
 
-from lnpl.config import ResolvedConfig, SecretFileRef, load_config
+from lnpl.config import (ResolvedConfig, SecretFileRef, SecretProviderRef,
+                         load_config)
 from lnpl.serve import WsgiConfigError
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -356,6 +357,32 @@ jwt = { file = "/run/secrets/jwt" }
         self.assertEqual(load_config(path=path).secrets["jwt"], "LNPL_T192_ENV")
         self.assertEqual(load_config(path=path, profile="prod").secrets["jwt"],
                          SecretFileRef("/run/secrets/jwt"))
+
+    PROVIDER_FORM = '{ provider = "<name>", key = "<key>" }'
+
+    def test_normal_provider_form_loads_a_ref(self):
+        cfg = self._load('jwt = { provider = "demo", key = "kv/app/jwt" }')
+        self.assertEqual(cfg.secrets["jwt"],
+                         SecretProviderRef("demo", "kv/app/jwt"))
+
+    def test_error_provider_without_key(self):
+        text = self._refused('jwt = { provider = "demo" }')
+        self.assertIn("got key(s) provider", text)
+        self.assertIn(self.PROVIDER_FORM, text)
+        self.assertIn(self.FORM, text)
+
+    def test_error_empty_provider_name(self):
+        text = self._refused('jwt = { provider = "", key = "jwt" }')
+        self.assertIn("default.secrets.jwt.provider must be a non-empty string",
+                      text)
+
+    def test_error_provider_with_extra_key(self):
+        text = self._refused('jwt = { provider = "a", key = "b", file = "/c" }')
+        self.assertIn("got key(s) file, key, provider", text)
+
+    def test_boundary_non_string_key_is_refused(self):
+        text = self._refused('jwt = { provider = "demo", key = 42 }')
+        self.assertIn("default.secrets.jwt.key must be a non-empty string", text)
 
 
 class SecretNameEchoTest(ConfigTestCase):

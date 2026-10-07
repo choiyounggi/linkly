@@ -14,6 +14,8 @@ a controlled, in-process set, group-filtered; `EntryPoint.load()` itself is
 never mocked.
 """
 
+import threading
+import time
 import traceback
 import unittest
 from importlib import metadata as importlib_metadata
@@ -21,12 +23,14 @@ from unittest import mock
 
 from lnpl import drivers as drivers_module
 from lnpl.capabilities import capabilities_document
-from lnpl.drivers import (BUILTIN_SECRET_SOURCES, DriverError, SecretProvider,
-                          open_secret_provider)
-from lnpl.testing import SecretProviderTCK
+from lnpl.drivers import (BUILTIN_SECRET_SOURCES, DriverError,
+                          HmacTokenProvider, RotatingHmacTokenProvider,
+                          SecretProvider, TokenError, open_secret_provider)
+from lnpl.testing import SecretProviderTCK, TokenProviderTCK
 
 from tests import secret_spi_fixture
-from tests.secret_spi_fixture import DemoSecretProvider
+from tests.secret_spi_fixture import (DEMO_SECRET_K0, DEMO_SECRET_K1,
+                                      DEMO_SECRET_K2, DemoSecretProvider)
 
 GROUP = drivers_module.SECRETS_ENTRY_POINT_GROUP
 MARKER = "FAKE-SECRET-192"
@@ -324,6 +328,258 @@ class SecretsSlotCatalogTest(unittest.TestCase):
 
         self.assertEqual(slot["builtin"], ["env", "file"])
         self.assertEqual([e["name"] for e in slot["registered"]], ["file"])
+
+
+AUD = "rollup"
+
+
+class HmacPreviousKeyTest(unittest.TestCase):
+    """issue #192 D14: verification accepts the current OR the previous
+    key; signing always uses the current one."""
+
+    def test_normal_previous_key_token_verifies(self):
+        token = HmacTokenProvider(DEMO_SECRET_K0).issue("alice", AUD)
+        provider = HmacTokenProvider(DEMO_SECRET_K1,
+                                     previous_secret=DEMO_SECRET_K0)
+
+        self.assertEqual(provider.verify(token, AUD)["sub"], "alice")
+
+    def test_normal_current_key_token_verifies(self):
+        token = HmacTokenProvider(DEMO_SECRET_K1).issue("bob", AUD)
+        provider = HmacTokenProvider(DEMO_SECRET_K1,
+                                     previous_secret=DEMO_SECRET_K0)
+
+        self.assertEqual(provider.verify(token, AUD)["sub"], "bob")
+
+    def test_error_token_from_neither_key_is_rejected(self):
+        token = HmacTokenProvider(DEMO_SECRET_K2).issue("eve", AUD)
+        provider = HmacTokenProvider(DEMO_SECRET_K1,
+                                     previous_secret=DEMO_SECRET_K0)
+
+        with self.assertRaises(TokenError) as caught:
+            provider.verify(token, AUD)
+        self.assertEqual(str(caught.exception),
+                         "token signature does not verify")
+
+    def test_normal_issue_signs_with_the_current_key_only(self):
+        token = HmacTokenProvider(
+            DEMO_SECRET_K1, previous_secret=DEMO_SECRET_K0).issue("carol", AUD)
+
+        self.assertEqual(
+            HmacTokenProvider(DEMO_SECRET_K1).verify(token, AUD)["sub"], "carol")
+        with self.assertRaises(TokenError):
+            HmacTokenProvider(DEMO_SECRET_K0).verify(token, AUD)
+
+    def test_error_short_previous_is_refused(self):
+        with self.assertRaises(TokenError) as caught:
+            HmacTokenProvider(DEMO_SECRET_K1, previous_secret=b"short")
+        self.assertEqual(
+            str(caught.exception),
+            "the previous JWT signing secret must be at least 32 bytes, got 5")
+
+    def test_boundary_no_previous_is_single_key(self):
+        token = HmacTokenProvider(DEMO_SECRET_K0).issue("dave", AUD)
+
+        with self.assertRaises(TokenError) as caught:
+            HmacTokenProvider(DEMO_SECRET_K1).verify(token, AUD)
+        self.assertEqual(str(caught.exception),
+                         "token signature does not verify")
+
+
+class HmacTwoKeyTokenProviderTCKTest(TokenProviderTCK, unittest.TestCase):
+    """A two-key provider still passes the published token contract."""
+
+    def make_provider(self):
+        return HmacTokenProvider(DEMO_SECRET_K1, previous_secret=DEMO_SECRET_K0)
+
+    def make_foreign_issuer_provider(self):
+        return HmacTokenProvider(DEMO_SECRET_K1, previous_secret=DEMO_SECRET_K0,
+                                 issuer="https://somebody-else.example")
+
+
+class RotatingHmacTokenProviderTest(unittest.TestCase):
+    """issue #192 D15: keys come from a `SecretProvider`; re-read lazily
+    once `refresh_s` (60 s) has passed and on every `refresh_keys()`; a
+    failed re-read keeps the last good keys."""
+
+    def setUp(self):
+        self.now = [0.0]
+        self.source = DemoSecretProvider({"jwt": DEMO_SECRET_K0})
+        self.provider = RotatingHmacTokenProvider(
+            self.source, "jwt", monotonic=lambda: self.now[0])
+
+    @staticmethod
+    def _token(secret):
+        return HmacTokenProvider(secret).issue("alice", AUD)
+
+    def test_normal_startup_reads_current_and_previous_once(self):
+        self.assertEqual(self.source.get_calls, 1)
+        self.assertEqual(
+            self.provider.verify(self._token(DEMO_SECRET_K0), AUD)["sub"],
+            "alice")
+
+    def test_boundary_no_reread_before_the_ttl(self):
+        self.source.rotate("jwt", DEMO_SECRET_K1)
+        self.now[0] = 59.9
+
+        with self.assertRaises(TokenError):
+            self.provider.verify(self._token(DEMO_SECRET_K1), AUD)
+        self.assertEqual(self.source.get_calls, 1)
+
+    def test_normal_reread_at_the_ttl(self):
+        self.source.rotate("jwt", DEMO_SECRET_K1)
+        self.now[0] = 60.0
+
+        self.assertEqual(
+            self.provider.verify(self._token(DEMO_SECRET_K1), AUD)["sub"],
+            "alice")
+        self.assertEqual(
+            self.provider.verify(self._token(DEMO_SECRET_K0), AUD)["sub"],
+            "alice")
+        self.assertEqual(self.source.get_calls, 2)
+
+    def test_error_failed_reread_keeps_the_last_good_keys(self):
+        self.source.fail = True
+        self.now[0] = 60.0
+
+        self.assertEqual(
+            self.provider.verify(self._token(DEMO_SECRET_K0), AUD)["sub"],
+            "alice")
+        self.assertEqual(self.source.get_calls, 2)
+        self.now[0] = 60.1
+        self.provider.verify(self._token(DEMO_SECRET_K0), AUD)
+        self.assertEqual(self.source.get_calls, 2)
+
+    def test_error_refresh_keys_raises_value_free(self):
+        self.source.raise_with = RuntimeError("x FAKE-SECRET-192-CAUSE")
+
+        with self.assertRaises(DriverError) as caught:
+            self.provider.refresh_keys()
+        self.assertEqual(str(caught.exception),
+                         "the secret provider failed to return the secret")
+        self.assertNotIn(MARKER, _formatted(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(
+            self.provider.verify(self._token(DEMO_SECRET_K0), AUD)["sub"],
+            "alice")
+
+    def test_error_non_bytes_value(self):
+        source = DemoSecretProvider(
+            {"jwt": "a str of forty characters............."})
+
+        with self.assertRaises(DriverError) as caught:
+            RotatingHmacTokenProvider(source, "jwt")
+        self.assertEqual(
+            str(caught.exception),
+            "the secret provider returned a value that is not bytes")
+
+    def test_error_short_value_at_startup(self):
+        source = secret_spi_fixture.make_short_secret_provider()
+
+        with self.assertRaises(TokenError) as caught:
+            RotatingHmacTokenProvider(source, "jwt")
+        self.assertEqual(
+            str(caught.exception),
+            "the JWT signing secret must be at least 32 bytes, got 21")
+
+    def test_boundary_issue_before_the_ttl_signs_with_the_old_key(self):
+        self.source.rotate("jwt", DEMO_SECRET_K1)
+        self.now[0] = 59.9
+
+        token = self.provider.issue("alice", AUD)
+
+        self.assertEqual(
+            HmacTokenProvider(DEMO_SECRET_K0).verify(token, AUD)["sub"], "alice")
+        self.assertEqual(self.source.get_calls, 1)
+
+    def test_normal_issue_at_the_ttl_rereads_and_signs_with_the_new_key(self):
+        self.source.rotate("jwt", DEMO_SECRET_K1)
+        self.now[0] = 60.0
+
+        token = self.provider.issue("alice", AUD)
+
+        self.assertEqual(
+            HmacTokenProvider(DEMO_SECRET_K1).verify(token, AUD)["sub"], "alice")
+        with self.assertRaises(TokenError):
+            HmacTokenProvider(DEMO_SECRET_K0).verify(token, AUD)
+        self.assertEqual(self.source.get_calls, 2)
+
+    def test_boundary_close_is_idempotent(self):
+        self.provider.close()
+        self.provider.close()
+
+        self.assertEqual(self.source.close_calls, 1)
+
+
+
+class _GatedSecretProvider(DemoSecretProvider):
+    """A slow provider for the single-flight test: every `get` after the
+    first (startup) blocks until `release` is set, or `timeout_s` passes."""
+
+    def __init__(self, values, timeout_s):
+        super().__init__(values)
+        self.release = threading.Event()
+        self.timeout_s = timeout_s
+
+    def get(self, key):
+        if self.get_calls >= 1:
+            self.release.wait(self.timeout_s)
+        return super().get(key)
+
+
+class RotatingSingleFlightTest(unittest.TestCase):
+    """issue #192 D15 + review C2: when many threads verify through an
+    expired TTL at once, exactly one of them re-reads the provider; the
+    others keep the current keys.
+
+    Two injected delays make the race certain rather than lucky: the clock
+    sleeps on every read once `slow` is set, so every thread passes the
+    staleness check before any thread stamps `_read_at`; and the
+    provider's `get` blocks until every non-reading thread has finished
+    verifying, so no thread can reach the lock after the reader released
+    it. Without the lock every thread re-reads (each `get` then waits out
+    `timeout_s`)."""
+
+    THREADS = 16
+
+    def test_normal_concurrent_verifies_reread_exactly_once(self):
+        now, slow = [0.0], [False]
+
+        def clock():
+            if slow[0]:
+                time.sleep(0.05)
+            return now[0]
+
+        source = _GatedSecretProvider({"jwt": DEMO_SECRET_K0}, timeout_s=2.0)
+        provider = RotatingHmacTokenProvider(source, "jwt", monotonic=clock)
+        token = HmacTokenProvider(DEMO_SECRET_K0).issue("alice", AUD)
+        self.assertEqual(source.get_calls, 1)
+
+        start = threading.Barrier(self.THREADS)
+        done_lock = threading.Lock()
+        done, subjects, errors = [0], [], []
+
+        def worker():
+            start.wait()
+            try:
+                subjects.append(provider.verify(token, AUD)["sub"])
+            except Exception as exc:  # recorded and asserted below
+                errors.append(exc)
+            with done_lock:
+                done[0] += 1
+                if done[0] == self.THREADS - 1:
+                    source.release.set()
+
+        now[0], slow[0] = 60.0, True
+        threads = [threading.Thread(target=worker) for _ in range(self.THREADS)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(subjects, ["alice"] * self.THREADS)
+        self.assertEqual(source.get_calls, 2)
 
 
 if __name__ == "__main__":

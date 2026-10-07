@@ -418,7 +418,7 @@ liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
 
 ### `/-/readyz` — readiness
 
-닫힌 목록 넷만 본다(임의로 늘리지 않는다):
+닫힌 목록 다섯만 본다(임의로 늘리지 않는다):
 
 1. 라우팅↔OpenAPI 대조 통과 여부 — `build_routes`가 기동 시 이미 판정했다
    (실패했다면 `ServeError`로 애초에 뜨지 못했으므로, 이 앱이 존재한다는
@@ -433,8 +433,18 @@ liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
    검사하고, 주지 않으면 검사할 것이 없어 통과한다(이슈 #187).
 4. `--network http`를 썼으면 논리명 endpoint 매핑이 전부 해소돼 있는지 —
    (1)과 같은 이유로, 기동 시 이미 판정된 사실을 노출한다.
+5. `secret-provider` — JWT 시크릿이 `lnpl.secrets` 프로바이더 원천일 때만
+   돈다(이슈 #192). 프로브가 프로바이더에서 현재 키 + 이전 키를 다시
+   읽는다 — 검증이 기대는 바로 그 읽기다. 단 마지막 읽기(성공이든 실패든)가
+   5초(`READYZ_REFRESH_FLOOR_S`)보다 최근이면 프로바이더를 부르지 않고 그
+   읽기의 결과를 그대로 보고한다 — readyz는 인증이 없고 `--rate-limit`에서도
+   빠지므로, 프로브를 반복해 보내도 워커당 5초에 한 번만 읽게 하는 바닥이다
+   (kubelet 기본 프로브 주기 10초의 절반이라 실제 프로브는 매번 읽는다).
+   실패하면 503에 `secret-provider`를 싣고 마지막으로 정상이던 키를 그대로
+   쓰며, 바닥이 지난 뒤 다음 프로브가 읽기에 성공하면 새 키를 설치하고
+   200으로 돌아온다. 본문에는 검사 이름만 실린다.
 
-SIGTERM은 이 넷보다 **먼저** 본다 — 받는 즉시 나머지 검사 없이 503이다.
+SIGTERM은 이 다섯보다 **먼저** 본다 — 받는 즉시 나머지 검사 없이 503이다.
 전부 통과하면 200 `{"status": "ok"}`; 하나라도 깨졌으면 503 +
 `application/problem+json`(`code: "not-ready"`)에 **깨진 검사 이름**을
 `checks`로 싣는다. 401/403(위 M3/M3a/M3b)과 반대 판단이다 — readyz는
@@ -690,6 +700,7 @@ payments = "https://api.example.com/pay"
 [default.secrets]
 jwt = "LNPL_JWT_SECRET"          # 값이 아니라 환경변수 이름
 # jwt = { file = "/run/secrets/jwt" }   # 또는 파일 원천(이슈 #192)
+# jwt = { provider = "vault", key = "kv/app/jwt" }   # 또는 등록된 프로바이더(이슈 #192)
 
 [staging]                        # [default] 위에 얕게(1단) 오버레이
 backend = "sqlite:./staging.db"
@@ -762,17 +773,21 @@ lnpl config check <src>.lnpl... [--profile staging] [--config lnpl.toml]
 진단한다). `{ file = "..." }` 항목은 (b)에서 파일이 있는지, 일반 파일이고
 읽히는지, 비지 않았는지, 65536바이트 이하인지를 보고, `jwt` 키는 32바이트 이상인지까지 본다
 (이슈 #192) — 메시지는 `lnpl.toml secrets.<key>.file`이라는 역할 이름만 싣고
-경로·내용은 싣지 않는다.
+경로·내용은 싣지 않는다. `{ provider = "...", key = "..." }` 항목은 기동과
+같은 방식으로 프로바이더를 열고 현재 키 + 이전 키를 읽은 뒤 닫는다 —
+미등록·로드 실패·읽기 실패·`bytes`가 아닌 값을 보고하고, `jwt` 키는 두 값이
+32바이트 이상인지까지 본다. 메시지는 기동 때와 같은 문구이고 값은 싣지 않는다.
 
-### 시크릿 원천 — 환경변수·파일 (이슈 #192)
+### 시크릿 원천 — 환경변수·파일·프로바이더 (이슈 #192)
 
-JWT 서명 시크릿은 두 원천에서 온다. 어느 쪽이든 설정에 적히는 것은
+JWT 서명 시크릿은 세 원천에서 온다. 어느 쪽이든 설정에 적히는 것은
 **포인터**이고 값이 아니다.
 
 | 원천 | `lnpl serve` | `build_app()` | `lnpl.toml` |
 |------|--------------|---------------|-------------|
 | 환경변수 | `--jwt-secret-env NAME` | `jwt_secret_env` / `LNPL_JWT_SECRET_ENV` | `jwt = "NAME"` |
 | 파일 | `--jwt-secret-file PATH` | `jwt_secret_file` / `LNPL_JWT_SECRET_FILE` | `jwt = { file = "<절대경로>" }` |
+| 프로바이더 | (없음 — 설정 파일 전용) | (없음 — 설정 파일 전용) | `jwt = { provider = "<이름>", key = "<키>" }` |
 
 파일 원천은 Kubernetes/Docker가 마운트한 시크릿 파일을 그대로 읽는다:
 
@@ -813,8 +828,48 @@ JWT 서명 시크릿은 두 원천에서 온다. 어느 쪽이든 설정에 적�
 
 `lnpl.toml`의 `[*.secrets]` 값이 환경변수 이름 모양이 아니면 로드 시점에
 거부하고, 이때 받은 값은 메시지에 싣지 않는다 — 그 자리에 들어온 값이
-시크릿 자체일 수 있기 때문이다. 표 형태가 `{ file = "..." }`가 아니면(다른
-키, 빈 표) 받은 키 이름과 허용 형태만 알린다.
+시크릿 자체일 수 있기 때문이다. 표 형태가 `{ file = "..." }`도
+`{ provider = "...", key = "..." }`도 아니면(다른 키, 빈 표, 섞인 키) 받은 키
+이름과 허용 형태만 알린다.
+
+#### 프로바이더 원천과 키 교체
+
+`jwt = { provider = "<이름>", key = "<키>" }`는 `lnpl.secrets`로 등록된
+외부 프로바이더(Vault, 클라우드 시크릿 매니저 등 — 등록과 계약은
+`docs/backends.md` §16)에서 키를 읽는다. CLI 플래그나 환경변수는 없다 —
+설정 파일 전용이다. 우선순위는 위 표 그대로다: `--jwt-secret-env`/
+`--jwt-secret-file`(또는 그 `build_app()` 짝)을 주면 그쪽이 이기고
+프로바이더는 열리지도 않는다. `--token-provider`가 `hmac`이 아니어도
+프로바이더를 열지 않는다.
+
+- **교체(무중단 회전).** 검증은 프로바이더의 **현재 키와 이전 키** 둘 다
+  받아들이고, 서명(`issue`)은 현재 키로만 한다. 이전 키는 하나만 둔다.
+- **재조회 규칙.** 기동 시 한 번 읽고, 이후 60초(`SECRET_REFRESH_S`)가 지난
+  뒤 처음 오는 검증·발급 요청이 다시 읽는다(한 번에 한 스레드만 읽고, 나머지는
+  기존 키로 계속 처리한다). 그와 별개로 `/-/readyz` 프로브도 다시 읽는다
+  (검사 ⑤, 마지막 읽기가 5초보다 최근이면 그 결과를 재사용). 재조회가 실패하면 마지막으로 정상이던 키를 계속 쓰고, readyz가
+  `secret-provider`로 503을 낸다. 타이머 스레드는 없다 — 트래픽이 재조회를
+  일으키므로 워커들이 동시에 만료되지 않는다.
+- **운영 절차.** 프로바이더에서 키를 바꾼다(새 값이 현재, 직전 값이 이전).
+  그다음 **최소 60초**를 기다린 뒤에 발급자가 새 키로 서명하게 한다 — 그 전에는
+  아직 새 키를 읽지 않은 워커가 새 토큰을 거부할 수 있다.
+- **종료.** `lnpl serve`는 종료 시 프로바이더를 `close()`한다. `build_app()`
+  경로에는 종료 훅이 없으므로 프로바이더가 프로세스와 수명을 같이한다.
+
+프로바이더 실패는 기동을 막는다(서버 경로 `error: ...` 한 줄 + rc 2,
+`build_app()`은 원인 체인 없는 `WsgiConfigError`). 드라이버 예외의 문구는
+절대 옮겨 싣지 않는다 — 드라이버 메시지에 URL이나 값이 들어 있을 수 있다:
+
+| 상황 | 메시지 |
+|------|--------|
+| 미등록 이름 | `lnpl.toml secrets.jwt: unknown secret provider '<이름>' (built-in: env, file; registered entry-points: ...)` |
+| 내장 이름(`env`, `file`)을 가리는 등록 | `lnpl.toml secrets.jwt: entry-point '<이름>' (registered via '...') attempts to shadow the built-in secret source '<이름>'; ...` |
+| 내장 이름(`env`, `file`)을 프로바이더로 지정 | `lnpl.toml secrets.jwt: secret provider '<이름>' is a built-in source, not a registered provider — ...` |
+| entry-point 로드 실패 | `lnpl.toml secrets.jwt: secret provider '<이름>' registered via entry-point '...' failed to load (<예외 타입>)` |
+| 팩토리 실패 | `lnpl.toml secrets.jwt: secret provider '<이름>' failed to start (<예외 타입>)` |
+| 읽기 실패 | `the secret provider failed to return the secret (from lnpl.toml secrets.jwt provider '<이름>')` |
+| `bytes`가 아닌 값 | `the secret provider returned a value that is not bytes (from lnpl.toml secrets.jwt provider '<이름>')` |
+| 32바이트 미만 | `the JWT signing secret must be at least 32 bytes, got <n> (from lnpl.toml secrets.jwt provider '<이름>')` (이전 키는 `the previous JWT signing secret ...`) |
 
 ## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
 

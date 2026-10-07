@@ -84,6 +84,10 @@ rc 2이고, 메시지는 플래그 이름(`--jwt-secret-file`)만 싣는다 — 
 싣지 않는다. `--jwt-secret-env`와 함께 주면 거부한다. 형태·우선순위·오류 문구
 전체는 `docs/serving.md` "시크릿 원천" 절.
 
+`lnpl.toml`의 `jwt = { provider = "<이름>", key = "<키>" }`(이슈 #192, 설정 파일
+전용)는 `lnpl.secrets`로 등록된 외부 프로바이더에서 키를 읽고, 현재 키 + 이전
+키로 검증해 무중단 교체를 지원한다 — 등록·계약·재조회 규칙은 §16.
+
 ```bash
 export LNPL_JWT_SECRET="…여기에 32바이트 이상의 무작위 값. 이 문자열이 아니라…"
 ```
@@ -276,7 +280,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | 항목 | 값 |
 |------|-----|
 | 알고리즘 | **HS256 고정.** 발급자와 검증자가 같은 서비스이므로 대칭키가 맞는 모양이다 |
-| 키 | ≥32바이트(256비트). 환경변수에서 런타임에 읽는다 |
+| 키 | ≥32바이트(256비트). 환경변수·파일·`lnpl.secrets` 프로바이더에서 읽는다. 프로바이더 원천은 현재 키 + 이전 키로 검증한다(이슈 #192) |
 | 검증 순서 | 3조각 → **alg allowlist** → 서명(`hmac.compare_digest`) → `typ` → `iss` → `aud` → `nbf`/`exp` |
 | leeway | 60초 (RFC 7519가 승인하는 상한은 "몇 분") |
 | 클레임 | `iss`/`aud`/`sub`/`jti`/`iat`/`nbf`/`exp`, 그리고 `--role`을 주면 `role`(이슈 #202, 자기 주장). payload는 암호문이 아니라 base64이므로 PII를 넣지 않는다 |
@@ -305,7 +309,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | 하지 않는 것 | 왜 |
 |--------------|-----|
 | **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — SPI 표면(`lnpl.caches` entry-points, `open_cache`)은 이슈 #131이 열었다(§10). 실드라이버를 싣는 외부 패키지는 채워졌다: `lnpl-redis`(§10)가 위임 권장 경로의 실구현(단일 원자 `SET key value PX ttl_ms`)이다 — 코어가 싣지 않는다는 경계 설계 자체는 그대로다 |
-| **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
+| **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 (서명 키 교체는 §16) |
 | **postgres / redis 서버 바인딩** | 코어가 싣지 않는다는 사실은 그대로다 — 그게 §8의 경계 설계다. postgres 쪽은 경계 밖 절반이 채워졌다: 외부 레포 [`lnpl-postgres`](https://github.com/choiyounggi/lnpl-postgres)가 `lnpl.drivers`에 `postgres = "lnpl_postgres:make_driver"`로 등록되는 `RepositoryDriver`(psycopg 3)를 싣고, 이 레포의 TCK를 자기 Testcontainers CI에서 실 postgres 서버로 통과시킨다(이슈 #115의 레포 안 절반=TCK 강화에 이은 이슈 #121, 2026-08-30 완료). redis 쪽도 채워졌다: 외부 레포 [`lnpl-redis`](https://github.com/choiyounggi/lnpl-redis)가 `lnpl.caches`에 `redis = "lnpl_redis:make_cache"`로 등록되는 `CacheDriver`(redis-py 8)를 싣고, 이 레포의 `CacheDriverTCK`를 자기 Testcontainers CI에서 실 redis 서버로 통과시킨다(이슈 #143, 2026-09-02 완료) |
 | **트랜잭션 경계 밖 `NetworkCall`의 보상** | `policy rollback`은 저장소 쓰기만 되돌린다(RFC-0032 §Open Questions ②) — `call`/`request`는 이미 나간 뒤라 되돌아가지 않는다. 컴파일러는 그 워크플로마다 `rollback-escapes-network`(warning, 이슈 #112)로 **신고만** 한다. 보상 방식은 RFC-0034(Draft)가 결정했고 구현은 후속(Batch B) |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
@@ -1324,6 +1328,35 @@ unknown secret provider 'nope' (built-in: env, file; registered entry-points: va
 secret provider 'vault' registered via entry-point 'lnpl_vault:make_provider' failed to load (ModuleNotFoundError)
 secret provider 'vault' failed to start (RuntimeError)
 ```
+
+### 교체와 재조회
+
+프로바이더 원천(`[*.secrets] jwt = { provider, key }`)의 JWT 검증자는
+`RotatingHmacTokenProvider`(`lnpl.drivers`)다:
+
+- 검증은 **현재 키 또는 이전 키**와 맞으면 통과한다(두 MAC을 항상 다 계산하고
+  `hmac.compare_digest`로 비교한다). 서명은 현재 키로만 한다. 이전 키도
+  32바이트 이상이어야 한다. 키 둘은 한 튜플로 원자적으로 바뀌므로, 동시에 도는
+  검증은 옛 쌍이나 새 쌍 중 하나만 본다.
+- 기동 시 `get` + `get_previous`를 한 번 읽는다. 이후 `SECRET_REFRESH_S`(60초)가
+  지난 뒤 처음 오는 `verify`/`issue`가 다시 읽는다 — 한 번에 한 스레드만
+  읽고(single-flight), 실패하면 마지막 정상 키를 조용히 유지한 채 60초 뒤에
+  다시 시도한다. 잘못된 토큰이 올 때마다 다시 읽지는 않는다(쓰레기 토큰으로
+  프로바이더 호출을 무한히 일으킬 수 없게).
+- `/-/readyz` 프로브도 다시 읽는다(검사 ⑤ `secret-provider`, 상세는
+  `docs/serving.md`). 단 마지막 읽기(성공이든 실패든)가 `READYZ_REFRESH_FLOOR_S`
+  (5초)보다 최근이면 그 결과를 재사용한다 — 인증 없는 readyz 반복 호출이
+  프로바이더 호출을 무한히 일으킬 수 없게. 실패는 503, 회복하면 200이고 새 키가
+  설치된다.
+- 운영 절차: 프로바이더에서 새 값을 현재로, 직전 값을 이전으로 바꾼 뒤 **최소
+  60초** 기다렸다가 발급자가 새 키로 서명하게 한다. 이전 키는 발급자가 새 키로
+  바꾼 시점부터 가장 긴 토큰 수명이 지난 뒤에 프로바이더에서 지운다 — 기본 수명은
+  `DEFAULT_TTL_MS`(15분, `lnpl token --ttl` 기본값 `15m`)이고 검증은
+  `LEEWAY_S`(60초)만큼 만료를 늦게 보므로, 기본값이면 16분 뒤다. 지운 뒤에도
+  워커가 다시 읽기까지(최대 60초) 이전 키는 살아 있다 — 유출된 옛 키를 끊으려면
+  기다리지 말고 지금 지운다.
+- `lnpl serve`는 종료 시 프로바이더를 `close()`한다. `build_app()` 경로에는
+  종료 훅이 없다.
 
 ### TCK로 검증하기
 

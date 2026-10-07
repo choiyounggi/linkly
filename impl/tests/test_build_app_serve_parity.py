@@ -310,6 +310,52 @@ class SecretSourceParityTest(unittest.TestCase):
         self.assertIn("at least 32 bytes, got 8", text)
         self.assertEqual(self._mapped(err), "error: %s\n" % text)
 
+    # issue #192 piece c: the config-only provider form, cases (e) and (f).
+
+    def _provider_toml(self):
+        return self._write(
+            "lnpl.toml", b'[default.secrets]\njwt = { provider = "demo", key = "jwt" }\n')
+
+    def _demo_registered(self):
+        from importlib import metadata as importlib_metadata
+
+        from lnpl import drivers as drivers_module
+        from tests import secret_spi_fixture
+        secret_spi_fixture.INSTANCES.clear()
+        ep = importlib_metadata.EntryPoint(
+            name="demo", value="tests.secret_spi_fixture:make_demo_secret_provider",
+            group="lnpl.secrets")
+        return mock.patch.object(
+            drivers_module.importlib_metadata, "entry_points",
+            lambda group=None, **_kw: [ep] if group == "lnpl.secrets" else [])
+
+    def test_normal_explicit_file_beats_config_provider_on_both(self):
+        from tests import secret_spi_fixture
+        from tests.secret_spi_fixture import DEMO_SECRET_K0
+        path = self._write("jwt", FILE_SECRET)
+        toml = self._provider_toml()
+        with self._demo_registered():
+            rc, err, serve_p = self._serve("--config", toml, "--jwt-secret-file", path)
+            build_p = self._build(config=toml, jwt_secret_file=path)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(secret_spi_fixture.INSTANCES, [])
+        for provider in (serve_p, build_p):
+            self.assertTrue(self._accepts(provider, FILE_SECRET))
+            self.assertFalse(self._accepts(provider, DEMO_SECRET_K0))
+
+    def test_normal_config_provider_only_verifies_on_both(self):
+        from lnpl.drivers import RotatingHmacTokenProvider
+        from tests.secret_spi_fixture import DEMO_SECRET_K0
+        toml = self._provider_toml()
+        with self._demo_registered():
+            rc, err, serve_p = self._serve("--config", toml)
+            build_p = self._build(config=toml)
+        self.assertEqual(rc, 0, err)
+        for provider in (serve_p, build_p):
+            self.assertIsInstance(provider, RotatingHmacTokenProvider)
+            self.assertTrue(self._accepts(provider, DEMO_SECRET_K0))
+            self.assertFalse(self._accepts(provider, FILE_SECRET))
+
 
 if __name__ == "__main__":
     unittest.main()
