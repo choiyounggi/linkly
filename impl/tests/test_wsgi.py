@@ -1782,5 +1782,499 @@ class BuildAppSecretProviderTest(_EnvIsolatedTest):
         self.assertEqual(self.fixture.INSTANCES, [])
 
 
+# --- issue #192 piece D: the secret never reaches an output channel, from
+# any source, on either path -------------------------------------------------
+
+LEAK = "FAKE-SECRET-192-LEAK-" + "x" * 19     # 40 bytes, a valid HS256 key
+SHORT_LEAK = "FAKE-SECRET-192-S"              # 17 bytes: below the 32 minimum
+LEAK_PROBE = "FAKE-SECRET-192"                # every synthetic value starts so
+LEAK_ENV = "LNPL_T192_LEAK_ENV"
+STDOUT_CONTROL = "t192 stdout capture control"
+
+
+def _make_leak_provider():
+    """An entry-point factory serving `LEAK` under key `jwt`; the instance is
+    appended to `secret_spi_fixture.INSTANCES` like the fixture's own."""
+    from tests import secret_spi_fixture
+    provider = secret_spi_fixture.DemoSecretProvider({"jwt": LEAK.encode()})
+    secret_spi_fixture.INSTANCES.append(provider)
+    return provider
+
+
+LEAK_EP = _spi_entry_point(
+    "leak", "tests.test_wsgi:_make_leak_provider", SECRETS_GROUP)
+RAISING_EP = _secret_ep("raising", "make_raising_secret_provider")
+SHORT_EP = _secret_ep("short", "make_short_secret_provider")
+
+
+def _json_lines(text):
+    """Every stderr line that is one JSON object (access log, trace)."""
+    found = []
+    for line in text.splitlines():
+        if line.startswith("{"):
+            try:
+                found.append(json.loads(line))
+            except ValueError:
+                pass
+    return found
+
+
+def _exception_chain(exc):
+    """`exc` and every exception reachable from it through `__cause__` or
+    `__context__`, recursively. A reporter that logs the chain by hand
+    walks exactly this graph; `raise ... from None` hides it from
+    `traceback` only (`__suppress_context__`), not from this walk."""
+    seen, found, pending = set(), [], [exc]
+    while pending:
+        link = pending.pop()
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        found.append(link)
+        pending.extend((link.__cause__, link.__context__))
+    return found
+
+
+def _exception_chain_text(exc):
+    """Everything printable about every link of the chain: `str`, `repr`,
+    `args` and the formatted traceback."""
+    parts = []
+    for link in _exception_chain(exc):
+        parts.append("%s | %r | %r | %s" % (
+            link, link, link.args,
+            "".join(traceback.format_exception(
+                type(link), link, link.__traceback__))))
+    return "\n".join(parts)
+
+
+ROLE_SRC = """entity Report
+    field
+        id UUID
+
+service Rollup
+    security
+        jwt
+        role admin
+
+workflow GetReport
+    read report
+"""
+
+
+class _BrokenRepository:
+    """Every read fails with a DriverError (a 500 `read-failed`)."""
+
+    def execute(self, *_args, **_kwargs):
+        from lnpl.drivers import DriverError
+        raise DriverError("repository is down")
+
+    def close(self):
+        pass
+
+
+class SecretSourceLeakTest(_EnvIsolatedTest):
+    """D20: the JWT secret from each source (env var, file, provider) goes
+    through `build_app` and through `lnpl serve`, with JSON access logs and
+    the stderr-json trace exporter on, while a good and a forged token are
+    posted and `/-/readyz` is probed. `FAKE-SECRET-192` (a substring, so a
+    truncated copy is caught too) must be absent from stdout, stderr, the 401
+    body, the readyz bodies, `lnpl config check` output and every startup
+    error with its traceback. Each channel is paired with a control proving
+    it was captured, so an empty capture cannot pass for a clean one."""
+
+    SOURCES = ("env", "file", "provider")
+
+    def setUp(self):
+        super().setUp()
+        from tests import secret_spi_fixture
+        self.fixture = secret_spi_fixture
+        secret_spi_fixture.INSTANCES.clear()
+        self.addCleanup(os.environ.pop, LEAK_ENV, None)
+        self.jwt_source = _write_tmp(self, JWT_SRC)
+
+    def _toml_provider(self, name):
+        return _write_toml(
+            self, '[default.secrets]\njwt = { provider = "%s", key = "jwt" }\n'
+            % name)
+
+    def _toml_file(self, path):
+        return _write_toml(
+            self, '[default.secrets]\njwt = { file = "%s" }\n' % path)
+
+    def _origin(self, kind, value):
+        """The configuration for `kind` holding `value`: the keyword
+        arguments of `build_app`, the `serve` flags, and a callable that
+        proves `value` really sits where the source reads it from."""
+        if kind == "env":
+            os.environ[LEAK_ENV] = value
+            return ({"jwt_secret_env": LEAK_ENV},
+                    ["--jwt-secret-env", LEAK_ENV],
+                    lambda: self.assertEqual(os.environ[LEAK_ENV], value))
+        if kind == "file":
+            path = _secret_file(self, (value + "\n").encode())
+            def file_has_value():
+                with open(path, "rb") as fh:
+                    self.assertIn(value.encode(), fh.read())
+            return ({"jwt_secret_file": path}, ["--jwt-secret-file", path],
+                    file_has_value)
+        toml = self._toml_provider("leak")
+        return ({"config": toml}, ["--config", toml],
+                lambda: self.assertEqual(
+                    self.fixture.INSTANCES[-1].values["jwt"], value.encode()))
+
+    def _build(self, source=None, **kwargs):
+        """-> (app, stderr, stdout); stdout is captured with a control line
+        printed inside the same redirect, so an empty capture can be told
+        from a broken one."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            print(STDOUT_CONTROL)
+            app = wsgi.build_app(sources=[source or self.jwt_source],
+                                 log_format="json",
+                                 trace_exporter="stderr-json", **kwargs)
+        self.assertIn(STDOUT_CONTROL, out.getvalue())
+        return app, err.getvalue(), out.getvalue()
+
+    def _serve_app(self, flags):
+        """`lnpl serve` run to the point it would block: `lnpl.cli.serve` is
+        replaced by one that builds the real app from the exact keywords the
+        real `serve.serve` forwards and keeps it. -> (app, rc, stdout,
+        stderr)."""
+        from lnpl import cli
+        kept = {}
+
+        def fake_serve(document, host, port, **kw):
+            kw.pop("grace_period_s", None)
+            kept["app"] = wsgi.make_wsgi_app(document, **kw)
+            server = mock.Mock()
+            server.server_address = (host, port)
+            server.serve_forever.side_effect = KeyboardInterrupt
+            return server
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("lnpl.cli.serve", side_effect=fake_serve):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cli.main(["serve", self.jwt_source, "--log-format", "json",
+                               "--trace-exporter", "stderr-json"] + flags)
+        return kept.get("app"), rc, out.getvalue(), err.getvalue()
+
+    def _token(self, secret):
+        from lnpl.drivers import audience_for_path
+        return HmacTokenProvider(secret).issue("u", audience_for_path(JWT_PATH))
+
+    def _post(self, app, token):
+        return call_wsgi(app, "POST", JWT_PATH, body=b"{}",
+                         headers={"Authorization": "Bearer " + token,
+                                  "Content-Type": "application/json"})
+
+    def _drive(self, app):
+        """A good token, a forged token, a readyz probe and a read that the
+        repository fails (a 500), on `app`, with stderr and stdout captured.
+        -> (stderr text, stdout text, 401 body, readyz body, 500 body)."""
+        from lnpl.drivers import audience_for_path
+        out, err = io.StringIO(), io.StringIO()
+        row = "/rollup/report/3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            print(STDOUT_CONTROL)
+            good, _h, _b = self._post(app, self._token(LEAK.encode()))
+            forged, _h, rejected = self._post(app, self._token(b"f" * 40))
+            ready, _h, ready_body = call_wsgi(app, "GET", "/-/readyz")
+            healthy = app.repository_factory
+            app.repository_factory = _BrokenRepository
+            try:
+                failed, _h, failed_body = call_wsgi(
+                    app, "GET", row, headers={"Authorization": "Bearer " + HmacTokenProvider(
+                        LEAK.encode()).issue("u", audience_for_path(row))})
+            finally:
+                app.repository_factory = healthy
+        self.assertEqual((good, forged, ready, failed), (200, 401, 200, 500))
+        self.assertIn(STDOUT_CONTROL, out.getvalue())
+        self.assertIn("serve: internal error", err.getvalue())
+        return err.getvalue(), out.getvalue(), rejected, ready_body, failed_body
+
+    def _assert_channels_clean(self, err, bodies, stdout=""):
+        self.assertNotIn(LEAK_PROBE, err)
+        self.assertNotIn(LEAK_PROBE, stdout)
+        for body in bodies:
+            self.assertNotIn(LEAK_PROBE, json.dumps(body))
+
+    def _assert_channels_were_captured(self, err, rejected, ready_body):
+        """The controls: each clean channel above did carry output."""
+        self.assertIn("serve: token rejected", err)
+        lines = _json_lines(err)
+        self.assertTrue([l for l in lines if l.get("status") == 401],
+                        "no JSON access-log line for the 401")
+        self.assertTrue([l for l in lines if "span" in l],
+                        "no stderr-json trace line")
+        self.assertIn("auth-invalid", json.dumps(rejected))
+        self.assertIn("status", ready_body)
+
+    def _provider_readyz(self, app):
+        """Provider source only: the provider fails, readyz answers 503 naming
+        the check, the provider recovers, readyz answers 200. The re-read
+        floor is a monotonic-clock rule, so the clock is a list this test
+        advances."""
+        from lnpl.drivers import READYZ_REFRESH_FLOOR_S
+        now = [1000.0]
+        app.token_provider._monotonic = lambda: now[0]
+        app.token_provider._read_at = now[0]
+        provider = self.fixture.INSTANCES[-1]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            provider.fail = True
+            now[0] += READYZ_REFRESH_FLOOR_S + 1
+            down, _h, down_body = call_wsgi(app, "GET", "/-/readyz")
+            provider.fail = False
+            now[0] += READYZ_REFRESH_FLOOR_S + 1
+            up, _h, up_body = call_wsgi(app, "GET", "/-/readyz")
+        self.assertEqual(down, 503)
+        self.assertEqual(down_body["checks"], ["secret-provider"])
+        self.assertEqual(up, 200)
+        self._assert_channels_clean(err.getvalue(), [down_body, up_body])
+
+    def _check_build_path(self, kind):
+        kwargs, _flags, origin_has_value = self._origin(kind, LEAK)
+        with _spi_registered(LEAK_EP):
+            app, build_err, build_out = self._build(**kwargs)
+            origin_has_value()
+            err, out, rejected, ready_body, failed_body = self._drive(app)
+            if kind == "provider":
+                self._provider_readyz(app)
+        self._assert_channels_clean(build_err + err, [rejected, ready_body, failed_body],
+                                    build_out + out)
+        self._assert_channels_were_captured(err, rejected, ready_body)
+        self.assertIn("internal server error", json.dumps(failed_body))
+
+    def _check_serve_path(self, kind):
+        _kwargs, flags, origin_has_value = self._origin(kind, LEAK)
+        with _spi_registered(LEAK_EP):
+            app, rc, out, serve_err = self._serve_app(flags)
+            self.assertEqual(rc, 0, serve_err)
+            origin_has_value()
+            err, drive_out, rejected, ready_body, failed_body = self._drive(app)
+            if kind == "provider":
+                self._provider_readyz(app)
+        self._assert_channels_clean(serve_err + err,
+                                    [rejected, ready_body, failed_body],
+                                    out + drive_out)
+        self._assert_channels_were_captured(err, rejected, ready_body)
+        self.assertIn("internal server error", json.dumps(failed_body))
+        self.assertIn("serving", out)
+
+    def _check_role_rejection(self, kind):
+        """A valid token without the required role: the 403 body and its
+        stderr line carry no key material (build_app path)."""
+        kwargs, _flags, _origin = self._origin(kind, LEAK)
+        role_source = _write_tmp(self, ROLE_SRC, name="role.lnpl")
+        with _spi_registered(LEAK_EP):
+            app, build_err, build_out = self._build(source=role_source, **kwargs)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                status, _h, body = self._post(app, self._token(LEAK.encode()))
+        self.assertEqual(status, 403)
+        self.assertIn("forbidden", json.dumps(body))
+        self.assertIn("serve: role rejected", err.getvalue())
+        self._assert_channels_clean(build_err + err.getvalue(), [body], build_out)
+
+    def test_normal_build_app_env_source_channels_are_clean(self):
+        self._check_build_path("env")
+
+    def test_normal_build_app_file_source_channels_are_clean(self):
+        self._check_build_path("file")
+
+    def test_normal_build_app_provider_source_channels_are_clean(self):
+        self._check_build_path("provider")
+
+    def test_normal_serve_env_source_channels_are_clean(self):
+        self._check_serve_path("env")
+
+    def test_normal_serve_file_source_channels_are_clean(self):
+        self._check_serve_path("file")
+
+    def test_normal_serve_provider_source_channels_are_clean(self):
+        self._check_serve_path("provider")
+
+    def test_error_role_rejection_403_is_clean_for_env_source(self):
+        self._check_role_rejection("env")
+
+    def test_error_role_rejection_403_is_clean_for_file_source(self):
+        self._check_role_rejection("file")
+
+    def test_error_role_rejection_403_is_clean_for_provider_source(self):
+        self._check_role_rejection("provider")
+
+    def _config_check(self, toml):
+        from lnpl import cli
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["config", "check", self.jwt_source, "--config", toml])
+        self._assert_channels_clean(err.getvalue(), [], out.getvalue())
+        return rc, out.getvalue().strip(), err.getvalue()
+
+    def test_normal_config_check_of_env_and_file_sources_is_clean(self):
+        os.environ[LEAK_ENV] = LEAK
+        toml_env = _write_toml(
+            self, '[default.secrets]\njwt = "%s"\n' % LEAK_ENV)
+        secret_path = _secret_file(self, (LEAK + "\n").encode())
+        toml_file = self._toml_file(secret_path)
+        for label, toml in (("env", toml_env), ("file", toml_file)):
+            with self.subTest(label):
+                rc, out, err = self._config_check(toml)
+                self.assertEqual((rc, out), (0, "ok"), err)
+
+    def test_error_config_check_of_a_short_file_source_is_clean(self):
+        short_path = _secret_file(self, SHORT_LEAK.encode(), name="short")
+        rc, out, err = self._config_check(self._toml_file(short_path))
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertIn("at least 32 bytes", err)
+        self.assertIn("lnpl.toml secrets.jwt.file", err)
+
+    def test_boundary_config_check_judges_an_env_source_by_presence_only(self):
+        # D18: the env-name form is checked for presence, not length, so a
+        # short value passes `config check` -- and still prints nothing of it
+        os.environ[LEAK_ENV] = SHORT_LEAK
+        toml = _write_toml(self, '[default.secrets]\njwt = "%s"\n' % LEAK_ENV)
+        rc, out, err = self._config_check(toml)
+        self.assertEqual((rc, out), (0, "ok"), err)
+        self.assertEqual(os.environ[LEAK_ENV], SHORT_LEAK)
+
+    def test_normal_config_check_output_is_clean(self):
+        from lnpl import cli
+        with _spi_registered(LEAK_EP):
+            toml = self._toml_provider("leak")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cli.main(["config", "check", self.jwt_source,
+                               "--config", toml])
+        self.assertEqual((rc, out.getvalue().strip()), (0, "ok"), err.getvalue())
+        self.assertEqual(self.fixture.INSTANCES[-1].values["jwt"], LEAK.encode())
+        self._assert_channels_clean(err.getvalue(), [], out.getvalue())
+
+    def test_error_config_check_of_a_missing_file_names_the_role_only(self):
+        from lnpl import cli
+        missing = os.path.join(_tmp_dir(self), "no-such-secret")
+        toml = self._toml_file(missing)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["config", "check", self.jwt_source, "--config", toml])
+        self.assertEqual(rc, 2)
+        self.assertIn("lnpl.toml secrets.jwt.file", err.getvalue())
+        self._assert_channels_clean(err.getvalue(), [], out.getvalue())
+
+    def _short_cases(self):
+        """(label, build_app kwargs, serve flags, entry points, expects a
+        cause-free error) for every way a startup can fail on a secret."""
+        os.environ[LEAK_ENV] = SHORT_LEAK
+        short_file = _secret_file(self, SHORT_LEAK.encode(), name="short-secret")
+        missing = os.path.join(_tmp_dir(self), "no-such-secret")
+        return [
+            ("short env", {"jwt_secret_env": LEAK_ENV},
+             ["--jwt-secret-env", LEAK_ENV], (), False),
+            ("short file", {"jwt_secret_file": short_file},
+             ["--jwt-secret-file", short_file], (), True),
+            ("short provider", {"config": self._toml_provider("short")},
+             ["--config", self._toml_provider("short")], (SHORT_EP,), True),
+            ("raising provider", {"config": self._toml_provider("raising")},
+             ["--config", self._toml_provider("raising")], (RAISING_EP,), True),
+            ("unregistered provider", {"config": self._toml_provider("nope")},
+             ["--config", self._toml_provider("nope")], (), True),
+            ("missing file", {"jwt_secret_file": missing},
+             ["--jwt-secret-file", missing], (), True),
+            ("unset env", {"jwt_secret_env": LEAK_ENV + "_UNSET"},
+             ["--jwt-secret-env", LEAK_ENV + "_UNSET"], (), True),
+        ]
+
+    def test_error_startup_failures_are_clean_on_build_app(self):
+        for label, kwargs, _flags, eps, _no_cause in self._short_cases():
+            with self.subTest(label), _spi_registered(*eps):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                        wsgi.build_app(sources=[self.jwt_source], **kwargs)
+                exc = cm.exception
+                formatted = "".join(traceback.format_exception(
+                    type(exc), exc, exc.__traceback__))
+                self.assertTrue(str(exc), "the error carries no text")
+                # nothing is attached to the error: no `__cause__`, no
+                # `__context__`, so a reporter walking the chain by hand
+                # reaches no driver text either (issue #192 r1 F1)
+                self.assertIsNone(exc.__cause__)
+                self.assertIsNone(exc.__context__)
+                self.assertEqual(_exception_chain(exc), [exc])
+                self._assert_channels_clean(
+                    err.getvalue() + _exception_chain_text(exc) + formatted, [])
+
+    def test_error_startup_failures_are_clean_on_serve(self):
+        for label, _kwargs, flags, eps, _no_cause in self._short_cases():
+            with self.subTest(label), _spi_registered(*eps):
+                app, rc, out, err = self._serve_app(flags)
+                self.assertIsNone(app)
+                self.assertEqual(rc, 2)
+                self.assertTrue(
+                    [l for l in err.splitlines() if l.startswith("error:")],
+                    "no `error:` line to prove stderr was captured")
+                self._assert_channels_clean(err, [], out)
+
+    def test_error_provider_read_failure_leaves_no_chain_on_the_driver_error(self):
+        # the lowest raising site: RotatingHmacTokenProvider._read_pair. The
+        # wsgi wrappers cut the chain as well, so only a direct call proves
+        # this site drops the driver's exception (its text may hold a value)
+        from lnpl.drivers import DriverError, RotatingHmacTokenProvider
+        failing = self.fixture.make_raising_secret_provider()
+        with self.assertRaises(DriverError) as cm:
+            RotatingHmacTokenProvider(failing, "jwt")
+        self.assertEqual(_exception_chain(cm.exception), [cm.exception])
+        self.assertNotIn(LEAK_PROBE, _exception_chain_text(cm.exception))
+        # and on the re-read path readyz and refresh_keys use
+        working = self.fixture.DemoSecretProvider({"jwt": LEAK.encode()})
+        rotating = RotatingHmacTokenProvider(working, "jwt")
+        working.raise_with = RuntimeError("driver said " + LEAK)
+        with self.assertRaises(DriverError) as again:
+            rotating.refresh_keys()
+        self.assertEqual(_exception_chain(again.exception), [again.exception])
+        self.assertNotIn(LEAK_PROBE, _exception_chain_text(again.exception))
+
+    def test_error_secret_file_failures_leave_no_chain(self):
+        # every refusal of the shared file reader, raised outside its except
+        directory = _tmp_dir(self)
+        cases = (("missing", os.path.join(directory, "no-such-secret")),
+                 ("directory", directory),
+                 ("relative", "relative/secret"),
+                 ("embedded NUL", "/" + NUL_PATH_TAIL),
+                 ("empty", _secret_file(self, b"", name="empty")))
+        for label, path in cases:
+            with self.subTest(label):
+                with self.assertRaises(wsgi.WsgiConfigError) as cm:
+                    wsgi._read_secret_file(path, "LNPL_JWT_SECRET_FILE")
+                self.assertEqual(_exception_chain(cm.exception), [cm.exception])
+                self.assertNotIn(LEAK_PROBE, _exception_chain_text(cm.exception))
+                self.assertIn("LNPL_JWT_SECRET_FILE", str(cm.exception))
+
+    def test_boundary_the_chain_walk_sees_what_traceback_hides(self):
+        # `from None` hides the original from `traceback` but not from a
+        # hand-written `__context__` walk; this is why the startup tests
+        # walk the graph instead of trusting the formatted traceback
+        try:
+            try:
+                raise RuntimeError("driver said " + LEAK)
+            except RuntimeError:
+                raise wsgi.WsgiConfigError("value-free") from None
+        except wsgi.WsgiConfigError as exc:
+            hidden = exc
+        self.assertNotIn(LEAK_PROBE, "".join(traceback.format_exception(
+            type(hidden), hidden, hidden.__traceback__)))
+        self.assertEqual(len(_exception_chain(hidden)), 2)
+        self.assertIn(LEAK_PROBE, _exception_chain_text(hidden))
+
+    def test_boundary_the_leak_marker_is_a_valid_key_and_the_short_one_is_not(self):
+        # the failure cases above are only meaningful if the marker used for
+        # the success cases is long enough and the short one is not
+        self.assertGreaterEqual(len(LEAK.encode()), 32)
+        self.assertLess(len(SHORT_LEAK.encode()), 32)
+        self.assertTrue(LEAK.startswith(LEAK_PROBE))
+        self.assertTrue(SHORT_LEAK.startswith(LEAK_PROBE))
+
+
 if __name__ == "__main__":
     unittest.main()

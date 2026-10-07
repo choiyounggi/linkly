@@ -2513,16 +2513,22 @@ def _read_secret_file(raw_path, role):
     path = os.path.expanduser(raw_path)
     if not os.path.isabs(path):
         raise WsgiConfigError("%s must be an absolute path" % role) from None
+    # Raised after the try/except, so the OSError (it names the path) is
+    # neither `__cause__` nor `__context__` of the error.
+    failure = None
+    data = b""
     try:
         if not stat.S_ISREG(os.stat(path).st_mode):
-            raise WsgiConfigError(
-                "%s names a file that cannot be read" % role) from None
-        with open(path, "rb") as fh:
-            data = fh.read(MAX_SECRET_FILE_BYTES + 1)
+            failure = "names a file that cannot be read"
+        else:
+            with open(path, "rb") as fh:
+                data = fh.read(MAX_SECRET_FILE_BYTES + 1)
     except FileNotFoundError:
-        raise WsgiConfigError("%s names a file that does not exist" % role) from None
+        failure = "names a file that does not exist"
     except (OSError, ValueError):
-        raise WsgiConfigError("%s names a file that cannot be read" % role) from None
+        failure = "names a file that cannot be read"
+    if failure is not None:
+        raise WsgiConfigError("%s %s" % (role, failure))
     if len(data) > MAX_SECRET_FILE_BYTES:
         raise WsgiConfigError("%s names a file larger than %d bytes"
                               % (role, MAX_SECRET_FILE_BYTES)) from None
@@ -2541,18 +2547,25 @@ def _build_rotating_token_provider(ref, role, issuer=None):
     over `ref.key`. Every failure is a WsgiConfigError with no cause and no
     driver text (a driver message may hold a URL or a value); a provider
     opened before the failure is closed."""
+    # Both errors are raised OUTSIDE their except blocks: raised inside one,
+    # the original exception stays reachable as `__context__` (`from None`
+    # only hides it from `traceback`), and a driver's text may hold a value.
+    failure = None
     try:
         provider = open_secret_provider(ref.provider)
     except (ValueError, DriverError) as exc:
-        raise WsgiConfigError("lnpl.toml secrets.jwt: %s" % exc) from None
+        failure = str(exc)
+    if failure is not None:
+        raise WsgiConfigError("lnpl.toml secrets.jwt: %s" % failure)
     try:
         return RotatingHmacTokenProvider(provider, ref.key, issuer=issuer)
     except DriverError as exc:
-        try:
-            provider.close()
-        except Exception:
-            pass
-        raise WsgiConfigError("%s (from %s)" % (exc, role)) from None
+        failure = str(exc)
+    try:
+        provider.close()
+    except Exception:
+        pass
+    raise WsgiConfigError("%s (from %s)" % (failure, role))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2791,26 +2804,33 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     if (secret_source is not None and secret_source.kind == "file"
             and (token_provider_name or "hmac") == "hmac"):
         secret = _read_secret_file(secret_source.value, secret_source.role)
+        short = None
         try:
             token_provider = HmacTokenProvider(secret, issuer=jwt_issuer)
         except TokenError as exc:
-            raise WsgiConfigError(
-                "%s (from %s)" % (exc, secret_source.role)) from None
+            short = str(exc)
+        if short is not None:
+            raise WsgiConfigError("%s (from %s)" % (short, secret_source.role))
     elif (secret_source is not None and secret_source.kind == "provider"
             and (token_provider_name or "hmac") == "hmac"):
         token_provider = _build_rotating_token_provider(
             secret_source.value, secret_source.role, issuer=jwt_issuer)
     else:
+        option_error = None
         try:
             token_provider = _resolve_token_provider(
                 jwt_secret_env, issuer=jwt_issuer, provider_name=token_provider_name)
         except _OptionError as exc:
+            option_error = exc
+        if option_error is not None:
+            # raised outside the except block: no `__context__` either
+            exc = option_error
             if exc.option == "jwt_secret_env":
                 if exc.kind == "secret-missing":
                     raise WsgiConfigError(
-                        "%s is not set in the environment" % jwt_secret_env) from None
+                        "%s is not set in the environment" % jwt_secret_env)
                 raise WsgiConfigError(
-                    "%s (from %s)" % (exc.cause, jwt_secret_env)) from exc.cause
+                    "%s (from %s)" % (exc.cause, jwt_secret_env))
             _raise_config_error(exc)
 
     clock_spec = clock if clock is not None else os.environ.get("LNPL_CLOCK", "virtual")

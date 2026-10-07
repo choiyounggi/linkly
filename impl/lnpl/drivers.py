@@ -1400,12 +1400,18 @@ class RotatingHmacTokenProvider(HmacTokenProvider):
         self._last_read_ok = True
 
     def _read_pair(self):
+        # The value-free error is raised AFTER the except block: raised
+        # inside it, the driver's exception (its text may hold the secret)
+        # would stay reachable as `__context__` for any reporter that walks
+        # the chain by hand (`from None` only hides it from `traceback`).
+        failed = False
         try:
             current = self._secret_provider.get(self._secret_key)
             previous = self._secret_provider.get_previous(self._secret_key)
         except Exception:
-            raise DriverError(
-                "the secret provider failed to return the secret") from None
+            failed = True
+        if failed:
+            raise DriverError("the secret provider failed to return the secret")
         if not isinstance(current, bytes) or (
                 previous is not None and not isinstance(previous, bytes)):
             raise DriverError(
