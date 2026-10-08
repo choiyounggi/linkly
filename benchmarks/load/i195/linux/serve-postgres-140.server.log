@@ -1,0 +1,2 @@
+serving /work/examples/linkhub.lnpl on http://127.0.0.1:18186 (mode A, backend=postgres, jwt=presence-checked)
+lnpl serve: drain complete -- shutting down

@@ -942,6 +942,62 @@ gunicorn이 여러 워커 프로세스를 띄우면(`--workers K`, 기본 1) 각
 하나가 합산 최대 N × K개/초를 통과시킬 수 있다. 전역 한도는 여기서도
 게이트웨이의 일이다(위 "Rate limit" 절).
 
+레이트 리밋 버킷만이 아니다. 요청 사이에 살아남는 프로세스 로컬 상태는 전부
+워커마다 하나씩이다: 메트릭 레지스트리(`wsgi.MetricsRegistry`)와 토큰 버킷
+(`wsgi.TokenBucket`). 그래서 `--workers K`이면 `/-/metrics`는 그 스크레이프를
+받은 워커 하나의 누적값만 돌려준다 — 호스트 전체 합계가 아니다. 실측(이슈
+#195, `benchmarks/load/i195/linux/per-worker-state.log`): 워커 2개에 시드 뒤 get-bookmark
+요청 100건을 보낸 뒤 열 번 스크레이프하면 `GetBookmark` 실행 수가 53 또는 48로
+나왔고(합 101 = 100건 + 시드의 get 1건), `LNPL_RATE_LIMIT=20`에 워커 2개로 100 rps를 10초 보내면 200이 434건,
+429가 566건이었다(워커 하나라면 20 × 10초 + 버스트 20 = 약 220건). 호스트 단위 메트릭이
+필요하면 워커별 값을 수집 쪽에서 합산하거나 워커를 1개로 둔다.
+
+### 워커 수와 워커 클래스 (이슈 #195)
+
+아래 숫자는 `docs/gunicorn-load-measurement.md`(Docker Linux 컨테이너 한 대,
+점마다 1회 측정)에서 온 것이므로 배치 호스트의 값이 아니라 모양으로만
+읽는다. 조합마다 사다리 50·100·200·400 rps를 올려 처음 STABLE이 아닌 점
+앞까지를 상한으로 적었다.
+
+| 백엔드 | 워커 수 | 클래스 | 상한(rps) | p99 |
+|--------|---------|--------|-----------|-----|
+| postgres | 1 | sync | 100 | 6.74ms |
+| postgres | 1 | gthread | 50 | 7.54ms |
+| postgres | 2 | sync | 400 (사다리 끝) | 1566.89ms |
+| postgres | 2 | gthread | 400 (사다리 끝) | 10.98ms |
+| postgres | 4 | sync | 100 | 22.28ms |
+| postgres | 4 | gthread | 400 (사다리 끝) | 60.12ms |
+
+상한이 목표 처리량 이상인 조합 중 워커 수가 가장 작은 것을 고르고, 배치
+호스트에서 `scripts/load_probe.py`로 다시 잰다. 이 표가 뒷받침하는 100 rps용
+조합은 postgres 워커 1개 sync(상한 100, p99 6.74ms)다. 100 rps를 넘는 목표에는
+워커 2개 gthread(상한 400, p99 10.98ms)가 가장 작은 깨끗한 행이다. 워커 2개
+sync도 400까지 갔지만 첫 구간부터 느려서(p95 1493.78ms) STABLE 규칙이 그것을
+못 잡았다. 상한이 워커 수에 따라 단조롭게 오르지 않는다(워커 4개 sync는 100,
+워커 2개 sync는 400) — 점마다 1회 측정이라 워커 수의 효과와 실행마다의 잡음을
+이 표만으로는 가를 수 없다. 표의 p99 가운데 워커 4개 gthread(60.12ms)와 워커 4개
+sync(22.28ms)는 첫 10초 구간이 이후보다 높았던 점(17.10ms와 9.13ms 대 6.57ms
+이하와 4.80ms 이하)에서 오므로 정상 상태 값이 아니라 기동 직후의 튐으로 읽는다.
+
+postgres에 동시에 열리는 연결 수의 상한은 sync가 K, gthread가 K × 스레드 수
+(`--threads 4`이면 4K)다. 요청마다 자기 연결을 열기 때문에
+(`docs/postgres-load-ceiling.md` Root cause) K × 스레드 수를 postgres 기본
+`max_connections` 100보다 한참 아래로 둔다. gunicorn 문서의 `(2 × 코어 수) + 1`
+(https://gunicorn.org/design/ — "workers = (2 × CPU cores) + 1")과 `--workers`
+설정 문서의 "generally in the 2-4 x $(NUM_CORES) range"
+(https://gunicorn.org/reference/settings/)는 출발점일 뿐이고 측정이 그것을
+대체한다. 워커 클래스별 차이도 design 문서에 있다. fake와
+sqlite 백엔드는 워커 1·2·4개, sync·gthread 모두 사다리 끝 400 rps까지
+STABLE이었고(p99 최대 43.96ms, sqlite 워커 1개 gthread) 병목이 되지 않았다.
+
+새 postgres DB에서 `--workers 2` 이상으로 처음 띄우면 `LNPL_BACKEND is not a
+recognized selector`로 기동이 실패할 수 있다. 모든 워커의 기동 점검이 같은
+순간 드라이버의 `CREATE TABLE IF NOT EXISTS`를 돌려 서로 부딪치기 때문이다
+(`duplicate key value violates unique constraint "pg_type_typname_nsp_index"`).
+테이블을 먼저 한 번 만든 뒤(워커 하나를 띄우거나
+`python -c "from lnpl.drivers import open_repository; open_repository('postgres:<dsn>').close()"`)
+K개 워커를 띄운다. lnpl-postgres 후속 과제이다(이슈 #195 측정에서 발견).
+
 해석 순서는 소스 컴파일 → `LNPL_CONFIG`/`LNPL_PROFILE`(파일 로드) →
 `LNPL_BACKEND` → `LNPL_JWT_SECRET_ENV` → `LNPL_TOKEN_PROVIDER`/
 `LNPL_JWT_ISSUER` → `LNPL_CLOCK` → `LNPL_CACHE` → `LNPL_NETWORK` → 나머지다.

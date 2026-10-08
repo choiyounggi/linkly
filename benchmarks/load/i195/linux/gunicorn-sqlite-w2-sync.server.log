@@ -1,0 +1,9 @@
+[2026-10-08 02:27:47 +0000] [58262] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:27:47 +0000] [58262] [INFO] Listening at: http://127.0.0.1:18195 (58262)
+[2026-10-08 02:27:47 +0000] [58262] [INFO] Using worker: sync
+[2026-10-08 02:27:47 +0000] [58266] [INFO] Booting worker with pid: 58266
+[2026-10-08 02:27:47 +0000] [58267] [INFO] Booting worker with pid: 58267
+[2026-10-08 02:31:35 +0000] [58262] [INFO] Handling signal: term
+[2026-10-08 02:31:35 +0000] [58266] [INFO] Worker exiting (pid: 58266)
+[2026-10-08 02:31:35 +0000] [58267] [INFO] Worker exiting (pid: 58267)
+[2026-10-08 02:31:35 +0000] [58262] [INFO] Shutting down: Master

@@ -1,0 +1,9 @@
+[2026-10-08 02:51:37 +0000] [92835] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:51:37 +0000] [92835] [INFO] Listening at: http://127.0.0.1:18195 (92835)
+[2026-10-08 02:51:37 +0000] [92835] [INFO] Using worker: gthread
+[2026-10-08 02:51:37 +0000] [92839] [INFO] Booting worker with pid: 92839
+[2026-10-08 02:51:37 +0000] [92840] [INFO] Booting worker with pid: 92840
+[2026-10-08 02:55:25 +0000] [92835] [INFO] Handling signal: term
+[2026-10-08 02:55:25 +0000] [92839] [INFO] Worker exiting (pid: 92839)
+[2026-10-08 02:55:25 +0000] [92840] [INFO] Worker exiting (pid: 92840)
+[2026-10-08 02:55:25 +0000] [92835] [INFO] Shutting down: Master

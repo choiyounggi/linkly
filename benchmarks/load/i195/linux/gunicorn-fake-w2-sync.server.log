@@ -1,0 +1,11 @@
+[2026-10-08 02:04:53 +0000] [9951] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:04:53 +0000] [9951] [INFO] Listening at: http://127.0.0.1:18195 (9951)
+[2026-10-08 02:04:53 +0000] [9951] [INFO] Using worker: sync
+[2026-10-08 02:04:53 +0000] [9955] [INFO] Booting worker with pid: 9955
+[2026-10-08 02:04:53 +0000] [9956] [INFO] Booting worker with pid: 9956
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 02:08:42 +0000] [9951] [INFO] Handling signal: term
+[2026-10-08 02:08:42 +0000] [9955] [INFO] Worker exiting (pid: 9955)
+[2026-10-08 02:08:42 +0000] [9956] [INFO] Worker exiting (pid: 9956)
+[2026-10-08 02:08:42 +0000] [9951] [INFO] Shutting down: Master

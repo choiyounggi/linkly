@@ -177,6 +177,52 @@ Mean latency falls as the rate rises (18.99 ms at 25 rps, 7.04 ms at
 150 rps). This sweep does not explain that; the same pattern is not in the
 fake-backend control, which was run at one rate only.
 
+## Refinement in a Linux container (issue #195)
+
+Issue #195 asked for the gap between 100 and 150 rps to be measured at 10 rps
+resolution. The sections above were measured on the macOS host and are left as
+they were. This refinement ran on 2026-10-08 inside a Docker Linux container
+(Docker Desktop VM on an Apple M4 Pro, 8 CPUs, 4 GB; Debian 12, kernel
+6.10.14-linuxkit), because the macOS host loopback path stalls after about 8000
+to 10000 short connections for any client and server
+(`benchmarks/load/i195/diagnosis/README.md`). Versions: PostgreSQL 16.15,
+lnpl-postgres 0.1.0 at 14b113e and psycopg 3.3.6 (as above), Python 3.13.16,
+lnpl commit 5e81fd01b04ef4278b68f2b753648f5b147e799c. Full machine table and
+reproduction commands: `docs/gunicorn-load-measurement.md`.
+
+Method is #180's: a fresh `lnpl serve --cache fake --backend postgres:<dsn>` per
+rate (postgres in a second container on the same Docker network), 90 s per rate,
+5 s warm-up, the same workload, one run per rate. The STABLE rule is printed by
+`scripts/load_probe.py` as its `verdict=` line. Control: `lnpl serve --cache fake`
+(fake backend) at 140 rps for 90 s was `verdict=STABLE worst_bucket_ratio=1.111x`
+(`serve-fake-control.log`); the session controls were STABLE as well
+(`session.log`).
+
+| Rate (rps) | Verdict | 0-10 s mean | Last-bucket mean | Worst bucket mean | Error rate | p99 | Log |
+|------------|---------|-------------|------------------|-------------------|------------|-----|-----|
+| 100 | STABLE | 5.66 ms | 4.63 ms | 6.03 ms (1.065x) | 0.00 % | 7.53 ms | `serve-postgres-100.log` |
+| 110 | UNSTABLE | 4.50 ms | 5.73 ms | 143.01 ms (31.767x) | 0.00 % | 204.09 ms | `serve-postgres-110.log` |
+| 120 | UNSTABLE | 5.47 ms | 4.52 ms | 52.66 ms (9.621x) | 0.00 % | 113.95 ms | `serve-postgres-120.log` |
+| 130 | STABLE | 4.78 ms | 4.15 ms | 4.78 ms (1.000x) | 0.00 % | 5.98 ms | `serve-postgres-130.log` |
+| 140 | STABLE | 4.38 ms | 4.16 ms | 4.50 ms (1.026x) | 0.00 % | 6.29 ms | `serve-postgres-140.log` |
+| 150 | STABLE | 4.58 ms | 4.31 ms | 5.11 ms (1.117x) | 0.00 % | 8.54 ms | `serve-postgres-150.log` |
+
+Ceiling in the container: 100 rps. It is the highest rate that stayed STABLE with
+every lower rate also STABLE, at 10 rps resolution. The 110 and 120 rps runs each
+had one short stall (a single 10 s bucket, longest request 5155.77 ms and
+2060.78 ms) and then recovered with no errors; 130, 140 and 150 rps were STABLE
+in their single runs. One run per rate does not show whether the stalls at 110
+and 120 would repeat, so the table does not support a ceiling above 100.
+
+These numbers are not directly comparable with the host numbers above: the
+container has a different kernel and network stack, and 150 rps, which stalled
+in all three #180 host runs, was STABLE here. #180's host numbers may also have
+been affected by the host loopback stall described in
+`benchmarks/load/i195/diagnosis/README.md`; they are not rewritten. The
+recommendation below stays at `--rate-limit 100`: it is the highest rate STABLE
+with every lower rate STABLE in both environments, and each refinement rate ran
+once.
+
 ## Hypothesis table
 
 The 100 rps run did not collapse, so every experiment below uses the lowest
@@ -267,7 +313,11 @@ https://nginx.org/en/docs/http/ngx_http_limit_req_module.html).
 
 100 rps is the measured ceiling on the machine above: it was STABLE in both
 runs made at that rate (60 s and 90 s), and 150 rps stalled in all three
-unpatched runs. No rate between 100 and 150 was tested.
+unpatched runs. The issue #195 refinement
+("Refinement in a Linux container" above) then measured 100 to 150 rps at
+10 rps steps, once each, in a container: ceiling 100 rps, 110 and 120 rps
+UNSTABLE, 130 to 150 rps STABLE. One repetition per rate, so read 100 as the
+figure to plan with, not the 130 to 150 results as headroom.
 
 This differs from the prior audit, which saw 100 rps collapse after about
 40 s on its own setup. The ceiling depends on how fast the host opens

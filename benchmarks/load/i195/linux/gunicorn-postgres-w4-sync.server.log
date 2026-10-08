@@ -1,0 +1,13 @@
+[2026-10-08 02:55:25 +0000] [34424] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:55:25 +0000] [34424] [INFO] Listening at: http://127.0.0.1:18195 (34424)
+[2026-10-08 02:55:25 +0000] [34424] [INFO] Using worker: sync
+[2026-10-08 02:55:25 +0000] [34428] [INFO] Booting worker with pid: 34428
+[2026-10-08 02:55:26 +0000] [34434] [INFO] Booting worker with pid: 34434
+[2026-10-08 02:55:26 +0000] [34435] [INFO] Booting worker with pid: 34435
+[2026-10-08 02:55:26 +0000] [34439] [INFO] Booting worker with pid: 34439
+[2026-10-08 02:58:15 +0000] [34424] [INFO] Handling signal: term
+[2026-10-08 02:58:15 +0000] [34434] [INFO] Worker exiting (pid: 34434)
+[2026-10-08 02:58:15 +0000] [34439] [INFO] Worker exiting (pid: 34439)
+[2026-10-08 02:58:15 +0000] [34428] [INFO] Worker exiting (pid: 34428)
+[2026-10-08 02:58:15 +0000] [34435] [INFO] Worker exiting (pid: 34435)
+[2026-10-08 02:58:15 +0000] [34424] [INFO] Shutting down: Master

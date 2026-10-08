@@ -1,0 +1,69 @@
+session start 2026-10-08T01:45:45Z
+environment: Docker Linux container (T195_ prefixed values come from benchmarks/load/i195/run_linux.sh)
+host uptime at start: 10:45  up 14 days, 14:52, 14 users, load averages: 5.09 4.58 3.85
+host docker: Docker Desktop 27.4.0, VM cpus=8 mem=4109737984 bytes, kernel 6.10.14-linuxkit
+nproc 8
+MemTotal:        4013416 kB
+uname -r 6.10.14-linuxkit
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+net.core.somaxconn = 4096
+net.ipv4.ip_local_port_range = 32768	60999
+net.ipv4.tcp_fin_timeout = 60
+postgres PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+Python 3.13.16
+gunicorn (version 26.2.0)
+Name: psycopg
+Version: 3.3.6
+Name: lnpl-postgres
+Version: 0.1.0
+lnpl commit 5e81fd01b04ef4278b68f2b753648f5b147e799c
+lnpl-postgres commit 14b113e
+gunicorn defaults kept: --timeout 30 --backlog 2048 (kernel cap: somaxconn above)
+ladder=50 100 200 400 point_seconds=55 refine_seconds=90 warmup=5 repetitions=1
+control_rate=400 refine_rates=100 110 120 130 140 150
+uptime  01:45:45 up 10 days,  9:43,  0 user,  load average: 1.34, 0.73, 0.39
+seed save=200 get=200
+control start backend=fake workers=4 class=gthread threads=4 rate=400 seconds=55 warmup=5 started=2026-10-08T01:45:45Z
+total=22000 post_warmup=20000 ok=20000 error_or_non2xx=0
+p50=0.89ms p95=1.89ms p99=3.30ms
+error_rate=0.00%
+bucket=0-10s mean=1.05ms max=28.50ms n=4000
+bucket=10-20s mean=1.21ms max=24.23ms n=4000
+bucket=20-30s mean=0.98ms max=12.65ms n=4000
+bucket=30-40s mean=0.97ms max=27.49ms n=4000
+bucket=40-50s mean=0.97ms max=14.12ms n=4000
+verdict=STABLE worst_bucket_ratio=1.155x
+uptime  01:46:40 up 10 days,  9:44,  0 user,  load average: 1.39, 0.84, 0.45
+postgres tables ready
+uptime  01:57:16 up 10 days,  9:54,  0 user,  load average: 1.58, 1.51, 1.04
+uptime  02:01:04 up 10 days,  9:58,  0 user,  load average: 1.18, 1.38, 1.09
+uptime  02:04:53 up 10 days, 10:02,  0 user,  load average: 1.80, 1.57, 1.22
+uptime  02:08:42 up 10 days, 10:06,  0 user,  load average: 1.64, 1.59, 1.30
+uptime  02:12:31 up 10 days, 10:09,  0 user,  load average: 1.57, 1.44, 1.29
+uptime  02:16:20 up 10 days, 10:13,  0 user,  load average: 1.53, 1.36, 1.28
+uptime  02:20:09 up 10 days, 10:17,  0 user,  load average: 1.65, 1.47, 1.34
+uptime  02:23:58 up 10 days, 10:21,  0 user,  load average: 1.80, 1.55, 1.39
+uptime  02:27:47 up 10 days, 10:25,  0 user,  load average: 1.58, 1.52, 1.41
+uptime  02:31:36 up 10 days, 10:29,  0 user,  load average: 1.72, 1.51, 1.42
+uptime  02:35:24 up 10 days, 10:32,  0 user,  load average: 1.51, 1.44, 1.39
+uptime  02:39:13 up 10 days, 10:36,  0 user,  load average: 1.57, 1.47, 1.41
+uptime  02:43:02 up 10 days, 10:40,  0 user,  load average: 1.66, 1.49, 1.42
+uptime  02:45:55 up 10 days, 10:43,  0 user,  load average: 1.57, 1.39, 1.38
+uptime  02:47:48 up 10 days, 10:45,  0 user,  load average: 1.34, 1.41, 1.39
+uptime  02:51:36 up 10 days, 10:49,  0 user,  load average: 2.19, 1.54, 1.42
+uptime  02:55:25 up 10 days, 10:52,  0 user,  load average: 2.38, 1.67, 1.47
+uptime  02:58:15 up 10 days, 10:55,  0 user,  load average: 1.41, 1.52, 1.44
+uptime  03:02:11 up 10 days, 10:59,  0 user,  load average: 2.33, 1.74, 1.53
+seed save=200 get=200
+control end backend=fake workers=4 class=gthread threads=4 rate=400 seconds=55 warmup=5 started=2026-10-08T03:02:11Z
+total=22000 post_warmup=20000 ok=20000 error_or_non2xx=0
+p50=0.90ms p95=1.61ms p99=2.35ms
+error_rate=0.00%
+bucket=0-10s mean=0.98ms max=19.70ms n=4000
+bucket=10-20s mean=0.98ms max=12.59ms n=4000
+bucket=20-30s mean=1.01ms max=16.79ms n=4000
+bucket=30-40s mean=0.99ms max=20.20ms n=4000
+bucket=40-50s mean=0.98ms max=15.31ms n=4000
+verdict=STABLE worst_bucket_ratio=1.037x
+session end 2026-10-08T03:03:06Z
+host uptime at end: 12:03  up 14 days, 16:09, 14 users, load averages: 5.12 4.57 4.28
