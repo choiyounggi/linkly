@@ -60,3 +60,4 @@
 | `respond-field-missing` | **warning** |
 | `guard-scoped-binding-escape` | **warning** |
 | `optional-field-unguarded-arithmetic` | **warning** |
+| `spec-result-reads-input` | **warning** |

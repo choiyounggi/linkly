@@ -1620,6 +1620,7 @@ def lower(decls, module_name):
         _check_rollback_escapes_network(ctx.emitted, d.name, has_rollback,
                                         mod.diagnostics, verbs=ctx.network_verbs)
         _check_note_cap(ctx.emitted, d.name, mod.diagnostics)
+        _check_spec_result_reads_input(d, ctx.emitted, decls, mod.diagnostics)
 
     _check_event_consume_cycles(event_consumes, emits_by_workflow, mod.diagnostics)
 
@@ -2110,6 +2111,72 @@ def _check_guard_scoped_binding_reads(emitted, top_ids, workflow_name,
                         "request ... as %s` binds only inside a guard "
                         "this step is not in. %s"
                         % (rendering, binding, binding, ORPHAN_HINT))
+
+
+def _check_spec_result_reads_input(decl, emitted, decls, diagnostics):
+    """`spec-result-reads-input` (warning) -- issue #216.
+
+    `expect result <bare>` reads the input payload field (RFC-0012
+    §G12.1/G12.3), and `spec` fills every input field a case did not give
+    with a type sample. When <bare> is also the field of a
+    `respond <binding>.<bare>` reference, no respond term of that name
+    exists (a term wins, RFC-0059 §6) and no `given` line of the same
+    block sets that input, the assertion silently compares against the
+    sample. The scope rule is unchanged; this only reports the collision.
+    """
+    blocks = decl.extra.get("specs") or []
+    if not blocks:
+        return
+    # In-function: spec -> interp -> lower is an import cycle.
+    from .condition import ConditionError, parse_condition, references
+    from .spec import SpecError, _check_given, _schema_from_decls
+
+    field_to_ref = {}
+    term_names = set()
+    for node in emitted:
+        if node["kind"] != "Response":
+            continue
+        for ref in node.get("refs") or []:
+            _binding, _, field = ref.partition(".")
+            field_to_ref.setdefault(field, ref)
+        term_names.update(term["name"] for term in node.get("aggTerms") or [])
+        if node.get("listTerm"):
+            term_names.update(("items", "next"))
+    if not field_to_ref:
+        return
+
+    schema = _schema_from_decls(decls)
+    for block in blocks:
+        setters = set()
+        for line in block["given"]:
+            try:
+                form, parts = _check_given(" ".join(line.tokens), schema)
+            except SpecError:
+                continue
+            if form in ("field", "input-field"):
+                setters.add(parts[0])
+        for line in block["expect"]:
+            if len(line.tokens) < 2 or line.tokens[0] != "result":
+                continue
+            try:
+                names = references(parse_condition(" ".join(line.tokens[1:])))
+            except ConditionError:
+                continue
+            seen = set()
+            for name in names:
+                if "." in name or name in seen:
+                    continue
+                seen.add(name)
+                if (name not in field_to_ref or name in term_names
+                        or name in setters):
+                    continue
+                diagnostics.add(
+                    code="spec-result-reads-input",
+                    where="line %d" % line.lineno, subject=name,
+                    line=line.lineno,
+                    message="result %s reads the input field, not the "
+                            "response — write result %s"
+                            % (name, field_to_ref[name]))
 
 
 def _check_event_refs(emitted, declared_event_ids, workflow_name):

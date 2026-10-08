@@ -127,6 +127,20 @@ class TestStructure(unittest.TestCase):
         # to cover, not this one's).
         self.assertIn("/login-service/login", self.spec["paths"])
 
+    def test_400_names_validation_failed_and_id_required(self):
+        # issue #216: since #209 a create with no id answers 400
+        # `id-required` (wsgi.map_result M8d), beside validation-failed.
+        desc = self.spec["paths"]["/login-service/login"]["post"][
+            "responses"]["400"]["description"]
+        self.assertIn("(validation-failed)", desc)
+        self.assertIn("(id-required)", desc)
+        self.assertIn("issue #209", desc)
+
+    def test_list_get_400_is_not_the_workflow_400(self):
+        # Boundary: only the workflow operation's 400 changes.
+        op = query_surface_spec()["paths"]["/orders/order"]["get"]
+        self.assertNotIn("id-required", op["responses"]["400"]["description"])
+
     def test_operation_lists_the_declared_steps(self):
         desc = self.spec["paths"]["/login-service/login"]["post"]["description"]
         self.assertIn("validate input -> authenticate -> cache user", desc)

@@ -16,7 +16,7 @@
             "description": "the workflow completed"
           },
           "400": {
-            "description": "validation failed"
+            "description": "validation failed (validation-failed), or a create received no id for an entity whose id is not derived generated (id-required) -- issue #209"
           },
           "404": {
             "description": "a workflow read found no row for the entity it looked up (not-found) -- issue #197"

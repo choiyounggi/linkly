@@ -63,6 +63,7 @@ CODES = (
     "respond-field-missing",        # issue #198  `respond` names a field absent from the bound row
     "guard-scoped-binding-escape",  # issue #198  `respond`/`set`/`format`/`emit ... with` reads a `create .../call .../request ... as` binding outside the guard that creates it
     "optional-field-unguarded-arithmetic",  # RFC-0053  set/guard arithmetic reads an `optional` field with no Presence (`exists`) guard owning the step
+    "spec-result-reads-input",      # issue #216  spec `expect result <bare>` names a respond field, no same-name respond term exists, and no `given` set that input -> it is compared against the sample payload
 )
 
 # code -> grade (#52). One question decides every row:
@@ -158,6 +159,10 @@ SEVERITY_OF = {
     # RFC-0053: adding a `when <ref> exists` guard (or moving the read
     # under one) removes this — same test as `unknown-verb`.
     "optional-field-unguarded-arithmetic": "warning",
+    # issue #216: writing the qualified name (`result <binding>.<field>`)
+    # or setting the input with `given <field> <value>` removes this —
+    # same test as `unknown-verb`.
+    "spec-result-reads-input": "warning",
 }
 
 
@@ -188,6 +193,7 @@ HINTS = {
     "respond-field-missing": "Backfill the stored row (add the missing field) or stop respond-ing it — `lnpl migrate` can backfill a missing field across existing rows, the same path `stored-row-shape-mismatch` names.",
     "guard-scoped-binding-escape": "Repeat the guard line before this step, or wrap both in a `parallel` block.",
     "optional-field-unguarded-arithmetic": "Add `when <ref> exists` immediately before this step (or move it inside that guard's block) before using it in arithmetic — or use a different field that is not `optional`.",
+    "spec-result-reads-input": "Write the qualified name `result <binding>.<field>` to assert on the response, or set the input with `given <field> <value>` if the input is what this line means to check.",
 }
 
 
