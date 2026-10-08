@@ -1510,6 +1510,14 @@ def strip_schema_gen(row):
     return row
 
 
+def masked_field_names(entity_node):
+    """Names of `entity_node`'s fields whose resolved 18-type `base` is
+    masked (RFC-0003 §Observability) -- the one derivation both
+    `mask_payload` and the default call body (RFC-0063) read."""
+    return frozenset(f["name"] for f in entity_node.get("fields", [])
+                     if f.get("base", f.get("type")) in MASKED_TYPES)
+
+
 def mask_payload(payload, entity_node):
     """Replace values whose declared semantic type is masked (RFC-0003 §Observability).
 
@@ -1523,9 +1531,22 @@ def mask_payload(payload, entity_node):
     """
     if not isinstance(payload, dict) or entity_node is None:
         return payload
-    masked_names = {f["name"] for f in entity_node.get("fields", [])
-                    if f.get("base", f.get("type")) in MASKED_TYPES}
+    masked_names = masked_field_names(entity_node)
     return {k: (MASK if k in masked_names else v) for k, v in payload.items()}
+
+
+def omit_masked_fields(payload, masked_names):
+    """issue #214 / RFC-0063: `payload` without the keys in `masked_names`.
+
+    A presence filter, not a mask -- the key is absent, never `MASK`, so a
+    peer cannot even tell the field existed. A non-dict `payload`, or one
+    holding none of the names, comes back as the same object, so a body
+    with no Password-family field is byte-identical to before. Otherwise a
+    new dict in input order; the caller's dict is never mutated.
+    """
+    if not isinstance(payload, dict) or masked_names.isdisjoint(payload):
+        return payload
+    return {k: v for k, v in payload.items() if k not in masked_names}
 
 
 def _masked_evaluation(interp, entry):
@@ -1639,7 +1660,7 @@ class Interpreter:
         (RFC-0057 §4) -- each ref resolved through the one resolver and
         masked through the one chokepoint. Each caller keeps its own
         no-clause default: `emit` masks the whole input, a call sends it
-        as-is (RFC-0057 §5).
+        minus its Password-family fields (RFC-0063).
         """
         built_payload = {}
         for entry in payload_map:
@@ -1777,6 +1798,20 @@ class Interpreter:
                        .get("base", f.get("type")))
                   for f in node.get("fields", [])]
         return dict(node, fields=fields)
+
+    def _input_masked_names(self):
+        """issue #214 / RFC-0063 §1: input keys that are Password-family.
+
+        The run input is not bound to one entity, so a name counts when ANY
+        Entity declares it with a masked base (refinements resolved through
+        `_entity_view`) -- the conservative mirror of RFC-0053's rule that
+        `input.<field>` is optional only when every declaring entity says so.
+        """
+        names = set()
+        for node in self.doc["nodes"]:
+            if node["kind"] == "Entity":
+                names |= masked_field_names(self._entity_view(node))
+        return frozenset(names)
 
     def _aggregate(self, agg, expression, rowsets, agg_field_type):
         """One `Aggregate` over this run's RowSets — `set`'s right-hand side
@@ -2584,14 +2619,17 @@ class Interpreter:
                             "NetworkCall %r: `with` reference %r resolved to "
                             "nothing" % (effect["id"], ref))
                     path_args.append(value)
-            # RFC-0057 §4: `send` builds the body from the mapped refs; with
-            # no `send` the body is the run input, unmasked, as before.
+            # RFC-0057 §4 as updated by RFC-0063: `send` builds the body from
+            # the mapped refs; with no `send` the body is the run input minus
+            # every Password-family field -- keys dropped, never masked
+            # (issue #214).
             body_map = effect.get("bodyMap")
             if body_map:
                 request_body = self._assemble_mapped_payload(
                     body_map, payload, bindings)
             else:
-                request_body = payload
+                request_body = omit_masked_fields(
+                    payload, self._input_masked_names())
             # issue #108 D4: the ONE point in a locked step where the lock
             # is dropped — the whole reason a `parallel` block is faster is
             # that N of these can be in flight while their threads hold no
