@@ -71,5 +71,6 @@
 | RFC-0058 파이프라인 암묵 종결과 모순되는 들여쓰기의 거부 | `pipeline` 안에 들여 쓴 가드·블록이 왜 거부되는지, 가드된 `pipeline`을 이어 다단 조건 흐름을 쓰는 법과 그것이 기대는 '미바인딩 참조 비교는 거짓' 계약이 궁금하다 | `rfcs/0058-pipeline-implicit-close-indentation.md` |
 | RFC-0059 `respond`의 이름 붙인 집계 항과 목록 항 | 조회 전용 워크플로가 개수·합계·조건부 목록을 행을 쓰지 않고 응답하고 싶다(`respond <name> as <func> <ref>`, `respond list <binding>`) — `limit`이 필요한 이유, `next`가 늘 null인 이유, OpenAPI·spec이 항을 다루는 법과 모드 B가 거부하는 이유 | `rfcs/0059-respond-aggregate-and-list-terms.md` |
 | RFC-0060 할당한 필드를 읽는 가드와 `otherwise` 항목 | 가드가 앞 스텝이 바꾼 값을 읽어도 되는지(RFC-0015 OQ1), 가드가 거짓일 때 다른 항목을 실행하고 싶다(`otherwise`) — 어디에 쓸 수 있고 skipped[]에 무엇이 남는지, 모드 B는 왜 둘 다 거부하는지 | `rfcs/0060-assigned-field-guard-and-otherwise.md` |
+| RFC-0063 send 없는 call/request의 기본 본문은 Password 계열 입력 필드를 뺀다 | send 없는 call/request가 입력의 어떤 필드를 빼는지 — 어느 엔티티든 Password·refine … of Password로 선언한 이름이 기본 본문에서 빠지는 이유와 그 판정 규칙, 그런 필드가 없으면 본문이 바이트 동일한 이유 | `rfcs/0063-default-body-omits-password-fields.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

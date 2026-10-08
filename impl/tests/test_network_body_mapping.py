@@ -3,13 +3,14 @@
 
 Grammar and IR shape (lower.py), the shared reference rules (RFC-0049's,
 reused), runtime assembly against a real local recording HTTP server, and
-the measurement of today's no-clause default body (issue #43's masking
-contract) -- see RFC-0057.
+the no-clause default body, which leaves Password-family input fields out
+(issue #214) -- see RFC-0057 and RFC-0063.
 """
+import json
 import unittest
 
 from lnpl.drivers import FakeNetworkDriver, HttpNetworkDriver
-from lnpl.interp import Interpreter
+from lnpl.interp import Interpreter, omit_masked_fields
 from lnpl.lower import LowerError, lower
 from lnpl.parser import parse
 from lnpl.repo_policy import row_key
@@ -344,12 +345,17 @@ class SendClauseRuntimeAssemblyTest(_ServerTestCase):
         self.assertEqual([{"id": "o-1"}], handler.received)
 
 
+# issue #214 / RFC-0063: no `find` step, so repo_rows={} is enough.
+CALL_ONLY_SOURCE = ("capability http PaymentGateway\n    method post\n\n"
+                    "entity Customer\n    field\n        id UUID\n"
+                    "        secret Password\n\n"
+                    "workflow Ping\n    call PaymentGateway as paymentResult\n")
+
+
 class PasswordInDefaultBodyMeasurementTest(unittest.TestCase):
-    """RFC-0057 §8: measures, does not fix, issue #43's masking gap in the
-    no-clause default body. A plain `call ... as` (no `send`) passes the
-    whole run payload to the driver UNMASKED -- today's real behavior,
-    asserted so the gap is a reproducible fact. The planted value is an
-    obviously synthetic placeholder.
+    """Issue #214 / RFC-0063: a plain call ... as (no send) leaves every
+    Password-family input field out of the body -- the key is absent, never
+    "***". The planted value is an obviously synthetic placeholder.
     """
 
     SOURCE = ("capability http PaymentGateway\n    method post\n\n"
@@ -358,7 +364,7 @@ class PasswordInDefaultBodyMeasurementTest(unittest.TestCase):
               "workflow Ping\n    find customer\n"
               "    call PaymentGateway as paymentResult\n")
 
-    def test_a_plain_call_sends_a_password_family_field_in_clear_text(self):
+    def test_a_plain_call_leaves_a_password_family_field_out(self):
         doc = compile_doc(self.SOURCE)
         payload = {"id": "c-1", "secret": "sw0rdfish-raw"}
         rows = {"entity.customer": {row_key("entity.customer", payload):
@@ -367,9 +373,12 @@ class PasswordInDefaultBodyMeasurementTest(unittest.TestCase):
         result = Interpreter(doc, repo_rows=rows, network=rec).run_workflow(
             workflow_id(doc), payload)
         self.assertEqual("completed", result["status"])
-        # the raw secret is a real key of the sent body, not a text match
-        self.assertEqual([{"id": "c-1", "secret": "sw0rdfish-raw"}],
-                         [r["payload"] for r in rec.received])
+        self.assertEqual([("PaymentGateway", {"id": "c-1"}, None)],
+                         [(r["target"], r["payload"], r["path"]) for r in rec.received])
+        self.assertNotIn("sw0rdfish-raw", repr(rec.received))
+        self.assertNotIn("***", repr(rec.received))
+        # the caller's dict is not mutated by the filter
+        self.assertEqual({"id": "c-1", "secret": "sw0rdfish-raw"}, payload)
 
     def test_a_send_clause_leaves_the_password_field_out(self):
         # negative control: the same run with `send` carries only `id`
@@ -384,6 +393,136 @@ class PasswordInDefaultBodyMeasurementTest(unittest.TestCase):
             workflow_id(doc), payload)
         self.assertEqual([{"id": "c-1"}], [r["payload"] for r in rec.received])
         self.assertNotIn("sw0rdfish-raw", repr(rec.received))
+
+
+
+GATEWAY = "capability http PaymentGateway\n    method post\n\n"
+PING_CALL = "workflow Ping\n    call PaymentGateway as paymentResult\n"
+
+
+class DefaultBodyPasswordExclusionTest(unittest.TestCase):
+
+    def _sent(self, source, payload, rows=None):
+        doc = compile_doc(source)
+        rec = FakeNetworkDriver()
+        result = Interpreter(doc, repo_rows=rows or {}, network=rec).run_workflow(
+            workflow_id(doc), payload)
+        self.assertEqual("completed", result["status"])
+        return [(r["target"], r["payload"], r["path"]) for r in rec.received], rec
+
+    def test_a_request_step_leaves_a_password_family_field_out(self):
+        calls, rec = self._sent(
+            CALL_ONLY_SOURCE.replace("call PaymentGateway", "request PaymentGateway"),
+            {"id": "c-1", "secret": "sw0rdfish-raw"})
+        self.assertEqual([("PaymentGateway", {"id": "c-1"}, None)], calls)
+        self.assertNotIn("sw0rdfish-raw", repr(rec.received))
+
+    def test_a_refinement_of_password_is_left_out_too(self):
+        source = (GATEWAY + "refine ApiKey of Password\n    minLength 8\n\n"
+                  "entity Customer\n    field\n        id UUID\n"
+                  "        token ApiKey\n\n" + PING_CALL)
+        calls, rec = self._sent(source, {"id": "c-1", "token": "tk-synthetic-1"})
+        self.assertEqual([("PaymentGateway", {"id": "c-1"}, None)], calls)
+        self.assertNotIn("tk-synthetic-1", repr(rec.received))
+
+    def test_a_body_with_no_password_family_field_is_byte_identical(self):
+        payload = {"id": "c-1", "tier": "gold"}
+        calls, rec = self._sent(
+            CALL_ONLY_SOURCE.replace("secret Password", "tier Text"), payload)
+        self.assertEqual('{"id": "c-1", "tier": "gold"}',
+                         json.dumps(rec.received[0]["payload"]))
+        self.assertEqual([("PaymentGateway", {"id": "c-1", "tier": "gold"}, None)],
+                         calls)
+        self.assertIs(payload, rec.received[0]["payload"])
+
+    def test_an_input_without_the_declared_password_field_is_sent_unchanged(self):
+        payload = {"id": "c-1"}
+        calls, rec = self._sent(CALL_ONLY_SOURCE, payload)
+        self.assertEqual([("PaymentGateway", {"id": "c-1"}, None)], calls)
+        self.assertIs(payload, rec.received[0]["payload"])
+
+    def test_an_input_holding_only_a_password_family_field_sends_an_empty_body(self):
+        calls, rec = self._sent(CALL_ONLY_SOURCE, {"secret": "sw0rdfish-raw"})
+        self.assertEqual([("PaymentGateway", {}, None)], calls)
+        self.assertNotIn("sw0rdfish-raw", repr(rec.received))
+
+    def test_an_empty_input_sends_an_empty_body(self):
+        calls, _ = self._sent(CALL_ONLY_SOURCE, {})
+        self.assertEqual([("PaymentGateway", {}, None)], calls)
+
+    def test_a_document_with_no_entity_sends_the_input_unchanged(self):
+        calls, _ = self._sent(GATEWAY + PING_CALL,
+                              {"id": "c-1", "note": "plain-note"})
+        self.assertEqual(
+            [("PaymentGateway", {"id": "c-1", "note": "plain-note"}, None)], calls)
+
+    def test_a_password_field_on_the_first_entity_is_left_out(self):
+        source = (GATEWAY + "entity Customer\n    field\n        id UUID\n"
+                  "        secret Password\n\n"
+                  "entity Order\n    field\n        id UUID\n        label Text\n\n"
+                  + PING_CALL)
+        calls, rec = self._sent(
+            source, {"id": "c-1", "secret": "sw0rdfish-raw", "label": "l-1"})
+        self.assertEqual([("PaymentGateway", {"id": "c-1", "label": "l-1"}, None)],
+                         calls)
+        self.assertNotIn("sw0rdfish-raw", repr(rec.received))
+
+    def test_a_password_field_on_a_later_entity_is_left_out(self):
+        source = (GATEWAY + "entity Order\n    field\n        id UUID\n"
+                  "        label Text\n\n"
+                  "entity Customer\n    field\n        id UUID\n"
+                  "        secret Password\n\n"
+                  "workflow Ping\n    find customer\n"
+                  "    call PaymentGateway as paymentResult\n")
+        payload = {"id": "c-1", "secret": "sw0rdfish-raw"}
+        rows = {"entity.customer": {row_key("entity.customer", payload):
+                                    {"id": "c-1", "secret": "sw0rdfish-raw"}}}
+        calls, rec = self._sent(source, payload, rows)
+        self.assertEqual([("PaymentGateway", {"id": "c-1"}, None)], calls)
+        self.assertNotIn("sw0rdfish-raw", repr(rec.received))
+
+    def test_a_name_that_is_password_on_any_entity_is_left_out(self):
+        source = (GATEWAY + "entity Order\n    field\n        id UUID\n"
+                  "        secret Text\n\n"
+                  "entity Customer\n    field\n        id UUID\n"
+                  "        secret Password\n\n" + PING_CALL)
+        calls, rec = self._sent(source, {"id": "c-1", "secret": "sw0rdfish-raw"})
+        self.assertEqual([("PaymentGateway", {"id": "c-1"}, None)], calls)
+        self.assertNotIn("sw0rdfish-raw", repr(rec.received))
+
+
+class OmitMaskedFieldsTest(unittest.TestCase):
+
+    def test_a_non_dict_payload_comes_back_as_the_same_object(self):
+        for value in (["secret", "x"], "secret", 7, None):
+            with self.subTest(value=value):
+                self.assertIs(value, omit_masked_fields(value, frozenset({"secret"})))
+
+    def test_a_payload_with_no_masked_key_comes_back_as_the_same_object(self):
+        payload = {"id": "c-1", "tier": "gold"}
+        self.assertIs(payload, omit_masked_fields(payload, frozenset({"secret"})))
+        self.assertIs(payload, omit_masked_fields(payload, frozenset()))
+
+    def test_a_filtered_payload_keeps_input_order_and_leaves_the_input_alone(self):
+        payload = {"z": 1, "secret": "sw0rdfish-raw", "a": 2}
+        out = omit_masked_fields(payload, frozenset({"secret"}))
+        self.assertEqual(["z", "a"], list(out))
+        self.assertEqual({"z": 1, "a": 2}, out)
+        self.assertEqual({"z": 1, "secret": "sw0rdfish-raw", "a": 2}, payload)
+
+
+class DefaultBodyWireTest(_ServerTestCase):
+
+    def test_the_wire_body_of_a_plain_call_leaves_the_password_field_out(self):
+        handler = _make_handler(status=200, body={"ok": 1})
+        url = self.start(handler)
+        doc = compile_doc(CALL_ONLY_SOURCE)
+        driver = HttpNetworkDriver(endpoints={"PaymentGateway": url})
+        self.addCleanup(driver.close)
+        result = Interpreter(doc, repo_rows={}, network=driver).run_workflow(
+            workflow_id(doc), {"id": "c-1", "secret": "sw0rdfish-raw"})
+        self.assertEqual("completed", result["status"])
+        self.assertEqual([{"id": "c-1"}], handler.received)
 
 
 if __name__ == "__main__":
