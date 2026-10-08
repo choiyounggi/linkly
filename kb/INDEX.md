@@ -13,7 +13,7 @@ Layout & Routing). 에이전트는 여기서 트리거를 매칭해 문서 id만
 | [Testing](testing/index.md) | 테스트 수준·케이스 최소셋·검증 가능성 기준 |
 | [Concurrency](concurrency/index.md) | 병렬 실행·fan-out/merge·경쟁 상태 회피 |
 | [Database](database/index.md) | 스키마·인덱스·트랜잭션 등 데이터 저장 결정 |
-| [Cloud](cloud/index.md) | 클라우드 자원 프로비저닝·배포 대상 선택 |
+| [Cloud](cloud/index.md) | 클라우드 자원 프로비저닝(redis·postgres)·서빙 토폴로지(serve·gunicorn)·관측 내보내기·시크릿과 설정·무중단 스키마 변경·이벤트 전달 보장 |
 | [Patterns](patterns/index.md) | 재사용 가능한 검증된 구현 패턴 |
 | [AntiPatterns](antipatterns/index.md) | 반복 실패로 확인된 회피 대상 패턴 |
 | [Style](style/index.md) | 코드·선언 표기 스타일 규약 |
