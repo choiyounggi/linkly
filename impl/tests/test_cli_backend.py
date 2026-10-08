@@ -466,15 +466,20 @@ class TokenCommandTest(CliTestCase):
         claims = HmacTokenProvider(SECRET).verify(out.strip(), audience_for_path(ROLE_PATH))
         self.assertEqual(claims["role"], "x")
 
-    def test_boundary_a_role_only_service_without_jwt_never_warns(self):
+    def test_error_a_role_only_service_without_jwt_does_not_compile(self):
+        # issue #213: `role` without `jwt` no longer compiles, so `lnpl token`
+        # stops at the compile error and mints nothing (before #213 this
+        # minted with rc 0 and no warning — the #202 boundary).
+        self.assertNotEqual(ROLE_ONLY_NO_JWT_LNPL, ROLE_GATED_SRC)
         self.set_env(SECRET_ENV, SECRET)
         source = self.write_source(ROLE_ONLY_NO_JWT_LNPL, "role_only.lnpl")
         for extra in ([], ["--role", "ops"]):
             with self.subTest(extra=extra):
                 rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
                                              "--subject", "u1", "--secret-env", SECRET_ENV] + extra)
-                self.assertEqual(rc, 0)
-                self.assertEqual(err, "")
+                self.assertEqual(rc, 2)
+                self.assertEqual(out, "")
+                self.assertTrue(err.startswith("compile error: role-requires-jwt: "), err)
 
     def test_normal_the_secret_never_reaches_stdout_or_stderr_on_the_role_path(self):
         self.set_env(SECRET_ENV, SECRET)

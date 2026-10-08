@@ -878,6 +878,23 @@ def _parse_security_line(tokens, lineno):
     return head
 
 
+def _check_role_requires_jwt(service_name, mechs, lines):
+    """issue #213: `role <r>` needs `jwt` in the same `security` block.
+
+    Without `jwt` no token is verified, so no role can be read off one and
+    the M3b gate never runs (wsgi keys route auth on `jwt`). `mechs` is
+    already validated by `_parse_security_line`, so a malformed line has
+    raised its own error before this runs."""
+    if "jwt" in mechs:
+        return
+    for mech, line in zip(mechs, lines):
+        if mech.startswith("role "):
+            raise LowerError(
+                "role-requires-jwt: line %d: service %s declares `%s` "
+                "without `jwt`; role requires jwt: add 'jwt' to this "
+                "service's security block" % (line.lineno, service_name, mech))
+
+
 def _parse_expose_line(tokens, lineno, registry, base_of):
     """issue #99, D2: `list <Entity> by <field>` -> `{entity, field}`.
 
@@ -1404,6 +1421,7 @@ def lower(decls, module_name):
         if "security" in d.clauses:
             secid = ".".join([KIND_PREFIX["Security"]] + segs)
             mechs = [_parse_security_line(line.tokens, line.lineno) for line in d.clauses["security"]]
+            _check_role_requires_jwt(d.name, mechs, d.clauses["security"])
             constraint_nodes.append(_node("Security", secid, mechanisms=mechs))
             constraints.append(secid)
             # `role admin` is the same declaration as `role owner` as far as

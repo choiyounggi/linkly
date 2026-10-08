@@ -287,9 +287,12 @@ class TestDocumentCoverage(unittest.TestCase):
             "| security | role | enforced | — | "
             "이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 "
             "정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`"
-            "(docs/serving.md M3b). `jwt`와 달리 \"약한 경로\"가 없다 — "
-            "`security role`을 선언하고도 `serve`가 뜬다면 token_provider "
-            "없이는 기동 자체가 rc 2로 거부되기 때문이다(D6) |\n", "")
+            "(docs/serving.md M3b). `role`은 같은 `security` 블록에 `jwt`가 "
+            "있어야 컴파일된다 — 없으면 `lower()`가 `role-requires-jwt` "
+            "컴파일 오류(rc 2)로 거부한다(issue #213). 그래서 `jwt`와 달리 "
+            "\"약한 경로\"가 없다 — 컴파일된 `security role`은 언제나 `jwt` "
+            "뒤에 있고, token_provider 없이는 `serve` 기동 자체가 rc 2로 "
+            "거부된다(D6) |\n", "")
         self.assertNotEqual(mutant, self.markdown, "the mutation did not apply")
         errors = document_coverage_errors(mutant)
         self.assertTrue(errors, "check 2 did not notice a deleted row")
@@ -302,9 +305,12 @@ class TestDocumentCoverage(unittest.TestCase):
             "| security | role | enforced | — | "
             "이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 "
             "정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`"
-            "(docs/serving.md M3b). `jwt`와 달리 \"약한 경로\"가 없다 — "
-            "`security role`을 선언하고도 `serve`가 뜬다면 token_provider "
-            "없이는 기동 자체가 rc 2로 거부되기 때문이다(D6) |\n", "")
+            "(docs/serving.md M3b). `role`은 같은 `security` 블록에 `jwt`가 "
+            "있어야 컴파일된다 — 없으면 `lower()`가 `role-requires-jwt` "
+            "컴파일 오류(rc 2)로 거부한다(issue #213). 그래서 `jwt`와 달리 "
+            "\"약한 경로\"가 없다 — 컴파일된 `security role`은 언제나 `jwt` "
+            "뒤에 있고, token_provider 없이는 `serve` 기동 자체가 rc 2로 "
+            "거부된다(D6) |\n", "")
         self.assertEqual(document_validity_errors(mutant), [])
 
 

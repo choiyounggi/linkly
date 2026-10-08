@@ -415,11 +415,14 @@ ENFORCEMENT = {
         (UNENFORCED, "the default path issues and verifies nothing; "
                      "`lnpl serve --jwt-secret-env NAME` verifies the bearer "
                      "token per request (docs/serving.md M3a, docs/backends.md)"),
-    # issue #119, D6/D9: unlike `jwt` above, `role` has no live weak path to
-    # name — a `security role` declaration that serves at all is checked,
-    # because D6 refuses to even start `serve` without a token_provider
-    # configured (`WsgiConfigError` -> rc 2). What is left once launch
-    # succeeds is a single behaviour, not two paths to pick the weaker of.
+    # issue #119, D6/D9 + issue #213: unlike `jwt` above, `role` has no live
+    # weak path to name. `lower()` rejects `role <r>` without `jwt` in the
+    # same `security` block (`LowerError` `role-requires-jwt`), so every
+    # compiled `role` sits behind `jwt` and the M3b check is reached; D6 then
+    # refuses to start `serve` without a token_provider (`WsgiConfigError`
+    # -> rc 2). Not covered: an IR document that did not come from `lower()`
+    # handed straight to `make_wsgi_app` — wsgi route auth still keys on
+    # `jwt` alone (issue #213 kept the fix at compile time).
     ("security", "role"):
         (ENFORCED, "every route the declaring service owns requires the "
                    "verified token's role to exactly match `<r>`; mismatch "

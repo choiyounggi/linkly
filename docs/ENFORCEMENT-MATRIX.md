@@ -75,7 +75,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 **선언 여부와 무관하게 모든 서비스에서 무조건** 롤백한다 — `policy rollback` 선언이 실제로 좌우하는 것은 (a) 그 INFO trace 로그 한 줄과 (b) 컴파일 타임 `rollback-escapes-network` 진단(issue #112)의 활성화뿐이다(issue #79, RFC-0032, RFC-0036) |
 | policy | parallel | enforced | — | `run_workflow`가 `parallel` 블록의 스텝을 블록 스코프 `ThreadPoolExecutor`에서 동시 실행한다 — fail-fast(한 스텝 실패 시 나머지 취소), 동시성 상한은 선언값(없으면 블록 스텝 수)이 정한다(issue #108, RFC-0041) |
 | security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
-| security | role | enforced | — | 이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`(docs/serving.md M3b). `jwt`와 달리 "약한 경로"가 없다 — `security role`을 선언하고도 `serve`가 뜬다면 token_provider 없이는 기동 자체가 rc 2로 거부되기 때문이다(D6) |
+| security | role | enforced | — | 이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`(docs/serving.md M3b). `role`은 같은 `security` 블록에 `jwt`가 있어야 컴파일된다 — 없으면 `lower()`가 `role-requires-jwt` 컴파일 오류(rc 2)로 거부한다(issue #213). 그래서 `jwt`와 달리 "약한 경로"가 없다 — 컴파일된 `security role`은 언제나 `jwt` 뒤에 있고, token_provider 없이는 `serve` 기동 자체가 rc 2로 거부된다(D6) |
 | performance | response | measured | declared-measured-only | 실행마다 측정·보고하지만 예산 초과 실행을 차단하지 않는다 |
 | performance | cache | enforced | — | 모든 CacheAccess set이 쓰는 TTL 예산을 소유한다 |
 | performance | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
