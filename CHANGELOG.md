@@ -74,6 +74,57 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   (problem+json, with `failed_step`); the event-consume path answers 503
   with `Retry-After` and releases the claim. Clients that retried on 500
   should retry on 409 (issue #201).
+- Fixed a self-conflict in the SQLite driver where calling `update` on a
+  bound row and then `set`ting the same row again failed with `"write
+  conflict"` (issue #182).
+- Fixed `FakeRepository`'s `delete`, which unconditionally returned
+  `affected: 1` without removing the row — it now actually deletes the
+  row and returns `affected: 0` for a missing row. A workflow that reads
+  the same row after `delete` now gets the same result on Fake and
+  SQLite (issue #183).
+- Fixed `lnpl diff` (`differential.verify()`) and `lnpl build` reporting
+  different RFCs as the first rejection reason for a workflow that
+  combines two or more of a Money guard, a lookup key (`by <ref>`), and
+  a numeric-shape predicate (`is-numeric`/`is-not-numeric`) —
+  `differential.verify()`'s check order is now unified with
+  `backend.build()`/`backend.emit_mlir()`'s Money (RFC-0051) → lookup
+  key (RFC-0052) → numeric predicate (RFC-0050) order. Two combinations
+  change: for a Money + numeric-predicate program, `diff`'s first report
+  moves from RFC-0050 to RFC-0051; for a lookup-key + numeric-predicate
+  program, from RFC-0050 to RFC-0052. Both still reject with rc 4 — only
+  the reason changes (issue #185).
+- Fixed `lnpl build`-ing a workflow that uses a numeric-shape predicate
+  (`is-numeric`/`is-not-numeric`) in an environment without MLIR/LLVM
+  tools reporting a tool-missing error (`"mlir-opt not found ..."`)
+  before the RFC-0050 rejection — `build()` now rejects the numeric
+  predicate early, in the same place as the Money/lookup-key rejection
+  (#181), right before `verify_lnpl_module()` (the tool lookup). This
+  early check sees the ops stream truncated by `_lnpl_ops`'s
+  seed/payload, so a guard step that comes after an unseeded read and
+  still succeeds today (`seeded=frozenset()`) still succeeds — only the
+  case where the rejection used to come after the tool error changes
+  (issue #186).
+- `build_app()` (the gunicorn operations path) now accepts four
+  operational options that previously existed only for `lnpl serve`:
+  `LNPL_METRICS`, `LNPL_CAPTURE_ON_FAILURE`, `LNPL_TRUST_INCOMING_TRACE`
+  (boolean — `1`/`true`/`yes`/`on`, `0`/`false`/`no`/`off`), and
+  `LNPL_RATE_LIMIT` (a finite number greater than 0). An argument of the
+  same name (e.g. `metrics=`) is also accepted, and an explicit argument
+  wins over the environment variable. An empty string means unset, and
+  an invalid value fails startup with a `WsgiConfigError` naming the
+  variable. readyz check ③ (`jwt-secret-env`) now also runs on the
+  `build_app()` path — it used to be skipped even when
+  `LNPL_JWT_SECRET_ENV` was given. `lnpl serve --rate-limit nan`/`inf`
+  is now rejected with the same wording as `0` (rc 2).
+  `impl/tests/test_build_app_serve_parity.py` enforces that every
+  `serve` option has a `build_app()` counterpart (issue #187).
+- The gunicorn `build_app()` path now accepts
+  `--cache`/`--network`/`--token-provider`/`--jwt-issuer`/`--config`/`--profile`
+  under the same rules as `lnpl serve` — the
+  `LNPL_CACHE`/`LNPL_NETWORK`/`LNPL_TOKEN_PROVIDER`/`LNPL_JWT_ISSUER`/`LNPL_CONFIG`/`LNPL_PROFILE`
+  environment variables, or an argument of the same name. The
+  startup-failure message for an unknown `LNPL_BACKEND` value no longer
+  includes the value (issue #187).
 
 ### Added
 - `scripts/load_probe.py` (stdlib open-loop load generator) and
@@ -147,6 +198,101 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   required, `items`/`next` envelope), with zero repository writes, masked
   rowsets, an OpenAPI 200 schema derived from the terms, and `spec` results
   for named aggregates. Mode B refuses it (issue #210, RFC-0059).
+- Added a `cached` read-through cache clause to the read verbs
+  (`find`/`read`/`load`/`authenticate`) — a hit skips the repository
+  call, a miss reads the row and records it with the `performance cache`
+  TTL, and a write or rollback in the same document clears that key. It
+  is a compile error with no budget declared or when the same workflow
+  also writes that row; mode B refuses it as a recorded exemption
+  (RFC-0062) (issue #188).
+- Added the `lnpl generate compose` / `lnpl generate k8s` built-in
+  generators: they deterministically generate a compose file (app +
+  postgres/redis, readyz healthcheck) and k8s manifests (Deployment,
+  Service, ConfigMap; Secret is referenced by name only) from the
+  declared capabilities. Image, replica count, and resources are taken
+  from `--set KEY=VALUE` or left as commented placeholders (issue #189).
+- Added the `image` job to `release.yml`, which builds and smoke-tests a
+  runtime-only linkly image on every release-tag push and publishes it
+  to `ghcr.io/<owner>/linkly` tagged `vX.Y.Z` and `X.Y` (including SBOM
+  and provenance attestation, a pinned base-image digest; PyPI
+  publishing stays disabled) (issue #190).
+- Added the `lnpl.publishers` entry-point group and the `EventPublisher`
+  publish SPI contract, `EventPublisherTCK`, and URL-scheme dispatch for
+  `lnpl relay --target` (`http(s)://` is byte-identical) — a real broker
+  driver stays out of scope, left for a separate repo (issue #191).
+- Registered RFC-0061 (Draft) — the `lnpl.publishers` publish SPI
+  specification, with RFC-0040 §Motivation/§7/§8/§9/§Alternatives
+  Updates, reflected in `docs/backends.md`/`docs/serving.md`
+  (issue #191).
+- Added `lnpl serve --jwt-secret-file`,
+  `build_app(jwt_secret_file=...)`/`LNPL_JWT_SECRET_FILE`, and
+  `lnpl.toml` `[*.secrets] jwt = { file = "..." }` — they read the JWT
+  signing secret from a mounted file (one trailing newline stripped,
+  absolute path only; an error names only the role). Giving both an
+  environment-variable name and a file is rejected (issue #192).
+- Added the `lnpl.secrets` entry-point group and the `SecretProvider`
+  contract (`get`/`get_previous`/`close`), `open_secret_provider`,
+  `SecretProviderTCK` (lnpl.testing), and a `secrets` slot in
+  `lnpl capabilities` — the built-in names `env`/`file` cannot be
+  shadowed (issue #192).
+- Added `[*.secrets] jwt = { provider = "...", key = "..." }` — it reads
+  the JWT signing key from a registered `lnpl.secrets` provider and
+  verifies against the current key plus the previous key to support
+  zero-downtime rotation (a 60-second delayed re-fetch, plus a re-fetch
+  on every readyz probe). `/-/readyz` answers 503 with `secret-provider`
+  on a provider failure (issue #192).
+- Added a secret-leak regression test — it runs each of the
+  environment-variable, file, and provider secret sources through both
+  `lnpl serve` and `build_app()`, and pins that the secret value never
+  appears in stdout, stderr, the access log, trace, error bodies,
+  readyz, `lnpl config check`, or startup-error tracebacks (issue #192).
+- Added a document that judges, from actual run results, how far
+  object-storage scenarios (upload storage, signed-URL issuance,
+  large-file download) can go through a `capability http` workaround —
+  closed; no RFC is needed (issue #193).
+- Added the performance-regression PR gate
+  `impl/tests/test_perf_counters.py` — it asserts exact counts of DB
+  connections opened/closed, repository statements, and driver
+  instantiations per request on the sqlite, fake, and `build_app()`
+  paths, and proves on every run that the gate actually fails, using a
+  control driver that opens one extra connection per statement
+  (issue #195).
+- Added the weekly load-report workflow
+  `.github/workflows/load-weekly.yml` (Mondays 07:00 UTC plus manual
+  dispatch) — it reports absolute throughput and latency without
+  blocking a PR, and `impl/tests/test_load_weekly_workflow.py` pins that
+  wiring (issue #195).
+- `scripts/load_probe.py` now prints a stability verdict `verdict=`
+  (STABLE, UNSTABLE, NO-DATA) and `worst_bucket_ratio=` on its last line
+  (the exit code stays 0) (issue #195).
+- Added a load-ceiling table for the operations path (gunicorn +
+  `build_app()`) to `docs/gunicorn-load-measurement.md` — it records the
+  stable ceiling and p50/p95/p99 for all 18 combinations of backend
+  (fake, sqlite, postgres) × worker count (1, 2, 4) × worker class
+  (sync, gthread), a fake control group, and the measurement method;
+  every number traces back to a log line under
+  `benchmarks/load/i195/linux/`. Measurements were taken in a Docker
+  Linux container, because loopback congestion on a macOS host makes the
+  measurement invalid there (issue #195).
+- Re-measured `lnpl serve` + postgres at 100-150 rps in 10 rps steps and
+  added a container-measurement section to
+  `docs/postgres-load-ceiling.md` (the ceiling stays 100 rps; 110 and
+  120 rps show one interval of congestion) (issue #195).
+- Added to `docs/serving.md` the recommended worker count and worker
+  class with the measurements behind them, the measured fact that the
+  metrics registry and rate-limit bucket are separate per worker, and
+  the failure (and workaround) when several workers start concurrently
+  against a fresh postgres database (issue #195).
+- Added six documents to the KB `cloud` category:
+  `cloud-postgres-provisioning` (throughput ceiling, `--rate-limit`
+  value, connections), `cloud-serving-topology` (`lnpl serve` with
+  gunicorn, workers, and a front proxy), `cloud-observability-export`
+  (access log, trace export, metrics, probes),
+  `cloud-secrets-and-config` (secret sources, rotation, `lnpl.toml`
+  profiles), `cloud-schema-change-rollout` (expand/migrate/contract,
+  backups), `cloud-event-delivery` (outbox, relay guarantees). Every
+  factual sentence cites its source file, and every unimplemented
+  recommendation states its grade (issue #196).
 
 ### Changed
 - Persistent backends (sqlite, postgres) are no longer seeded from the
@@ -185,6 +331,14 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   reading an assigned field used to be a compile error and is now accepted
   in mode A, so a program that dodged the error by reordering still works;
   a mode-B build of a workflow that uses either form is now refused.
+- Formalized the position that rate limiting is a single linkly
+  process's own defense, which loosens by N × K across instances and
+  workers — a global or per-client limit is the gateway's job. Added a
+  reference `limit_req_zone`/`limit_req`/`limit_req_status` to
+  `examples/deploy/nginx.conf`, and a 2-instance smoke test
+  (`test_deploy.py::TwoInstanceGatewayRateLimitTest`) confirmed that
+  combined allowance is capped at the gateway and that `/-/healthz` is
+  exempt (issue #194).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
