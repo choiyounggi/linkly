@@ -748,6 +748,8 @@ payments = "https://staging.example.com/pay"   # payments만 덮는다
 `--jwt-secret-env`와 `--jwt-secret-file`(build_app: `LNPL_JWT_SECRET_ENV`/
 `LNPL_JWT_SECRET_FILE`, 인자 포함)을 함께 주면 rc 2/`WsgiConfigError`로
 거부한다. 하나만 주면 lnpl.toml의 `[*.secrets].jwt`(형태 무관)를 이긴다.
+`LNPL_JWT_SECRET_ENV=""`(빈 문자열)도 "줬다"로 친다 — 파일 쪽으로 바꿀 때는
+그 변수를 비우는 게 아니라 통째로 지워야 한다.
 
 ### `${VAR}` 치환
 
@@ -952,6 +954,11 @@ gunicorn이 여러 워커 프로세스를 띄우면(`--workers K`, 기본 1) 각
 429가 566건이었다(워커 하나라면 20 × 10초 + 버스트 20 = 약 220건). 호스트 단위 메트릭이
 필요하면 워커별 값을 수집 쪽에서 합산하거나 워커를 1개로 둔다.
 
+해석 순서는 소스 컴파일 → `LNPL_CONFIG`/`LNPL_PROFILE`(파일 로드) →
+`LNPL_BACKEND` → `LNPL_JWT_SECRET_ENV`/`LNPL_JWT_SECRET_FILE` → `LNPL_TOKEN_PROVIDER`/
+`LNPL_JWT_ISSUER` → `LNPL_CLOCK` → `LNPL_CACHE` → `LNPL_NETWORK` → 나머지다.
+`LNPL_CACHE`로 연 캐시는 그 뒤 단계가 실패하면 닫고 나서 기동이 실패한다.
+
 ### 워커 수와 워커 클래스 (이슈 #195)
 
 아래 숫자는 `docs/gunicorn-load-measurement.md`(Docker Linux 컨테이너 한 대,
@@ -997,11 +1004,6 @@ recognized selector`로 기동이 실패할 수 있다. 모든 워커의 기동 
 테이블을 먼저 한 번 만든 뒤(워커 하나를 띄우거나
 `python -c "from lnpl.drivers import open_repository; open_repository('postgres:<dsn>').close()"`)
 K개 워커를 띄운다. lnpl-postgres 후속 과제이다(이슈 #195 측정에서 발견).
-
-해석 순서는 소스 컴파일 → `LNPL_CONFIG`/`LNPL_PROFILE`(파일 로드) →
-`LNPL_BACKEND` → `LNPL_JWT_SECRET_ENV` → `LNPL_TOKEN_PROVIDER`/
-`LNPL_JWT_ISSUER` → `LNPL_CLOCK` → `LNPL_CACHE` → `LNPL_NETWORK` → 나머지다.
-`LNPL_CACHE`로 연 캐시는 그 뒤 단계가 실패하면 닫고 나서 기동이 실패한다.
 
 ### 기존 배치에 생기는 변화 — 정확히 둘 (이슈 #187)
 

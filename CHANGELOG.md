@@ -239,8 +239,9 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   the JWT signing key from a registered `lnpl.secrets` provider and
   verifies against the current key plus the previous key to support
   zero-downtime rotation (a 60-second delayed re-fetch, plus a re-fetch
-  on every readyz probe). `/-/readyz` answers 503 with `secret-provider`
-  on a provider failure (issue #192).
+  on a readyz probe when the last read is at least 5 seconds old
+  (`READYZ_REFRESH_FLOOR_S`), per worker). `/-/readyz` answers 503 with
+  `secret-provider` on a provider failure (issue #192).
 - Added a secret-leak regression test — it runs each of the
   environment-variable, file, and provider secret sources through both
   `lnpl serve` and `build_app()`, and pins that the secret value never

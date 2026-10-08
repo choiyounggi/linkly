@@ -80,10 +80,21 @@ sources:
 
 ## build_app 환경 변수
 
-- `build_app()`(gunicorn) 경로는 `LNPL_LOG_FORMAT`, `LNPL_TRACE_EXPORTER`
-  두 환경 변수로 접속 로그 형식과 trace exporter를 받는다 — `lnpl serve`의
-  `--log-format`/`--trace-exporter`와 같은 자리다(근거: docs/serving.md
-  "환경 변수 (`build_app()` 경유)").
+- `build_app()`(gunicorn) 경로가 받는 관측 관련 환경 변수는 다섯이다(docs/serving.md
+  "운영 배치 — WSGI 호스트(gunicorn)" 절 환경 변수 표에 실린 전체 목록 중
+  관측 관련 행만 — 닫힌 목록이니 늘려 읽지 않는다):
+  - `LNPL_LOG_FORMAT`, `LNPL_TRACE_EXPORTER` — 접속 로그 형식과 trace
+    exporter, `lnpl serve`의 `--log-format`/`--trace-exporter`와 같은
+    자리(근거: docs/serving.md "환경 변수 (`build_app()` 경유)").
+  - `LNPL_METRICS` — gunicorn 아래서 `/-/metrics`를 켜는 **유일한** 길이다
+    (`--metrics`와 같은 자리, 이슈 #187로 더해짐; 근거: docs/serving.md
+    "`/-/metrics` — RED 시그널 (`--metrics`, 기본 off)").
+  - `LNPL_TRUST_INCOMING_TRACE` — 인바운드 `traceparent`를 trace_id/span_id
+    원천으로 신뢰할지(`--trust-incoming-trace`와 같은 자리, 이슈 #187로
+    더해짐; 근거: 같은 절).
+  - `LNPL_CAPTURE_ON_FAILURE` — `--capture-on-failure`와 같은 자리, 불리언
+    표기(미설정 = 꺼짐; 근거: docs/serving.md "운영 배치 — WSGI 호스트(gunicorn)"
+    환경 변수 표).
 
 ## 집행 등급
 

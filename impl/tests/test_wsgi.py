@@ -1151,6 +1151,19 @@ class BuildAppTokenProviderTest(_EnvIsolatedTest):
         app = wsgi.build_app(sources=[self._src()], jwt_secret_env="")
         self.assertIsNone(app.token_provider)
 
+    def test_boundary_lnpl_jwt_secret_env_empty_string_with_file_still_refused(self):
+        # "" counts as given (_resolve_jwt_secret_source docstring), so even
+        # though LNPL_JWT_SECRET_ENV="" alone is unset (test above), paired
+        # with LNPL_JWT_SECRET_FILE it still trips the two-source refusal.
+        os.environ["LNPL_JWT_SECRET_ENV"] = ""
+        os.environ["LNPL_JWT_SECRET_FILE"] = _secret_file(self, b"k" * 32)
+        with self.assertRaises(wsgi.WsgiConfigError) as cm:
+            wsgi.build_app(sources=[self._src()])
+        text = str(cm.exception)
+        self.assertEqual(text, "LNPL_JWT_SECRET_ENV and LNPL_JWT_SECRET_FILE both name "
+                               "the JWT signing secret — give exactly one")
+        self.assertNotIn("k" * 32, text)
+
     def test_normal_positive_jwt_issuer_reaches_minted_token(self):
         name = self._secret("LNPL_TEST_K5_SECRET")
         app = wsgi.build_app(sources=[self._src()], jwt_secret_env=name,

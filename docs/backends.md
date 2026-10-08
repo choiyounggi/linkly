@@ -935,7 +935,7 @@ NetworkCall 대상마다 `LNPL_ENDPOINT_<대상 대문자>`(값은 예약 도메
 `LNPL_BACKEND`·`LNPL_CACHE`는 **주석으로만** 나온다: 공식 이미지는 `fake`·
 `sqlite` 백엔드만 담고 있어서, `lnpl-postgres` 등을 설치한 파생 이미지
 (`docs/RELEASING.md`)를 쓸 때 주석을 푼다. 생성기가 내보내지 않는 변수
-(필요하면 손으로 추가): `LNPL_CLOCK`, `LNPL_LOG_FORMAT`, `LNPL_TRACE_EXPORTER`,
+(필요하면 손으로 추가): `LNPL_JWT_SECRET_FILE`, `LNPL_CLOCK`, `LNPL_LOG_FORMAT`, `LNPL_TRACE_EXPORTER`,
 `LNPL_IDEMPOTENCY_TTL_S`, `LNPL_METRICS`, `LNPL_CAPTURE_ON_FAILURE`,
 `LNPL_TRUST_INCOMING_TRACE`, `LNPL_RATE_LIMIT`, `LNPL_CONFIG`, `LNPL_PROFILE`,
 `LNPL_NETWORK`, `LNPL_TOKEN_PROVIDER`, `LNPL_JWT_ISSUER`.
