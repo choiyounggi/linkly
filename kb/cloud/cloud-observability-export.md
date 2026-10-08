@@ -85,13 +85,20 @@ sources:
   관측 관련 행만 — 닫힌 목록이니 늘려 읽지 않는다):
   - `LNPL_LOG_FORMAT`, `LNPL_TRACE_EXPORTER` — 접속 로그 형식과 trace
     exporter, `lnpl serve`의 `--log-format`/`--trace-exporter`와 같은
-    자리(근거: docs/serving.md "환경 변수 (`build_app()` 경유)").
-  - `LNPL_METRICS` — gunicorn 아래서 `/-/metrics`를 켜는 **유일한** 길이다
+    자리(변수명 근거: docs/serving.md "환경 변수 (`build_app()` 경유)";
+    CLI 대응 근거: docs/serving.md "운영 배치 — WSGI 호스트(gunicorn)"
+    환경 변수 표).
+  - `LNPL_METRICS` — 문서의 env-only gunicorn 호출(`build_app()`이 인자
+    없이 불려 모든 설정이 환경 변수로 오는 경로)에서 `/-/metrics`를 켠다
     (`--metrics`와 같은 자리, 이슈 #187로 더해짐; 근거: docs/serving.md
-    "`/-/metrics` — RED 시그널 (`--metrics`, 기본 off)").
+    "운영 배치 — WSGI 호스트(gunicorn)" 환경 변수 표). `/-/metrics`가 내는
+    신호는 docs/serving.md "`/-/metrics` — RED 시그널 (`--metrics`, 기본
+    off)" 절을 본다.
   - `LNPL_TRUST_INCOMING_TRACE` — 인바운드 `traceparent`를 trace_id/span_id
     원천으로 신뢰할지(`--trust-incoming-trace`와 같은 자리, 이슈 #187로
-    더해짐; 근거: 같은 절).
+    더해짐; 근거: docs/serving.md "`/-/metrics` — RED 시그널 (`--metrics`,
+    기본 off)"). `traceparent`를 trace_id/span_id 원천으로 쓰는 의미는
+    docs/serving.md "접속 로그 — `--log-format`" 절에 있다.
   - `LNPL_CAPTURE_ON_FAILURE` — `--capture-on-failure`와 같은 자리, 불리언
     표기(미설정 = 꺼짐; 근거: docs/serving.md "운영 배치 — WSGI 호스트(gunicorn)"
     환경 변수 표).
