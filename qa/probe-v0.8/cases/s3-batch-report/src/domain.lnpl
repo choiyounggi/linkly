@@ -1,0 +1,54 @@
+refine MerchantTier of Text
+    enum small large
+
+refine TxStatus of Text
+    enum settled refunded pending
+
+entity Merchant
+    field
+        id UUID
+        name Text
+        tier MerchantTier
+
+entity Transaction
+    field
+        id UUID
+        merchant UUID
+        amount Money
+        fee Money
+        status TxStatus
+        occurredAt DateTime
+        monthKey Text
+        dayKey Text
+        currency Currency
+
+entity DailyTotal
+    field
+        id UUID
+        merchant UUID
+        day DateTime
+        gross Money
+        count Integer
+
+entity SettlementSummary
+    field
+        id UUID
+        monthKey Text
+        totalGross Money
+        totalNet Money
+        merchantCount Integer
+
+entity Settlement
+    field
+        id UUID
+        merchant UUID
+        month DateTime
+        monthKey Text
+        gross Money
+        fees Money
+        net Money
+        txCount Integer
+        avgTicket Money
+        maxTicket Money
+        minTicket Money
+        settlementState Text

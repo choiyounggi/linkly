@@ -1,0 +1,191 @@
+service SettlementService
+    expose
+        list Settlement by txCount
+
+workflow MonthlySettlement
+    list transaction where merchant == input.merchant and status == input.status and monthKey == input.monthKey
+    create settlement as newSettlement
+    set newSettlement.gross to sum transaction.amount
+    set newSettlement.fees to sum transaction.fee
+    set newSettlement.txCount to count transaction
+    set newSettlement.avgTicket to avg transaction.amount
+    set newSettlement.maxTicket to max transaction.amount
+    set newSettlement.minTicket to min transaction.amount
+
+    spec
+        given
+            stored transaction[0] id c1-tx-1
+            stored transaction[0] merchant M1
+            stored transaction[0] amount 10.00USD
+            stored transaction[0] fee 0.30USD
+            stored transaction[0] status settled
+            stored transaction[0] monthKey 2026-07
+            stored transaction[1] id c1-tx-2
+            stored transaction[1] merchant M1
+            stored transaction[1] amount 20.00USD
+            stored transaction[1] fee 0.60USD
+            stored transaction[1] status settled
+            stored transaction[1] monthKey 2026-07
+            stored transaction[2] id c1-tx-3
+            stored transaction[2] merchant M1
+            stored transaction[2] amount 30.00USD
+            stored transaction[2] fee 0.90USD
+            stored transaction[2] status settled
+            stored transaction[2] monthKey 2026-07
+            stored transaction[3] id c1-tx-4
+            stored transaction[3] merchant M1
+            stored transaction[3] amount 99.99USD
+            stored transaction[3] fee 0.00USD
+            stored transaction[3] status refunded
+            stored transaction[3] monthKey 2026-07
+            merchant M1
+            status settled
+            monthKey 2026-07
+        when
+            monthlySettlement
+        expect
+            completed
+            effects complete
+            rows Settlement 1
+            result newSettlement.gross == 60.00USD
+            result newSettlement.fees == 1.80USD
+            result newSettlement.txCount == 3
+            result newSettlement.avgTicket == 20.00USD
+            result newSettlement.maxTicket == 30.00USD
+            result newSettlement.minTicket == 10.00USD
+
+    spec
+        given
+            merchant M2
+            status settled
+            monthKey 2026-07
+        when
+            monthlySettlement
+        expect
+            failed
+            effects complete
+            error reason avg-of-empty-rowset
+            rows Settlement 0
+
+    spec
+        given
+            stored transaction[0] id c3a-tx-1
+            stored transaction[0] merchant M3
+            stored transaction[0] amount 1.00USD
+            stored transaction[0] fee 0.03USD
+            stored transaction[0] status settled
+            stored transaction[0] monthKey 2026-07
+            stored transaction[1] id c3a-tx-2
+            stored transaction[1] merchant M3
+            stored transaction[1] amount 1.00USD
+            stored transaction[1] fee 0.03USD
+            stored transaction[1] status settled
+            stored transaction[1] monthKey 2026-07
+            stored transaction[2] id c3a-tx-3
+            stored transaction[2] merchant M3
+            stored transaction[2] amount 1.00USD
+            stored transaction[2] fee 0.03USD
+            stored transaction[2] status settled
+            stored transaction[2] monthKey 2026-07
+            merchant M3
+            status settled
+            monthKey 2026-07
+        when
+            monthlySettlement
+        expect
+            completed
+            effects complete
+            rows Settlement 1
+            result newSettlement.gross == 3.00USD
+            result newSettlement.fees == 0.09USD
+            result newSettlement.txCount == 3
+            result newSettlement.avgTicket == 1.00USD
+            result newSettlement.maxTicket == 1.00USD
+            result newSettlement.minTicket == 1.00USD
+
+workflow ReplaceSettlement
+    find settlement
+    delete settlement
+    list transaction where merchant == input.merchant and status == input.status and monthKey == input.monthKey
+    create settlement as newSettlement
+    set newSettlement.gross to sum transaction.amount
+    set newSettlement.fees to sum transaction.fee
+    set newSettlement.txCount to count transaction
+    set newSettlement.avgTicket to avg transaction.amount
+    set newSettlement.maxTicket to max transaction.amount
+    set newSettlement.minTicket to min transaction.amount
+
+    # This block is EXPECTED TO FAIL -- it documents F-10 (evidence/04-spec.md,
+    # FINDINGS.md): `delete` inside `lnpl spec` does not actually remove the row
+    # for later `rows <Entity> <N>`/`create` purposes, even though `effects
+    # complete` and `status: completed` both report success. Real `lnpl run`
+    # deletes correctly (evidence/08-rerun-oracle.md, 50/50 merchants). Left in
+    # place, not deleted, so the reproduction stays live in the sweep/spec run.
+    spec
+        given
+            id settlement-M1-2026-07
+            merchant M1
+            monthKey 2026-07
+            status settled
+            stored settlement merchant M1
+            stored settlement monthKey 2026-07
+            stored settlement gross 999.00USD
+            stored settlement fees 999.00USD
+            stored settlement txCount 999
+            stored settlement avgTicket 999.00USD
+            stored settlement maxTicket 999.00USD
+            stored settlement minTicket 999.00USD
+            stored transaction[0] id c1-tx-1
+            stored transaction[0] merchant M1
+            stored transaction[0] amount 10.00USD
+            stored transaction[0] fee 0.30USD
+            stored transaction[0] status settled
+            stored transaction[0] monthKey 2026-07
+            stored transaction[1] id c1-tx-2
+            stored transaction[1] merchant M1
+            stored transaction[1] amount 20.00USD
+            stored transaction[1] fee 0.60USD
+            stored transaction[1] status settled
+            stored transaction[1] monthKey 2026-07
+            stored transaction[2] id c1-tx-3
+            stored transaction[2] merchant M1
+            stored transaction[2] amount 30.00USD
+            stored transaction[2] fee 0.90USD
+            stored transaction[2] status settled
+            stored transaction[2] monthKey 2026-07
+            stored transaction[3] id c1-tx-4
+            stored transaction[3] merchant M1
+            stored transaction[3] amount 99.99USD
+            stored transaction[3] fee 0.00USD
+            stored transaction[3] status refunded
+            stored transaction[3] monthKey 2026-07
+        when
+            replaceSettlement
+        expect
+            completed
+            effects complete
+            rows Settlement 1
+            result newSettlement.gross == 60.00USD
+            result newSettlement.fees == 1.80USD
+            result newSettlement.txCount == 3
+            result newSettlement.avgTicket == 20.00USD
+            result newSettlement.maxTicket == 30.00USD
+            result newSettlement.minTicket == 10.00USD
+
+workflow SettlementTotals
+    find settlementsummary
+    list settlement where monthKey == input.monthKey
+    set settlementSummary.totalGross to sum settlement.gross
+    set settlementSummary.totalNet to sum settlement.net
+    set settlementSummary.merchantCount to count settlement
+    respond settlementSummary.totalGross settlementSummary.totalNet settlementSummary.merchantCount
+
+service RollupService
+
+workflow ComputeDailyRollup
+    list transaction where merchant == input.merchant and status == input.status and dayKey == input.dayKey
+    create dailytotal as newDailyTotal
+    set newDailyTotal.gross to sum transaction.amount
+    set newDailyTotal.count to count transaction
+
+event DailyRollup on schedule daily at 02:00 UTC

@@ -1,0 +1,8 @@
+entity Stock
+    field
+        id UUID
+        product UUID
+        onHand Integer
+
+workflow SeedStock
+    create stock

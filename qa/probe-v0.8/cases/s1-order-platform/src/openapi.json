@@ -1,0 +1,1522 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "src API",
+    "version": "0.1.0",
+    "description": "Generated from Semantic IR (lir_version 0.1). Do not edit by hand."
+  },
+  "paths": {
+    "/catalog-service/seed-product": {
+      "post": {
+        "operationId": "catalog_service_seed_product",
+        "summary": "SeedProduct workflow",
+        "description": "Steps: create product",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ]
+      }
+    },
+    "/catalog-service/seed-stock": {
+      "post": {
+        "operationId": "catalog_service_seed_stock",
+        "summary": "SeedStock workflow",
+        "description": "Steps: create stock",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ]
+      }
+    },
+    "/catalog-service/seed-customer": {
+      "post": {
+        "operationId": "catalog_service_seed_customer",
+        "summary": "SeedCustomer workflow",
+        "description": "Steps: create customer",
+        "responses": {
+          "200": {
+            "description": "the workflow completed"
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ]
+      }
+    },
+    "/catalog-service/product/{id}": {
+      "get": {
+        "operationId": "catalog_service_get_product",
+        "summary": "get one Product",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.Product"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/catalog-service/customer/{id}": {
+      "get": {
+        "operationId": "catalog_service_get_customer",
+        "summary": "get one Customer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.Customer"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/catalog-service/stock/{id}": {
+      "get": {
+        "operationId": "catalog_service_get_stock",
+        "summary": "get one Stock",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.Stock"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/create-order": {
+      "post": {
+        "operationId": "orders_service_create_order",
+        "summary": "CreateOrder workflow",
+        "description": "Steps: validate order -> list customer where id == input.customer -> list catalogproduct where id == input.product -> list stock where id == input.product and onHand >= input.qty -> create order as newOrder -> set newOrder.status to 0 -> set newOrder.customerTier to max customer.tier -> set newOrder.stockOnHand to max stock.onHand -> create orderline as line -> set line.unitPriceCents to max product.priceCents -> set line.lineTotalCents to line.unitPriceCents * line.qty -> create stockreservation as reservation -> set newOrder.subtotalCents to line.lineTotalCents -> set newOrder.discountCents to newOrder.subtotalCents * 10 -> set newOrder.discountCents to newOrder.discountCents / 100 -> set newOrder.discountCents to newOrder.discountCents * newOrder.customerTier -> set newOrder.taxCents to newOrder.subtotalCents - newOrder.discountCents -> set newOrder.taxCents to newOrder.taxCents * 8 -> set newOrder.taxCents to newOrder.taxCents / 100 -> set newOrder.totalCents to newOrder.subtotalCents - newOrder.discountCents -> set newOrder.totalCents to newOrder.totalCents + newOrder.taxCents -> find order -> respond order.id order.status order.subtotalCents order.discountCents order.taxCents order.totalCents",
+        "responses": {
+          "200": {
+            "description": "the workflow completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "status": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        },
+                        "subtotalCents": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        },
+                        "discountCents": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        },
+                        "taxCents": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        },
+                        "totalCents": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "status",
+                        "subtotalCents",
+                        "discountCents",
+                        "taxCents",
+                        "totalCents"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "order"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/orders.Order"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders-service/ship-order": {
+      "post": {
+        "operationId": "orders_service_ship_order",
+        "summary": "ShipOrder workflow",
+        "description": "Steps: find order -> set order.status to 2 -> respond order.id order.status",
+        "responses": {
+          "200": {
+            "description": "the workflow completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "status": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "order"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ],
+        "x-conditional-steps": [
+          "set order.status to 2"
+        ]
+      }
+    },
+    "/orders-service/cancel-order": {
+      "post": {
+        "operationId": "orders_service_cancel_order",
+        "summary": "CancelOrder workflow",
+        "description": "Steps: find order -> list paymentspayment where orderRef == input.id and status == 1 -> create paymentsrefund as newRefund -> set newRefund.amountCents to sum payment.amountCents -> set newRefund.cumulativeCents to newRefund.amountCents -> set newRefund.capChecked to newRefund.amountCents -> set order.status to 4 -> find paymentsrefund -> respond order.id order.status refund.amountCents",
+        "responses": {
+          "200": {
+            "description": "the workflow completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "order": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "status": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "refund": {
+                      "type": "object",
+                      "properties": {
+                        "amountCents": {
+                          "type": "integer",
+                          "format": "int64"
+                        }
+                      },
+                      "required": [
+                        "amountCents"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "order",
+                    "refund"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ],
+        "x-conditional-steps": [
+          "create paymentsrefund as newRefund",
+          "set newRefund.amountCents to sum payment.amountCents",
+          "set newRefund.cumulativeCents to newRefund.amountCents",
+          "set newRefund.capChecked to newRefund.amountCents",
+          "set order.status to 4",
+          "find paymentsrefund",
+          "respond order.id order.status refund.amountCents"
+        ]
+      }
+    },
+    "/orders-service/product/{id}": {
+      "get": {
+        "operationId": "orders_service_get_product",
+        "summary": "get one Product",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/catalog.Product"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/customer/{id}": {
+      "get": {
+        "operationId": "orders_service_get_customer",
+        "summary": "get one Customer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.Customer"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/order/{id}": {
+      "get": {
+        "operationId": "orders_service_get_order",
+        "summary": "get one Order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.Order"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/order-line/{id}": {
+      "get": {
+        "operationId": "orders_service_get_order_line",
+        "summary": "get one OrderLine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.OrderLine"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/stock/{id}": {
+      "get": {
+        "operationId": "orders_service_get_stock",
+        "summary": "get one Stock",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.Stock"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/stock-reservation/{id}": {
+      "get": {
+        "operationId": "orders_service_get_stock_reservation",
+        "summary": "get one StockReservation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.StockReservation"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/payment/{id}": {
+      "get": {
+        "operationId": "orders_service_get_payment",
+        "summary": "get one Payment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/payments.Payment"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/orders-service/refund/{id}": {
+      "get": {
+        "operationId": "orders_service_get_refund",
+        "summary": "get one Refund",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/payments.Refund"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/payments-service/pay": {
+      "post": {
+        "operationId": "payments_service_pay",
+        "summary": "Pay workflow",
+        "description": "Steps: validate payment -> find ordersorder -> create payment as newPayment -> set newPayment.status to 1 -> set order.status to 1 -> find payment -> respond payment.id payment.status order.status",
+        "responses": {
+          "200": {
+            "description": "the workflow completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "payment": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "status": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "order": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        }
+                      },
+                      "required": [
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "payment",
+                    "order"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/payments.Payment"
+              }
+            }
+          }
+        },
+        "x-conditional-steps": [
+          "create payment as newPayment",
+          "set newPayment.status to 1",
+          "set order.status to 1",
+          "find payment",
+          "respond payment.id payment.status order.status"
+        ]
+      }
+    },
+    "/payments-service/order/{id}": {
+      "get": {
+        "operationId": "payments_service_get_order",
+        "summary": "get one Order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orders.Order"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/payments-service/payment/{id}": {
+      "get": {
+        "operationId": "payments_service_get_payment",
+        "summary": "get one Payment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/payments.Payment"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          }
+        }
+      }
+    },
+    "/refunds-service/refund": {
+      "post": {
+        "operationId": "refunds_service_refund",
+        "summary": "Refund workflow",
+        "description": "Steps: validate refund -> list refund where payment == input.payment -> create refund as newRefund -> set newRefund.cumulativeCents to sum refund.amountCents -> set newRefund.cumulativeCents to newRefund.cumulativeCents + input.amountCents -> list payment where id == input.payment and amountCents >= newRefund.cumulativeCents -> set newRefund.capChecked to max payment.amountCents -> find refund -> respond refund.id refund.amountCents refund.cumulativeCents",
+        "responses": {
+          "200": {
+            "description": "the workflow completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "refund": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "amountCents": {
+                          "type": "integer",
+                          "format": "int64"
+                        },
+                        "cumulativeCents": {
+                          "type": "integer",
+                          "format": "int64",
+                          "readOnly": true
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "amountCents",
+                        "cumulativeCents"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "refund"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "validation failed"
+          },
+          "409": {
+            "description": "a repository create conflicted with an existing row (conflict), or another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113"
+          },
+          "412": {
+            "description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"
+          },
+          "504": {
+            "description": "the workflow deadline was exceeded"
+          },
+          "403": {
+            "description": "the caller's verified role does not satisfy this service's `security role` requirement"
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "replay this workflow's prior response for the same key instead of running it again"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "the ETag a prior GET of the entity this workflow reads returned; 412 on mismatch"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/payments.Refund"
+              }
+            }
+          }
+        },
+        "x-lnpl-roles": [
+          "admin"
+        ]
+      }
+    },
+    "/refunds-service/payment/{id}": {
+      "get": {
+        "operationId": "refunds_service_get_payment",
+        "summary": "get one Payment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/payments.Payment"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          },
+          "403": {
+            "description": "the caller's verified role does not satisfy this service's `security role` requirement"
+          }
+        },
+        "x-lnpl-roles": [
+          "admin"
+        ]
+      }
+    },
+    "/refunds-service/refund/{id}": {
+      "get": {
+        "operationId": "refunds_service_get_refund",
+        "summary": "get one Refund",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the row, masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/payments.Refund"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "weak validator (W/\"<version>\"); absent on a backend with no row versioning -- issue #113, D12"
+              }
+            }
+          },
+          "404": {
+            "description": "no such row"
+          },
+          "403": {
+            "description": "the caller's verified role does not satisfy this service's `security role` requirement"
+          }
+        },
+        "x-lnpl-roles": [
+          "admin"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "catalog.Category": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "catalog.Product": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "priceCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "sku",
+          "name",
+          "priceCents",
+          "kind",
+          "active"
+        ]
+      },
+      "orders.Stock": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "onHand": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "product",
+          "onHand"
+        ]
+      },
+      "orders.Customer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tier": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "tier",
+          "email"
+        ]
+      },
+      "orders.Order": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "customer": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "customerTier": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "stockOnHand": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "subtotalCents": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "discountCents": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "taxCents": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "totalCents": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "customer"
+        ]
+      },
+      "orders.OrderLine": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "order": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "qty": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unitPriceCents": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "lineTotalCents": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "order",
+          "product",
+          "qty"
+        ]
+      },
+      "orders.StockReservation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "order": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "qty": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "product",
+          "order",
+          "qty"
+        ]
+      },
+      "payments.Payment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "orderRef": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cardLast4": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "orderRef",
+          "amountCents",
+          "cardLast4"
+        ]
+      },
+      "payments.Refund": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payment": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amountCents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "cumulativeCents": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          },
+          "capChecked": {
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "payment",
+          "amountCents",
+          "reason"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,110 @@
+entity Payment
+    field
+        id UUID
+        orderRef UUID
+        amountCents Integer
+        cardLast4 Text
+        status Integer derived
+
+entity Refund
+    field
+        id UUID
+        payment UUID
+        amountCents Integer
+        reason Text
+        cumulativeCents Integer derived
+        capChecked Integer derived
+
+service PaymentsService
+    policy
+        rollback
+
+workflow Pay
+    validate payment
+    find ordersorder
+    when order.totalCents == input.amountCents and order.status == 0
+    pipeline capture
+        create payment as newPayment
+        set newPayment.status to 1
+        set order.status to 1
+        respond newPayment.id newPayment.status order.status
+    spec
+        given
+            stored Order id 66666666-6666-6666-6666-666666666666
+            stored Order totalCents 4317
+            stored Order status 0
+            input.id 66666666-6666-6666-6666-666666666666
+            input.amountCents 4317
+            input.cardLast4 4242
+        when
+            pay
+        expect
+            completed
+            effects complete
+            rows Payment 1
+            result newPayment.status == 1
+            result order.status == 1
+    spec
+        given
+            stored Order id 77777777-7777-7777-7777-777777777777
+            stored Order totalCents 4317
+            stored Order status 0
+            input.id 77777777-7777-7777-7777-777777777777
+            input.amountCents 100
+            input.cardLast4 4242
+        when
+            pay
+        expect
+            completed
+            rows Payment 0
+
+service RefundsService
+    policy
+        rollback
+    security
+        role admin
+
+workflow Refund
+    validate refund
+    list refund where payment == input.payment
+    create refund as newRefund
+    set newRefund.cumulativeCents to sum refund.amountCents
+    set newRefund.cumulativeCents to newRefund.cumulativeCents + input.amountCents
+    list payment where id == input.payment and amountCents >= newRefund.cumulativeCents
+    set newRefund.capChecked to max payment.amountCents
+    respond newRefund.id newRefund.amountCents newRefund.cumulativeCents
+    spec
+        given
+            stored Payment[0] id aaaaaaaa-9999-9999-9999-999999999999
+            stored Payment[0] amountCents 4317
+            stored Refund[0] payment aaaaaaaa-9999-9999-9999-999999999999
+            stored Refund[0] amountCents 2000
+            stored Refund[1] payment aaaaaaaa-9999-9999-9999-999999999999
+            stored Refund[1] amountCents 2000
+            input.id bbbbbbbb-9999-9999-9999-999999999999
+            input.payment aaaaaaaa-9999-9999-9999-999999999999
+            input.amountCents 300
+            input.reason partial
+        when
+            refund
+        expect
+            completed
+            rows Refund 3
+            result newRefund.cumulativeCents == 4300
+    spec
+        given
+            stored Payment[0] id cccccccc-9999-9999-9999-999999999999
+            stored Payment[0] amountCents 4317
+            stored Refund[0] payment cccccccc-9999-9999-9999-999999999999
+            stored Refund[0] amountCents 2000
+            stored Refund[1] payment cccccccc-9999-9999-9999-999999999999
+            stored Refund[1] amountCents 2000
+            input.id dddddddd-9999-9999-9999-999999999999
+            input.payment cccccccc-9999-9999-9999-999999999999
+            input.amountCents 1000
+            input.reason toomuch
+        when
+            refund
+        expect
+            failed
+            rows Refund 2

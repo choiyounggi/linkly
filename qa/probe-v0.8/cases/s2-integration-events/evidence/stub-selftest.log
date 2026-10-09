@@ -1,0 +1,7 @@
+mode=b1 pid=68379 port=65490 curl_status=200
+mode=b2 pid=68380 port=65492 curl_status=500
+mode=b3 pid=68381 port=65494 curl_status=500
+mode=b4 pid=68382 port=65497 curl_status=200
+mode=b5 pid=68626 port=65509 curl_status=200
+mode=hook-ok pid=68627 port=65511 curl_status=200
+mode=b7 pid=68631 port=65513 curl_status=500

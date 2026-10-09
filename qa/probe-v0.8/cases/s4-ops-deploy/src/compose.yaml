@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: s4pw
+      POSTGRES_DB: s4db
+      POSTGRES_USER: s4user
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U s4user -d s4db"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-config.yaml"]
+    volumes:
+      - ./otel-config.yaml:/etc/otel-config.yaml:ro
+      - ./otel-out:/out
+    ports:
+      - "14317:4317"
+      - "14318:4318"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        repo: ../../../../..
+    ports:
+      - "18080:8080"
+    environment:
+      LNPL_JWT_SECRET: "s4-hardening-test-secret-value-needs-32bytes-min"
+      OTEL_SERVICE_NAME: "s4-linkhub"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/-/healthz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 10

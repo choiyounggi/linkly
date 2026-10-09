@@ -1,0 +1,48 @@
+{
+ "note": "excerpt from src/otel-out/spans.json (6.1MB full file not committed) \u2014 R3 trace-propagation demo, trace_id 5be92f3577b34da6a3ce929d0e0e5847 (evidence/01-drivers.md R3)",
+ "resource_service_name": "s4-linkhub",
+ "scope": "lnpl_otel",
+ "spans": [
+  {
+   "traceId": "5be92f3577b34da6a3ce929d0e0e5847",
+   "spanId": "1456cf2b4fba4870",
+   "name": "GetBookmark",
+   "kind": 2,
+   "attributes": [
+    {
+     "key": "lnpl.span.kind",
+     "value": {
+      "stringValue": "Workflow"
+     }
+    },
+    {
+     "key": "lnpl.correlation_id",
+     "value": {
+      "stringValue": "req-4cda6c863be2"
+     }
+    }
+   ]
+  },
+  {
+   "traceId": "5be92f3577b34da6a3ce929d0e0e5847",
+   "spanId": "6070ea51182df10d",
+   "parentSpanId": "1456cf2b4fba4870",
+   "name": "validate input",
+   "kind": 1,
+   "attributes": [
+    {
+     "key": "lnpl.span.kind",
+     "value": {
+      "stringValue": "WorkflowStep"
+     }
+    },
+    {
+     "key": "lnpl.attempts",
+     "value": {
+      "intValue": "4"
+     }
+    }
+   ]
+  }
+ ]
+}

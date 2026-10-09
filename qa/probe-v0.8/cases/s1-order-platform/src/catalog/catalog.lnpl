@@ -1,0 +1,18 @@
+entity Category
+    field
+        id UUID
+        name Text
+
+entity Product
+    field
+        id UUID
+        sku Text
+        name Text
+        priceCents Integer
+        kind Integer
+        active Boolean
+
+service CatalogService
+
+workflow SeedProduct
+    create product
