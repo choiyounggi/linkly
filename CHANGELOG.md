@@ -125,6 +125,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   environment variables, or an argument of the same name. The
   startup-failure message for an unknown `LNPL_BACKEND` value no longer
   includes the value (issue #187).
+- A service whose `security` block declared `role <r>` without `jwt`
+  compiled, and `lnpl serve` then answered 200 to a request with no
+  Authorization header, because route authentication keys on `jwt` alone
+  and the role check was never reached. Such a service is now rejected at
+  compile time with a `LowerError` whose message leads with
+  `role-requires-jwt`: `lnpl compile` exits 2, `build_app()` refuses to
+  start, and the MCP compile response is `isError`. `jwt` together with
+  `role` still answers 401/403 as before. Compatibility: a document that
+  declared `role` without `jwt` compiled before and no longer compiles;
+  add `jwt` to that service's `security` block (issue #213).
 
 ### Added
 - `scripts/load_probe.py` (stdlib open-loop load generator) and
@@ -294,6 +304,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   backups), `cloud-event-delivery` (outbox, relay guarantees). Every
   factual sentence cites its source file, and every unimplemented
   recommendation states its grade (issue #196).
+- A new warning `spec-result-reads-input`: a spec's bare
+  `expect result <name>` reads the run input, which `spec` fills with a
+  sample value when no `given` sets it (RFC-0012), so a name shared with a
+  `respond <binding>.<name>` field, with no same-name `respond` term and
+  no `given` for that input, was silently compared against the sample. It
+  fails under `--strict=warning`; write `result <binding>.<name>` to
+  assert on the response, or set the input with `given <field> <value>`.
+  The generated OpenAPI workflow `"400"` description now also names
+  `id-required` (issue #209); the six `examples/*.openapi.json` goldens
+  are regenerated (issue #216).
 
 ### Changed
 - Persistent backends (sqlite, postgres) are no longer seeded from the
@@ -340,6 +360,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   (`test_deploy.py::TwoInstanceGatewayRateLimitTest`) confirmed that
   combined allowance is capped at the gateway and that `/-/healthz` is
   exempt (issue #194).
+- Compatibility (issue #214, RFC-0063): a `call`/`request` with no `send`
+  clause no longer sends Password-family input fields. A field is
+  Password-family when any entity in the document declares that name with
+  type `Password` or a `refine ... of Password`; its key is left out of
+  the outbound body (not replaced by `***`). There is no opt-in to send
+  such a value: `send` still rejects Password-family references at compile
+  time (RFC-0057). A workflow whose input carries no Password-family field
+  sends a byte-identical body. Mode B is unchanged (it builds no call
+  body). This replaces the earlier note that a call without `send` is
+  byte-identical to before (issue #200, RFC-0057).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0

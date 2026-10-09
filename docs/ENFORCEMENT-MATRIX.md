@@ -75,7 +75,7 @@ LNPL 프로그램이 **선언하는 것**과 플랫폼이 **실제로 하는 것
 | policy | rollback | enforced | — | `run_workflow`가 첫 step 전에 트랜잭션을 열고, 실행이 실패하면 그 실행에서 이뤄진 모든 쓰기(outbox 등록 포함)를 **선언 여부와 무관하게 모든 서비스에서 무조건** 롤백한다 — `policy rollback` 선언이 실제로 좌우하는 것은 (a) 그 INFO trace 로그 한 줄과 (b) 컴파일 타임 `rollback-escapes-network` 진단(issue #112)의 활성화뿐이다(issue #79, RFC-0032, RFC-0036) |
 | policy | parallel | enforced | — | `run_workflow`가 `parallel` 블록의 스텝을 블록 스코프 `ThreadPoolExecutor`에서 동시 실행한다 — fail-fast(한 스텝 실패 시 나머지 취소), 동시성 상한은 선언값(없으면 블록 스텝 수)이 정한다(issue #108, RFC-0041) |
 | security | jwt | unenforced | declared-not-enforced | 기본 경로는 발급도 검증도 하지 않는다. `lnpl serve --jwt-secret-env NAME`은 요청마다 베어러 토큰을 검증한다(docs/serving.md M3a, docs/backends.md) |
-| security | role | enforced | — | 이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`(docs/serving.md M3b). `jwt`와 달리 "약한 경로"가 없다 — `security role`을 선언하고도 `serve`가 뜬다면 token_provider 없이는 기동 자체가 rc 2로 거부되기 때문이다(D6) |
+| security | role | enforced | — | 이 서비스가 소유한 모든 라우트는 검증된 토큰의 역할이 `<r>`과 정확히 일치할 때만 실행된다. 불일치·부재는 403 `forbidden`(docs/serving.md M3b). `role`은 같은 `security` 블록에 `jwt`가 있어야 컴파일된다 — 없으면 `lower()`가 `role-requires-jwt` 컴파일 오류(rc 2)로 거부한다(issue #213). 그래서 `jwt`와 달리 "약한 경로"가 없다 — 컴파일된 `security role`은 언제나 `jwt` 뒤에 있고, token_provider 없이는 `serve` 기동 자체가 rc 2로 거부된다(D6) |
 | performance | response | measured | declared-measured-only | 실행마다 측정·보고하지만 예산 초과 실행을 차단하지 않는다 |
 | performance | cache | enforced | — | 모든 CacheAccess set과 읽기 경유 캐시(`cached`, RFC-0062)의 기록이 쓰는 TTL 예산을 소유한다 |
 | performance | parallel | unenforced | declared-not-enforced | 파싱되지만 실행 계획이 읽지 않는다 |
@@ -160,6 +160,7 @@ capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
 | respond-field-missing | warning | `respond`가 가리키는 바인딩은 있는데, 그 바인딩이 가리키는 필드가 저장된 행에 없을 때 — 그 참조는 응답에서 빠지고 진단이 하나 남는다 (issue #198) | 런타임 — 인터프리터 |
 | guard-scoped-binding-escape | warning | 가드(또는 가드된 `parallel`/`pipeline` 블록) 안의 `create ... as`/`call ... as`/`request ... as`가 만든 바인딩을, 그 가드 스코프 밖의 `respond`/`set`/`format`/`emit ... with`가 읽을 때 (issue #198) | 컴파일 타임 — lowering |
 | optional-field-unguarded-arithmetic | warning | `set`/가드 산술이 `optional` 필드를 읽는데, 그 필드의 존재(`exists`)를 확인하는 가드가 이 스텝을 소유하지 않을 때 (RFC-0053) | 컴파일 타임 — lowering |
+| spec-result-reads-input | warning | `spec`의 `expect result <맨 이름>`이 그 워크플로의 `respond <binding>.<같은 이름>` 필드와 이름이 같고, 같은 이름의 응답 항(RFC-0059 §6)이 없고, 그 spec 블록의 `given`이 그 입력 필드를 설정하지 않았을 때 — 단언이 응답이 아니라 자동으로 채운 입력 샘플과 비교된다 (issue #216) | 컴파일 타임 — lowering |
 
 등급을 정하는 것은 이 표가 아니라 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`다 —
 이 표는 §B가 `ENFORCEMENT`의 복사본인 것과 같은 뜻에서 그것의 복사본이고,
@@ -177,7 +178,8 @@ capabilities --json`의 `slots.<slot>.registered[].enforcement` 키 자체가
 `respond-field-missing`(저장된 행에 누락된 필드를 채우면 사라진다 — 이슈 #198,
 RFC-0021 질문의 데이터판) · `guard-scoped-binding-escape`(리더를 가드 스코프
 안으로 옮기거나 가드 줄을 반복하면 사라진다 — 이슈 #198) ·
-`optional-field-unguarded-arithmetic`(가드 안으로 옮기면 사라진다 — RFC-0053)),
+`optional-field-unguarded-arithmetic`(가드 안으로 옮기면 사라진다 — RFC-0053) ·
+`spec-result-reads-input`(한정 이름 `result <binding>.<field>`을 쓰거나 `given`으로 입력을 설정하면 사라진다 — 이슈 #216)),
 사라지지 않으면 `info`(나머지 여섯 행 — 플랫폼이 자기가 하는 일을 진술한 것이다).
 
 **기본 경로에서는 어느 것도 종료 코드를 바꾸지 않는다** — `--strict`를 준 실행에서만

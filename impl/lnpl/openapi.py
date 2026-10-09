@@ -582,7 +582,7 @@ def _operation(wf, service, con, nodes, entities, refined):
         "description": "Steps: %s" % " -> ".join(s["name"] for s in steps),
         "responses": {
             "200": {"description": "the workflow completed"},
-            "400": {"description": "validation failed"},
+            "400": {"description": "validation failed (validation-failed), or a create received no id for an entity whose id is not derived generated (id-required) -- issue #209"},
             "404": {"description": "a workflow read found no row for the entity it looked up (not-found) -- issue #197"},
             "409": {"description": "a repository create conflicted with an existing row (conflict), another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113, or an optimistic-version write conflict (write-conflict) -- issue #201"},
             "412": {"description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"},

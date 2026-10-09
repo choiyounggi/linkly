@@ -120,6 +120,10 @@
       {
         "code": "optional-field-unguarded-arithmetic",
         "severity": "warning"
+      },
+      {
+        "code": "spec-result-reads-input",
+        "severity": "warning"
       }
     ],
     "enforcement": [

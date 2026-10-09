@@ -63,6 +63,7 @@ CODES = (
     "respond-field-missing",        # issue #198  `respond` names a field absent from the bound row
     "guard-scoped-binding-escape",  # issue #198  `respond`/`set`/`format`/`emit ... with` reads a `create .../call .../request ... as` binding outside the guard that creates it
     "optional-field-unguarded-arithmetic",  # RFC-0053  set/guard arithmetic reads an `optional` field with no Presence (`exists`) guard owning the step
+    "spec-result-reads-input",      # issue #216  spec `expect result <bare>` names a respond field, no same-name respond term exists, and no `given` set that input -> it is compared against the sample payload
 )
 
 # code -> grade (#52). One question decides every row:
@@ -158,6 +159,10 @@ SEVERITY_OF = {
     # RFC-0053: adding a `when <ref> exists` guard (or moving the read
     # under one) removes this — same test as `unknown-verb`.
     "optional-field-unguarded-arithmetic": "warning",
+    # issue #216: writing the qualified name (`result <binding>.<field>`)
+    # or setting the input with `given <field> <value>` removes this —
+    # same test as `unknown-verb`.
+    "spec-result-reads-input": "warning",
 }
 
 
@@ -188,6 +193,7 @@ HINTS = {
     "respond-field-missing": "Backfill the stored row (add the missing field) or stop respond-ing it — `lnpl migrate` can backfill a missing field across existing rows, the same path `stored-row-shape-mismatch` names.",
     "guard-scoped-binding-escape": "Repeat the guard line before this step, or wrap both in a `parallel` block.",
     "optional-field-unguarded-arithmetic": "Add `when <ref> exists` immediately before this step (or move it inside that guard's block) before using it in arithmetic — or use a different field that is not `optional`.",
+    "spec-result-reads-input": "Write the qualified name `result <binding>.<field>` to assert on the response, or set the input with `given <field> <value>` if the input is what this line means to check.",
 }
 
 
@@ -415,11 +421,14 @@ ENFORCEMENT = {
         (UNENFORCED, "the default path issues and verifies nothing; "
                      "`lnpl serve --jwt-secret-env NAME` verifies the bearer "
                      "token per request (docs/serving.md M3a, docs/backends.md)"),
-    # issue #119, D6/D9: unlike `jwt` above, `role` has no live weak path to
-    # name — a `security role` declaration that serves at all is checked,
-    # because D6 refuses to even start `serve` without a token_provider
-    # configured (`WsgiConfigError` -> rc 2). What is left once launch
-    # succeeds is a single behaviour, not two paths to pick the weaker of.
+    # issue #119, D6/D9 + issue #213: unlike `jwt` above, `role` has no live
+    # weak path to name. `lower()` rejects `role <r>` without `jwt` in the
+    # same `security` block (`LowerError` `role-requires-jwt`), so every
+    # compiled `role` sits behind `jwt` and the M3b check is reached; D6 then
+    # refuses to start `serve` without a token_provider (`WsgiConfigError`
+    # -> rc 2). Not covered: an IR document that did not come from `lower()`
+    # handed straight to `make_wsgi_app` — wsgi route auth still keys on
+    # `jwt` alone (issue #213 kept the fix at compile time).
     ("security", "role"):
         (ENFORCED, "every route the declaring service owns requires the "
                    "verified token's role to exactly match `<r>`; mismatch "
