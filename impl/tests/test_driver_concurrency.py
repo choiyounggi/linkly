@@ -219,6 +219,37 @@ class WorkflowConflictTest(unittest.TestCase):
                                         "entity.counter#c-1")["value"], 1)
 
 
+    def test_a_declared_retry_budget_does_not_by_itself_rerun_the_whole_workflow(self):
+        """Issue #201: `policy retry` retries the failing `set` step inside
+        ONE `run_workflow` call, which never re-reads and so cannot recover
+        a version conflict. A single call under a nonzero budget still ends
+        failed -- what recovered `test_retry_declared_recovers_from_the_same_conflict`
+        above is the caller's whole-call retry loop, not the budget."""
+        budget = 3
+        doc = compile_source(with_retry(budget))
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        payload = self._seed(doc, target, 0)
+        persists = []
+
+        class _CountingPersists(_OnceStolenDriver):
+            def persist(self, entity_id, key, row):
+                persists.append(key)
+                return super().persist(entity_id, key, row)
+
+        driver = _CountingPersists(self.path)
+        self.addCleanup(driver.close)
+
+        result = Interpreter(doc, repository=driver).run_workflow(target, payload)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result.get("failure_kind"), "write-conflict")
+        # the budget WAS spent: the first try plus `budget` retries of the
+        # same step, each against the same stale read
+        self.assertEqual(len(persists), budget + 1)
+        # only the competing write landed
+        self.assertEqual(driver.execute(COUNTER, "read",
+                                        "entity.counter#c-1")["value"], 1)
+
 class ThreadedIncrementTest(unittest.TestCase):
     """Real OS thread scheduling, confirming the mechanism the deterministic
     tests above already proved: N concurrent increments, retry declared,

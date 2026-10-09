@@ -20,7 +20,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from lnpl.cli import main
 from lnpl.serve import serve
 
+from lnpl.cli import _open_endpoints
+
 from tests.test_network_driver import _ServerTestCase, _make_handler
+from tests.test_network_resilience import _make_fail_n_handler
 from tests.test_serve import compile_src
 
 PAYMENT_TOKEN_ENV = "LNPL_TEST_PAYMENT_TOKEN"
@@ -199,6 +202,115 @@ class CapabilityHttpCliTest(_ServerTestCase):
         self.assertEqual(rc, 0, err)
         result = json.loads(out)
         self.assertEqual(result["result"]["status"], "completed")
+
+    # ---- issue #176: retry/breaker/path actually reach the driver ----
+
+    def test_a_declared_retry_recovers_after_two_failures(self):
+        handler = _make_fail_n_handler(fail_count=2, fail_status=500)
+        url = self.start(handler)
+        source = self.write_source("""
+capability http PaymentGateway
+    method post
+    retry 2 backoff 1ms
+entity Order
+    field
+        id UUID
+service Checkout
+workflow Pay
+    call PaymentGateway as p
+""")
+
+        rc, out, err = self.run_cli(
+            ["run", source, "--network", "http",
+             "--endpoint", "PaymentGateway=%s" % url, "--json"])
+
+        self.assertEqual(rc, 0, err)
+        result = json.loads(out)
+        self.assertEqual(result["result"]["status"], "completed")
+        self.assertEqual(len(handler.calls), 3)
+
+    def test_no_retry_declared_still_makes_exactly_one_attempt(self):
+        handler = _make_fail_n_handler(fail_count=5, fail_status=500)
+        url = self.start(handler)
+        source = self.write_source(CALL_SOURCE)
+        self.set_env(PAYMENT_TOKEN_ENV, "tok-xyz")
+
+        rc, _out, err = self.run_cli(
+            ["run", source, "--network", "http",
+             "--endpoint", "PaymentGateway=%s" % url])
+
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(len(handler.calls), 1)
+
+    def test_a_declared_retry_exhausts_against_a_connection_refused_target(self):
+        import socket
+        from lnpl.drivers import DriverError, open_network
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        _host, port = sock.getsockname()
+        sock.close()
+        doc = compile_src("""
+capability http PaymentGateway
+    method post
+    retry 1 backoff 1ms
+entity Order
+    field
+        id UUID
+service Checkout
+workflow Pay
+    call PaymentGateway as p
+""", "mod")
+        target = "http://127.0.0.1:%d/" % port
+        endpoints, caps = _open_endpoints(
+            doc, ["PaymentGateway=%s" % target], "http")
+        driver = open_network("http", endpoints=endpoints, capabilities=caps)
+        self.addCleanup(driver.close)
+
+        with self.assertRaises(DriverError):
+            driver.call("PaymentGateway", {}, 500)
+
+    def test_a_declared_path_template_resolves_through_a_real_with_call(self):
+        handler = _make_handler(status=200, body={})
+        url = self.start(handler)
+        source = self.write_source("""
+capability http Orders
+    method get
+    path "/orders/{}"
+entity Order
+    field
+        id UUID
+service Checkout
+workflow Pay
+    call Orders with input.id as o
+""")
+
+        rc, out, err = self.run_cli(
+            ["run", source, "--network", "http",
+             "--endpoint", "Orders=%s" % url, "--json"])
+
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(handler.received_paths[0].startswith("/orders/"),
+                        handler.received_paths[0])
+
+    def test_a_declared_breaker_reaches_the_resolved_capabilities_map(self):
+        doc = compile_src("""
+capability http Orders
+    method get
+    breaker after 2 within 1m
+entity Order
+    field
+        id UUID
+service Checkout
+workflow Pay
+    call Orders as o
+""", "mod")
+
+        _endpoints, caps = _open_endpoints(
+            doc, ["Orders=http://example.invalid/"], "http")
+
+        self.assertEqual(caps["Orders"]["breaker"],
+                         {"threshold": 2, "window_ms": 60000})
 
 
 class CapabilityHttpServeTest(_ServerTestCase):

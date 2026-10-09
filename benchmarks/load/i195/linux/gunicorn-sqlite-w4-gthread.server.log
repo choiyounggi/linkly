@@ -1,0 +1,13 @@
+[2026-10-08 02:39:13 +0000] [82414] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:39:13 +0000] [82414] [INFO] Listening at: http://127.0.0.1:18195 (82414)
+[2026-10-08 02:39:13 +0000] [82414] [INFO] Using worker: gthread
+[2026-10-08 02:39:13 +0000] [82418] [INFO] Booting worker with pid: 82418
+[2026-10-08 02:39:13 +0000] [82421] [INFO] Booting worker with pid: 82421
+[2026-10-08 02:39:13 +0000] [82423] [INFO] Booting worker with pid: 82423
+[2026-10-08 02:39:13 +0000] [82427] [INFO] Booting worker with pid: 82427
+[2026-10-08 02:43:02 +0000] [82414] [INFO] Handling signal: term
+[2026-10-08 02:43:02 +0000] [82423] [INFO] Worker exiting (pid: 82423)
+[2026-10-08 02:43:02 +0000] [82418] [INFO] Worker exiting (pid: 82418)
+[2026-10-08 02:43:02 +0000] [82427] [INFO] Worker exiting (pid: 82427)
+[2026-10-08 02:43:02 +0000] [82421] [INFO] Worker exiting (pid: 82421)
+[2026-10-08 02:43:02 +0000] [82414] [INFO] Shutting down: Master

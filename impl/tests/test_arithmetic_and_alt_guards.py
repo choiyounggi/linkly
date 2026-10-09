@@ -23,10 +23,11 @@ import subprocess
 import sys
 import unittest
 
+from lnpl.drivers import FakeNetworkDriver
 from lnpl.interp import Interpreter, RunError, _condition_holds
 from lnpl.lower import LowerError, lower
 from lnpl.parser import ParseError, parse
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -284,6 +285,91 @@ class TestModeAEvaluation(unittest.TestCase):
                                    {"a": 0, "b": 999}))
 
 
+class TestTextTermsChainLikeAnyOtherTerm(unittest.TestCase):
+    """RFC-0054: `!=` and `and` with a Text term, run end to end."""
+
+    def _run(self, condition, status, total=10):
+        interp = text_chain_interp(
+            "    when %s\n    update order" % condition, status, total)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        return interp, result
+
+    def test_text_not_equal_compiles_and_runs(self):
+        _interp, result = self._run("order.status != cancelled", "pending")
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(["find order", "update order"],
+                         [s["step"] for s in result["steps"]])
+
+    def test_text_not_equal_skips_when_equal(self):
+        _interp, result = self._run("order.status != cancelled", "cancelled")
+        self.assertEqual(1, len(result["skipped"]))
+        self.assertEqual([{"ref": "order.status", "value": "cancelled", "op": "!=",
+                           "expected": "cancelled", "holds": False}],
+                         result["skipped"][0]["evaluations"])
+
+    def test_and_chain_with_a_text_term_and_a_numeric_term_compiles_and_runs(self):
+        _interp, result = self._run("order.status == pending and order.total > 0",
+                                    "pending")
+        self.assertEqual([], result["skipped"])
+        self.assertEqual(["find order", "update order"],
+                         [s["step"] for s in result["steps"]])
+
+    def test_and_chain_skips_on_the_text_side(self):
+        _interp, result = self._run("order.status == pending and order.total > 0",
+                                    "paid")
+        self.assertEqual(
+            [("order.status", False), ("order.total", True)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+    def test_and_chain_skips_on_the_numeric_side(self):
+        _interp, result = self._run("order.status == pending and order.total > 0",
+                                    "pending", total=0)
+        self.assertEqual(
+            [("order.status", True), ("order.total", False)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+
+class TestAlternativeGuardRuntimeWithATextTerm(unittest.TestCase):
+    """RFC-0054 + RFC-0028: an `or` alternative may carry a Text term."""
+
+    BODY = ("    when order.total > 1000000\n"
+            "    or order.status == pending\n"
+            "    update order")
+
+    def test_the_text_alternative_fires_and_the_trace_names_it(self):
+        interp = text_chain_interp(self.BODY, "pending", 10)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual([], result["skipped"])
+        matched = [log for log in interp.trace.to_dict()["logs"]
+                   if log["message"] == "guard alternative matched"]
+        self.assertEqual(["order.status == pending"],
+                         [log["condition"] for log in matched])
+
+    def test_both_the_primary_and_the_text_alternative_false_skip(self):
+        interp = text_chain_interp(self.BODY, "cancelled", 10)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual(
+            [("order.total", False), ("order.status", False)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+    def test_a_text_primary_with_a_numeric_alternative(self):
+        # Mirror: the recorded operands follow the text index, so the Text
+        # term in position 0 and the numeric one in position 1 each evaluate
+        # with their own entry.
+        body = ("    when order.status == paid\n"
+                "    or order.total > 5\n"
+                "    update order")
+        interp = text_chain_interp(body, "pending", 10)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual([], result["skipped"])
+        interp = text_chain_interp(body, "pending", 1)
+        result = interp.run_workflow("wf.cancel.order", {"id": ORDER_ID})
+        self.assertEqual(
+            [("order.status", False), ("order.total", False)],
+            [(e["ref"], e["holds"]) for e in result["skipped"][0]["evaluations"]])
+
+
 class TestAlternativeGuardRuntime(unittest.TestCase):
     """D7 boundary: each branch of the alt guard, `skipped[]` observed."""
 
@@ -336,6 +422,31 @@ class TestAlternativeGuardRuntime(unittest.TestCase):
         self.assertEqual(refs, {("input.channel", False), ("input.amount", False)})
 
 
+TEXT_CHAIN_SOURCE = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+        total Integer
+service OrderService
+workflow CancelOrder
+    find order
+%s
+"""
+
+ORDER_ID = "00000000-0000-4000-8000-000000000207"
+
+
+def text_chain_interp(body, status, total):
+    doc = compile_doc(TEXT_CHAIN_SOURCE % body, "shop")
+    return Interpreter(doc, repo_rows={"entity.order": {
+        row_key("entity.order", {"id": ORDER_ID}): {
+            "id": ORDER_ID, "status": status, "total": total}}})
+
+
 class TestIrSchemaGate(unittest.TestCase):
     """The Guard.alternatives field against schemas/lir.schema.json."""
 
@@ -345,6 +456,30 @@ class TestIrSchemaGate(unittest.TestCase):
                   encoding="utf-8") as fh:
             schema = json.load(fh)
         jsonschema.validate(compile_doc(ALT_GUARD_APPROVE, "approve"), schema)
+
+    def _schema(self):
+        with open(os.path.join(REPO_ROOT, "schemas", "lir.schema.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_guard_with_text_equality_operands_validates_against_the_schema(self):
+        import jsonschema
+        doc = json.loads(json.dumps(compile_doc(TEXT_CHAIN_SOURCE % (
+            "    when order.status == paid\n    update order"), "shop")))
+        guards = [n for n in nodes_of(doc, "Guard") if "textEqualityOperands" in n]
+        self.assertEqual([["order.status", "paid"]],
+                         guards[0]["textEqualityOperands"])
+        jsonschema.validate(doc, self._schema())
+
+    def test_a_malformed_text_equality_operands_is_rejected_by_the_schema(self):
+        import jsonschema
+        doc = json.loads(json.dumps(compile_doc(TEXT_CHAIN_SOURCE % (
+            "    when order.status == paid\n    update order"), "shop")))
+        guard = [n for n in nodes_of(doc, "Guard") if "textEqualityOperands" in n][0]
+        for bad in ([[1]], ["order.status"], "order.status"):
+            guard["textEqualityOperands"] = bad
+            with self.assertRaises(jsonschema.ValidationError, msg=repr(bad)):
+                jsonschema.validate(doc, self._schema())
 
     def test_the_schema_self_test_passes_including_the_new_negatives(self):
         proc = subprocess.run(
@@ -359,6 +494,145 @@ class TestIrSchemaGate(unittest.TestCase):
                       "undeclared property"):
             self.assertIn(label, proc.stdout,
                           "the gate no longer runs the %r negative" % label)
+
+
+NUMERIC_ALT_SOURCE = """capability postgres
+
+entity Payment
+    field
+        id UUID
+        status Integer
+        rate Integer
+
+service PaymentService
+    policy
+        timeout 5s
+
+workflow Convert
+    when input.status != 200
+    or input.rate is-not-numeric
+    create payment
+"""
+
+
+class TestNumericPredicateInConditions(unittest.TestCase):
+    """Issue #177 / RFC-0050: the predicate parses as an `or` alternative
+    and evaluates in mode A — bare, or as an `and` term next to a
+    `Comparison` (never an `AttributeError` from a path that assumed every
+    `and` term is a `Comparison`)."""
+
+    def test_an_or_alternative_with_the_predicate_parses_and_lowers(self):
+        doc = compile_doc(NUMERIC_ALT_SOURCE, "convert")
+        guards = nodes_of(doc, "Guard")
+        self.assertEqual(guards[0]["alternatives"], ["input.rate is-not-numeric"])
+
+    def test_a_bare_predicate_evaluates(self):
+        self.assertTrue(_condition_holds("input.rate is-numeric", {"rate": 1350}, {}))
+        self.assertFalse(_condition_holds("input.rate is-numeric", {"rate": "abc"}, {}))
+
+    def test_a_predicate_inside_and_is_evaluated_with_the_comparison(self):
+        cond = "input.status == 200 and input.rate is-numeric"
+        self.assertTrue(_condition_holds(cond, {"status": 200, "rate": 1350}, {}))
+        self.assertFalse(_condition_holds(cond, {"status": 200, "rate": "abc"}, {}))
+        self.assertFalse(_condition_holds(cond, {"status": 500, "rate": 1350}, {}))
+
+    def test_a_non_numeric_comparison_in_the_same_and_still_raises(self):
+        # RFC-0028 §2's non-numeric RunError row is unchanged: the predicate
+        # guards nothing it is not asked about.
+        with self.assertRaises(RunError) as ctx:
+            _condition_holds("input.rate is-numeric and input.rate >= 0",
+                             {"rate": "abc"}, {})
+        self.assertIn("Cannot compare non-numeric", str(ctx.exception))
+
+    def test_an_absent_reference_is_not_numeric(self):
+        self.assertTrue(_condition_holds("input.rate is-not-numeric", {}, {}))
+        self.assertFalse(_condition_holds("input.rate is-numeric", {}, {}))
+
+
+F5_SOURCE = """capability postgres
+
+entity Quote
+    field
+        id UUID
+
+service QuoteService
+    policy
+        timeout 5s
+
+workflow Convert
+    call Fx as fxResult
+    when fxResult.status == 200 and fxResult.rate is-numeric
+    create quote
+    when fxResult.status != 200
+    or fxResult.rate is-not-numeric
+    note "fallback"
+"""
+
+
+def fx_run(status, body):
+    """Run the F-5 program (issue #177, RFC-0050 §Examples) against a
+    stubbed `Fx` response."""
+    doc = compile_doc(F5_SOURCE, "fx")
+    wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+    payload = {"id": PAYMENT_ID}
+    interp = Interpreter(doc, repo_rows=default_rows(doc, wf, payload),
+                         network=FakeNetworkDriver({"Fx": (status, body)}))
+    return interp, interp.run_workflow(wf, payload)
+
+
+class TestNumericPredicateRuntime(unittest.TestCase):
+    """DoD 1: the F-5 program routes a non-numeric response to the fallback
+    branch instead of dying on the comparison `RunError`."""
+
+    def _matched_alternatives(self, interp):
+        return [log for log in interp.trace.to_dict()["logs"]
+                if log["message"] == "guard alternative matched"]
+
+    # ---- normal: numeric rate -> live branch --------------------------------
+    def test_numeric_rate_takes_the_live_branch(self):
+        interp, result = fx_run(200, {"rate": 1350})
+        self.assertEqual(result["status"], "completed")
+        steps = [s["step"] for s in result["steps"]]
+        self.assertIn("create quote", steps)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(result["skipped"][0]["condition"],
+                         "fxResult.status != 200 or fxResult.rate is-not-numeric")
+        self.assertEqual(self._matched_alternatives(interp), [],
+                         "no alternative matched, so no RFC-0028 alt log")
+
+    # ---- error input: non-numeric rate -> fallback, no RunError ------------
+    def test_non_numeric_rate_takes_the_fallback_branch(self):
+        interp, result = fx_run(200, {"rate": "abc"})
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("create quote", [s["step"] for s in result["steps"]])
+        self.assertEqual(len(result["skipped"]), 1)
+        skipped = result["skipped"][0]
+        self.assertEqual(skipped["condition"],
+                         "fxResult.status == 200 and fxResult.rate is-numeric")
+        self.assertEqual(skipped["steps"], ["create quote"])
+        self.assertIn({"ref": "fxResult.rate", "value": "abc", "op": "is-numeric",
+                       "expected": None, "holds": False},
+                      skipped["evaluations"])
+        self.assertEqual(len(self._matched_alternatives(interp)), 1,
+                         "the fallback ran through its `or` alternative")
+
+    # ---- boundary: rate absent -> same as non-numeric ----------------------
+    def test_absent_rate_takes_the_fallback_branch(self):
+        interp, result = fx_run(200, {})
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("create quote", [s["step"] for s in result["steps"]])
+        skipped = result["skipped"][0]
+        self.assertIn({"ref": "fxResult.rate", "value": None, "op": "is-numeric",
+                       "expected": None, "holds": False},
+                      skipped["evaluations"])
+        self.assertEqual(len(self._matched_alternatives(interp)), 1)
+
+    def test_non_200_takes_the_fallback_through_the_primary_condition(self):
+        interp, result = fx_run(500, {"rate": 1350})
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("create quote", [s["step"] for s in result["steps"]])
+        self.assertEqual(self._matched_alternatives(interp), [],
+                         "the primary `status != 200` matched, not the alternative")
 
 
 if __name__ == "__main__":

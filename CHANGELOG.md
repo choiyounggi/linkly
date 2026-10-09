@@ -9,6 +9,338 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Fixed
+- `capability http`'s `retry`/`breaker`/`path` clauses were parsed and
+  compiled but silently dropped before reaching `HttpNetworkDriver` — both
+  `lnpl run`/`lnpl serve` (`cli.py:_open_endpoints`) and
+  `build_app()`/`make_wsgi_app` (`wsgi.py:_resolve_network`) projected a
+  declared capability down to `{"method", "auth"}` before handing it to
+  the driver. A declared `retry` never retried; a declared `path` made
+  any `call ... with <ref>` fail with `"has path arguments but no path
+  declared"` (issue #176).
+- OpenAPI generation crashed (`KeyError`) on any workflow using `create
+  <Entity> as <alias>` together with `respond <alias>...` —
+  `_response_schema`'s `by_binding` map only ever held entities' own
+  default binding names, never an `as`-declared alias, so the RFC-0030
+  golden example itself could not compile to an OpenAPI document, and
+  `lnpl serve` (which calls the same generator at startup) could not bind
+  either. `_response_schema` now also resolves a `respond` reference
+  against the workflow's own `create ... as` result bindings, and raises a
+  clear `OpenApiError` instead of a bare `KeyError` for any reference
+  resolving to neither (issue #173).
+- `lnpl migrate`가 다개체(multi-entity) 모듈에서 `create`가 쓴 행을 조용히
+  건너뛰고 rc 0으로 "완료"를 보고하던 문제를 고쳤다 — `id` 필드를 선언하지
+  않은 entity의 행은 `create`가 자기 자신의 저장 키를 `id` 값으로 쓰는데,
+  migrate가 그 값으로 저장 키를 다시 계산하면 이중으로 접두되어 재조회가
+  실패했다. 이제 그 경우를 행 자신의 `id`로 재조회해 복구하고, 그래도
+  확인할 수 없는 행이나 후보가 있었는데 하나도 못 쓴 실행은 rc 2로
+  시끄럽게 실패한다 (issue #179).
+- In-workflow write-state self-conflicts (issue #174): the default seed
+  rule now excludes an entity whose first repository operation is
+  `create` (previously seeded if it was ever read anywhere in the
+  workflow, even after being created first); `persist()` now advances the
+  bound row's optimistic-lock version after a successful write, so a
+  second `set` on the same binding in one run no longer raises a phantom
+  write conflict.
+- `respond` naming a binding that a guard skipped, or a field the bound row
+  does not carry, crashed with a raw `KeyError` (CLI rc 1; `lnpl serve`
+  answered 500 with no `failed_step`). Such a reference is now omitted from
+  the response; an absent field raises one `respond-field-missing` warning
+  per reference, and when every reference is omitted the response is `{}`.
+  A new compile warning `guard-scoped-binding-escape` flags a `respond` or
+  `send` reference to a binding that only exists inside a guard. Existing
+  programs that crashed now answer; none that succeeded change (issue #198).
+- `If-Match` ignored a `by <ref>` lookup key: the precondition was checked
+  against the payload `id`, so a stale ETag on a row read by another key got
+  200 instead of 412. It now evaluates the row the workflow's first read
+  addresses; a `by` ref that cannot be resolved from the request answers 400
+  `precondition-unsupported` without running the workflow, and an absent
+  addressed row answers 412. Workflows without `by` behave as before
+  (issue #199).
+- The default `Money` sample was `{"amount": "0", ...}`, which fails the
+  type's own codec (USD has two decimals), so the default `spec`/`run`
+  payload failed unconditionally. The sample is now
+  `{"amount": "1.00", "currency": "USD"}`; any golden or fixture that
+  pinned the old sample must be regenerated (issue #203).
+- A `derived` field assigned with `set`/`format` earlier in the same guard
+  scope was still rejected by `emit ... with <binding>.<field>`, with an
+  error text that contradicted RFC-0049. It is now accepted when the
+  assignment precedes the `emit` in the same scope, and otherwise rejected
+  naming the missing assignment and the `emit` line; RFC-0049 was corrected
+  in place (issue #204).
+- Optimistic-lock write conflicts left the server as `500 workflow-failed`,
+  indistinguishable from a server fault. They now fail with
+  `failure_kind` `write-conflict` and answer `409 write-conflict`
+  (problem+json, with `failed_step`); the event-consume path answers 503
+  with `Retry-After` and releases the claim. Clients that retried on 500
+  should retry on 409 (issue #201).
+- Fixed a self-conflict in the SQLite driver where calling `update` on a
+  bound row and then `set`ting the same row again failed with `"write
+  conflict"` (issue #182).
+- Fixed `FakeRepository`'s `delete`, which unconditionally returned
+  `affected: 1` without removing the row — it now actually deletes the
+  row and returns `affected: 0` for a missing row. A workflow that reads
+  the same row after `delete` now gets the same result on Fake and
+  SQLite (issue #183).
+- Fixed `lnpl diff` (`differential.verify()`) and `lnpl build` reporting
+  different RFCs as the first rejection reason for a workflow that
+  combines two or more of a Money guard, a lookup key (`by <ref>`), and
+  a numeric-shape predicate (`is-numeric`/`is-not-numeric`) —
+  `differential.verify()`'s check order is now unified with
+  `backend.build()`/`backend.emit_mlir()`'s Money (RFC-0051) → lookup
+  key (RFC-0052) → numeric predicate (RFC-0050) order. Two combinations
+  change: for a Money + numeric-predicate program, `diff`'s first report
+  moves from RFC-0050 to RFC-0051; for a lookup-key + numeric-predicate
+  program, from RFC-0050 to RFC-0052. Both still reject with rc 4 — only
+  the reason changes (issue #185).
+- Fixed `lnpl build`-ing a workflow that uses a numeric-shape predicate
+  (`is-numeric`/`is-not-numeric`) in an environment without MLIR/LLVM
+  tools reporting a tool-missing error (`"mlir-opt not found ..."`)
+  before the RFC-0050 rejection — `build()` now rejects the numeric
+  predicate early, in the same place as the Money/lookup-key rejection
+  (#181), right before `verify_lnpl_module()` (the tool lookup). This
+  early check sees the ops stream truncated by `_lnpl_ops`'s
+  seed/payload, so a guard step that comes after an unseeded read and
+  still succeeds today (`seeded=frozenset()`) still succeeds — only the
+  case where the rejection used to come after the tool error changes
+  (issue #186).
+- `build_app()` (the gunicorn operations path) now accepts four
+  operational options that previously existed only for `lnpl serve`:
+  `LNPL_METRICS`, `LNPL_CAPTURE_ON_FAILURE`, `LNPL_TRUST_INCOMING_TRACE`
+  (boolean — `1`/`true`/`yes`/`on`, `0`/`false`/`no`/`off`), and
+  `LNPL_RATE_LIMIT` (a finite number greater than 0). An argument of the
+  same name (e.g. `metrics=`) is also accepted, and an explicit argument
+  wins over the environment variable. An empty string means unset, and
+  an invalid value fails startup with a `WsgiConfigError` naming the
+  variable. readyz check ③ (`jwt-secret-env`) now also runs on the
+  `build_app()` path — it used to be skipped even when
+  `LNPL_JWT_SECRET_ENV` was given. `lnpl serve --rate-limit nan`/`inf`
+  is now rejected with the same wording as `0` (rc 2).
+  `impl/tests/test_build_app_serve_parity.py` enforces that every
+  `serve` option has a `build_app()` counterpart (issue #187).
+- The gunicorn `build_app()` path now accepts
+  `--cache`/`--network`/`--token-provider`/`--jwt-issuer`/`--config`/`--profile`
+  under the same rules as `lnpl serve` — the
+  `LNPL_CACHE`/`LNPL_NETWORK`/`LNPL_TOKEN_PROVIDER`/`LNPL_JWT_ISSUER`/`LNPL_CONFIG`/`LNPL_PROFILE`
+  environment variables, or an argument of the same name. The
+  startup-failure message for an unknown `LNPL_BACKEND` value no longer
+  includes the value (issue #187).
+
+### Added
+- `scripts/load_probe.py` (stdlib open-loop load generator) and
+  `docs/postgres-load-ceiling.md` (measured sustained-load ceiling and
+  root cause for the postgres backend) — issue #180.
+- `emit`/`publish <Event> with <ref>...` maps the emitted event's payload
+  from workflow bindings (created-row fields, `input.*`, network-call
+  results) instead of always carrying the raw masked input; trailing
+  words after `emit <Event>` that are not a `with`-clause now raise a
+  compile error instead of being silently dropped (issue #178, RFC-0049).
+- Guard predicates `<ref> is-numeric` / `<ref> is-not-numeric` ask whether
+  a value reads as a number without failing, so a non-numeric external
+  response can route to a fallback branch instead of the comparison
+  `RunError`; unlike `exists`/`missing` they may be `and` terms, and
+  `lnpl vocab` now lists both predicate tables (issue #177, RFC-0050).
+- Money fields can be copied, added, subtracted, and multiplied by an
+  Integer in `set`, and compared Money-to-Money in guards under all six
+  comparators, evaluated exactly in minor units (previously a compile
+  refusal); Decimal, Money division and Money × Money stay refused, a
+  currency mismatch fails with `money-currency-mismatch`, `expect result`
+  now evaluates Money order comparisons, and mode B refuses a Money guard
+  as a recorded differential exemption instead of a false EQUIVALENT
+  (issue #172, RFC-0051).
+- `find`/`read`/`load`/`authenticate`/`update`/`delete <Entity> by <ref>`
+  addresses the row under the ref's value instead of the payload `id`, so
+  one workflow can create an order under its own id while finding and
+  decrementing stock under the product id (probe-v0.8 s1 F-3/F-6); a `set`
+  on a row read that way persists under the same key, a ref with no value
+  fails the step, a first read `by input.<field>` is seeded under that
+  field's value, and mode B refuses such a workflow as a recorded
+  differential exemption. Other trailing words on those verbs are now a
+  compile error instead of being silently dropped; `create` keeps
+  `as <name>` only (issue #175, RFC-0052).
+- `call`/`request <Target> [with <path refs>] send <ref>... [as <name>]`
+  chooses the outbound body from workflow bindings (same mapping rules as
+  `emit ... with`, RFC-0049) instead of always sending the whole input; a
+  call without `send` is byte-identical to before. Mode B is unchanged
+  (issue #200, RFC-0057).
+- `lnpl token --role <r>` mints a token carrying the claim the runtime reads
+  as the caller's role, so a `security jwt` service with a `role` rule can be
+  tested with the built-in tool. It warns on stderr only when the route
+  enforces the role (issue #202).
+- `lnpl capabilities` and the MCP `lnpl_capabilities`/compile responses
+  report `vocabulary_digest` and the loaded package path; the MCP launcher
+  prints one discovery line on stderr, `lnpl-doctor` flags a CLI/MCP digest
+  mismatch, and the generated reference header carries the digest, so two
+  builds between tags can be told apart. `--version` is unchanged
+  (issue #205).
+- `fail <kebab-code>` ends a workflow as a business rejection: status
+  `failed`, `failure_kind` `rejected`, the code in `failure_reason`, writes
+  rolled back (RFC-0032), `422` problem+json with the author's code on
+  `lnpl serve` and on the consume path, and the declared codes listed in
+  OpenAPI. Codes the server already uses are reserved; `fail` is not retried
+  by a retry policy; mode B refuses it (issue #206, RFC-0056).
+- Guards compare Text-family fields and bare enum members with `==`/`!=`,
+  checked at compile time against the enum's members (a did-you-mean hint
+  only for close matches), so a state transition can be a guard. `spec`
+  evaluates the comparison; mode B refuses it as a recorded differential
+  exemption (issue #207, RFC-0054).
+- The `optional` field modifier: a client may omit an optional field or send
+  `null`, and both mean absent. Absent values are left out of stored rows,
+  `emit ... with` and `respond`; OpenAPI request schemas drop them from
+  `required`; `db check`/`db migrate` follow; absent rows sort last in both
+  directions on `fake` and `sqlite`; aggregates skip them. A presence guard
+  works on optional fields of any type including Money; an optional `id` is
+  a compile error; arithmetic on an optional field protected only by a
+  presence guard raises the `optional-field-unguarded-arithmetic` warning;
+  mode B refuses guards that read an optional field (issue #208, RFC-0053).
+- `respond` can answer an aggregate or a filtered list without storing rows:
+  named terms `<name> as <agg> <ref>` and a bounded list term (`limit`
+  required, `items`/`next` envelope), with zero repository writes, masked
+  rowsets, an OpenAPI 200 schema derived from the terms, and `spec` results
+  for named aggregates. Mode B refuses it (issue #210, RFC-0059).
+- Added a `cached` read-through cache clause to the read verbs
+  (`find`/`read`/`load`/`authenticate`) — a hit skips the repository
+  call, a miss reads the row and records it with the `performance cache`
+  TTL, and a write or rollback in the same document clears that key. It
+  is a compile error with no budget declared or when the same workflow
+  also writes that row; mode B refuses it as a recorded exemption
+  (RFC-0062) (issue #188).
+- Added the `lnpl generate compose` / `lnpl generate k8s` built-in
+  generators: they deterministically generate a compose file (app +
+  postgres/redis, readyz healthcheck) and k8s manifests (Deployment,
+  Service, ConfigMap; Secret is referenced by name only) from the
+  declared capabilities. Image, replica count, and resources are taken
+  from `--set KEY=VALUE` or left as commented placeholders (issue #189).
+- Added the `image` job to `release.yml`, which builds and smoke-tests a
+  runtime-only linkly image on every release-tag push and publishes it
+  to `ghcr.io/<owner>/linkly` tagged `vX.Y.Z` and `X.Y` (including SBOM
+  and provenance attestation, a pinned base-image digest; PyPI
+  publishing stays disabled) (issue #190).
+- Added the `lnpl.publishers` entry-point group and the `EventPublisher`
+  publish SPI contract, `EventPublisherTCK`, and URL-scheme dispatch for
+  `lnpl relay --target` (`http(s)://` is byte-identical) — a real broker
+  driver stays out of scope, left for a separate repo (issue #191).
+- Registered RFC-0061 (Draft) — the `lnpl.publishers` publish SPI
+  specification, with RFC-0040 §Motivation/§7/§8/§9/§Alternatives
+  Updates, reflected in `docs/backends.md`/`docs/serving.md`
+  (issue #191).
+- Added `lnpl serve --jwt-secret-file`,
+  `build_app(jwt_secret_file=...)`/`LNPL_JWT_SECRET_FILE`, and
+  `lnpl.toml` `[*.secrets] jwt = { file = "..." }` — they read the JWT
+  signing secret from a mounted file (one trailing newline stripped,
+  absolute path only; an error names only the role). Giving both an
+  environment-variable name and a file is rejected (issue #192).
+- Added the `lnpl.secrets` entry-point group and the `SecretProvider`
+  contract (`get`/`get_previous`/`close`), `open_secret_provider`,
+  `SecretProviderTCK` (lnpl.testing), and a `secrets` slot in
+  `lnpl capabilities` — the built-in names `env`/`file` cannot be
+  shadowed (issue #192).
+- Added `[*.secrets] jwt = { provider = "...", key = "..." }` — it reads
+  the JWT signing key from a registered `lnpl.secrets` provider and
+  verifies against the current key plus the previous key to support
+  zero-downtime rotation (a 60-second delayed re-fetch, plus a re-fetch
+  on a readyz probe when the last read is at least 5 seconds old
+  (`READYZ_REFRESH_FLOOR_S`), per worker). `/-/readyz` answers 503 with
+  `secret-provider` on a provider failure (issue #192).
+- Added a secret-leak regression test — it runs each of the
+  environment-variable, file, and provider secret sources through both
+  `lnpl serve` and `build_app()`, and pins that the secret value never
+  appears in stdout, stderr, the access log, trace, error bodies,
+  readyz, `lnpl config check`, or startup-error tracebacks (issue #192).
+- Added a document that judges, from actual run results, how far
+  object-storage scenarios (upload storage, signed-URL issuance,
+  large-file download) can go through a `capability http` workaround —
+  closed; no RFC is needed (issue #193).
+- Added the performance-regression PR gate
+  `impl/tests/test_perf_counters.py` — it asserts exact counts of DB
+  connections opened/closed, repository statements, and driver
+  instantiations per request on the sqlite, fake, and `build_app()`
+  paths, and proves on every run that the gate actually fails, using a
+  control driver that opens one extra connection per statement
+  (issue #195).
+- Added the weekly load-report workflow
+  `.github/workflows/load-weekly.yml` (Mondays 07:00 UTC plus manual
+  dispatch) — it reports absolute throughput and latency without
+  blocking a PR, and `impl/tests/test_load_weekly_workflow.py` pins that
+  wiring (issue #195).
+- `scripts/load_probe.py` now prints a stability verdict `verdict=`
+  (STABLE, UNSTABLE, NO-DATA) and `worst_bucket_ratio=` on its last line
+  (the exit code stays 0) (issue #195).
+- Added a load-ceiling table for the operations path (gunicorn +
+  `build_app()`) to `docs/gunicorn-load-measurement.md` — it records the
+  stable ceiling and p50/p95/p99 for all 18 combinations of backend
+  (fake, sqlite, postgres) × worker count (1, 2, 4) × worker class
+  (sync, gthread), a fake control group, and the measurement method;
+  every number traces back to a log line under
+  `benchmarks/load/i195/linux/`. Measurements were taken in a Docker
+  Linux container, because loopback congestion on a macOS host makes the
+  measurement invalid there (issue #195).
+- Re-measured `lnpl serve` + postgres at 100-150 rps in 10 rps steps and
+  added a container-measurement section to
+  `docs/postgres-load-ceiling.md` (the ceiling stays 100 rps; 110 and
+  120 rps show one interval of congestion) (issue #195).
+- Added to `docs/serving.md` the recommended worker count and worker
+  class with the measurements behind them, the measured fact that the
+  metrics registry and rate-limit bucket are separate per worker, and
+  the failure (and workaround) when several workers start concurrently
+  against a fresh postgres database (issue #195).
+- Added six documents to the KB `cloud` category:
+  `cloud-postgres-provisioning` (throughput ceiling, `--rate-limit`
+  value, connections), `cloud-serving-topology` (`lnpl serve` with
+  gunicorn, workers, and a front proxy), `cloud-observability-export`
+  (access log, trace export, metrics, probes),
+  `cloud-secrets-and-config` (secret sources, rotation, `lnpl.toml`
+  profiles), `cloud-schema-change-rollout` (expand/migrate/contract,
+  backups), `cloud-event-delivery` (outbox, relay guarantees). Every
+  factual sentence cites its source file, and every unimplemented
+  recommendation states its grade (issue #196).
+
+### Changed
+- Persistent backends (sqlite, postgres) are no longer seeded from the
+  request payload, so a read of a missing row no longer stores a phantom
+  row. The step now fails with `failure_kind` `not-found` and `lnpl serve`
+  answers `404 not-found` with `failed_step` (consume path: 422
+  `event-rejected`; OpenAPI workflow operations gain a 404). The `fake`
+  backend and the `spec`/`diff` runners keep seeding. Compatibility:
+  a program that relied on a read miss succeeding on a persistent backend
+  now gets 404 and must create the row first (issue #197, RFC-0052 §4
+  corrected in place).
+- `derived generated` (a per-run UUIDv4 id) and `derived clock` (the run's
+  start instant) mark entity fields the server fills at `create`/`insert`;
+  `spec` pins them with `given run.id` / `given run.clock`. A `create` or
+  `insert` without a non-null `id` now fails with `id-required` (400; 422 on
+  the consume path) unless the id is `derived generated`; UUID fields no
+  longer store row-key strings; a bare-name `set` operand that no entity
+  declares is rejected. Compatibility: an id-less create used to run and
+  collide on one key from the second run; it now fails on the first, so add
+  `derived generated` to the id or send an id. Mode B refuses the markers
+  (issue #209, RFC-0055).
+- Two structural changes to flow control, with one parse-time and one
+  runtime consequence. (a) A control keyword (`when`, `until`, `repeat`,
+  `pipeline`, `parallel`) indented inside an open `pipeline` body is now a
+  parse error naming the block and both fixes, instead of silently closing
+  the pipeline and compiling to a different structure (RFC-0058).
+  Compatibility: a program that compiled this way must dedent the keyword
+  or re-indent the body, and the old compile ran it as the dedented
+  structure (steps after the keyword fell outside the enclosing guard).
+  (b) In mode A a guard may read a field the workflow itself assigned
+  earlier (its value at that point), and an `otherwise` sibling line owns
+  one item after a `when` guard; `otherwise` after
+  `until`/`repeat`, with no guard, twice, or inside `parallel` is a parse
+  error, and `else` gets a did-you-mean. Mode B refuses both
+  (issue #211, RFC-0060, resolves RFC-0015 OQ1). Compatibility: a guard
+  reading an assigned field used to be a compile error and is now accepted
+  in mode A, so a program that dodged the error by reordering still works;
+  a mode-B build of a workflow that uses either form is now refused.
+- Formalized the position that rate limiting is a single linkly
+  process's own defense, which loosens by N × K across instances and
+  workers — a global or per-client limit is the gateway's job. Added a
+  reference `limit_req_zone`/`limit_req`/`limit_req_status` to
+  `examples/deploy/nginx.conf`, and a 2-instance smoke test
+  (`test_deploy.py::TwoInstanceGatewayRateLimitTest`) confirmed that
+  combined allowance is capped at the gateway and that `/-/healthz` is
+  exempt (issue #194).
+
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
 now reach the last two places they had not: `spec` blocks can seed and

@@ -44,6 +44,539 @@ def _observation(order, skips):
             "text": "\n".join(["step %s" % n for n in order] + ["status completed"])}
 
 
+class TestNumericPredicateExemption(unittest.TestCase):
+    """RFC-0050 §5: a workflow using `is-numeric`/`is-not-numeric` is a
+    recorded mode B exemption. `verify` says so BEFORE the toolchain check,
+    so the answer is the same with or without LLVM installed."""
+
+    def _f5(self):
+        from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+        doc = lower(parse(F5_SOURCE), "fx").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        return doc, wf
+
+    def _verify(self, doc, wf):
+        payload = {"id": USER["id"]}
+        workdir = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp")
+                                   if os.path.isdir(os.path.join(REPO, ".claude", "tmp"))
+                                   else None)
+        self.addCleanup(shutil.rmtree, workdir, True)
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), workdir)
+
+    def test_verify_raises_the_recorded_exemption(self):
+        doc, wf = self._f5()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0050", str(ctx.exception))
+        self.assertNotIn("toolchain unavailable", str(ctx.exception))
+
+    def test_the_exemption_fires_without_a_toolchain(self):
+        doc, wf = self._f5()
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0050", str(ctx.exception))
+
+    def test_a_workflow_without_the_predicate_is_not_exempted(self):
+        # Control: without a toolchain, a predicate-free workflow still gets
+        # the ordinary toolchain message — the exemption is scoped.
+        with open(CHECKOUT_LNPL) as f:
+            doc = lower(parse(f.read()), "checkout").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+
+MONEY_BARE = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    read order
+    %s
+    set order.stock to order.stock + 1
+"""
+
+
+class TestMoneyGuardExemption(unittest.TestCase):
+    """RFC-0051 §6: a guard comparing a declared Money field is a recorded mode
+    B exemption, reported before the toolchain check; a Money-shaped value an
+    undeclared reference carries into mode B's condition channel is refused
+    rather than zeroed (a zero would let mode B evaluate a guard mode A
+    evaluates as money, and still report EQUIVALENT)."""
+
+    def _doc(self, source):
+        doc = lower(parse(source), "money").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        return doc, wf
+
+    def _verify(self, doc, wf, payload=None):
+        payload = payload or {"id": USER["id"]}
+        workdir = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp")
+                                   if os.path.isdir(os.path.join(REPO, ".claude", "tmp"))
+                                   else None)
+        self.addCleanup(shutil.rmtree, workdir, True)
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), workdir)
+
+    def _without_toolchain(self):
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+
+    def test_a_declared_money_guard_is_the_recorded_exemption(self):
+        from tests.test_backend import MONEY_GUARD
+        doc, wf = self._doc(MONEY_GUARD % "when order.total > order.threshold")
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+        self.assertIn("Money guard", str(ctx.exception))
+        self.assertNotIn("toolchain unavailable", str(ctx.exception))
+
+    def test_an_input_money_guard_is_exempted_without_a_toolchain(self):
+        from tests.test_backend import MONEY_GUARD
+        doc, wf = self._doc(MONEY_GUARD % "when input.total > input.threshold")
+        self._without_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+
+    def test_a_create_as_alias_money_guard_is_exempted_without_a_toolchain(self):
+        from tests.test_backend import MONEY_ALIAS_GUARD
+        doc, wf = self._doc(MONEY_ALIAS_GUARD)
+        self._without_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+        self.assertIn("Money guard", str(ctx.exception))
+
+    def test_a_money_free_guard_is_not_exempted(self):
+        # Control: the same document with an Integer guard gets the ordinary
+        # toolchain message — the exemption is scoped to Money guards.
+        from tests.test_backend import MONEY_GUARD
+        doc, wf = self._doc(MONEY_GUARD % "when order.stock > 0")
+        self._without_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def _observe_b(self, source, payload):
+        """Drive `observe_mode_b` up to the binary run with the build and run
+        stubbed, returning the condition values it would pass."""
+        doc, wf = self._doc(source)
+        seen = {}
+        real_build, real_run = backend.build, backend.run_binary
+        backend.build = lambda *a, **k: "unused"
+
+        def run_binary(bin_path, skip=False, condition_fields=None):
+            seen.update(condition_fields or {})
+            return 0, ["status completed"]
+        backend.run_binary = run_binary
+        self.addCleanup(setattr, backend, "build", real_build)
+        self.addCleanup(setattr, backend, "run_binary", real_run)
+        differential.observe_mode_b(doc, wf, "unused", payload=payload)
+        return seen
+
+    def test_a_money_shaped_undeclared_value_is_refused_not_zeroed(self):
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._observe_b(MONEY_BARE % "when extra > limit",
+                            {"id": USER["id"], "limit": 5,
+                             "extra": {"amount": "1.00", "currency": "USD"}})
+        self.assertIn("'extra'", str(ctx.exception))
+        self.assertIn("Money-shaped", str(ctx.exception))
+        self.assertIn("RFC-0051", str(ctx.exception))
+
+    def test_other_non_numeric_values_keep_the_zero_placeholder(self):
+        # Boundary: a Presence guard's field and a plain non-Money dict still
+        # take the i64 placeholder — only a Money-shaped dict is intercepted.
+        seen = self._observe_b(MONEY_BARE % "when extra exists",
+                               {"id": USER["id"], "extra": "abc"})
+        self.assertEqual({"extra": 0}, seen)
+        seen = self._observe_b(MONEY_BARE % "when extra exists",
+                               {"id": USER["id"], "extra": {"amount": "1.00"}})
+        self.assertEqual({"extra": 0}, seen)
+
+    @NEEDS_TOOLS
+    def test_a_money_set_without_a_money_guard_compares_equivalent(self):
+        # RFC-0028 §6: an Assignment is one opaque effect marker in mode B, so
+        # a Money `set` needs no mode B change and still compares.
+        doc, wf = self._doc(MONEY_BARE.replace(
+            "    %s\n    set order.stock to order.stock + 1",
+            "    when order.stock > 0\n    set order.total to order.total * 2"))
+        total = {"amount": "2.50", "currency": "USD"}
+        payload = {"id": USER["id"], "stock": 1, "total": total}
+        rows = {"entity.order": {row_key("entity.order", payload):
+                                 {"id": USER["id"], "stock": 1,
+                                  "total": dict(total)}}}
+        workdir = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, workdir, True)
+        ok, report = differential.verify(doc, wf, payload, rows, workdir)
+        self.assertTrue(ok, "\n".join(report))
+        self.assertIn("EQUIVALENT", report[-1])
+
+
+def _predicate_money_guard_doc():
+    from tests.test_backend import MONEY_GUARD
+    doc = lower(parse(MONEY_GUARD % "when order.total > order.threshold"),
+                "money").to_document()
+    wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+    return doc, wf
+
+
+MONEY_AND_NUMERIC_GUARD = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+        threshold Money
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    read order
+    when order.total > order.threshold
+    create order
+    when order.stock is-numeric
+    note "flagged"
+"""
+
+LOOKUP_AND_NUMERIC_GUARD = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service Orders
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    when stock.onHand is-numeric
+    note "flagged"
+workflow Audit
+    find stock
+"""
+
+MONEY_LOOKUP_AND_NUMERIC_GUARD = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+        price Money
+        limit Money
+service Orders
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    when stock.price > stock.limit
+    update stock
+    when stock.onHand is-numeric
+    note "flagged"
+workflow Audit
+    find stock
+"""
+
+
+PREDICATE_READ_THEN_GUARD = """capability postgres
+
+entity Product
+    field
+        id UUID
+        rate Integer
+
+service CheckoutService
+    policy
+        timeout 5s
+
+workflow Checkout
+    find product
+    when product.rate is-numeric
+    create product
+"""
+
+
+class TestLookupKeyExemption(unittest.TestCase):
+    """RFC-0052 §6 (issue #175): a workflow with a `by <ref>` repository call
+    is a recorded mode B exemption, reported before the toolchain check —
+    never a false EQUIVALENT. A `by`-free workflow in the same module still
+    compares."""
+
+    def _doc(self, body):
+        from tests.test_backend import LOOKUP_MODULE
+        return lower(parse(LOOKUP_MODULE % body), "orders").to_document()
+
+    def _workdir(self):
+        base = os.path.join(REPO, ".claude", "tmp")
+        os.makedirs(base, exist_ok=True)
+        workdir = tempfile.mkdtemp(prefix="lnpl-t175-", dir=base)
+        self.addCleanup(shutil.rmtree, workdir, True)
+        return workdir
+
+    def _verify(self, doc, wf, payload):
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), self._workdir())
+
+    def test_a_by_workflow_is_the_recorded_exemption_without_a_toolchain(self):
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+        doc = self._doc("    find stock by input.productId")
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, "wf.restock", {"id": "O1", "productId": "P1"})
+        msg = str(ctx.exception)
+        self.assertIn("lookup key", msg)
+        self.assertIn("RFC-0052", msg)
+        self.assertNotIn("toolchain unavailable", msg)
+
+    @NEEDS_TOOLS
+    def test_a_by_free_workflow_in_the_same_module_compares_equivalent(self):
+        doc = self._doc("    find stock by input.productId")
+        ok, report = self._verify(doc, "wf.audit", {"id": "O1", "productId": "P1",
+                                                    "onHand": 3})
+        self.assertTrue(ok, "\n".join(report))
+        self.assertIn("EQUIVALENT", report[-1])
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "orders.lnpl")
+        from tests.test_backend import LOOKUP_MODULE
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(LOOKUP_MODULE % "    find stock by input.productId")
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.restock"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0052", text)
+                self.assertNotIn("EQUIVALENT", text)
+
+    def _forbid_tool(self):
+        real_tool = backend.tool
+
+        def _guard(*_a, **_k):
+            raise AssertionError(
+                "tool() called before the mode B exemption guard")
+        backend.tool = _guard
+        self.addCleanup(setattr, backend, "tool", real_tool)
+
+    def _hide_tools(self):
+        """Make every mlir-opt lookup fail: tool() tries LNPL_LLVM_BIN, then
+        BREW_LLVM_BIN, then PATH, so all three are emptied (and restored)."""
+        from unittest import mock
+        empty = self._workdir()
+        patcher = mock.patch.dict(os.environ, {"PATH": empty})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("LNPL_LLVM_BIN", None)
+        brew = mock.patch.object(backend, "BREW_LLVM_BIN", empty)
+        brew.start()
+        self.addCleanup(brew.stop)
+        with self.assertRaises(backend.BackendError):
+            backend.tool("mlir-opt")
+
+    def test_build_refuses_the_lookup_before_any_toolchain_lookup(self):
+        doc = self._doc("    find stock by input.productId")
+        workdir = self._workdir()
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, "wf.restock", workdir, seeded=frozenset())
+        self.assertIn("RFC-0052", str(ctx.exception))
+
+    def test_build_refuses_a_money_guard_before_any_toolchain_lookup(self):
+        doc, wf = _predicate_money_guard_doc()
+        workdir = self._workdir()
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir, seeded=frozenset())
+        self.assertIn("RFC-0051", str(ctx.exception))
+
+    def test_build_still_raises_the_duration_overflow_error_first(self):
+        # Placement pin: the refusal call sits after emit_lnpl_mlir, so an
+        # overflowing timeout is still reported first.
+        from tests.test_backend import MONEY_GUARD
+        overflow_source = (MONEY_GUARD % "when order.total > order.threshold"
+                           ).replace("timeout 5s", "timeout 100000000000000000d")
+        doc = lower(parse(overflow_source), "money").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        workdir = self._workdir()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir, seeded=frozenset())
+        self.assertNotIn("RFC-0051", str(ctx.exception))
+        self.assertIn("100000000000000000d", str(ctx.exception))
+
+    def test_a_refused_lookup_document_still_leaves_the_module_on_disk(self):
+        # Placement pin: the refusal call sits after the module write.
+        doc = self._doc("    find stock by input.productId")
+        workdir = self._workdir()
+        with self.assertRaises(backend.BackendError):
+            backend.build(doc, "wf.restock", workdir)
+        self.assertTrue(os.path.isfile(
+            os.path.join(workdir, "module.lnpl.mlir")))
+
+    def test_build_and_diff_agree_on_a_money_and_lookup_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "orders.lnpl")
+        from tests.test_backend import LOOKUP_MODULE
+        fields = ("entity Stock\n    field\n        id Text\n"
+                  "        productId Text\n        onHand Integer\n")
+        source = (LOOKUP_MODULE % "    find stock by input.productId").replace(
+            fields, fields + "        price Money\n        limit Money\n"
+        ).replace(
+            "workflow Restock\n    find stock by input.productId\n",
+            "workflow Restock\n    find stock by input.productId\n"
+            "    when stock.price > stock.limit\n    update stock\n")
+        self.assertIn("limit Money", source)
+        self.assertIn("when stock.price > stock.limit", source)
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(source)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
+    def test_build_and_diff_agree_on_a_money_and_numeric_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "money_numeric.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(MONEY_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.approve"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.approve"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
+    def test_build_and_diff_agree_on_a_lookup_and_numeric_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "lookup_numeric.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(LOOKUP_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0052", diff_text)
+        self.assertIn("RFC-0052", build_text)
+
+    def test_build_and_diff_agree_on_a_money_lookup_and_numeric_document(self):
+        # Boundary (design.md D4): all three exemptions in one workflow —
+        # proves the full Money -> lookup -> numeric chain, not only each pair.
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "triple.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(MONEY_LOOKUP_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
+    def test_build_and_emit_mlir_raise_identical_lookup_messages(self):
+        doc = self._doc("    find stock by input.productId")
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as build_ctx:
+            backend.build(doc, "wf.restock", self._workdir())
+        with self.assertRaises(backend.BackendError) as emit_ctx:
+            backend.emit_mlir(doc, "wf.restock")
+        self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_build_and_emit_mlir_raise_identical_money_messages(self):
+        doc, wf = _predicate_money_guard_doc()
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as build_ctx:
+            backend.build(doc, wf, self._workdir())
+        with self.assertRaises(backend.BackendError) as emit_ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_build_refuses_the_numeric_predicate_before_any_toolchain_lookup(self):
+        from tests.test_backend import PREDICATE_WHEN, _predicate_doc
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate is-numeric")
+        workdir = self._workdir()
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir)
+        self.assertIn("RFC-0050", str(ctx.exception))
+
+    def test_build_and_emit_mlir_raise_identical_numeric_messages(self):
+        from tests.test_backend import PREDICATE_WHEN, _predicate_doc
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate is-numeric")
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as build_ctx:
+            backend.build(doc, wf, self._workdir())
+        with self.assertRaises(backend.BackendError) as emit_ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_an_unreachable_numeric_guard_after_an_unseeded_read_still_succeeds(self):
+        # Boundary (design.md D1/D2; issue #186's own counterexample): the
+        # is-numeric guard sits after an unguarded, unseeded `find` that
+        # fails and truncates `_lnpl_ops`'s stream before the guard step is
+        # ever appended to it -- `_render_std` never sees that step, so the
+        # pre-check (walking the SAME truncated stream) must not invent a
+        # refusal a naive whole-document scan would. Two assertions, BOTH
+        # required -- neither alone proves the fix:
+        #   (1) emit_mlir(doc, wf, seeded=frozenset()) still succeeds
+        #   (2) build() on the SAME input, tools hidden, does not newly
+        #       refuse with RFC-0050 -- it still reaches the (hidden)
+        #       toolchain lookup and fails with the ordinary tool-not-found
+        #       text instead
+        doc = lower(parse(PREDICATE_READ_THEN_GUARD), "checkout").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        self.assertTrue(backend.workflow_uses_numeric_predicate(doc, wf))
+        # Assertion 1: emit_mlir succeeds under the truncating seed.
+        text = backend.emit_mlir(doc, wf, seeded=frozenset())
+        self.assertIn("func.func", text)
+        # Assertion 2: build() on the same input does not newly refuse.
+        workdir = self._workdir()
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir, seeded=frozenset())
+        self.assertNotIn("RFC-0050", str(ctx.exception))
+        self.assertIn("mlir-opt", str(ctx.exception))
+
+
 class TestNormaliseSkips(unittest.TestCase):
     """The projection both modes are compared on."""
 
@@ -405,3 +938,325 @@ class TestRestoreSkips(unittest.TestCase):
             self.assertEqual(backend.restore_skips(doc, "wf.checkout",
                                                    {"1", "2", "3"},
                                                    payload=payload), [])
+
+
+
+# RFC-0053 §10: mode B refuses any guard — Presence or comparison — that reads
+# an `optional` field, in `build` and `diff` alike, before any toolchain use.
+OPTIONAL_MODE_B = """capability postgres
+%s
+entity Customer
+    field
+        id UUID
+        score Integer
+        nickname Text optional
+        bonus Integer optional
+
+entity Order
+    field
+        id UUID
+%s
+service CustomerService
+    policy
+        timeout 5s
+
+workflow Greet
+    read customer
+%s
+"""
+
+LEDGER = "\nentity Ledger\n    field\n        id UUID\n        bonus Integer\n"
+
+
+def _optional_doc(body, before="", after=""):
+    doc = lower(parse(OPTIONAL_MODE_B % (before, after, body)), "crm").to_document()
+    return doc, "wf.greet"
+
+
+class TestOptionalGuardExemption(unittest.TestCase):
+
+    _workdir = TestLookupKeyExemption._workdir
+    _forbid_tool = TestLookupKeyExemption._forbid_tool
+
+    def _no_toolchain(self):
+        real = backend.toolchain_available
+        backend.toolchain_available = lambda: False
+        self.addCleanup(setattr, backend, "toolchain_available", real)
+
+    def _verify(self, doc, wf):
+        payload = {"id": "0b6f1c2e-5555-4a2b-9c3d-000000000208"}
+        return differential.verify(doc, wf, payload,
+                                   default_rows(doc, wf, payload), self._workdir())
+
+    def _build_refusal(self, doc, wf):
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, self._workdir(), seeded=frozenset())
+        return str(ctx.exception)
+
+    def _diff_refusal(self, doc, wf):
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        msg = str(ctx.exception)
+        self.assertNotIn("toolchain unavailable", msg)
+        return msg
+
+    def test_build_refuses_presence_on_optional_field(self):
+        doc, wf = _optional_doc("    when customer.nickname exists\n    create order")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("customer.nickname exists", msg)
+        self.assertIn("`optional`", msg)
+        self.assertIn("RFC-0053", msg)
+        self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
+
+    def test_build_refuses_comparison_on_optional_field(self):
+        doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("customer.bonus > 5", msg)
+        self.assertIn("RFC-0053", msg)
+
+    def test_emit_mlir_refuses_too(self):
+        doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertIn("RFC-0053", str(ctx.exception))
+
+    def test_build_refuses_presence_on_optional_create_as_alias(self):
+        doc, wf = _optional_doc(
+            "    create customer as fresh\n    when fresh.bonus exists\n"
+            "    create order")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("fresh.bonus exists", msg)
+        self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
+
+    def test_build_refuses_an_optional_field_only_in_an_or_alternative(self):
+        doc, wf = _optional_doc(
+            "    when customer.score > 1\n    or customer.bonus > 1\n    create order")
+        self.assertIn("customer.bonus > 1", self._build_refusal(doc, wf))
+
+    def test_build_still_builds_guard_on_non_optional_sibling_field(self):
+        doc, wf = _optional_doc("    when customer.score > 5\n    create order")
+        self.assertFalse(backend.workflow_uses_optional_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_diff_refuses_presence_on_optional_field_without_toolchain(self):
+        doc, wf = _optional_doc("    when customer.nickname exists\n    create order")
+        msg = self._diff_refusal(doc, wf)
+        self.assertIn("`optional`", msg)
+        self.assertIn("RFC-0053", msg)
+
+    def test_diff_refuses_comparison_on_optional_field_without_toolchain(self):
+        doc, wf = _optional_doc("    when customer.bonus > 5\n    create order")
+        self.assertIn("RFC-0053", self._diff_refusal(doc, wf))
+
+    def test_mixed_entity_comparison_input_field_refused_both_orders(self):
+        # `Ledger.bonus` is required, `Customer.bonus` optional: the ANY rule
+        # refuses whichever entity is declared last.
+        for before, after in ((LEDGER, ""), ("", LEDGER)):
+            with self.subTest(ledger_first=bool(before)):
+                doc, wf = _optional_doc("    when input.bonus > 5\n    create order",
+                                        before=before, after=after)
+                self.assertTrue(backend.workflow_uses_optional_guard(doc, wf))
+                self.assertIn("RFC-0053", self._build_refusal(doc, wf))
+                self.assertIn("RFC-0053", self._diff_refusal(doc, wf))
+
+    def test_build_with_no_optional_guard_still_builds(self):
+        doc, wf = _optional_doc("    create order")
+        self.assertFalse(backend.workflow_uses_optional_guard(doc, wf))
+        self.assertIn("func.func", backend.emit_mlir(doc, wf))
+
+    def test_diff_with_no_optional_guard_still_diffs(self):
+        # Without a toolchain the ordinary toolchain message comes back —
+        # the exemption is scoped to optional guards.
+        doc, wf = _optional_doc("    when customer.score > 5\n    create order")
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def test_an_unknown_workflow_is_a_backend_error(self):
+        doc, _ = _optional_doc("    create order")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_optional_guard(doc, "wf.nope")
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "crm.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(OPTIONAL_MODE_B % ("", "", "    when customer.nickname exists\n"
+                                                "    create order"))
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.greet"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0053", text)
+                self.assertNotIn("EQUIVALENT", text)
+
+
+# RFC-0054 §Mode B: mode B refuses a guard comparing a Text-family field, in
+# `build` and `diff` alike, LAST among the guard exemptions and before any
+# toolchain use.
+def _text_doc(body):
+    from tests.test_backend import TEXT_GUARD
+    return lower(parse(TEXT_GUARD % body), "shop").to_document(), "wf.cancel"
+
+
+class TestTextGuardExemption(unittest.TestCase):
+
+    _workdir = TestLookupKeyExemption._workdir
+    _forbid_tool = TestLookupKeyExemption._forbid_tool
+    _no_toolchain = TestOptionalGuardExemption._no_toolchain
+    _verify = TestOptionalGuardExemption._verify
+    _build_refusal = TestOptionalGuardExemption._build_refusal
+    _diff_refusal = TestOptionalGuardExemption._diff_refusal
+
+    def test_a_text_guard_is_detected(self):
+        doc, wf = _text_doc("read order\n    when order.status == input.expected")
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_a_text_guard_through_create_as_alias_is_detected(self):
+        doc, wf = _text_doc("create order as fresh\n    when fresh.status != paid")
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_a_workflow_with_no_text_guard_is_not_detected(self):
+        doc, wf = _text_doc("read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_build_refuses_text_equality_without_toolchain(self):
+        doc, wf = _text_doc("read order\n    when order.status == paid")
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("order.status == paid", msg)
+        self.assertIn("RFC-0054", msg)
+
+    def test_diff_refuses_text_equality_without_toolchain(self):
+        doc, wf = _text_doc("read order\n    when order.status == paid")
+        msg = self._diff_refusal(doc, wf)
+        self.assertIn("Text-family", msg)
+        self.assertIn("RFC-0054", msg)
+
+    def test_diff_with_no_text_guard_still_diffs(self):
+        doc, wf = _text_doc("read order\n    when order.stock > 0")
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def test_build_and_diff_refuse_in_the_same_order(self):
+        # The earlier exemptions win in both commands: optional (RFC-0053),
+        # lookup (RFC-0052), then text (RFC-0054) last.
+        optional = lower(parse(OPTIONAL_MODE_B % (
+            "", "", "    when customer.nickname == input.nickname\n"
+                    "    create order")), "crm").to_document()
+        from tests.test_backend import LOOKUP_MODULE
+        lookup = lower(parse(LOOKUP_MODULE % (
+            "    find stock by input.productId\n"
+            "    when stock.productId == p1\n    find stock")),
+            "orders").to_document()
+        for doc, wf, first in ((optional, "wf.greet", "RFC-0053"),
+                               (lookup, "wf.restock", "RFC-0052")):
+            with self.subTest(first=first):
+                self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+                for msg in (self._build_refusal(doc, wf),
+                            self._diff_refusal(doc, wf)):
+                    self.assertIn(first, msg)
+                    self.assertNotIn("RFC-0054", msg)
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_backend import TEXT_GUARD
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "shop.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(TEXT_GUARD % "read order\n    when order.status == paid")
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.cancel"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0054", text)
+                self.assertNotIn("EQUIVALENT", text)
+
+
+# RFC-0056 §Mode B: mode B refuses a workflow reaching `fail`, in `build` and
+# `diff` alike, after every guard exemption and before any toolchain use.
+def _fail_doc(body):
+    from tests.test_backend import TEXT_GUARD
+    return lower(parse(TEXT_GUARD % body), "shop").to_document(), "wf.cancel"
+
+
+FAIL_BODY = "read order\n    when order.stock < 1\n    fail out-of-stock"
+
+
+class TestFailExemption(unittest.TestCase):
+
+    _workdir = TestLookupKeyExemption._workdir
+    _forbid_tool = TestLookupKeyExemption._forbid_tool
+    _no_toolchain = TestOptionalGuardExemption._no_toolchain
+    _verify = TestOptionalGuardExemption._verify
+    _build_refusal = TestOptionalGuardExemption._build_refusal
+    _diff_refusal = TestOptionalGuardExemption._diff_refusal
+
+    def test_build_refuses_fail_without_toolchain(self):
+        doc, wf = _fail_doc(FAIL_BODY)
+        msg = self._build_refusal(doc, wf)
+        self.assertIn("fail out-of-stock", msg)
+        self.assertIn("RFC-0056", msg)
+
+    def test_diff_refuses_fail_without_toolchain(self):
+        doc, wf = _fail_doc(FAIL_BODY)
+        msg = self._diff_refusal(doc, wf)
+        self.assertIn("`fail`", msg)
+        self.assertIn("RFC-0056", msg)
+
+    def test_diff_with_no_fail_still_diffs(self):
+        doc, wf = _fail_doc("read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_fail(doc, wf))
+        self._no_toolchain()
+        with self.assertRaises(differential.DifferentialError) as ctx:
+            self._verify(doc, wf)
+        self.assertIn("toolchain unavailable", str(ctx.exception))
+
+    def test_build_and_diff_refuse_in_the_same_order(self):
+        # Every guard exemption wins over `fail` in both commands.
+        text = _fail_doc("read order\n    when order.status == paid\n"
+                         "    fail already-paid")
+        optional = _optional_doc("    when customer.nickname exists\n"
+                                 "    fail nickname-taken")
+        for (doc, wf), first in ((text, "RFC-0054"), (optional, "RFC-0053")):
+            with self.subTest(first=first):
+                self.assertTrue(backend.workflow_uses_fail(doc, wf))
+                for msg in (self._build_refusal(doc, wf),
+                            self._diff_refusal(doc, wf)):
+                    self.assertIn(first, msg)
+                    self.assertNotIn("RFC-0056", msg)
+
+    def test_fail_wins_over_the_numeric_predicate_in_both_commands(self):
+        # Issue #185: the numeric-shape predicate is checked LAST in both
+        # `build` and `diff`, so a workflow also reaching `fail` names
+        # RFC-0056 from both, never RFC-0050 from one of them.
+        doc, wf = _fail_doc("read order\n    when order.stock is-numeric\n"
+                            "    note \"flagged\"\n"
+                            "    when order.stock < 1\n    fail out-of-stock")
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        self.assertTrue(backend.workflow_uses_numeric_predicate(doc, wf))
+        for msg in (self._build_refusal(doc, wf), self._diff_refusal(doc, wf)):
+            self.assertIn("RFC-0056", msg)
+            self.assertNotIn("RFC-0050", msg)
+
+    def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
+        from tests.test_backend import TEXT_GUARD
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "shop.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(TEXT_GUARD % FAIL_BODY)
+        for cmd in ("diff", "build"):
+            with self.subTest(cmd=cmd):
+                rc, text = run_cli_err([cmd, src, "--workdir", workdir,
+                                        "--workflow", "wf.cancel"])
+                self.assertEqual(rc, 4, text)
+                self.assertIn("RFC-0056", text)
+                self.assertNotIn("EQUIVALENT", text)

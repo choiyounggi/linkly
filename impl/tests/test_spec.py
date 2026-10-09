@@ -453,6 +453,69 @@ class TestErrorExpectation(unittest.TestCase):
             run_shop(["valid product"], ["error wobbled"])
 
 
+# RFC-0056 / issue #206: the issue's own spec, with `fail out-of-stock`
+# declared. `expect failed` + `error reason` contract it with no new syntax.
+RESERVE_SPEC_SRC = """entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+    spec
+        given
+%s
+        when
+            reserve
+        expect
+%s
+"""
+
+
+def run_reserve(given, expect):
+    return run_shop_src(RESERVE_SPEC_SRC, given, expect)
+
+
+class TestDeclaredRejectionIsContractable(unittest.TestCase):
+
+    def test_the_issue_spec_passes(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"],
+            ["failed", "error reason out-of-stock",
+             "error step fail out-of-stock"])
+        # one count per expectation line
+        self.assertEqual((3, 0), (passed, failed), lines)
+
+    def test_expecting_completed_on_a_rejection_fails(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"], ["completed"])
+        self.assertEqual((0, 1), (passed, failed), lines)
+
+    def test_a_different_code_does_not_match(self):
+        passed, failed, lines = run_reserve(
+            ["stored product stock 1", "input.quantity 5"],
+            ["failed", "error reason over-limit"])
+        self.assertEqual((1, 1), (passed, failed), lines)
+
+    def test_enough_stock_completes_and_no_reason_exists(self):
+        # Boundary: stock == quantity skips the `fail`; asserting a reason on a
+        # run that did not fail must fail, never match vacuously.
+        passed, failed, lines = run_reserve(
+            ["stored product stock 5", "input.quantity 5"], ["completed"])
+        self.assertEqual((1, 0), (passed, failed), lines)
+        passed, failed, lines = run_reserve(
+            ["stored product stock 5", "input.quantity 5"],
+            ["error reason out-of-stock"])
+        self.assertEqual((0, 1), (passed, failed), lines)
+
+
 class TestEffectsExpectation(unittest.TestCase):
     """`effects <N>` — the total observable effect count.
 
@@ -646,6 +709,52 @@ def run_shop_src(src, given, expect):
     return run_manifest(extract(decls, "shop"), doc)
 
 
+LOOKUP_SPEC_SRC = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service StockService
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    spec
+        given
+            input.id O1
+            input.productId P1
+            stored stock onHand 7
+        when
+            restock
+        expect
+            completed
+            result stock.onHand == 7
+"""
+
+
+class TestLookupKeyGiven(unittest.TestCase):
+    """issue #175 / RFC-0052 §4: a spec case seeds through `default_rows`, so
+    a single-row `given` for an entity first read `by input.<field>` lands
+    under that field's value — the key the read addresses — even though the
+    case's own `id` is different. `stored` then overrides that row."""
+
+    def test_a_by_input_read_finds_the_given_row_and_expect_result_reads_it(self):
+        decls = parse(LOOKUP_SPEC_SRC)
+        doc = lower(decls, "stock").to_document()
+        passed, failed, lines = run_manifest(extract(decls, "stock"), doc)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2, lines)
+
+    def test_a_wrong_expectation_on_that_row_still_fails(self):
+        src = LOOKUP_SPEC_SRC.replace("result stock.onHand == 7",
+                                      "result stock.onHand == 8")
+        decls = parse(src)
+        doc = lower(decls, "stock").to_document()
+        passed, failed, lines = run_manifest(extract(decls, "stock"), doc)
+        self.assertEqual(failed, 1, lines)
+
+
 class TestNoOpStepFailsTheSpec(unittest.TestCase):
     """`effects complete` — every step that ran performed at least one Effect.
 
@@ -785,6 +894,35 @@ class TestNoteExcludedFromEffectsCount(unittest.TestCase):
         self.assertTrue(any("note " in l for l in lines), lines)
 
 
+# issue #178: emit ... with maps the payload from a create-as binding and the
+# run's input, instead of the raw masked input SHOP's plain `emit orderPlaced`
+# already covers (TestEventExpectation, unchanged).
+SHOP_WITH_MAPPED_EMIT = SHOP.replace(
+    "    create order\n    emit orderPlaced\n",
+    "    create order as newOrder\n"
+    "    emit orderPlaced with newOrder.id input.stock\n")
+
+
+class TestEmittedPayloadMapping(unittest.TestCase):
+    """issue #178: `emitted ... payload ... exists` against a
+    `with`-mapped payload — no spec.py code change, `_expect_emitted`
+    already reads `e["payload"].get(field)` generically."""
+
+    def test_mapped_fields_are_assertable(self):
+        passed, failed, lines = run_shop_src(
+            SHOP_WITH_MAPPED_EMIT, ["valid product"],
+            ["emitted OrderPlaced payload id exists",
+             "emitted OrderPlaced payload stock exists"])
+        self.assertEqual(failed, 0, lines)
+
+    def test_an_unmapped_field_is_missing(self):
+        # Boundary: SHOP's Order.total is never in this with-clause.
+        passed, failed, lines = run_shop_src(
+            SHOP_WITH_MAPPED_EMIT, ["valid product"],
+            ["emitted OrderPlaced payload total missing"])
+        self.assertEqual(failed, 0, lines)
+
+
 class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
     """`lnpl spec` reports compile diagnostics like `compile` and `run` do.
 
@@ -814,3 +952,256 @@ class TestSpecCommandSurfacesDiagnostics(unittest.TestCase):
                       "`lnpl spec` must report that a step derives no Effect; "
                       "got %r" % err.getvalue())
         self.assertIn("ponder", err.getvalue())
+
+
+def _f5_spec_source():
+    """The F-5 program (issue #177) with three spec cases appended —
+    derived from the shared fixture, not a copy of it."""
+    from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+    return F5_SOURCE + """    spec
+        given
+            call Fx returns 200 body.rate 1350
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-numeric
+
+    spec
+        given
+            call Fx returns 200 body.rate abc
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-numeric
+
+    spec
+        given
+            call Fx returns 200 body.rate abc
+        when
+            convert
+        expect
+            completed
+            result fxResult.rate is-not-numeric
+"""
+
+
+class TestExpectResultWithNumericPredicate(unittest.TestCase):
+    """RFC-0050 / issue #177: `expect result <ref> is-numeric` runs through
+    the shared `_condition_holds` evaluator — no spec.py change."""
+
+    def setUp(self):
+        decls = parse(_f5_spec_source())
+        self.doc = lower(decls, "fx").to_document()
+        self.cases = extract(decls, "fx")["cases"]
+
+    def _run(self, index):
+        return run_manifest({"spec_version": "0.1", "module": "fx",
+                             "cases": [self.cases[index]]}, self.doc)
+
+    def test_a_numeric_rate_passes_the_expectation(self):
+        passed, failed, lines = self._run(0)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2)
+
+    def test_a_non_numeric_rate_fails_the_positive_expectation(self):
+        passed, failed, lines = self._run(1)
+        self.assertEqual(failed, 1, lines)
+        self.assertEqual(passed, 1, "`completed` still holds — no RunError")
+        self.assertIn("fxResult.rate is-numeric", "\n".join(lines))
+
+    def test_a_non_numeric_rate_passes_the_negative_expectation(self):
+        passed, failed, lines = self._run(2)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 2)
+
+
+CANCEL_SPEC = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+        qty Integer
+        cap Integer
+service OrderService
+    policy
+        retry 0
+workflow CancelOrder
+    find order
+    when order.status != cancelled
+    format order.status from "cancelled"
+    update order
+    spec
+        given
+%s
+        when
+            cancel order
+        expect
+%s
+"""
+
+
+def run_cancel(given, expect):
+    src = CANCEL_SPEC % ("\n".join("            " + g for g in given),
+                         "\n".join("            " + e for e in expect))
+    decls = parse(src)
+    return run_manifest(extract(decls, "shop"), lower(decls, "shop").to_document())
+
+
+class TestResultTextEquality(unittest.TestCase):
+    """RFC-0054: `result <ref> ==/!= <value>` compares a Text-family field —
+    a bare name paired with it is a literal, as in a guard."""
+
+    def test_spec_result_text_equality_passes(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status pending"],
+            ["completed", "result order.status == cancelled",
+             "result order.status != pending"])
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 3, lines)
+
+    def test_spec_result_text_equality_fails(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status pending"],
+            ["result order.status == pending"])
+        self.assertEqual(failed, 1, lines)
+        text = "\n".join(lines)
+        self.assertIn("order.status == pending", text)
+        self.assertNotIn("non-numeric", text)
+
+    def test_the_guard_skip_leaves_the_status_and_the_spec_sees_it(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status paid"],
+            ["result order.status == cancelled"])
+        self.assertEqual(failed, 0, lines)
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status cancelled"],
+            ["result order.status == cancelled"])
+        self.assertEqual(failed, 0, lines)
+
+    def test_spec_result_bare_name_pairing_matches_guard_semantics(self):
+        # Two bare Integer payload names stay a numeric comparison.
+        passed, failed, lines = run_cancel(
+            ["valid order", "qty 3", "cap 3"], ["result qty == cap"])
+        self.assertEqual(failed, 0, lines)
+        passed, failed, lines = run_cancel(
+            ["valid order", "qty 3", "cap 4"], ["result qty == cap"])
+        self.assertEqual(failed, 1, lines)
+
+    def test_an_absent_text_field_is_false(self):
+        passed, failed, lines = run_cancel(
+            ["valid order", "stored order status pending"],
+            ["result order.nosuch == cancelled"])
+        self.assertEqual(failed, 1, lines)
+
+    def test_a_text_field_against_a_number_is_refused(self):
+        with self.assertRaises(SpecError) as caught:
+            run_cancel(["valid order", "stored order status pending"],
+                       ["result order.status == 5"])
+        self.assertIn("Text-family", str(caught.exception))
+
+
+# RFC-0055 §9: `spec` pins the run's fill-source values with `given run.*`.
+FILL_PIN_ID = "00000000-0000-4000-8000-000000000057"
+FILL_PIN_AT = "2030-01-02T03:04:05.006Z"
+FILL_SRC = """entity AuditEntry
+    field
+        id UUID derived generated
+        at DateTime derived clock
+        action Text
+
+entity Probe
+    field
+        id UUID
+        expectedAt DateTime
+
+service AuditService
+
+workflow Record
+    create auditentry as a
+    respond a.action
+    spec
+        given
+{given}
+        when
+            record
+        expect
+            completed
+            rows AuditEntry 1
+            result a.id exists
+            result a.at == input.expectedAt
+"""
+FILL_GIVEN = ("            action login\n"
+              "            run.generated %s\n"
+              "            run.clock %s\n"
+              "            input.expectedAt %s" % (FILL_PIN_ID, FILL_PIN_AT,
+                                                  FILL_PIN_AT))
+
+
+def fill_build(given=FILL_GIVEN):
+    decls = parse(FILL_SRC.format(given=given))
+    return lower(decls, "audit").to_document(), extract(decls, "audit")
+
+
+class TestFillSourcePinning(unittest.TestCase):
+
+    def run_capturing(self, doc, manifest):
+        """run_manifest, keeping each case's Interpreter to read the store."""
+        import lnpl.spec as spec_mod
+        made = []
+        real = spec_mod.Interpreter
+
+        def capture(*args, **kwargs):
+            made.append(real(*args, **kwargs))
+            return made[-1]
+        spec_mod.Interpreter = capture
+        try:
+            return run_manifest(manifest, doc), made
+        finally:
+            spec_mod.Interpreter = real
+
+    def test_spec_pins_both_fill_source_markers(self):
+        doc, manifest = fill_build()
+        (passed, failed, lines), made = self.run_capturing(doc, manifest)
+        self.assertEqual(failed, 0, lines)
+        self.assertEqual(passed, 4)
+        rows = made[0].repo.rows["entity.audit.entry"]
+        self.assertEqual(list(rows), ["entity.audit.entry#" + FILL_PIN_ID])
+        row = rows["entity.audit.entry#" + FILL_PIN_ID]
+        self.assertEqual((row["id"], row["at"]), (FILL_PIN_ID, FILL_PIN_AT))
+        # Deterministic: the same manifest twice gives byte-identical output.
+        (_p, _f, again), made2 = self.run_capturing(doc, manifest)
+        self.assertEqual(lines, again)
+        self.assertEqual(made2[0].repo.rows["entity.audit.entry"], rows)
+
+    def test_an_unpinned_generated_id_fails_the_case_naming_the_given(self):
+        given = "\n".join(g for g in FILL_GIVEN.splitlines()
+                          if "run.generated" not in g)
+        doc, manifest = fill_build(given)
+        passed, failed, lines = run_manifest(manifest, doc)
+        self.assertEqual((passed, failed), (0, 1))
+        self.assertTrue(any("run.generated" in x and "id" in x for x in lines),
+                        lines)
+
+    def test_an_unpinned_clock_runs_on_the_virtual_clock(self):
+        # Boundary: `derived clock` needs no pin — the virtual clock is
+        # deterministic, so the run reads 1970-01-01 at its start.
+        given = "\n".join(g for g in FILL_GIVEN.splitlines()
+                          if "run.clock" not in g).replace(
+            FILL_PIN_AT, "1970-01-01T00:00:00.000Z")
+        doc, manifest = fill_build(given)
+        passed, failed, lines = run_manifest(manifest, doc)
+        self.assertEqual(failed, 0, lines)
+
+    def test_a_malformed_run_given_is_refused_at_extraction(self):
+        for line, fragment in (("run.generated not-a-uuid", "run.generated"),
+                               ("run.clock 2030-01-02", "run.clock"),
+                               ("run.bogus x", "run.generated")):
+            with self.subTest(line=line):
+                with self.assertRaises(SpecError) as ctx:
+                    fill_build("            action login\n            " + line)
+                self.assertIn(fragment, str(ctx.exception))

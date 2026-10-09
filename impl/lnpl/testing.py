@@ -63,7 +63,9 @@ import base64
 import json
 import os
 
-from lnpl.drivers import DriverError, TokenError
+from lnpl.cli import _relay_drain_once_via_publisher
+from lnpl.drivers import (ConflictError, DriverError, TokenError,
+                          WriteConflictError)
 from lnpl.generators import GeneratorError, run_generator
 
 
@@ -128,6 +130,19 @@ class RepositoryDriverTCK:
         self.driver.execute("widget", "delete", "w5")
 
         self.assertIsNone(self.driver.execute("widget", "read", "w5"))
+
+    def test_deleting_an_absent_row_reports_affected_zero(self):
+        result = self.driver.execute("widget", "delete", "no-such-row")
+        self.assertEqual(result, {"affected": 0})
+
+    def test_deleting_one_row_leaves_other_rows_of_the_same_entity_untouched(self):
+        self.driver.execute("widget", "create", "w6")
+        self.driver.execute("widget", "create", "w7")
+
+        self.driver.execute("widget", "delete", "w6")
+
+        self.assertIsNone(self.driver.execute("widget", "read", "w6"))
+        self.assertIsNotNone(self.driver.execute("widget", "read", "w7"))
 
     # -- query -------------------------------------------------------------
 
@@ -303,6 +318,28 @@ class RepositoryDriverTCK:
             self.driver.execute("widget", "read", "w-tx-outbox"))
         self.assertEqual(self.driver.read_outbox("widget.created"), [])
 
+    def test_rollback_discards_a_delete_made_inside_the_transaction(self):
+        """issue #183: two assertions, each proving a different thing
+        (design.md D3/D4). The mid-transaction read, right after the
+        delete and before rollback, finding nothing is what makes this a
+        real regression test of the Fake's delete fix itself -- against
+        today's Fake (which never actually removes a row on delete),
+        THIS assertion fails. The post-rollback read finding the row
+        again is what `impl/tests/test_driver_contract.py`'s
+        `RollbackTCKDiscriminatesTest` class (Task 02 of this plan) proves
+        discriminating, with two new methods reusing this same case name
+        against `_NoOpRollbackDriver` (fails) and `SqliteRepositoryDriver`
+        (passes)."""
+        self.driver.seed({"widget": {"w-tx-delete": {"id": "w-tx-delete", "n": 1}}})
+        self.driver.begin()
+        self.driver.execute("widget", "delete", "w-tx-delete")
+
+        self.assertIsNone(self.driver.execute("widget", "read", "w-tx-delete"))
+
+        self.driver.rollback()
+
+        self.assertIsNotNone(self.driver.execute("widget", "read", "w-tx-delete"))
+
     def test_a_nested_begin_is_refused(self):
         self.driver.begin()
 
@@ -338,6 +375,118 @@ class RepositoryDriverTCK:
         # attempt above never reached the row.
         self.assertEqual(
             self.driver.execute("widget", "read", "w-v1")["n"], 1)
+
+    def test_a_stale_write_raises_the_typed_write_conflict_error(self):
+        """Issue #201: the conflict is told apart by TYPE, not by message
+        text — a driver opts in by raising `WriteConflictError`, a sibling
+        of the create-conflict `ConflictError`, never a subclass of it."""
+        self.driver.seed({"widget": {"w-v3": {"id": "w-v3", "n": 0}}})
+        first_read = self.driver.execute("widget", "read", "w-v3")
+        if not hasattr(first_read, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        second_driver = self.make_driver()
+        self.addCleanup(second_driver.close)
+        stolen = second_driver.execute("widget", "read", "w-v3")
+        stolen["n"] = 1
+        second_driver.persist("widget", "w-v3", stolen)
+
+        first_read["n"] = first_read["n"] + 1
+        with self.assertRaises(WriteConflictError) as caught:
+            self.driver.persist("widget", "w-v3", first_read)
+        self.assertNotIsInstance(caught.exception, ConflictError)
+
+    def test_two_consecutive_persists_on_one_read_row_both_succeed(self):
+        self.driver.seed({"widget": {"w-v2": {"id": "w-v2", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-v2")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        row["n"] = 1
+        self.driver.persist("widget", "w-v2", row)
+        row["n"] = 2
+        self.driver.persist("widget", "w-v2", row)
+
+        self.assertEqual(self.driver.execute("widget", "read", "w-v2")["n"], 2)
+
+    def test_set_update_set_update_on_one_read_row_all_persist(self):
+        """Issue #182: `update` bumps `_version` without advancing the
+        bound row's `observed_version` on a driver that does not account
+        for it — this pins the fix. All four steps on ONE bound row, in
+        one run, must land."""
+        self.driver.seed({"widget": {"w-v4": {"id": "w-v4", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-v4")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        row["n"] = 1
+        self.driver.persist("widget", "w-v4", row)
+        self.driver.execute("widget", "update", "w-v4")
+        row["n"] = 2
+        self.driver.persist("widget", "w-v4", row)
+        self.driver.execute("widget", "update", "w-v4")
+
+        self.assertEqual(self.driver.execute("widget", "read", "w-v4")["n"], 2)
+
+    def test_a_write_from_another_run_after_this_runs_update_still_conflicts(self):
+        """Issue #182, scenario (a): this run's own `update` (and the
+        bookkeeping that advances its bound row's `observed_version`)
+        must not make a LATER, genuinely external write invisible. A
+        second, independent handle writes after this run's `update`;
+        this run's own `persist` on its original binding must still
+        raise."""
+        self.driver.seed({"widget": {"w-x1": {"id": "w-x1", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-x1")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        self.driver.execute("widget", "update", "w-x1")
+
+        second_driver = self.make_driver()
+        self.addCleanup(second_driver.close)
+        stolen = second_driver.execute("widget", "read", "w-x1")
+        stolen["n"] = 1
+        second_driver.persist("widget", "w-x1", stolen)
+
+        row["n"] = row["n"] + 1
+        with self.assertRaises(DriverError) as caught:
+            self.driver.persist("widget", "w-x1", row)
+        self.assertIn("conflict", str(caught.exception))
+
+    def test_a_write_from_another_run_before_this_runs_update_still_conflicts(self):
+        """Issue #182, scenario (b): a genuinely external write that
+        landed BEFORE this run's own `update` must still be caught when
+        this run later tries to `persist` its original binding —
+        `update`'s own version bump must never let this run's
+        bookkeeping advance PAST what the external write actually left
+        behind."""
+        self.driver.seed({"widget": {"w-x2": {"id": "w-x2", "n": 0}}})
+        row = self.driver.execute("widget", "read", "w-x2")
+        if not hasattr(row, "observed_version"):
+            self.skipTest(
+                "driver does not opt into optimistic version conflicts "
+                "(no observed_version on a read result)")
+
+        second_driver = self.make_driver()
+        self.addCleanup(second_driver.close)
+        stolen = second_driver.execute("widget", "read", "w-x2")
+        stolen["n"] = 1
+        second_driver.persist("widget", "w-x2", stolen)
+
+        self.driver.execute("widget", "update", "w-x2")
+
+        row["n"] = row["n"] + 1
+        with self.assertRaises(DriverError) as caught:
+            self.driver.persist("widget", "w-x2", row)
+        self.assertIn("conflict", str(caught.exception))
 
 
 class CacheDriverTCK:
@@ -403,6 +552,201 @@ class CacheDriverTCK:
         self.cache.invalidate("k6")
 
         self.assertIsNone(self.cache.get("k6"))
+
+
+_TCK_EVENT_NAMES = {"event.tck.emitted": "TckEmitted"}
+
+
+class _TckOutbox:
+    """Minimal outbox fixture EventPublisherTCK owns itself -- not a
+    RepositoryDriver, just the two methods
+    `_relay_drain_once_via_publisher` calls."""
+
+    def __init__(self, rows):
+        self._rows = {r["seq"]: dict(r, delivered=False) for r in rows}
+
+    def drain_outbox(self):
+        return [dict(r) for r in self._rows.values() if not r["delivered"]]
+
+    def ack_outbox(self, seqs):
+        for s in seqs:
+            self._rows[s]["delivered"] = True
+
+
+class EventPublisherTCK:
+    """Mix into a `unittest.TestCase` subclass, override
+    `make_publisher()` -- see `EventPublisher`'s docstring (`lnpl.
+    drivers`) for the contract. Tests the SAME drain-publish-ack glue
+    `cmd_relay` calls in production (`cli._relay_drain_once_via_publisher`,
+    imported above), against a tiny outbox fixture this TCK owns
+    itself -- no real `RepositoryDriver` needed.
+
+    `make_publisher(fail_ids)` must return a fresh publisher that raises
+    `DriverError` from `publish` for every envelope whose `id` is in
+    `fail_ids`, and that exposes `published`: the list of confirmed
+    envelope ids, in publish order (the ordering case reads it). A driver
+    backed by a real broker supplies both through a test-only wrapper.
+    """
+
+    DRAIN_ONCE = staticmethod(_relay_drain_once_via_publisher)
+
+    def make_publisher(self, fail_ids=frozenset()):
+        raise NotImplementedError(
+            "EventPublisherTCK subclasses must override make_publisher() "
+            "to return a fresh EventPublisher, honoring fail_ids")
+
+    def test_publish_then_ack(self):
+        repo = _TckOutbox([{"seq": 1, "event": "event.tck.emitted",
+                            "payload": {"x": 1}}])
+        publisher = self.make_publisher()
+
+        acked = self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck", publisher)
+
+        self.assertEqual(acked, 1)
+        self.assertEqual(repo.drain_outbox(), [])
+
+    def test_failure_leaves_the_row_unacked(self):
+        repo = _TckOutbox([{"seq": 1, "event": "event.tck.emitted",
+                            "payload": {"x": 1}}])
+        publisher = self.make_publisher(fail_ids={"outbox-1"})
+
+        acked = self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck", publisher)
+
+        self.assertEqual(acked, 0)
+        self.assertEqual(len(repo.drain_outbox()), 1)
+
+    def test_a_restart_republishes_the_unacked_row(self):
+        repo = _TckOutbox([{"seq": 1, "event": "event.tck.emitted",
+                            "payload": {"x": 1}}])
+        self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck",
+                        self.make_publisher(fail_ids={"outbox-1"}))
+
+        acked = self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck",
+                                self.make_publisher())
+
+        self.assertEqual(acked, 1)
+        self.assertEqual(repo.drain_outbox(), [])
+
+    def test_ordering_preserved(self):
+        repo = _TckOutbox([
+            {"seq": 1, "event": "event.tck.emitted", "payload": {}},
+            {"seq": 2, "event": "event.tck.emitted", "payload": {}},
+            {"seq": 3, "event": "event.tck.emitted", "payload": {}}])
+        publisher = self.make_publisher()
+
+        self.DRAIN_ONCE(repo, _TCK_EVENT_NAMES, "tck", publisher)
+
+        self.assertEqual(publisher.published,
+                         ["outbox-1", "outbox-2", "outbox-3"])
+
+
+class SecretProviderTCK:
+    """Mix into a `unittest.TestCase` subclass and override the three hooks
+    -- see `SecretProvider`'s docstring (`lnpl.drivers`, issue #192) for
+    the contract::
+
+        import unittest
+        from lnpl.testing import SecretProviderTCK
+
+        class MyVaultTCKTest(SecretProviderTCK, unittest.TestCase):
+            def make_provider(self, initial):
+                return MyVaultProvider(...)   # TCK_KEY holds `initial`
+
+            def rotate(self, provider, new_value):
+                ...                           # test-only: write a new version
+
+            def break_provider(self, provider):
+                ...                           # test-only: make reads fail
+
+    `make_provider(initial)` returns a fresh provider whose `TCK_KEY`
+    currently holds `initial` and has no previous value. `rotate` makes
+    `new_value` current and the old current value the previous one.
+    `break_provider` makes every later `get`/`get_previous` raise
+    `DriverError`. A driver backed by a real store supplies the two
+    test-only hooks through a test wrapper.
+    """
+
+    TCK_KEY = "lnpl-tck-key"
+    TCK_UNKNOWN_KEY = "lnpl-tck-unknown-key"
+    TCK_VALUE_0 = b"lnpl-tck-secret-value-0-" + b"0" * 16
+    TCK_VALUE_1 = b"lnpl-tck-secret-value-1-" + b"1" * 16
+    TCK_VALUE_2 = b"lnpl-tck-secret-value-2-" + b"2" * 16
+
+    def make_provider(self, initial):
+        raise NotImplementedError(
+            "SecretProviderTCK subclasses must override make_provider() "
+            "to return a fresh SecretProvider whose TCK_KEY holds `initial`")
+
+    def rotate(self, provider, new_value):
+        raise NotImplementedError(
+            "SecretProviderTCK subclasses must override rotate() to make "
+            "`new_value` current and the old current value previous")
+
+    def break_provider(self, provider):
+        raise NotImplementedError(
+            "SecretProviderTCK subclasses must override break_provider() "
+            "so that later get/get_previous raise DriverError")
+
+    def _provider(self, initial):
+        provider = self.make_provider(initial)
+        self.addCleanup(provider.close)
+        return provider
+
+    def test_get_returns_the_configured_bytes(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        value = provider.get(self.TCK_KEY)
+
+        self.assertIsInstance(value, bytes)
+        self.assertEqual(value, self.TCK_VALUE_0)
+        self.assertGreaterEqual(len(value), 32)
+
+    def test_get_previous_is_none_before_any_rotation(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.assertIsNone(provider.get_previous(self.TCK_KEY))
+
+    def test_rotation_moves_current_to_previous(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.rotate(provider, self.TCK_VALUE_1)
+
+        self.assertEqual(provider.get(self.TCK_KEY), self.TCK_VALUE_1)
+        self.assertEqual(provider.get_previous(self.TCK_KEY), self.TCK_VALUE_0)
+
+    def test_a_second_rotation_keeps_only_one_previous(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.rotate(provider, self.TCK_VALUE_1)
+        self.rotate(provider, self.TCK_VALUE_2)
+
+        self.assertEqual(provider.get(self.TCK_KEY), self.TCK_VALUE_2)
+        self.assertEqual(provider.get_previous(self.TCK_KEY), self.TCK_VALUE_1)
+
+    def test_an_unknown_key_raises_driver_error(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        with self.assertRaises(DriverError):
+            provider.get(self.TCK_UNKNOWN_KEY)
+        with self.assertRaises(DriverError):
+            provider.get_previous(self.TCK_UNKNOWN_KEY)
+
+    def test_a_broken_provider_raises_driver_error(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        self.break_provider(provider)
+
+        with self.assertRaises(DriverError):
+            provider.get(self.TCK_KEY)
+        with self.assertRaises(DriverError):
+            provider.get_previous(self.TCK_KEY)
+
+    def test_close_is_idempotent(self):
+        provider = self._provider(self.TCK_VALUE_0)
+
+        provider.close()
+
+        self.assertIsNone(provider.close())
 
 
 NETWORK_TCK_TARGET = "TckTarget"

@@ -24,6 +24,15 @@ CHANGELOG, 릴리스 노트 본문)와, 자동화가 실패했을 때의 로컬 
    바꾼다(0.x이므로 [docs/compatibility.md](compatibility.md)의 breaking
    여부와 무관하게 minor 자리를 올려 왔다 — 지금까지의 실제 이력).
 
+   릴리스 태그를 push한 직후, `main`의 버전을 다음 릴리스를 가리키는
+   `X.Y.(Z+1).dev0`로 올려 두는 것을 권장한다(예: `v0.8.0` 태그 뒤
+   `0.9.0.dev0`) -- 태그와 태그 사이의 모든 빌드가 직전 릴리스와 같은
+   버전 문자열을 내는 것을 막는다(issue #205). `.dev0` 접미사가 붙어도
+   네 지점(`pyproject.toml`/`impl/lnpl/__init__.py`/`plugins/*/plugin.json`/
+   `marketplace.json`) 모두 같은 한 문자열이면 되므로 `scripts/
+   check_version_sync.py`는 그대로 통과한다. 이 절차 자체는 현재 범위
+   밖이다 -- 이번 태스크는 권장 문구만 남긴다.
+
 3. **`CHANGELOG.md`를 갱신한다.** `## [Unreleased]`의 내용을 새
    `## [x.y.z] — <발행일>` 절로 옮기고(제목·날짜는 5단계에서 만들 GitHub
    Release와 맞춘다), 각 항목이 어느 이슈/PR을 닫는지 남긴다. breaking
@@ -40,9 +49,37 @@ CHANGELOG, 릴리스 노트 본문)와, 자동화가 실패했을 때의 로컬 
    git push origin vX.Y.Z
    ```
    `release.yml`이 게이트 재실행 → `python -m build`로 sdist+wheel 빌드 →
-   `gh release create`까지 수행한다. PyPI 발행은 아직 비활성이다(워크플로의
-   `publish-pypi` 잡 주석 참고 — Trusted Publisher 미등록, 사용자 결정으로
-   이번 단계 범위 밖). 자동화가 실패하면 수동으로:
+   `gh release create`까지 수행한다. 같은 태그 push가 `image` 잡도 깨운다
+   (issue #190): `docker/Dockerfile`로 런타임 전용 이미지를 빌드하고,
+   마운트한 소스로 `/-/healthz` 200을 받는 스모크를 통과한 뒤에만
+   `ghcr.io/<owner>/linkly`에 `vX.Y.Z`와 `X.Y` 두 태그로 push한다
+   (`latest`는 올리지 않는다). 베이스 이미지는 digest로 고정되어 있고,
+   SBOM·provenance attestation이 함께 올라간다. 이 이미지는 코어
+   런타임만 담는다 — `postgres`·`redis`·`otel` 드라이버
+   (`lnpl-postgres`·`lnpl-redis`·`lnpl-otel`,
+   [README.md](../README.md)의 "Real backend drivers" 절)는 기본
+   이미지에 넣지 않고 사용자가 파생 이미지로 얹는 방식을 권장한다
+   (issue #190 본문). 세 드라이버 모두 아직 PyPI에 없다(2026-10-05
+   확인) — GitHub 소스 아카이브에서 설치한다:
+   ```dockerfile
+   FROM ghcr.io/<owner>/linkly@sha256:<digest>
+   USER root
+   RUN pip install --no-cache-dir --no-deps \
+         "https://github.com/choiyounggi/lnpl-postgres/archive/refs/heads/main.tar.gz" \
+       && pip install --no-cache-dir "psycopg[binary]>=3.2,<3.3"
+   USER linkly
+   ```
+   `--no-deps`가 필수다: `lnpl-postgres`의 `pyproject.toml`이 `lnpl`
+   의존성을 linkly의 특정 git 커밋으로 고정해 둬서, 그대로 두면 pip가
+   이미지에 이미 설치된 `lnpl` 휠을 그 커밋으로 재설치하려
+   한다(이 슬림 베이스에는 `git`도 없어 그 자체로 실패한다).
+   `psycopg[binary]` 버전은 `lnpl-postgres`가 요구하는 범위
+   (`>=3.2,<3.3`)로 맞춘다 — 비워 두면 최신 3.3.x가 설치되어 의존성
+   충돌 경고가 난다. 위 레시피는 로컬에서 실측했다(`docker build`
+   성공, 설치 후 `lnpl` 버전 불변, `/-/healthz` 여전히 200). PyPI
+   발행은 아직 비활성이다(워크플로의 `publish-pypi` 잡 주석 참고 —
+   Trusted Publisher 미등록, 사용자 결정으로 이번 단계 범위 밖).
+   자동화가 실패하면 수동으로:
    ```
    gh release create vX.Y.Z --title "linkly vX.Y.Z — <한 줄 테마>" \
      --notes-file <CHANGELOG.md의 해당 절에서 뽑은 본문>
@@ -54,7 +91,9 @@ CHANGELOG, 릴리스 노트 본문)와, 자동화가 실패했을 때의 로컬 
 
 ## 참고
 
-- 배치·컨테이너 이미지 절차는 릴리스 절차와 별개다 —
+- 컨테이너 이미지는 이제 `release.yml`의 `image` 잡이 같은 태그 push로
+  발행한다(위 5단계, issue #190) — 운영 배치 매니페스트(k8s·nginx TLS
+  등)는 여전히 릴리스 절차와 별개다:
   [examples/deploy/README.md](../examples/deploy/README.md)를 본다.
 - 과거 5개 릴리스(v0.1.0–v0.5.0)의 소급 CHANGELOG 작성 근거는
   `gh release view <tag>`이며, [CHANGELOG.md](../CHANGELOG.md) 상단에

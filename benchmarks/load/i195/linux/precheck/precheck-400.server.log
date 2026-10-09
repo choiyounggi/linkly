@@ -1,0 +1,17 @@
+[2026-10-08 01:43:40 +0000] [58] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 01:43:40 +0000] [58] [INFO] Listening at: http://127.0.0.1:18195 (58)
+[2026-10-08 01:43:40 +0000] [58] [INFO] Using worker: gthread
+[2026-10-08 01:43:40 +0000] [62] [INFO] Booting worker with pid: 62
+[2026-10-08 01:43:40 +0000] [63] [INFO] Booting worker with pid: 63
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 01:43:40 +0000] [73] [INFO] Booting worker with pid: 73
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 01:43:40 +0000] [88] [INFO] Booting worker with pid: 88
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 01:45:40 +0000] [58] [INFO] Handling signal: term
+[2026-10-08 01:45:40 +0000] [63] [INFO] Worker exiting (pid: 63)
+[2026-10-08 01:45:40 +0000] [73] [INFO] Worker exiting (pid: 73)
+[2026-10-08 01:45:40 +0000] [62] [INFO] Worker exiting (pid: 62)
+[2026-10-08 01:45:40 +0000] [88] [INFO] Worker exiting (pid: 88)
+[2026-10-08 01:45:40 +0000] [58] [INFO] Shutting down: Master

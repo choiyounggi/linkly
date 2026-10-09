@@ -14,7 +14,7 @@ actually discriminates.
 
 import unittest
 
-from lnpl.drivers import HmacTokenProvider, TokenError
+from lnpl.drivers import ROLE_CLAIM, HmacTokenProvider, TokenError
 from lnpl.testing import TokenProviderTCK
 
 SECRET = "0123456789abcdef0123456789abcdef"
@@ -111,6 +111,22 @@ class NegativeControlSanityTest(unittest.TestCase):
 
         with self.assertRaises(TokenError):
             provider.verify(token, "some-other-aud")
+
+
+class HmacTokenProviderRoleClaimTest(unittest.TestCase):
+    """Issue #202: `issue(..., role=...)` mints the claim `caller_view`
+    reads, under the one shared `ROLE_CLAIM` name."""
+
+    def test_normal_a_role_argument_is_minted_as_the_role_claim(self):
+        provider = HmacTokenProvider(SECRET)
+        token = provider.issue("alice", "aud", role="clerk")
+        self.assertEqual(provider.verify(token, "aud")[ROLE_CLAIM], "clerk")
+
+    def test_boundary_role_omitted_keeps_the_claim_set_unchanged(self):
+        provider = HmacTokenProvider(SECRET)
+        token = provider.issue("alice", "aud")
+        self.assertEqual(set(provider.verify(token, "aud")),
+                         {"aud", "exp", "iat", "iss", "jti", "nbf", "sub"})
 
 
 if __name__ == "__main__":

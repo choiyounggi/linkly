@@ -1,0 +1,12 @@
+uptime 10:30  up 14 days, 14:37, 14 users, load averages: 3.53 3.28 3.23
+seed get=200
+rate=200 started=2026-10-08T01:30:41Z
+total=11000 post_warmup=10000 ok=10000 error_or_non2xx=0
+p50=1.66ms p95=2017.25ms p99=3937.11ms
+error_rate=0.00%
+bucket=0-10s mean=64.68ms max=1059.26ms n=2000
+bucket=10-20s mean=468.14ms max=3959.52ms n=2000
+bucket=20-30s mean=518.40ms max=3941.02ms n=2000
+bucket=30-40s mean=9.35ms max=575.17ms n=2000
+bucket=40-50s mean=524.49ms max=4006.71ms n=2000
+verdict=UNSTABLE worst_bucket_ratio=8.109x

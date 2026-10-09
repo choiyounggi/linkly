@@ -82,6 +82,22 @@ LINKHUB_LIR = os.path.join(_REPO, "examples", "linkhub.lir.json")
 LINKHUB_SPEC = os.path.join(_REPO, "examples", "linkhub.spec.json")
 LINKHUB_OPENAPI = os.path.join(_REPO, "examples", "linkhub.openapi.json")
 
+# The multi-stage conditional-flow exemplar (issue #211, RFC-0058): guarded
+# `pipeline` blocks chained, a later guard reading a binding only the earlier
+# pipeline creates.
+STAGED_LNPL = os.path.join(_REPO, "examples", "staged.lnpl")
+STAGED_LIR = os.path.join(_REPO, "examples", "staged.lir.json")
+STAGED_SPEC = os.path.join(_REPO, "examples", "staged.spec.json")
+STAGED_OPENAPI = os.path.join(_REPO, "examples", "staged.openapi.json")
+
+# RFC-0049's golden-adjacent example (issue #178): `emit ... with` over all
+# three admitted reference sources in one workflow. Login declares no event,
+# so RFC-0049's `## Examples` points here instead (RFC-0007 §6).
+EMITTED_LNPL = os.path.join(_REPO, "examples", "emitted.lnpl")
+EMITTED_LIR = os.path.join(_REPO, "examples", "emitted.lir.json")
+EMITTED_SPEC = os.path.join(_REPO, "examples", "emitted.spec.json")
+EMITTED_OPENAPI = os.path.join(_REPO, "examples", "emitted.openapi.json")
+
 GUARDED = """
 capability postgres
 capability redis

@@ -19,12 +19,20 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from lnpl import backend
 from lnpl.cli import main
-from lnpl.drivers import HmacTokenProvider, audience_for_path
+from lnpl.drivers import HmacTokenProvider, SqliteRepositoryDriver, audience_for_path
+from lnpl.lower import lower
+from lnpl.parser import parse
+from lnpl.repo_policy import default_rows
 
 from tests.fixtures import GUARDED_LNPL, SHORTEN_LNPL, VALUE_INVENTORY
+from tests.test_role_gate import (NO_ROLE_SRC, PATH as ROLE_PATH, ROLE_GATED_ESC_PATH,
+                                  ROLE_GATED_ESC_PATH_SRC, ROLE_GATED_ESC_SRC,
+                                  ROLE_GATED_SRC, ROLE_GATED_ZWSP_PATH,
+                                  ROLE_GATED_ZWSP_PATH_SRC, ROLE_GATED_ZWSP_SRC)
 
 SECRET = "0123456789abcdef0123456789abcdef"
 SECRET_ENV = "LNPL_TEST_JWT_SECRET"
+ROLE_ONLY_NO_JWT_LNPL = ROLE_GATED_SRC.replace("jwt\n        role admin", "role admin")
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Build workdirs stay inside the worktree: this repo does not write to `/tmp` or
@@ -60,6 +68,18 @@ class CliTestCase(unittest.TestCase):
             rc = main(argv)
         return rc, out.getvalue(), err.getvalue()
 
+    def seed_product(self, db_path, payload):
+        """Store the Product row a run is about to read. A persistent store
+        is not seeded from the request payload (issue #197), so a test that
+        needs the row there puts it there."""
+        doc = lower(parse(VALUE_INVENTORY), "inventory").to_document()
+        target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        driver = SqliteRepositoryDriver(db_path)
+        try:
+            driver.seed(default_rows(doc, target, payload))
+        finally:
+            driver.close()
+
     def set_env(self, name, value):
         previous = os.environ.get(name)
         os.environ[name] = value
@@ -71,6 +91,12 @@ class CliTestCase(unittest.TestCase):
                 os.environ[name] = previous
 
         self.addCleanup(restore)
+
+    def write_source(self, text, name):
+        path = os.path.join(self.dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
 
 
 class RunBackendTest(CliTestCase):
@@ -91,6 +117,7 @@ class RunBackendTest(CliTestCase):
 
     def test_a_sqlite_run_completes_and_writes_its_store(self):
         payload = self.payload_file({"id": "p-1", "stock": 9, "quantity": 4})
+        self.seed_product(self.db, {"id": "p-1", "stock": 9, "quantity": 4})
 
         rc, out, _ = self.run_cli(["run", self.source, "--payload", payload,
                                    "--json", "--backend", "sqlite:" + self.db])
@@ -106,6 +133,7 @@ class RunBackendTest(CliTestCase):
         payload = self.payload_file({"id": "p-1", "stock": 9, "quantity": 4})
         argv = ["run", self.source, "--payload", payload, "--json",
                 "--backend", "sqlite:" + self.db]
+        self.seed_product(self.db, {"id": "p-1", "stock": 9, "quantity": 4})
         self.run_cli(argv)
 
         rc, out, _ = self.run_cli(argv)
@@ -204,6 +232,7 @@ class StoreLifetimeTest(CliTestCase):
     def test_the_store_is_released_after_a_completing_run(self):
         calls = self._recording_open([])
         payload = self.payload_file({"id": "p-1", "stock": 9, "quantity": 4})
+        self.seed_product(self.db, {"id": "p-1", "stock": 9, "quantity": 4})
 
         rc, _, _ = self.run_cli(["run", self.source, "--payload", payload,
                                  "--json", "--backend", "sqlite:" + self.db])
@@ -223,6 +252,19 @@ class StoreLifetimeTest(CliTestCase):
 
         self.assertEqual(rc, 1)
         self.assertEqual(calls, ["closed"])
+
+
+# Issue #202's pinned stderr lines — an own copy, never imported from
+# `cli.py`, so a wording regression cannot drift together with the test.
+EXPECTED_INVALID_ROLE_ERROR = (
+    "error: --role %r is not a value `security role <r>` can parse "
+    "(no whitespace, no '#', not a reserved word: if, for, while, switch)")
+EXPECTED_ABSENT_WARNING = (
+    "warning: the service at %r requires role %r; this token carries "
+    "no role, so the request will be refused with 403")
+EXPECTED_MISMATCH_WARNING = (
+    "warning: the service at %r requires role %r; this token carries "
+    "role %r, so the request will be refused with 403")
 
 
 class TokenCommandTest(CliTestCase):
@@ -302,6 +344,216 @@ class TokenCommandTest(CliTestCase):
         self.assertNotIn(SECRET, out)
         self.assertNotIn(SECRET, err)
 
+    def test_normal_the_role_flag_mints_a_role_claim(self):
+        self.set_env(SECRET_ENV, SECRET)
+        rc, out, err = self.run_cli(["token", self.source, "--path",
+                                     "/order-service/place-order", "--subject", "alice",
+                                     "--secret-env", SECRET_ENV, "--role", "clerk"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        claims = HmacTokenProvider(SECRET).verify(
+            out.strip(), audience_for_path("/order-service/place-order"))
+        self.assertEqual(claims["role"], "clerk")
+
+    def test_boundary_role_omitted_keeps_the_claim_set_exactly_as_before(self):
+        self.set_env(SECRET_ENV, SECRET)
+        rc, out, err = self.run_cli(["token", self.source, "--path",
+                                     "/order-service/place-order", "--subject", "alice",
+                                     "--secret-env", SECRET_ENV])
+        claims = HmacTokenProvider(SECRET).verify(
+            out.strip(), audience_for_path("/order-service/place-order"))
+        self.assertEqual(set(claims), {"aud", "exp", "iat", "iss", "jti", "nbf", "sub"})
+
+    def test_error_an_invalid_role_value_is_rejected_and_mints_nothing(self):
+        self.set_env(SECRET_ENV, SECRET)
+        for value in ("", " ", "has space", "#bad", "if"):
+            with self.subTest(value=repr(value)):
+                rc, out, err = self.run_cli(["token", self.source, "--path",
+                                             "/order-service/place-order", "--subject", "alice",
+                                             "--secret-env", SECRET_ENV, "--role", value])
+                self.assertEqual(rc, 2)
+                self.assertEqual(out, "")
+                self.assertEqual(err, (EXPECTED_INVALID_ROLE_ERROR % value) + "\n")
+
+    def test_normal_a_role_value_with_quotes_and_backslashes_is_accepted(self):
+        self.set_env(SECRET_ENV, SECRET)
+        rc, out, err = self.run_cli(["token", self.source, "--path",
+                                     "/order-service/place-order", "--subject", "alice",
+                                     "--secret-env", SECRET_ENV, "--role", "o'brien\\path"])
+        claims = HmacTokenProvider(SECRET).verify(
+            out.strip(), audience_for_path("/order-service/place-order"))
+        self.assertEqual(claims["role"], "o'brien\\path")
+
+    def test_boundary_a_long_role_value_has_no_artificial_length_cap(self):
+        self.set_env(SECRET_ENV, SECRET)
+        long_role = "a" * 200
+        rc, out, err = self.run_cli(["token", self.source, "--path",
+                                     "/order-service/place-order", "--subject", "alice",
+                                     "--secret-env", SECRET_ENV, "--role", long_role])
+        claims = HmacTokenProvider(SECRET).verify(
+            out.strip(), audience_for_path("/order-service/place-order"))
+        self.assertEqual(claims["role"], long_role)
+
+    def test_normal_a_unicode_lookalike_role_passes_validation(self):
+        self.set_env(SECRET_ENV, SECRET)
+        lookalike = "аdmin"
+        rc, out, err = self.run_cli(["token", self.source, "--path",
+                                     "/order-service/place-order", "--subject", "alice",
+                                     "--secret-env", SECRET_ENV, "--role", lookalike])
+        claims = HmacTokenProvider(SECRET).verify(
+            out.strip(), audience_for_path("/order-service/place-order"))
+        self.assertEqual(claims["role"], lookalike)
+
+    def test_normal_role_value_starting_with_a_dash_via_equals_form(self):
+        self.set_env(SECRET_ENV, SECRET)
+        rc, out, err = self.run_cli(["token", self.source, "--path",
+                                     "/order-service/place-order", "--subject", "alice",
+                                     "--secret-env", SECRET_ENV, "--role=-x"])
+        claims = HmacTokenProvider(SECRET).verify(
+            out.strip(), audience_for_path("/order-service/place-order"))
+        self.assertEqual(claims["role"], "-x")
+
+    def test_error_role_value_starting_with_a_dash_via_space_form_is_an_argparse_usage_error(self):
+        self.set_env(SECRET_ENV, SECRET)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            with self.assertRaises(SystemExit) as ctx:
+                main(["token", self.source, "--path", "/order-service/place-order",
+                      "--subject", "alice", "--secret-env", SECRET_ENV,
+                      "--role", "-x"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_normal_role_declared_and_matching_mints_without_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_SRC, "role_gated.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV,
+                                     "--role", "admin"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        claims = HmacTokenProvider(SECRET).verify(out.strip(), audience_for_path(ROLE_PATH))
+        self.assertEqual(claims["role"], "admin")
+
+    def test_error_role_declared_but_absent_minted_anyway_with_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_SRC, "role_gated.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("\n", out.strip())
+        self.assertEqual(err, (EXPECTED_ABSENT_WARNING % (ROLE_PATH, "admin")) + "\n")
+        claims = HmacTokenProvider(SECRET).verify(out.strip(), audience_for_path(ROLE_PATH))
+        self.assertNotIn("role", claims)
+
+    def test_error_role_declared_and_mismatched_minted_anyway_with_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_SRC, "role_gated.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV,
+                                     "--role", "ops"])
+        self.assertEqual(err, (EXPECTED_MISMATCH_WARNING % (ROLE_PATH, "admin", "ops")) + "\n")
+        claims = HmacTokenProvider(SECRET).verify(out.strip(), audience_for_path(ROLE_PATH))
+        self.assertEqual(claims["role"], "ops")
+
+    def test_normal_role_flag_works_on_a_service_without_security_role(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(NO_ROLE_SRC, "no_role.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV,
+                                     "--role", "x"])
+        self.assertEqual(err, "")
+        claims = HmacTokenProvider(SECRET).verify(out.strip(), audience_for_path(ROLE_PATH))
+        self.assertEqual(claims["role"], "x")
+
+    def test_boundary_a_role_only_service_without_jwt_never_warns(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_ONLY_NO_JWT_LNPL, "role_only.lnpl")
+        for extra in ([], ["--role", "ops"]):
+            with self.subTest(extra=extra):
+                rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                             "--subject", "u1", "--secret-env", SECRET_ENV] + extra)
+                self.assertEqual(rc, 0)
+                self.assertEqual(err, "")
+
+    def test_normal_the_secret_never_reaches_stdout_or_stderr_on_the_role_path(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_SRC, "role_gated.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV,
+                                     "--role", "admin"])
+        self.assertNotIn(SECRET, out)
+        self.assertNotIn(SECRET, err)
+
+    def test_error_a_failing_mint_on_a_role_gated_service_prints_no_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_SRC, "role_gated.lnpl")
+        # (extra args, expected rc): a malformed --ttl surfaces as
+        # interp's RunError -> rc 3, unchanged from before issue #202.
+        cases = (
+            (["--path", ROLE_PATH, "--subject", "u1", "--secret-env", SECRET_ENV, "--ttl", "not-a-duration"], 3),
+            (["--path", ROLE_PATH, "--subject", "u1", "--secret-env", "LNPL_I202_UNSET_XYZ"], 2),
+            (["--path", "/no/such", "--subject", "u1", "--secret-env", SECRET_ENV], 2),
+        )
+        for extra_args, expected_rc in cases:
+            with self.subTest(extra_args=extra_args):
+                rc, out, err = self.run_cli(["token", source] + extra_args)
+                self.assertEqual(rc, expected_rc)
+                self.assertEqual(out, "")
+                self.assertNotIn("refused with 403", err)
+
+    def test_boundary_a_lone_surrogate_role_is_accepted_and_mints(self):
+        self.set_env(SECRET_ENV, SECRET)
+        surrogate_role = "a\udcffb"
+        rc, out, err = self.run_cli(["token", self.source, "--path",
+                                     "/order-service/place-order", "--subject", "alice",
+                                     "--secret-env", SECRET_ENV, "--role", surrogate_role])
+        self.assertEqual(rc, 0)
+        claims = HmacTokenProvider(SECRET).verify(
+            out.strip(), audience_for_path("/order-service/place-order"))
+        self.assertEqual(claims["role"], surrogate_role)
+
+    def test_error_an_invalid_role_on_a_role_gated_service_prints_no_role_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_SRC, "role_gated.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV,
+                                     "--role", "has space"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertEqual(err, (EXPECTED_INVALID_ROLE_ERROR % "has space") + "\n")
+        self.assertNotIn("refused with 403", err)
+
+    def test_error_a_declared_role_containing_an_escape_character_is_escaped_in_the_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_ESC_SRC, "role_gated_esc.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, (EXPECTED_ABSENT_WARNING % (ROLE_PATH, "a\x1bb")) + "\n")
+        self.assertNotIn("\x1b", err)
+
+    def test_error_a_declared_role_containing_a_zero_width_character_is_escaped_in_the_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        source = self.write_source(ROLE_GATED_ZWSP_SRC, "role_gated_zwsp.lnpl")
+        rc, out, err = self.run_cli(["token", source, "--path", ROLE_PATH,
+                                     "--subject", "u1", "--secret-env", SECRET_ENV])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, (EXPECTED_ABSENT_WARNING % (ROLE_PATH, "a\u200bb")) + "\n")
+        self.assertNotIn("\u200b", err)
+
+    def test_error_a_service_path_containing_control_or_zero_width_characters_is_escaped_in_the_warning(self):
+        self.set_env(SECRET_ENV, SECRET)
+        cases = ((ROLE_GATED_ESC_PATH_SRC, ROLE_GATED_ESC_PATH),
+                 (ROLE_GATED_ZWSP_PATH_SRC, ROLE_GATED_ZWSP_PATH))
+        for src_text, path in cases:
+            with self.subTest(path=repr(path)):
+                source = self.write_source(src_text, "role_gated_path.lnpl")
+                rc, out, err = self.run_cli(["token", source, "--path", path,
+                                             "--subject", "u1", "--secret-env", SECRET_ENV])
+                self.assertEqual(rc, 0)
+                self.assertEqual(err, (EXPECTED_ABSENT_WARNING % (path, "admin")) + "\n")
+
 
 class SurfaceDocumentationTest(unittest.TestCase):
     """`test_cli_surface_doc.py` gates the whole surface; this pins the entries
@@ -315,7 +567,7 @@ class SurfaceDocumentationTest(unittest.TestCase):
 
         self.assertIn("token", subcommands)
         for flag in ("--backend", "--jwt-secret-env", "--secret-env",
-                     "--subject", "--path", "--ttl"):
+                     "--subject", "--path", "--ttl", "--role"):
             self.assertIn(flag, options, "%s is not declared in cli.py" % flag)
             self.assertIn(flag, text, "%s is not documented" % flag)
 

@@ -6,8 +6,10 @@ No condition is evaluated differently in parser vs. runtime vs. compiler.
 Syntax (RFC-0002 §Full grammar as updated by RFC-0008, RFC-0012, RFC-0015,
 then RFC-0028):
 
-  Condition  ::= Presence | Comparison ('and' Comparison)*
+  Condition  ::= Presence | Term ('and' Term)*
+  Term       ::= Comparison | NumericPred           -- RFC-0050
   Presence   ::= Reference ('exists' | 'missing')
+  NumericPred ::= Reference ('is-numeric' | 'is-not-numeric')   -- RFC-0050
   Comparison ::= Value Comparator Value
   Comparator ::= '<' | '<=' | '>' | '>=' | '==' | '!='
   Value      ::= Operand (ArithOp Operand)?     -- at most ONE binary operator
@@ -28,10 +30,12 @@ Three properties of that grammar are decisions, not omissions (RFC-0015,
   be evaluated identically by an interpreter and by emitted MLIR; every
   production added here is a second evaluator to keep honest.
 
-  **`and` combines Comparisons only.** Mode B decides existence through one
-  run-level boolean (`run_binary(skip=...)`) and comparisons through i64
-  parameters. A condition mixing the two channels could produce a step set mode A
-  never produces, so a Presence stays a condition on its own.
+  **`and` combines Comparisons (and, since RFC-0050, numeric-shape
+  predicates) only.** Mode B decides existence through one run-level boolean
+  (`run_binary(skip=...)`) and comparisons through i64 parameters. A condition
+  mixing the two channels could produce a step set mode A never produces, so a
+  Presence stays a condition on its own. A `NumericPredicate` has no run-level
+  channel to mix in (RFC-0050 §Mode B), which is why it may join `and`.
 
   **Arithmetic nests zero levels.** `a - b - c` needs a precedence rule, and a
   precedence rule is a thing an author can get wrong silently.
@@ -58,11 +62,11 @@ from typing import Optional, Tuple, Union
 # sites import it via `from .condition import PAYLOAD_NAMESPACE`, not from
 # lexer directly.
 from .lexer import (AGG_FUNCS, ARITH_OPS, COMPARATORS, DURATION_UNIT_MS,
-                    INT64_MAX, INT64_MIN, LOGICAL_OPS, PAYLOAD_NAMESPACE,  # noqa: F401
-                    duration_ms_or_none)
+                    INT64_MAX, INT64_MIN, LOGICAL_OPS,
+                    NUMERIC_PREDICATE_KINDS, PAYLOAD_NAMESPACE,  # noqa: F401
+                    PRESENCE_KINDS, duration_ms_or_none)
 
 LOGICAL_AND = LOGICAL_OPS[0]
-PRESENCE_KINDS = ('exists', 'missing')
 
 # i64 — the domain mode B compiles to. Mode A checks against the same bounds so a
 # value that would wrap in the compiled path fails in both (RFC-0015 §Value domain).
@@ -193,6 +197,21 @@ class Presence:
 
 
 @dataclass(frozen=True)
+class NumericPredicate:
+    """Numeric-shape check: `<field> is-numeric` or `<field> is-not-numeric`.
+
+    RFC-0050 (issue #177). Its own class rather than a third `Presence` kind:
+    a Presence may not sit inside `and`, this may — one class, one rule.
+    """
+    field: str
+    kind: str  # 'is-numeric' | 'is-not-numeric'
+
+    def __post_init__(self):
+        if self.kind not in NUMERIC_PREDICATE_KINDS:
+            raise ValueError(f"invalid numeric predicate kind: {self.kind}")
+
+
+@dataclass(frozen=True)
 class Comparison:
     """Relational comparison: `<value> <op> <value>`.
 
@@ -212,22 +231,25 @@ class Comparison:
 
 @dataclass(frozen=True)
 class And:
-    """`<comparison> and <comparison> [and ...]` — two or more terms."""
-    terms: Tuple[Comparison, ...]
+    """`<term> and <term> [and ...]` — two or more terms, each a Comparison
+    or (RFC-0050) a NumericPredicate."""
+    terms: Tuple[Union[Comparison, NumericPredicate], ...]
 
     def __post_init__(self):
         if len(self.terms) < 2:
             raise ValueError("`and` needs at least two terms")
         for term in self.terms:
-            if not isinstance(term, Comparison):
-                raise ValueError("`and` combines comparisons only")
+            if not isinstance(term, (Comparison, NumericPredicate)):
+                raise ValueError(
+                    "`and` combines comparisons and numeric-shape predicates only")
 
 
-Condition = Union[Presence, Comparison, And, None]  # None = no guard
+Condition = Union[Presence, Comparison, And, NumericPredicate, None]  # None = no guard
 
 
 def parse_condition(text: Optional[str]) -> Condition:
-    """Parse a guard condition string into Presence, Comparison, or And.
+    """Parse a guard condition string into Presence, Comparison,
+    NumericPredicate, or And.
 
     Returns None if text is None or empty. Raises ConditionError if text
     violates the grammar or references an unsupported form.
@@ -433,6 +455,26 @@ def encode_instant(raw, where) -> int:
     return total
 
 
+def decode_instant(ms) -> str:
+    """UTC epoch-milliseconds -> RFC 3339 `YYYY-MM-DDTHH:MM:SS.mmmZ`, the
+    inverse of `encode_instant` for an in-range value (RFC-0055 §3, the
+    `derived clock` fill). Always zoned `Z`, always millisecond precision.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if isinstance(ms, bool) or not isinstance(ms, int):
+        raise ConditionError("instant is not integer milliseconds: %r" % (ms,))
+    try:
+        moment = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(
+            milliseconds=ms)
+    except OverflowError:
+        raise ConditionError(
+            "instant %d ms is outside the RFC 3339 year range 0001-9999" % ms)
+    return "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ" % (
+        moment.year, moment.month, moment.day, moment.hour, moment.minute,
+        moment.second, moment.microsecond // 1000)
+
+
 def parse_value(text: Optional[str]) -> Value:
     """A `Value` on its own — the assignment's right-hand side, re-read from the IR.
 
@@ -472,7 +514,7 @@ def references(cond) -> Tuple[str, ...]:
     """
     if cond is None:
         return ()
-    if isinstance(cond, Presence):
+    if isinstance(cond, (Presence, NumericPredicate)):
         return (cond.field,)
     if isinstance(cond, And):
         out = []
@@ -507,7 +549,7 @@ def condition_to_string(cond: Condition) -> Optional[str]:
     """
     if cond is None:
         return None
-    if isinstance(cond, Presence):
+    if isinstance(cond, (Presence, NumericPredicate)):
         return f"{cond.field} {cond.kind}"
     if isinstance(cond, Comparison):
         return "%s %s %s" % (value_to_string(cond.left), cond.op,
@@ -598,6 +640,13 @@ def _parse_term(tokens, text, allow_presence):
             raise ConditionError(
                 f"field must be camelCase or binding.field: {text!r}")
         return Presence(tokens[0], tokens[1])
+
+    # RFC-0050: unlike a Presence, allowed inside `and` too.
+    if len(tokens) == 2 and tokens[1] in NUMERIC_PREDICATE_KINDS:
+        if not _is_reference_name(tokens[0]):
+            raise ConditionError(
+                f"field must be camelCase or binding.field: {text!r}")
+        return NumericPredicate(tokens[0], tokens[1])
 
     op_positions = [i for i, tok in enumerate(tokens) if tok in COMPARATORS]
     if not op_positions:
@@ -700,7 +749,7 @@ def _is_reference_name(s: str) -> bool:
     The grammar's own words are not references. `and` would otherwise be a legal
     bare name, which would make `a and b` parse as something no one wrote.
     """
-    if s in (LOGICAL_AND, 'to') + PRESENCE_KINDS:
+    if s in (LOGICAL_AND, 'to') + PRESENCE_KINDS + NUMERIC_PREDICATE_KINDS:
         return False
     segments = s.split(".")
     if len(segments) > 2:

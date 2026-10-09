@@ -86,6 +86,453 @@ class TestMlirEmission(unittest.TestCase):
             backend.emit_mlir(golden(), "wf.nope")
 
 
+class TestComparisonsSkipsNumericPredicateTerms(unittest.TestCase):
+    """Issue #177 / RFC-0050: an `and` may now hold a `NumericPredicate`.
+    `backend._comparisons` (an independent copy of lower's) must yield only
+    the `Comparison` terms — never hand a predicate to `_emit_condition`,
+    which reads `.left`/`.right`. Mode B's refusal itself is t177b's."""
+
+    def test_mixed_and_yields_only_the_comparisons(self):
+        from lnpl.condition import Comparison, parse_condition
+        terms = backend._comparisons(
+            parse_condition("a > 1 and b is-numeric and c < 2"))
+        self.assertEqual(len(terms), 2)
+        self.assertTrue(all(isinstance(t, Comparison) for t in terms))
+
+    def test_bare_predicate_yields_nothing(self):
+        from lnpl.condition import parse_condition
+        self.assertEqual(backend._comparisons(parse_condition("b is-not-numeric")), ())
+
+    def test_no_condition_yields_nothing(self):
+        self.assertEqual(backend._comparisons(None), ())
+
+
+def _predicate_doc(source):
+    doc = lower(parse(source), "fx").to_document()
+    wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+    return doc, wf
+
+
+PREDICATE_WHEN = """capability postgres
+
+entity Quote
+    field
+        id UUID
+        rate Integer
+
+service QuoteService
+    policy
+        timeout 5s
+
+workflow Convert
+    %s
+    create quote
+"""
+
+
+class TestModeBRefusesTheNumericPredicate(unittest.TestCase):
+    """RFC-0050 §5 (issue #177): mode B has no compiled evaluator for
+    `is-numeric`/`is-not-numeric`, so it refuses the workflow by name rather
+    than compiling half of a mixed `and` or falling back to `%skip`. No
+    toolchain needed — the refusal happens while rendering MLIR text."""
+
+    def _refusal(self, source):
+        doc, wf = _predicate_doc(source)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        return str(ctx.exception)
+
+    def test_the_f5_program_is_refused_naming_the_step_and_guard(self):
+        from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+        msg = self._refusal(F5_SOURCE)
+        self.assertIn("create quote", msg)
+        self.assertIn("fxResult.status == 200 and fxResult.rate is-numeric", msg)
+        self.assertIn("RFC-0050", msg)
+
+    def test_a_bare_when_predicate_is_refused(self):
+        msg = self._refusal(PREDICATE_WHEN % "when input.rate is-numeric")
+        self.assertIn("input.rate is-numeric", msg)
+
+    def test_a_predicate_only_in_an_or_alternative_is_refused(self):
+        msg = self._refusal(PREDICATE_WHEN
+                            % "when input.rate > 0\n    or input.rate is-not-numeric")
+        self.assertIn("input.rate is-not-numeric", msg)
+
+    def test_an_until_predicate_is_refused(self):
+        msg = self._refusal(PREDICATE_WHEN % "until input.rate is-numeric")
+        self.assertIn("input.rate is-numeric", msg)
+
+    def test_the_same_workflow_without_the_predicate_still_emits(self):
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate > 0")
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_workflow_uses_numeric_predicate(self):
+        from tests.test_arithmetic_and_alt_guards import F5_SOURCE
+        self.assertTrue(backend.workflow_uses_numeric_predicate(*_predicate_doc(F5_SOURCE)))
+        self.assertTrue(backend.workflow_uses_numeric_predicate(*_predicate_doc(
+            PREDICATE_WHEN % "when input.rate > 0\n    or input.rate is-numeric")))
+        self.assertFalse(backend.workflow_uses_numeric_predicate(*_predicate_doc(
+            PREDICATE_WHEN % "when input.rate > 0")))
+        self.assertFalse(backend.workflow_uses_numeric_predicate(*_predicate_doc(
+            PREDICATE_WHEN % "when input.rate exists")))
+
+    def test_workflow_uses_numeric_predicate_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(PREDICATE_WHEN % "when input.rate > 0")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_numeric_predicate(doc, "wf.nope")
+
+
+MONEY_GUARD = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+        threshold Money
+        lineTotal Money
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    read order
+    %s
+    create order
+"""
+
+
+MONEY_ALIAS_GUARD = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+        threshold Money
+
+entity Audit
+    field
+        id UUID
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    create order as fresh
+    when fresh.total > fresh.threshold
+    create audit
+"""
+
+
+LOOKUP_MODULE = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service Orders
+    policy
+        retry 0
+workflow Restock
+%s
+workflow Audit
+    find stock
+"""
+
+
+class TestModeBRefusesALookupKey(unittest.TestCase):
+    """RFC-0052 §6 (issue #175): a `by <ref>` repository call addresses a key
+    the single-key seed projection cannot model, so mode B refuses the
+    workflow by name before rendering; a `by`-free workflow in the same
+    module is untouched."""
+
+    def _doc(self, body):
+        return lower(parse(LOOKUP_MODULE % body), "orders").to_document()
+
+    def test_a_by_read_is_refused_by_step_entity_and_rfc(self):
+        doc = self._doc("    find stock by input.productId")
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, "wf.restock")
+        self.assertEqual(
+            str(ctx.exception),
+            "step find stock by input.productId: entity.stock uses a lookup "
+            "key (by input.productId), which the single-key seed projection "
+            "cannot model (RFC-0052 §Mode B) — run it in mode A")
+        self.assertTrue(backend.workflow_uses_lookup(doc, "wf.restock"))
+
+    def test_update_delete_and_guarded_or_parallel_by_calls_are_refused(self):
+        for body in ("    find stock\n    update stock by input.productId",
+                     "    find stock\n    delete stock by productId",
+                     "    when onHand > 0\n        find stock by input.productId",
+                     "    parallel\n        find stock by input.productId\n"
+                     "        find stock\n    merge"):
+            with self.subTest(body=body):
+                doc = self._doc(body)
+                self.assertTrue(backend.workflow_uses_lookup(doc, "wf.restock"))
+                with self.assertRaises(backend.BackendError) as ctx:
+                    backend.emit_mlir(doc, "wf.restock")
+                self.assertIn("RFC-0052", str(ctx.exception))
+
+    def test_a_by_free_workflow_in_the_same_module_still_renders(self):
+        doc = self._doc("    find stock by input.productId")
+        self.assertFalse(backend.workflow_uses_lookup(doc, "wf.audit"))
+        self.assertIn("func.func", backend.emit_mlir(doc, "wf.audit"))
+        self.assertFalse(backend.workflow_uses_lookup(golden(), "wf.login"))
+
+    def test_an_unknown_workflow_is_a_backend_error(self):
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_lookup(self._doc("    find stock"), "wf.nope")
+
+
+class TestModeBRefusesAMoneyGuard(unittest.TestCase):
+    """RFC-0051 §6 (issue #172): Money carries its currency as row data, so it
+    cannot ride mode B's i64 condition-field channel. A guard that references
+    a declared Money field is refused by name; a Money `set` is untouched —
+    Assignment expressions are never lowered (RFC-0028 §6)."""
+
+    def _refusal(self, source):
+        doc, wf = _predicate_doc(source)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        return str(ctx.exception)
+
+    def test_a_money_guard_on_the_default_binding_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % "when order.total > order.threshold")
+        self.assertIn("create order", msg)
+        self.assertIn("order.total > order.threshold", msg)
+        self.assertIn("compares Money", msg)
+        self.assertIn("RFC-0051", msg)
+
+    def test_a_money_guard_through_input_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % "when input.total > input.threshold")
+        self.assertIn("input.total > input.threshold", msg)
+        self.assertIn("RFC-0051", msg)
+
+    def test_a_money_guard_on_a_create_as_alias_is_refused(self):
+        # Only the `create ... as <alias>` pass knows `fresh.*` is Money —
+        # the entity's default binding is `order`.
+        msg = self._refusal(MONEY_ALIAS_GUARD)
+        self.assertIn("create audit", msg)
+        self.assertIn("fresh.total > fresh.threshold", msg)
+        self.assertIn("RFC-0051", msg)
+        doc, wf = _predicate_doc(MONEY_ALIAS_GUARD)
+        self.assertTrue(backend.workflow_uses_money_guard(doc, wf))
+
+    def test_a_money_guard_only_in_an_or_alternative_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % (
+            "when order.stock > 0\n    or order.total >= order.threshold"))
+        self.assertIn("order.total >= order.threshold", msg)
+
+    def test_an_until_money_guard_is_refused(self):
+        msg = self._refusal(MONEY_GUARD % "until order.total == order.threshold")
+        self.assertIn("order.total == order.threshold", msg)
+
+    def test_a_money_set_without_a_money_guard_still_emits(self):
+        doc, wf = _predicate_doc(MONEY_GUARD.replace(
+            "    %s\n    create order",
+            "    when order.stock > 0\n"
+            "    set order.lineTotal to order.total * order.stock"))
+        self.assertFalse(backend.workflow_uses_money_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_an_integer_guard_in_a_money_document_still_emits(self):
+        doc, wf = _predicate_doc(MONEY_GUARD % "when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_money_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_input_resolves_to_the_last_declaring_entity(self):
+        # Boundary: lowering's `input.<field>` table is last-entity-wins, so a
+        # later Integer `amount` makes `input.amount` a plain number — mode B
+        # must agree and not refuse it; the reverse order is Money.
+        two = """capability postgres
+
+entity %s
+    field
+        id UUID
+        amount %s
+
+entity %s
+    field
+        id UUID
+        amount %s
+
+service S
+    policy
+        timeout 5s
+
+workflow W
+    %s
+    create %s
+"""
+        doc, wf = _predicate_doc(two % ("Ledger", "Money", "Counter", "Integer",
+                                        "when input.amount > 0", "counter"))
+        self.assertFalse(backend.workflow_uses_money_guard(doc, wf))
+        backend.emit_mlir(doc, wf)
+        doc, wf = _predicate_doc(two % ("Counter", "Integer", "Ledger", "Money",
+                                        "when input.amount == input.amount",
+                                        "ledger"))
+        self.assertTrue(backend.workflow_uses_money_guard(doc, wf))
+
+    def test_workflow_uses_money_guard_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(MONEY_GUARD % "when order.stock > 0")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_money_guard(doc, "wf.nope")
+
+
+TEXT_GUARD = """capability postgres
+
+refine OrderStatus of Text
+    enum pending paid cancelled
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        status OrderStatus
+        expected OrderStatus
+
+entity Audit
+    field
+        id UUID
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Cancel
+    %s
+    create audit
+"""
+
+
+class TestModeBRefusesATextGuard(unittest.TestCase):
+    """RFC-0054 §Mode B: a Text-family value has no i64 encoding, so a guard
+    comparing one is refused by name, after the Money, lookup and optional
+    checks."""
+
+    def _refusal(self, body):
+        doc, wf = _predicate_doc(TEXT_GUARD % body)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        return str(ctx.exception)
+
+    def test_build_refuses_text_equality_citing_rfc_0054(self):
+        msg = self._refusal("read order\n    when order.status == input.expected")
+        self.assertIn("create audit", msg)
+        self.assertIn("order.status == input.expected", msg)
+        self.assertIn("Text-family", msg)
+        self.assertIn("RFC-0054", msg)
+
+    def test_build_refuses_a_bare_literal_text_guard(self):
+        self.assertIn("RFC-0054", self._refusal(
+            "read order\n    when order.status != cancelled"))
+
+    def test_build_refuses_text_equality_on_a_create_as_alias(self):
+        msg = self._refusal("create order as fresh\n    when fresh.status == paid")
+        self.assertIn("fresh.status == paid", msg)
+        doc, wf = _predicate_doc(TEXT_GUARD % (
+            "create order as fresh\n    when fresh.status == paid"))
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_build_refuses_a_text_term_only_in_an_or_alternative(self):
+        msg = self._refusal(
+            "read order\n    when order.stock > 0\n    or order.status == paid")
+        self.assertIn("order.status == paid", msg)
+
+    def test_build_still_builds_a_non_text_guard_on_an_entity_that_also_has_a_text_field(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % "read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_text_guard(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_input_text_field_resolves_to_the_last_declaring_entity(self):
+        # Boundary: `input.code` is Integer when the Integer entity is last.
+        two = """capability postgres
+
+entity %s
+    field
+        id UUID
+        code %s
+
+entity %s
+    field
+        id UUID
+        code %s
+
+service S
+    policy
+        timeout 5s
+
+workflow W
+    %s
+    create %s
+"""
+        doc, wf = _predicate_doc(two % ("Label", "Text", "Counter", "Integer",
+                                        "when input.code > 0", "counter"))
+        self.assertFalse(backend.workflow_uses_text_guard(doc, wf))
+        doc, wf = _predicate_doc(two % ("Counter", "Integer", "Label", "Text",
+                                        "when input.code == input.code",
+                                        "label"))
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+
+    def test_a_money_guard_is_refused_before_a_text_guard(self):
+        source = MONEY_GUARD.replace(
+            "        lineTotal Money\n",
+            "        lineTotal Money\n        note Text\n") % (
+            "when order.note == x and order.total > order.threshold")
+        doc, wf = _predicate_doc(source)
+        self.assertTrue(backend.workflow_uses_text_guard(doc, wf))
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertIn("RFC-0051", str(ctx.exception))
+        self.assertNotIn("RFC-0054", str(ctx.exception))
+
+    def test_workflow_uses_text_guard_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(TEXT_GUARD % "read order\n    when order.stock > 0")
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_text_guard(doc, "wf.nope")
+
+
+class TestModeBRefusesFail(unittest.TestCase):
+    """RFC-0056 §Mode B: a declared business rejection has no compiled
+    evaluator, so a workflow reaching `fail` is refused by name, after every
+    guard exemption (Money, lookup, optional, Text)."""
+
+    FAIL_BODY = "read order\n    when order.stock < 1\n    fail out-of-stock"
+
+    def test_emit_mlir_refuses_fail_citing_rfc_0056(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        msg = str(ctx.exception)
+        self.assertIn("fail out-of-stock", msg)
+        self.assertIn("RFC-0056", msg)
+        self.assertIn("mode A", msg)
+
+    def test_workflow_uses_fail_detects_only_a_fail_step(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        doc, wf = _predicate_doc(TEXT_GUARD % "read order\n    when order.stock > 0")
+        self.assertFalse(backend.workflow_uses_fail(doc, wf))
+        self.assertIn("scf.if", backend.emit_mlir(doc, wf))
+
+    def test_a_text_guard_is_refused_before_fail(self):
+        doc, wf = _predicate_doc(TEXT_GUARD % (
+            "read order\n    when order.status == paid\n    fail already-paid"))
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertIn("RFC-0054", str(ctx.exception))
+        self.assertNotIn("RFC-0056", str(ctx.exception))
+
+    def test_workflow_uses_fail_unknown_workflow_raises(self):
+        doc, _wf = _predicate_doc(TEXT_GUARD % self.FAIL_BODY)
+        with self.assertRaises(backend.BackendError):
+            backend.workflow_uses_fail(doc, "wf.nope")
+
+
 @NEEDS_TOOLS
 class TestNativeBuild(unittest.TestCase):
     def setUp(self):
@@ -786,6 +1233,13 @@ workflow Checkout
 SAME_ENTITY = READ_THEN_CREATE.replace("    create order\n",
                                        "    create product\n")
 
+# Mirror of READ_THEN_CREATE with the order reversed (issue #174): Order is
+# created before it is read, so the order-aware seed rule must exclude it.
+CREATE_THEN_FIND = READ_THEN_CREATE.replace(
+    "    find product\n    create order\n",
+    "    create order\n    find order\n").replace(
+    "entity Product\n    field\n        id UUID\n        stock Integer\n", "")
+
 # No RepositoryCall at all — the zero-call boundary.
 NO_REPO = """
 capability postgres
@@ -833,6 +1287,21 @@ class TestModeBDerivesRepositoryOutcomes(unittest.TestCase):
         self.assertEqual(op_names(ops), ["find product", "create order"])
         self.assertNotIn("lnpl.terminal_status", attrs)
         self.assertEqual([len(op["effects"]) for op in ops], [1, 1])
+
+    def test_create_then_find_excludes_the_entity_from_the_default_seed(self):
+        """Scoped claim (issue #174): this proves only the shared-derivation
+        dimension — `backend._lnpl_ops` and `repo_policy.default_rows` both
+        read `seeded_entities()`, so excluding an entity from one excludes it
+        from the other by construction. It is not a full differential run
+        (see wiki/testing/quality/differential-run-agreement.md) — mode A's
+        own runtime behavior for the same create-before-read ordering is
+        separately pinned by
+        test_repo_policy.TestReadThenCreate.test_creating_an_entity_before_its_first_read_does_not_seed_it."""
+        d = checkout_doc(CREATE_THEN_FIND)
+        self.assertEqual(seeded_entities(d, "wf.checkout"), set())
+        attrs, ops = backend._lnpl_ops(d, "wf.checkout")
+        self.assertNotIn("lnpl.terminal_status", attrs)
+        self.assertEqual(op_names(ops), ["create order", "find order"])
 
     def test_an_unseeded_read_fails_and_truncates_at_that_step(self):
         attrs, ops = backend._lnpl_ops(checkout_doc(READ_THEN_CREATE),
@@ -896,6 +1365,79 @@ class TestModeBDerivesRepositoryOutcomes(unittest.TestCase):
         self.assertEqual(op_names(ops), a["order"])
         self.assertEqual({op["name"]: [e["kind"] for e in op["effects"]]
                           for op in ops}, a["effects"])
+
+
+# Issue #183: `_lnpl_ops` had no branch for `operation == "delete"`, so an
+# unconditional delete never updated `seeded_now`/`created` -- a later
+# unconditional repository call on the SAME entity kept being judged
+# against stale state. Two independent boundaries, two tests: a `read`
+# after `delete` must now fail statically (mirrors mode A's real delete,
+# issue #183's own Fake fix); a `create` after `delete` must insert
+# rather than conflict (mirrors what a real delete-then-create does on
+# both backends). Reproduced with a REAL mode B build via
+# `differential.verify()` during planning (plans/t183/analysis.md Spike
+# 2): `FAIL 2/4 policy outcome` before this fix, `EQUIVALENT` after it.
+# No toolchain needed here -- like `TestModeBDerivesRepositoryOutcomes`
+# above, this reads the op stream `_lnpl_ops` builds directly and
+# compares it to mode A's own trace.
+DELETE_THEN_FIND = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+service CheckoutService
+workflow Checkout
+    delete product
+    find product
+"""
+
+CREATE_DELETE_CREATE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+service CheckoutService
+workflow Checkout
+    create product
+    delete product
+    create product
+"""
+
+
+class TestModeBHandlesDelete(unittest.TestCase):
+
+    def test_a_delete_removes_the_entity_from_the_seed_so_the_next_read_fails(self):
+        d = checkout_doc(DELETE_THEN_FIND)
+        payload = sample_payload([n for n in d["nodes"] if n["kind"] == "Entity"])
+        rows = default_rows(d, "wf.checkout", payload)
+        a = differential.observe_mode_a(d, "wf.checkout", payload, rows)
+        attrs, ops = backend._lnpl_ops(d, "wf.checkout", payload=payload)
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        self.assertEqual(op_names(ops), a["order"])
+        self.assertEqual({op["name"]: [e["kind"] for e in op["effects"]]
+                          for op in ops}, a["effects"])
+
+    def test_a_delete_lets_a_later_create_insert_instead_of_conflicting(self):
+        # No per-step effects comparison here, unlike the sibling test
+        # above and `test_the_derived_outcome_matches_mode_a_on_a_read_
+        # miss`: this workflow's two `create product` steps share the
+        # same NAME, and `observe_mode_a` accumulates mode A's effects
+        # dict per step NAME (its own docstring, RFC-0018) while a
+        # `{op["name"]: ... for op in ops}` comprehension over mode B's
+        # `ops` instead keeps only the LAST same-named entry — verified
+        # by running it: that comparison reads 1 effect where mode A
+        # reports 2, a false mismatch this test must not make. Order and
+        # terminal status are this boundary's actual claim anyway.
+        d = checkout_doc(CREATE_DELETE_CREATE)
+        payload = sample_payload([n for n in d["nodes"] if n["kind"] == "Entity"])
+        a = differential.observe_mode_a(d, "wf.checkout", payload, {})
+        attrs, ops = backend._lnpl_ops(d, "wf.checkout", payload=payload)
+        self.assertEqual(a["status"], "completed")
+        self.assertNotIn("lnpl.terminal_status", attrs)
+        self.assertEqual(op_names(ops), a["order"])
 
 
 # Issue #48: a refinement facet (`PositiveInteger`, min 1) on the SECOND entity,

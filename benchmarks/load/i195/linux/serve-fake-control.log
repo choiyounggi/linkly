@@ -1,0 +1,15 @@
+seed save=200 get=200
+control refinement backend=fake server=lnpl-serve rate=140 seconds=90 warmup=5 started=2026-10-08T01:46:41Z
+total=12600 post_warmup=11900 ok=11900 error_or_non2xx=0
+p50=1.67ms p95=2.63ms p99=4.03ms
+error_rate=0.00%
+bucket=0-10s mean=1.66ms max=16.85ms n=1400
+bucket=10-20s mean=1.68ms max=11.51ms n=1400
+bucket=20-30s mean=1.72ms max=21.91ms n=1400
+bucket=30-40s mean=1.68ms max=14.34ms n=1400
+bucket=40-50s mean=1.61ms max=13.34ms n=1400
+bucket=50-60s mean=1.76ms max=13.76ms n=1400
+bucket=60-70s mean=1.81ms max=15.28ms n=1400
+bucket=70-80s mean=1.84ms max=15.56ms n=1400
+bucket=80-90s mean=1.84ms max=15.76ms n=700
+verdict=STABLE worst_bucket_ratio=1.111x

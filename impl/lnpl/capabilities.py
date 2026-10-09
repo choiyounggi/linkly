@@ -10,14 +10,18 @@
 새 발견 로직을 만들지 않고, 그 함수들의 시그니처도 바꾸지 않는다. 슬롯 이름은
 계약이다: `repository`/`cache`/`network`/`token`/`exporter`/`kb`(issue #134 plan
 D1), `diagnostics`(`lnpl.diagnostics`, issue #138)·`generators`(`lnpl.generators`,
-issue #139) — 뒤 두 행은 t-diag·t-gen이 각각 연 그룹을 얹은 것으로, 카탈로그
-표 형태(슬롯·그룹·내장·발견 함수 4-튜플)는 바뀌지 않는다(additive).
+issue #139)·`publishers`(`lnpl.publishers`, issue #191)·`secrets`(`lnpl.secrets`,
+issue #192) — 뒤 네 행은 각 이슈가
+연 그룹을 얹은 것으로, 카탈로그 표 형태(슬롯·그룹·내장·발견 함수 4-튜플)는
+바뀌지 않는다(additive).
 
 로드 가능 여부는 여기서 독립적으로 판정한다: 각 entry point에 `.load()`를
 시도하고, 실패는 예외를 전파하지 않고 `loadable: false`로만 나열한다 —
 카탈로그는 진단이지 게이트가 아니다(plan D4). 내장 이름과 같은 이름이
 등록되어도(섀도잉) 숨기거나 걸러내지 않고 그대로 나열한다.
 """
+
+import os
 
 from lnpl import __version__
 from lnpl import diagnostics as _diagnostics
@@ -44,6 +48,10 @@ SLOTS = (
     ("diagnostics", _diagnostics.DIAGNOSTICS_ENTRY_POINT_GROUP, (),
      _diagnostics._extension_entry_points),
     ("kb", _kb.KB_ENTRY_POINT_GROUP, (), _kb._kb_pack_entry_points),
+    ("publishers", _drivers.PUBLISHERS_ENTRY_POINT_GROUP, _drivers.PUBLISHERS,
+     _drivers._publisher_entry_points),
+    ("secrets", _drivers.SECRETS_ENTRY_POINT_GROUP, _drivers.BUILTIN_SECRET_SOURCES,
+     _drivers._secret_entry_points),
 )
 
 
@@ -186,9 +194,18 @@ def capabilities_document():
     """설치 확장 카탈로그. 최상위 키는 고정이다 — 빠지지 않는다.
 
     빈 등록은 `[]`로 실린다 — 빈 카탈로그도 성공이다(rc 0).
+
+    `vocabulary_digest`/`package_path`(issue #205): 버전 문자열이 같아도 어휘가
+    다른 두 컴파일러를 구분한다. digest는 `.lir.json` provenance와 같은 값이다.
     """
+    # Lazy import: `provenance` imports `SLOTS` from this module at its own
+    # module level, so a top-level import here would cycle — same shape as
+    # `lower.WorkflowModule.to_document()`.
+    from lnpl import provenance
     return {
         "lnpl_version": __version__,
+        "vocabulary_digest": provenance._current_vocabulary_digest(),
+        "package_path": os.path.dirname(os.path.abspath(__file__)),
         "slots": {
             slot: {
                 "builtin": list(builtin),

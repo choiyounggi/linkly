@@ -39,11 +39,14 @@ from lnpl.parser import parse
 from lnpl.repo_policy import default_rows, row_key, seeded_entities
 from lnpl.spec import extract
 from tests.fixtures import (CHECKOUT_LIR, CHECKOUT_LNPL, CHECKOUT_OPENAPI,
-                            CHECKOUT_SPEC, GUARDED_LIR, GUARDED_LNPL,
-                            GUARDED_OPENAPI, GUARDED_SPEC, LINKHUB_LIR,
-                            LINKHUB_LNPL, LINKHUB_OPENAPI, LINKHUB_SPEC,
-                            LOGIN_OPENAPI, LOGIN_SPEC, SHORTEN_LIR,
-                            SHORTEN_LNPL, SHORTEN_OPENAPI, SHORTEN_SPEC)
+                            CHECKOUT_SPEC, EMITTED_LIR, EMITTED_LNPL,
+                            EMITTED_OPENAPI, EMITTED_SPEC, GUARDED_LIR,
+                            GUARDED_LNPL, GUARDED_OPENAPI, GUARDED_SPEC,
+                            LINKHUB_LIR, LINKHUB_LNPL, LINKHUB_OPENAPI,
+                            LINKHUB_SPEC, LOGIN_OPENAPI, LOGIN_SPEC,
+                            SHORTEN_LIR, SHORTEN_LNPL, SHORTEN_OPENAPI,
+                            SHORTEN_SPEC, STAGED_LIR, STAGED_LNPL,
+                            STAGED_OPENAPI, STAGED_SPEC)
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SRC = os.path.join(REPO, "examples", "login.lnpl")
@@ -324,6 +327,28 @@ class TestLinkhubGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase
     OPENAPI = LINKHUB_OPENAPI
 
 
+class TestStagedGoldenPair(GoldenPairContract, unittest.TestCase):
+    """The multi-stage conditional-flow exemplar (issue #211, RFC-0058).
+
+    No `refine`/`service`, so the first entity leads; the declared
+    `capability http PaymentGateway` closes the order after postgres.
+    """
+
+    SRC = STAGED_LNPL
+    GOLDEN_IR = STAGED_LIR
+    FIRST_NODE_ID = "entity.product"
+    LAST_NODE_IDS = ["wf.place.order.guard.2", "cap.postgres",
+                     "cap.payment.gateway"]
+    REGEN_CMD = ("python3 -m lnpl compile examples/staged.lnpl "
+                 "-o examples/staged.lir.json")
+
+
+class TestStagedGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = STAGED_LNPL
+    SPEC = STAGED_SPEC
+    OPENAPI = STAGED_OPENAPI
+
+
 class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
     SRC = SHORTEN_LNPL
     SPEC = SHORTEN_SPEC
@@ -346,6 +371,38 @@ class TestShortenGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase
                          {"$ref": "#/components/schemas/Slug"})
         self.assertEqual(schemas["Link"]["properties"]["target"],
                          {"$ref": "#/components/schemas/URL"})
+
+
+class TestEmittedGoldenPair(GoldenPairContract, unittest.TestCase):
+    """RFC-0049's golden-adjacent example (issue #178): `emit ... with` over
+    all three admitted reference sources. The service leads the canonical
+    order, like login/checkout/guarded: the example declares no refinement."""
+
+    SRC = EMITTED_LNPL
+    GOLDEN_IR = EMITTED_LIR
+    FIRST_NODE_ID = "svc.shop"
+    LAST_NODE_IDS = ["wf.checkout.step.3.emit", "policy.shop", "cap.postgres"]
+    REGEN_CMD = ("python3 -m lnpl compile examples/emitted.lnpl "
+                 "-o examples/emitted.lir.json")
+
+    def test_the_emit_node_carries_a_payload_map(self):
+        """The point of the example, asserted on the committed IR rather
+        than the source text, so a rewrite that keeps the words but loses
+        `payloadMap` fails here."""
+        doc = self.compile_source()
+        emits = [n for n in doc["nodes"] if n["kind"] == "EventEmit"]
+        self.assertEqual(len(emits), 1)
+        self.assertEqual(
+            emits[0]["payloadMap"],
+            [{"field": "id", "ref": "newOrder.id"},
+             {"field": "customerId", "ref": "input.customerId"},
+             {"field": "status", "ref": "orderResult.status"}])
+
+
+class TestEmittedGeneratedArtifacts(GeneratedArtifactContract, unittest.TestCase):
+    SRC = EMITTED_LNPL
+    SPEC = EMITTED_SPEC
+    OPENAPI = EMITTED_OPENAPI
 
 
 class TestCheckoutShape(unittest.TestCase):

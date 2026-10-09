@@ -1,0 +1,57 @@
+{
+  "spec_version": "0.1",
+  "module": "staged",
+  "cases": [
+    {
+      "name": "PlaceOrder spec 1",
+      "workflow": "wf.place.order",
+      "given": [
+        "stored product stock 10",
+        "input.quantity 1"
+      ],
+      "when": [
+        "placeOrder"
+      ],
+      "expect": [
+        "completed",
+        "effects complete",
+        "rows Order 1",
+        "result o.status == confirmed"
+      ]
+    },
+    {
+      "name": "PlaceOrder spec 2",
+      "workflow": "wf.place.order",
+      "given": [
+        "stored product stock 0",
+        "input.quantity 5"
+      ],
+      "when": [
+        "placeOrder"
+      ],
+      "expect": [
+        "completed",
+        "effects complete",
+        "rows Order 0"
+      ]
+    },
+    {
+      "name": "PlaceOrder spec 3",
+      "workflow": "wf.place.order",
+      "given": [
+        "stored product stock 10",
+        "input.quantity 1",
+        "call PaymentGateway returns 402"
+      ],
+      "when": [
+        "placeOrder"
+      ],
+      "expect": [
+        "completed",
+        "effects complete",
+        "rows Order 1",
+        "result o.status missing"
+      ]
+    }
+  ]
+}

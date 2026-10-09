@@ -87,6 +87,7 @@ def tool_compile(arguments):
     LowerError)와 똑같이 `isError` 응답으로 번역한다 — 여기서 따로 잡지 않는다.
     """
     _version, parse, lower, to_records = _lnpl()
+    from lnpl.capabilities import capabilities_document
     from lnpl.diagnostics import extension_diagnostic_records
     path = arguments.get("path")
     if path is not None and arguments.get("text") is None and os.path.isdir(path):
@@ -102,12 +103,16 @@ def tool_compile(arguments):
     by_code = {}
     for rec in records:
         by_code[rec["code"]] = by_code.get(rec["code"], 0) + 1
+    # issue #205: which compiler answered — same values `lnpl_capabilities` reports.
+    caps = capabilities_document()
     return {
         "source": origin,
         "nodes": len(document["nodes"]),
         "diagnostics": records,
         "counts": by_code,
         "unknown_verbs": by_code.get("unknown-verb", 0),
+        "vocabulary_digest": caps["vocabulary_digest"],
+        "package_path": caps["package_path"],
     }
 
 
@@ -263,8 +268,9 @@ TOOLS = [
     {
         "name": "lnpl_capabilities",
         "description": (
-            "Return the installed-extension catalog: for each of the six "
-            "slots (repository, cache, network, token, exporter, kb), the "
+            "Return the installed-extension catalog: for each of the ten "
+            "slots (repository, cache, network, token, exporter, generators, "
+            "diagnostics, kb, publishers, secrets), the "
             "built-in names and every registered entry-point name with "
             "whether it actually loads. Use this instead of trying a "
             "`--backend`/`--cache`/`--network`/`--token-provider`/"

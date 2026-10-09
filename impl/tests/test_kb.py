@@ -145,5 +145,56 @@ class TestSecurityMaskingRouting(unittest.TestCase):
         self.assertEqual(self.kb.route(""), [])
 
 
+class TestCloudCategoryRouting(unittest.TestCase):
+    """Issue #196: the KB `cloud` category gains six documents."""
+
+    QUESTIONS = [
+        ("postgres 백엔드에 rate limit을 얼마로?", "cloud-postgres-provisioning"),
+        ("how do I attach postgres and how much load does it hold",
+         "cloud-postgres-provisioning"),
+        ("lnpl serve or gunicorn, how many workers", "cloud-serving-topology"),
+        ("gunicorn 워커 수를 몇 개로 둘까", "cloud-serving-topology"),
+        ("where do traces go", "cloud-observability-export"),
+        ("trace exporter 어디로 내보내나", "cloud-observability-export"),
+        ("where do secrets live", "cloud-secrets-and-config"),
+        ("시크릿을 파일로 주입하는 방법", "cloud-secrets-and-config"),
+        ("how do I roll out a schema change", "cloud-schema-change-rollout"),
+        ("무중단 스키마 변경 순서", "cloud-schema-change-rollout"),
+        ("what does the outbox guarantee", "cloud-event-delivery"),
+        ("이벤트 전달 보장은 at-least-once인가", "cloud-event-delivery"),
+    ]
+
+    def setUp(self):
+        self.kb = KnowledgeBase()
+
+    # ---- normal -------------------------------------------------------
+    def test_each_cloud_question_routes_to_its_document_first(self):
+        for question, doc_id in self.QUESTIONS:
+            with self.subTest(question=question):
+                self.assertEqual(self.kb.route(question)[:1], [doc_id])
+
+    # ---- boundary -------------------------------------------------------
+    def test_the_readme_agents_sample_step_still_routes_to_redis(self):
+        self.assertEqual(self.kb.route("cache user")[0],
+                         "cloud-redis-cache-provisioning")
+
+    def test_the_six_cloud_documents_are_draft_and_cite_existing_files(self):
+        doc_ids = sorted({doc_id for _, doc_id in self.QUESTIONS})
+        self.assertEqual(len(doc_ids), 6)
+        for doc_id in doc_ids:
+            doc = self.kb.load(doc_id)
+            self.assertEqual(doc["category"], "Cloud")
+            self.assertEqual(doc["status"], "draft")
+            self.assertTrue(doc["sources"])
+            for src in doc["sources"]:
+                if not src.startswith("http"):
+                    self.assertTrue(os.path.isfile(os.path.join(REPO, src)), src)
+
+    # ---- error -------------------------------------------------------------
+    def test_a_misspelled_cloud_id_is_an_error_not_a_guess(self):
+        with self.assertRaises(KbError):
+            self.kb.load("cloud-postgres-provision")
+
+
 if __name__ == "__main__":
     unittest.main()

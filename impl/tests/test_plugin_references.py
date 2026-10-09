@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CLAUDE_TMP = os.path.join(REPO, ".claude", "tmp")
@@ -204,12 +205,73 @@ class GeneratorTest(unittest.TestCase):
                 head = fh.readline()
             self.assertIn("생성물", head, "%s에 경고 배너가 없다" % name)
 
+    def test_verbs_header_carries_the_vocabulary_digest(self):
+        # issue #205: the reference names the vocabulary generation it was
+        # rendered from; only verbs.md carries it (plan D9).
+        gen = load_gen()
+        from lnpl import provenance
+        verbs = gen.render_verbs()
+        match = re.search(r"^> lnpl .+ 기준 \(vocab ([0-9a-f]{12})\)\.$", verbs, re.M)
+        self.assertIsNotNone(match, verbs[:400])
+        self.assertEqual(match.group(1),
+                         provenance._current_vocabulary_digest().split(":", 1)[1][:12])
+        types = gen.render_types()
+        self.assertRegex(types, r"(?m)^> lnpl \S+ 기준\.$")
+        self.assertNotIn("(vocab ", types)
+
+    def test_the_header_digest_changes_when_the_vocabulary_changes(self):
+        from lnpl import lower
+        gen = load_gen()
+        token = r"\(vocab ([0-9a-f]{12})\)"
+        plain = re.search(token, gen.render_verbs()).group(1)
+        extended = dict(lower.VERB_LEXICON)
+        extended["__test_probe__"] = ("read", {})
+        with mock.patch("lnpl.vocab.VERB_LEXICON", extended):
+            patched = re.search(token, gen.render_verbs()).group(1)
+        self.assertNotEqual(plain, patched)
+
+    def test_doc_without_a_digest_keeps_the_old_header_byte_for_byte(self):
+        # boundary: every renderer that passes no digest is unchanged
+        gen = load_gen()
+        self.assertEqual(gen._doc("T", "body"),
+                         "%s\n# T\n\n> lnpl %s 기준.\n\nbody"
+                         % (gen.BANNER % gen.SOURCE_CANON, gen.__version__))
+
     def test_every_verb_in_the_lexicon_reaches_the_document(self):
         from lnpl.lower import VERB_LEXICON
         with open(os.path.join(REFS, "verbs.md"), encoding="utf-8") as fh:
             text = fh.read()
         for verb in VERB_LEXICON:
             self.assertIn("`%s`" % verb, text)
+
+    def test_the_lookup_clause_rows_follow_the_lexicon_operation(self):
+        """issue #175 / RFC-0052: exactly the read/update/delete verbs carry
+        the optional `by <ref>` clause in their row; create/list do not."""
+        from lnpl.lower import VERB_LEXICON
+        with open(os.path.join(REFS, "verbs.md"), encoding="utf-8") as fh:
+            rows = {m.group(1): m.group(0) for m in
+                    re.finditer(r"^\| `(\w+)` \|.*$", fh.read(), re.M)}
+        lookup_verbs = {v for v, e in VERB_LEXICON.items()
+                        if e[1].get("operation") in ("read", "update", "delete")}
+        self.assertEqual(lookup_verbs, {"find", "read", "load", "authenticate",
+                                        "update", "delete"})
+        for verb, row in rows.items():
+            with self.subTest(verb=verb):
+                self.assertEqual("`by <ref>`" in row, verb in lookup_verbs, row)
+
+    def test_the_cached_clause_rows_follow_the_lexicon_operation(self):
+        """issue #188 / RFC-0062: exactly the four read verbs carry the
+        optional `cached` clause in their row."""
+        from lnpl.lower import VERB_LEXICON
+        with open(os.path.join(REFS, "verbs.md"), encoding="utf-8") as fh:
+            rows = {m.group(1): m.group(0) for m in
+                    re.finditer(r"^\| `(\w+)` \|.*$", fh.read(), re.M)}
+        read_verbs = {v for v, e in VERB_LEXICON.items()
+                      if e[1].get("operation") == "read"}
+        self.assertEqual(read_verbs, {"find", "read", "load", "authenticate"})
+        for verb, row in rows.items():
+            with self.subTest(verb=verb):
+                self.assertEqual("`cached`" in row, verb in read_verbs, row)
 
     def test_every_enforcement_row_reaches_the_document(self):
         from lnpl.diagnostics import ENFORCEMENT
@@ -480,6 +542,16 @@ class UndocumentedRuleTest(unittest.TestCase):
         """가드 참조는 Integer/DateTime만 받는다 — Presence도 마찬가지."""
         text = self._read("grammar.md")
         self.assertIn("Integer 또는 DateTime", text)
+
+    def test_guard_text_equality_rule_is_documented(self):
+        """RFC-0054: Text류 필드는 가드에서 `==`/`!=`로만 비교된다 — 옛 문장
+        ("Text 필드에 가드를 걸면 거부")은 이제 거짓이므로 남으면 안 된다."""
+        text = self._read("grammar.md")
+        self.assertIn("`==`/`!=`로만 비교할 수 있다", text)
+        self.assertIn("RFC-0054", text)
+        self.assertIn("`Password` 제외", text)
+        self.assertIn("when order.status == paid", text)
+        self.assertNotIn("`Text` 필드에 가드를 걸면 lowering이 거부한다", text)
 
     def test_step_object_spelling_rule_is_documented(self):
         """t3 F-4/F-6: 다단어 엔티티 참조 불가 + 복수형 불인식."""

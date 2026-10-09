@@ -10,15 +10,20 @@ from decimal import Decimal
 
 from lnpl.money import (
     CURRENCY_EXPONENT,
+    INT64_MAX,
+    INT64_MIN,
     MoneyCurrencyMismatchError,
     MoneyEncodePrecisionError,
     MoneyLiteralScaleError,
+    MoneyRangeError,
     add,
     avg_round,
     compare,
     encode_money,
     exponent,
+    mul_int,
     parse_money_literal,
+    sub,
 )
 
 
@@ -266,6 +271,74 @@ class ParseMoneyLiteralTest(unittest.TestCase):
     def test_inactive_currency_code_raises(self):
         with self.assertRaises(MoneyEncodePrecisionError):
             parse_money_literal("100XYZ")
+
+
+class SameCurrencySubTest(unittest.TestCase):
+    """RFC-0051 — `sub`: `add`의 통화 규칙 + 자기 결과의 64비트 도메인 검사."""
+
+    # (정상) 같은 통화의 뺄셈.
+    def test_sub_subtracts_same_currency_values(self):
+        self.assertEqual((950, "USD"), sub((1250, "USD"), (300, "USD")))
+
+    # (정상) 결과가 음수여도 된다 — Money에는 부호 제약이 없다.
+    def test_sub_may_produce_a_negative_amount(self):
+        self.assertEqual((-50, "JPY"), sub((100, "JPY"), (150, "JPY")))
+
+    # (에러) 통화가 다르면 money-currency-mismatch.
+    def test_subtracting_different_currencies_raises(self):
+        with self.assertRaises(MoneyCurrencyMismatchError) as ctx:
+            sub((100, "USD"), (100, "EUR"))
+
+        self.assertEqual("money-currency-mismatch", ctx.exception.code)
+        self.assertIn("different currencies", ctx.exception.message)
+
+    # (경계) 결과가 정확히 INT64_MAX / INT64_MIN이면 통과한다.
+    def test_sub_landing_exactly_on_the_int64_bounds_passes(self):
+        self.assertEqual((INT64_MAX, "USD"),
+                         sub((INT64_MAX - 1, "USD"), (-1, "USD")))
+        self.assertEqual((INT64_MIN, "USD"),
+                         sub((INT64_MIN + 1, "USD"), (1, "USD")))
+
+    # (경계·에러) 한 칸 넘으면 money-range.
+    def test_sub_one_past_the_int64_bounds_raises_money_range(self):
+        for a, b in (((INT64_MAX, "USD"), (-1, "USD")),
+                     ((INT64_MIN, "USD"), (1, "USD"))):
+            with self.subTest(a=a, b=b):
+                with self.assertRaises(MoneyRangeError) as ctx:
+                    sub(a, b)
+                self.assertEqual("money-range", ctx.exception.code)
+                self.assertIn("value out of the 64-bit range",
+                              ctx.exception.message)
+
+
+class MulIntTest(unittest.TestCase):
+    """RFC-0051 — `mul_int`: Money × Integer. 통화 질문은 없고 곱의 64비트
+    도메인만 검사한다."""
+
+    # (정상) 12.50 USD × 3 = 37.50 USD (minor 1250 × 3).
+    def test_mul_int_scales_the_minor_amount(self):
+        self.assertEqual((3750, "USD"), mul_int((1250, "USD"), 3))
+
+    # (경계) 0배와 음수 배도 정수 곱 그대로다.
+    def test_mul_int_by_zero_and_by_a_negative_integer(self):
+        self.assertEqual((0, "KWD"), mul_int((1250, "KWD"), 0))
+        self.assertEqual((-3000, "JPY"), mul_int((1000, "JPY"), -3))
+
+    # (에러) 곱이 INT64_MAX / INT64_MIN을 넘으면 money-range.
+    def test_mul_int_past_the_int64_bounds_raises_money_range(self):
+        for a, n in (((INT64_MAX // 2 + 1, "USD"), 2),
+                     ((INT64_MIN // 2 - 1, "USD"), 2)):
+            with self.subTest(a=a, n=n):
+                with self.assertRaises(MoneyRangeError) as ctx:
+                    mul_int(a, n)
+                self.assertEqual("money-range", ctx.exception.code)
+                self.assertIn("value out of the 64-bit range",
+                              ctx.exception.message)
+
+    # (경계) 곱이 정확히 INT64_MAX / INT64_MIN이면 통과한다.
+    def test_mul_int_landing_exactly_on_the_int64_bounds_passes(self):
+        self.assertEqual((INT64_MAX, "USD"), mul_int((INT64_MAX, "USD"), 1))
+        self.assertEqual((INT64_MIN, "USD"), mul_int((INT64_MIN // 2, "USD"), 2))
 
 
 if __name__ == "__main__":

@@ -56,6 +56,26 @@ workflow PlaceOrder
     emit orderPlaced
 """
 
+# issue #183: delete then read of the same row — the forcing input for
+# the repository-state asymmetry between the two backends (design.md
+# D7); both must now agree the read fails, since the Fake's delete
+# really removes the row.
+DELETE_THEN_READ = """capability postgres
+
+entity Widget
+    field
+        id UUID
+        n Integer
+
+service WidgetService
+    policy
+        timeout 5s
+
+workflow Remove
+    delete widget
+    read widget
+"""
+
 BACKENDS = ("fake", "sqlite")
 
 
@@ -104,9 +124,12 @@ class ContractTestCase(unittest.TestCase):
         rows = default_rows(doc, target, payload) if seed else {}
         if repository is None:
             repository = self._repository(backend)
-        # The Interpreter seeds the driver it is handed; seeding here too would
-        # hide a driver that ignored the rows it was given.
-        interp = Interpreter(doc, repo_rows=rows, repository=repository)
+        if rows:
+            # issue #197: `Interpreter` no longer seeds a persistent driver,
+            # so both backends get their rows the same way -- through the
+            # SPI method every driver implements.
+            repository.seed(rows)
+        interp = Interpreter(doc, repo_rows={}, repository=repository)
         return interp.run_workflow(target, payload), interp
 
 
@@ -186,6 +209,28 @@ class SqliteDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
         return driver
 
 
+class FakeDriverPassesDeleteTCKCasesTest(unittest.TestCase):
+    """Issue #183: `FakeRepository` cannot inherit the whole
+    `RepositoryDriverTCK` (it raises a bare `RunError`, never
+    `DriverError`, on a duplicate `create` and a nested `begin` — see
+    the module docstring above) — so each delete-related case is run
+    alone, via `_run_one_tck_case`, exactly as the rollback/conflict
+    cases above already do. None of these four touches the
+    `create`/`begin` paths that break the Fake's TCK membership."""
+
+    CASES = ("test_delete_removes_the_row",
+             "test_deleting_an_absent_row_reports_affected_zero",
+             "test_deleting_one_row_leaves_other_rows_of_the_same_entity_untouched",
+             "test_rollback_discards_a_delete_made_inside_the_transaction")
+
+    def test_the_fake_passes_every_delete_tck_case(self):
+        for case in self.CASES:
+            result = _run_one_tck_case(lambda: FakeRepository(), case)
+            self.assertEqual(result.testsRun, 1, case)
+            self.assertEqual(len(result.failures) + len(result.errors), 0,
+                             (case, result.failures, result.errors))
+
+
 class _NoOpRollbackDriver(SqliteRepositoryDriver):
     """Negative control (`testing/quality/harness-reverse-controls`) — this
     is a driver the rollback TCK case must NOT pass. `begin`/`commit` are
@@ -213,6 +258,19 @@ class _InertOutboxDriver(SqliteRepositoryDriver):
         return []
 
 
+class _TouchLosesBoundVersionDriver(SqliteRepositoryDriver):
+    """Negative control (testing/quality/harness-reverse-controls) for
+    issue #182's TCK case: reproduces the pre-fix bug by never
+    remembering a bound row, so `_touch`'s `update` has nothing to
+    advance and a later `persist` on that bound row sees a phantom
+    conflict."""
+
+    def execute(self, entity_id, operation, key):
+        if operation == "read":
+            return self._read(entity_id, key)
+        return super().execute(entity_id, operation, key)
+
+
 def _run_one_tck_case(driver_factory, case_name):
     """Run exactly one `RepositoryDriverTCK` method, in isolation, against a
     driver built by `driver_factory`, and return the `unittest.TestResult`."""
@@ -236,6 +294,7 @@ class RollbackTCKDiscriminatesTest(unittest.TestCase):
     """
 
     CASE = "test_rollback_discards_writes_made_inside_the_transaction"
+    DELETE_CASE = "test_rollback_discards_a_delete_made_inside_the_transaction"
 
     def test_the_case_fails_against_a_no_op_rollback_driver(self):
         box = tempfile.TemporaryDirectory()
@@ -277,6 +336,103 @@ class RollbackTCKDiscriminatesTest(unittest.TestCase):
         self.assertEqual(result.testsRun, 1)
         self.assertEqual(len(result.skipped), 1)
         self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+    def test_the_delete_case_also_fails_against_a_no_op_rollback_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "noop-delete-store.db")
+
+        result = _run_one_tck_case(lambda: _NoOpRollbackDriver(path),
+                                    self.DELETE_CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 1)
+
+    def test_the_delete_case_also_passes_against_the_real_sqlite_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "sqlite-delete-store.db")
+
+        result = _run_one_tck_case(lambda: SqliteRepositoryDriver(path),
+                                    self.DELETE_CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+
+class SelfConflictAfterUpdateTCKDiscriminatesTest(unittest.TestCase):
+    """harness-reverse-controls: before trusting that the new TCK case
+    catches a driver that loses the bound row's version after `update`,
+    prove it actually does — run it against a driver known wrong
+    (negative control) and the real driver (positive control), and
+    require opposite verdicts. Issue #182."""
+
+    CASE = "test_set_update_set_update_on_one_read_row_all_persist"
+
+    def test_the_case_fails_against_a_driver_that_loses_the_bound_version(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "lossy-store.db")
+
+        result = _run_one_tck_case(
+            lambda: _TouchLosesBoundVersionDriver(path), self.CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 1)
+
+    def test_the_case_passes_against_the_real_sqlite_driver(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "sqlite-store.db")
+
+        result = _run_one_tck_case(
+            lambda: SqliteRepositoryDriver(path), self.CASE)
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.failures) + len(result.errors), 0)
+
+
+class UpdateAffectingNoRowLeavesTheBoundVersionTest(unittest.TestCase):
+    """Issue #182's 0-rows boundary (review r1, F1): `_touch` advances a
+    bound row's `observed_version` only for a write that actually landed.
+    An `update` that matches no row wrote nothing, so advancing anyway
+    would let the next `persist` pass the version check against a version
+    this run never produced — masking another run's real change."""
+
+    def test_an_update_matching_no_row_does_not_advance_the_bound_version(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        path = os.path.join(box.name, "zero-rows-store.db")
+        driver = SqliteRepositoryDriver(path)
+        self.addCleanup(driver.close)
+        other = SqliteRepositoryDriver(path)
+        self.addCleanup(other.close)
+        driver.seed({"widget": {"w-z1": {"id": "w-z1", "n": 0}}})
+        row = driver.execute("widget", "read", "w-z1")
+        self.assertEqual(row.observed_version, 0)
+
+        # Another run deletes the row; this run's `update` then matches
+        # nothing.
+        other.execute("widget", "delete", "w-z1")
+        answer = driver.execute("widget", "update", "w-z1")
+
+        self.assertEqual(answer, {"affected": 0})
+        self.assertEqual(row.observed_version, 0)
+
+        # The other run re-creates the row and writes it once, leaving the
+        # store at `_version` 1 — exactly where a wrongly advanced binding
+        # would sit. This run's persist must still conflict, and the other
+        # run's write must survive.
+        other.execute("widget", "create", "w-z1")
+        theirs = other.execute("widget", "read", "w-z1")
+        theirs["n"] = 5
+        other.persist("widget", "w-z1", theirs)
+
+        row["n"] = 1
+        with self.assertRaises(DriverError) as caught:
+            driver.persist("widget", "w-z1", row)
+        self.assertIn("conflict", str(caught.exception))
+        self.assertEqual(other.execute("widget", "read", "w-z1")["n"], 5)
 
 
 class SharedContractTest(ContractTestCase):
@@ -438,6 +594,13 @@ class DriverSwapEquivalenceTest(ContractTestCase):
         self.assertEqual(fake, sqlite)
         self.assertTrue(fake["skipped"])
 
+    def test_a_delete_then_read_is_observationally_identical(self):
+        fake, sqlite = self.observe(DELETE_THEN_READ, {"id": "w-dtr", "n": 5})
+
+        self.assertEqual(fake, sqlite)
+        self.assertEqual(fake["status"], "failed")
+        self.assertEqual(fake["failed_step"], "read widget")
+
 
 class _FailingRepository(FakeRepository):
     """A driver that fails the way a real one does — network gone, disk full,
@@ -576,6 +739,7 @@ class DriverFaultTranslationTest(ContractTestCase):
         doc = compile_source(VALUE_INVENTORY)
         target = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
         payload = {"id": "p-1", "stock": 9, "quantity": 4}
+        driver.seed(default_rows(doc, target, payload))
         interp = Interpreter(doc, repo_rows=default_rows(doc, target, payload),
                              repository=driver)
 

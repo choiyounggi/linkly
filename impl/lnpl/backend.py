@@ -42,7 +42,7 @@ import sys
 import tempfile
 
 from lnpl.condition import (And, Arith, Comparison, ConditionError, Lit,
-                            Ref, encode_instant, guard_condition_text,
+                            NumericPredicate, Ref, encode_instant, guard_condition_text,
                             is_instant_text, looks_like_instant, parse_condition,
                             references)
 from lnpl.interp import (RunError, refinement_index, sample_payload,
@@ -51,7 +51,7 @@ from lnpl.interp import (RunError, refinement_index, sample_payload,
 # second copy of the seeding rule is the defect Wave 1 removed when three seeding
 # sites became one. `repo_policy` imports nothing from `interp`/`backend`/`cli`,
 # so this is cycle-safe.
-from lnpl.repo_policy import seeded_entities
+from lnpl.repo_policy import binding_name, seeded_entities
 from lnpl import resources
 
 MLIR_OPT = "mlir-opt"
@@ -251,11 +251,15 @@ def _parsed(cond_str):
 
 
 def _comparisons(cond):
-    """The Comparison terms of a parsed condition, in source order."""
+    """The Comparison terms of a parsed condition, in source order.
+
+    A `NumericPredicate` term of an `and` (RFC-0050) is not a comparison and
+    is skipped.
+    """
     if isinstance(cond, Comparison):
         return (cond,)
     if isinstance(cond, And):
-        return cond.terms
+        return tuple(t for t in cond.terms if isinstance(t, Comparison))
     return ()
 
 
@@ -534,6 +538,585 @@ def condition_field_names(document, workflow_id):
                     # compares against a register nobody wrote.
                     fields.update(references(parsed))
     return sorted(fields)
+
+
+def _uses_numeric_predicate(parsed):
+    """True if a parsed condition is, or has an `and` term that is, an
+    `is-numeric`/`is-not-numeric` predicate (RFC-0050)."""
+    if isinstance(parsed, NumericPredicate):
+        return True
+    return isinstance(parsed, And) and any(
+        isinstance(t, NumericPredicate) for t in parsed.terms)
+
+
+def workflow_uses_numeric_predicate(document, workflow_id):
+    """RFC-0050 §5: does any `when`/`until` guard of `workflow_id` —
+    condition or `or` alternative — use the numeric-shape predicate?
+
+    Mode B refuses such a workflow (`_render_std`); `differential.verify`
+    asks this first so the recorded exemption does not depend on a toolchain.
+    Walks the same `_workflow_steps` enumeration `condition_field_names` does.
+    Raises `BackendError` for an unknown workflow.
+    """
+    _, steps = _workflow_steps(document, workflow_id)
+    for _step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                if _uses_numeric_predicate(_parsed(text)):
+                    return True
+    return False
+
+
+def _numeric_predicate_offender(ops):
+    """`(step_name, guard_text)` of the first `when`/`until` guard in `ops`
+    -- `_lnpl_ops`'s seed/payload-truncated op stream, not a fresh
+    document scan -- using the numeric-shape predicate (RFC-0050), or
+    `None`.
+
+    Shared by `build()`'s pre-check (run on `_lnpl_ops`'s own result, with
+    `build()`'s own `seeded`/`payload`, before any toolchain lookup) and
+    `_render_std` (which renders that same stream) -- one walk, so neither
+    can disagree about which step is first, and the pre-check cannot
+    refuse a step `_render_std` would never reach (the
+    `seeded=frozenset()` counterexample, issue #186).
+    """
+    for entry in ops:
+        if entry["guard_mode"] not in ("when", "until"):
+            continue
+        for text in (entry["guard_condition"],) + tuple(
+                entry["guard_alternatives"] or ()):
+            if _uses_numeric_predicate(_parsed(text)):
+                return entry["name"], text
+    return None
+
+
+def _refuse_numeric_predicate(ops):
+    """Raise RFC-0050's refusal if `ops` reaches a numeric-shape-predicate
+    guard. Called by `build()` (on its own `_lnpl_ops` result, before
+    `verify_lnpl_module()`) and by `_render_std` (on the `ops` it
+    renders) -- the one place this message is written, so the two call
+    sites cannot drift apart (mirrors `_refuse_unsupported_guards`'s own
+    reasoning).
+    """
+    offender = _numeric_predicate_offender(ops)
+    if offender is not None:
+        step_name, guard_text = offender
+        raise BackendError(
+            "step %s: guard %r uses the numeric-shape predicate "
+            "(is-numeric/is-not-numeric), which mode B has no "
+            "compiled evaluator for (RFC-0050 §Mode B) — this "
+            "workflow runs in mode A only" % (step_name, guard_text))
+
+
+def _money_declared_fields(document):
+    """Every guard reference name that resolves to a declared Money field
+    (RFC-0051 §6): `<binding>.<field>` for each Entity's default binding and
+    each `create ... as <name>` alias, and `input.<field>` where the field's
+    LAST declaring Entity in document order is Money — lowering's
+    `input.<field>` table is a flat, last-entity-wins dict, and mode B must
+    agree with it on which references are Money."""
+    return _declared_fields_of_bases(document, ("Money",))
+
+
+# RFC-0054: the bases lowering opens to guard equality — BASE_CATEGORY "text"
+# minus DateTime and Password (lower.TEXT_EQUALITY_EXCLUDED_BASES).
+_TEXT_EQUALITY_BASES = ("UUID", "Email", "Phone", "Currency", "Html",
+                        "Markdown", "Text")
+
+
+def _text_declared_fields(document):
+    """Every guard reference name that resolves to a declared Text-family
+    field (RFC-0054), by the same rules `_money_declared_fields` uses —
+    `input.<field>` included, last-entity-wins like lowering."""
+    return _declared_fields_of_bases(document, _TEXT_EQUALITY_BASES)
+
+
+def _declared_fields_of_bases(document, bases):
+    """Guard reference names whose declared field's base is in `bases`: the
+    shared body of `_money_declared_fields` and `_text_declared_fields`."""
+    nodes = {n["id"]: n for n in document["nodes"]}
+    base_of = {name: r["base"] for name, r in refinement_index(document).items()}
+    entities = [n for n in document["nodes"] if n["kind"] == "Entity"]
+
+    def fields_of(entity):
+        return {f["name"] for f in entity["fields"]
+                if base_of.get(f["type"], f["type"]) in bases}
+
+    result = set()
+    for ent in entities:
+        for field in fields_of(ent):
+            result.add("%s.%s" % (binding_name(ent), field))
+    for node in document["nodes"]:
+        if (node["kind"] == "RepositoryCall"
+                and node.get("operation") == "create" and node.get("result")):
+            ent = nodes.get(node["entity"])
+            if ent is not None:
+                for field in fields_of(ent):
+                    result.add("%s.%s" % (node["result"], field))
+    last_base = {}
+    for ent in entities:
+        for f in ent["fields"]:
+            last_base[f["name"]] = base_of.get(f["type"], f["type"])
+    result.update("input.%s" % name for name, base in last_base.items()
+                  if base in bases)
+    return result
+
+
+def _money_guard_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when`/`until` condition or `or`
+    alternative of `workflow_id` that references a declared Money field, or
+    None. Raises `BackendError` for an unknown workflow."""
+    return _guard_offender(document, workflow_id,
+                           _money_declared_fields(document))
+
+
+def _text_guard_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when`/`until` condition or `or`
+    alternative of `workflow_id` that references a declared Text-family field
+    (RFC-0054), or None. Lowering admits such a field in a guard only as an
+    `==`/`!=` operand, so any reference to one is that comparison. Raises
+    `BackendError` for an unknown workflow."""
+    return _guard_offender(document, workflow_id,
+                           _text_declared_fields(document))
+
+
+def _guard_offender(document, workflow_id, fields):
+    """The first guard text of `workflow_id` referencing a name in `fields`."""
+    _, steps = _workflow_steps(document, workflow_id)
+    if not fields:
+        return None
+    for step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                parsed = _parsed(text)
+                if parsed is not None and any(
+                        name in fields for name in references(parsed)):
+                    return step["name"], text
+    return None
+
+
+def workflow_uses_money_guard(document, workflow_id):
+    """RFC-0051 §6: does any `when`/`until` guard of `workflow_id` —
+    condition or `or` alternative — compare a declared Money field?
+
+    Mode B refuses such a workflow (`emit_mlir`); `differential.verify` asks
+    this first so the recorded exemption does not depend on a toolchain.
+    Raises `BackendError` for an unknown workflow.
+    """
+    return _money_guard_offender(document, workflow_id) is not None
+
+
+def _lookup_offender(document, workflow_id):
+    """`(step_name, entity_id, lookup_ref)` of the first reachable
+    RepositoryCall of `workflow_id` carrying a `lookup` key (issue #175), or
+    None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is not None and effect["kind"] == "RepositoryCall"
+                    and effect.get("lookup")):
+                return step["name"], effect["entity"], effect["lookup"]
+    return None
+
+
+def workflow_uses_lookup(document, workflow_id):
+    """RFC-0052 §6: does any reachable RepositoryCall of `workflow_id` carry
+    a `by <ref>` lookup key?
+
+    Mode B refuses such a workflow (`emit_mlir`) — the single-key seed
+    projection cannot say which row a lookup addresses; `differential.verify`
+    asks this first so the recorded exemption does not depend on a toolchain.
+    Raises `BackendError` for an unknown workflow.
+    """
+    return _lookup_offender(document, workflow_id) is not None
+
+
+def _optional_guard_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when`/`until` guard (condition
+    or alternative) of `workflow_id` that references a field declared
+    `optional` -- Presence or comparison alike (RFC-0053 §Mode B), or None.
+    No dimension carve-out applies: mode A reads an unresolved reference as
+    false, while mode B's value encoding gives an absent field the i64 `0`,
+    which can satisfy a comparison mode A fails. A `create ... as <alias>`
+    binding resolves to its entity the way `_money_declared_fields` does;
+    `input.<field>` counts as optional when ANY declaring entity marks it so
+    (declaration-order independent). Raises `BackendError` for an unknown
+    workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    entities = [n for n in document["nodes"] if n["kind"] == "Entity"]
+    by_binding = {binding_name(e): e for e in entities}
+    for node in document["nodes"]:
+        if (node["kind"] == "RepositoryCall" and node.get("operation") == "create"
+                and node.get("result")):
+            ent = nodes.get(node["entity"])
+            if ent is not None:
+                by_binding[node["result"]] = ent
+
+    def field_optional(ref):
+        binding, _, field = ref.partition(".")
+        if binding == "input":
+            return any(f["name"] == field and f.get("optional")
+                       for e in entities for f in e["fields"])
+        ent = by_binding.get(binding)
+        return bool(ent) and any(f["name"] == field and f.get("optional")
+                                 for f in ent["fields"])
+
+    for step, cond in steps:
+        if cond and isinstance(cond, tuple) and len(cond) == 3:
+            _mode, cond_str, alternatives = cond
+            for text in (cond_str,) + tuple(alternatives):
+                parsed = _parsed(text)
+                if parsed is not None and any(
+                        field_optional(name) for name in references(parsed)):
+                    return step["name"], text
+    return None
+
+
+def workflow_uses_optional_guard(document, workflow_id):
+    """RFC-0053 §Mode B: does any `when`/`until` guard of `workflow_id` --
+    condition or `or` alternative, Presence or comparison -- read a field
+    declared `optional`?
+
+    Mode B refuses such a workflow (`emit_mlir`, `build`);
+    `differential.verify` asks this right after the lookup check so the
+    recorded exemption does not depend on a toolchain. Raises
+    `BackendError` for an unknown workflow.
+    """
+    return _optional_guard_offender(document, workflow_id) is not None
+
+
+def workflow_uses_text_guard(document, workflow_id):
+    """RFC-0054 §Mode B: does any `when`/`until` guard of `workflow_id` —
+    condition or `or` alternative — compare a declared Text-family field?
+
+    Mode B refuses such a workflow (`emit_mlir`, `build`);
+    `differential.verify` asks this last among the guard exemptions (after
+    the optional check) so the recorded exemption does not depend on a
+    toolchain. Raises `BackendError` for an unknown workflow.
+    """
+    return _text_guard_offender(document, workflow_id) is not None
+
+
+def _fill_source_create_offender(document, workflow_id):
+    """`(step_name, entity_id)` of the first `create` of `workflow_id` (guarded
+    or not) whose entity declares a `derived generated`/`derived clock` field
+    (RFC-0055 §8), or None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is None or effect["kind"] != "RepositoryCall"
+                    or effect.get("operation") != "create"):
+                continue
+            entity = nodes.get(effect["entity"])
+            if entity is not None and any(
+                    f.get("fill_source") for f in entity.get("fields", [])):
+                return step["name"], effect["entity"]
+    return None
+
+
+def workflow_uses_fill_source_create(document, workflow_id):
+    """RFC-0055 §8: does `workflow_id` create a row of an entity with a
+    fill-source field? Mode B has no channel for the run's id/instant, so it
+    refuses (`emit_mlir`, `build`); `differential.verify` asks this after the
+    Text-guard check and before the `fail` check, so the exemption needs no
+    toolchain. Raises `BackendError` for an unknown workflow."""
+    return _fill_source_create_offender(document, workflow_id) is not None
+
+
+def _fail_offender(document, workflow_id):
+    """`(step_name, code)` of the first reachable `fail` step (a `Rejection`
+    child, RFC-0056) of `workflow_id`, or None. Raises `BackendError` for an
+    unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if effect is not None and effect["kind"] == "Rejection":
+                return step["name"], effect["code"]
+    return None
+
+
+def workflow_uses_fail(document, workflow_id):
+    """RFC-0056 §Mode B: does `workflow_id` reach a `fail` step anywhere?
+
+    Mode B refuses such a workflow (`emit_mlir`, `build`) — its four
+    observation classes carry no author-declared failure code, so a
+    comparison could only call two different outcomes equivalent.
+    `differential.verify` asks this last, after every guard exemption, so the
+    recorded exemption does not depend on a toolchain. Raises `BackendError`
+    for an unknown workflow.
+    """
+    return _fail_offender(document, workflow_id) is not None
+
+
+def _respond_term_offender(document, workflow_id):
+    """`(step_name, "aggregate"|"list")` of the first reachable `respond`
+    carrying a named aggregate term or a list term (RFC-0059), or None.
+    Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if effect is None or effect["kind"] != "Response":
+                continue
+            if effect.get("aggTerms"):
+                return step["name"], "aggregate"
+            if effect.get("listTerm"):
+                return step["name"], "list"
+    return None
+
+
+def workflow_uses_respond_aggregate_or_list(document, workflow_id):
+    """RFC-0059 §Mode B: does `workflow_id` answer a named aggregate term or a
+    list term? A RowSet, and an aggregate computed from it, are none of the
+    four observation classes mode B compares (RFC-0045 §7's reasoning), so
+    mode B refuses such a workflow — asked after `fail` and before RFC-0060's
+    two links, by both `_refuse_unsupported_guards` and `differential.verify`.
+    Raises
+    `BackendError` for an unknown workflow.
+    """
+    return _respond_term_offender(document, workflow_id) is not None
+
+
+def _workflow_nodes(document, workflow_id):
+    nodes = {n["id"]: n for n in document["nodes"]}
+    wf = nodes.get(workflow_id)
+    if wf is None or wf["kind"] != "Workflow":
+        raise BackendError("no such workflow: %r" % workflow_id)
+    return nodes, wf
+
+
+def _first_step_name(nodes, node_id):
+    """The name of the first `WorkflowStep` at or under `node_id`, or the id."""
+    node = nodes.get(node_id)
+    if node is None:
+        return node_id
+    if node["kind"] == "WorkflowStep":
+        return node["name"]
+    for child_id in node.get("children") or []:
+        name = _first_step_name(nodes, child_id)
+        if name != child_id:
+            return name
+    return node_id
+
+
+def _assigned_guard_offender(document, workflow_id):
+    """`(step_name, guard_text, field)` of the first guard (condition or `or`
+    alternative) of `workflow_id` that reads a field an earlier step assigns
+    (RFC-0060 §Mode B), or None. Raises `BackendError` for an unknown workflow.
+
+    Walks the tree in source order exactly as `lower._check_scoped_conditions`
+    walked it when RFC-0015 refused this at compile time — a guard is judged
+    before the item it owns — so mode B refuses precisely the workflows that
+    used to fail to compile. `_workflow_steps` is not used: it unrolls `until`,
+    which would also catch a loop whose body assigns the field its own
+    condition reads, a workflow RFC-0015 always admitted.
+    """
+    nodes, wf = _workflow_nodes(document, workflow_id)
+    assigned = set()
+
+    def visit(ids):
+        for nid in ids:
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            if node["kind"] == "Guard":
+                for text in ((node.get("condition"),)
+                             + tuple(node.get("alternatives") or ())):
+                    parsed = _parsed(text) if text else None
+                    if parsed is None:
+                        continue
+                    for name in references(parsed):
+                        if name in assigned:
+                            children = node.get("children") or [nid]
+                            return (_first_step_name(nodes, children[0]),
+                                    text, name)
+                found = visit(node.get("children") or [])
+            elif node["kind"] == "WorkflowStep":
+                for child_id in node.get("children") or []:
+                    child = nodes.get(child_id)
+                    if child is not None and child["kind"] == "Assignment":
+                        assigned.add(child["target"])
+                found = None
+            else:
+                found = visit(node.get("children") or [])
+            if found is not None:
+                return found
+        return None
+
+    return visit(wf.get("children") or [])
+
+
+def workflow_uses_assigned_guard_field(document, workflow_id):
+    """RFC-0060 §Mode B: does a guard of `workflow_id` read a field an earlier
+    step assigns? Mode A evaluates it against the current value; mode B fixes
+    every condition field at entry (RFC-0008 G8), so it refuses (`emit_mlir`,
+    `build`) and `differential.verify` asks this after
+    `workflow_uses_respond_aggregate_or_list`.
+    Raises `BackendError` for an unknown workflow."""
+    return _assigned_guard_offender(document, workflow_id) is not None
+
+
+def _otherwise_offender(document, workflow_id):
+    """`(step_name, guard_text)` of the first `when` guard of `workflow_id` that
+    owns an `otherwise` item (a second child, RFC-0060), or None. Raises
+    `BackendError` for an unknown workflow.
+
+    A node walk, not `_workflow_steps`: that flattening tags every child of a
+    `when` with its condition, so the `otherwise` item is indistinguishable
+    from the guarded one there.
+    """
+    nodes, wf = _workflow_nodes(document, workflow_id)
+
+    def visit(ids):
+        for nid in ids:
+            node = nodes.get(nid)
+            if node is None:
+                continue
+            children = node.get("children") or []
+            if node["kind"] == "Guard" and len(children) > 1:
+                return (_first_step_name(nodes, children[0]),
+                        guard_condition_text(node.get("condition"),
+                                             node.get("alternatives")))
+            if node["kind"] != "WorkflowStep":
+                found = visit(children)
+                if found is not None:
+                    return found
+        return None
+
+    return visit(wf.get("children") or [])
+
+
+def workflow_uses_otherwise(document, workflow_id):
+    """RFC-0060 §Mode B: does a guard of `workflow_id` own an `otherwise` item?
+    Mode B compiles no branch that runs on a false guard, so it refuses
+    (`emit_mlir`, `build`); `differential.verify` asks this last, after
+    `workflow_uses_assigned_guard_field`. Raises `BackendError` for an unknown
+    workflow."""
+    return _otherwise_offender(document, workflow_id) is not None
+
+
+def _cached_read_offender(document, workflow_id):
+    """`(step_name, entity_id)` of the first reachable RepositoryCall of
+    `workflow_id` carrying a `cached` read-through clause (issue #188), or
+    None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is not None and effect["kind"] == "RepositoryCall"
+                    and effect.get("cached")):
+                return step["name"], effect["entity"]
+    return None
+
+
+def workflow_uses_cached_read(document, workflow_id):
+    """RFC-0062 §Mode B: does any reachable RepositoryCall of `workflow_id`
+    carry `cached`? Mode B has no cache state, so it refuses; this is
+    asked by `differential.verify` before the toolchain check."""
+    return _cached_read_offender(document, workflow_id) is not None
+
+
+def _refuse_unsupported_guards(document, workflow_id):
+    """RFC-0051/0052/0053/0054 §Mode B: refuse, by name, a Money-guard,
+    lookup-key, optional-field-guard or Text-guard workflow — called by
+    `build()` immediately before `verify_lnpl_module()` reaches any toolchain
+    lookup, and by `emit_mlir()` for direct callers. Single source of the four
+    messages: reuses `_money_guard_offender`, `_lookup_offender`,
+    `_optional_guard_offender` and `_text_guard_offender` verbatim, in the same
+    Money-then-Lookup-then-Optional-then-Text order `differential.verify` asks
+    them, so `build` and `diff` cannot drift apart. A fill-source create
+    (RFC-0055, `_fill_source_create_offender`) is refused next, then a `fail`
+    step (RFC-0056, `_fail_offender`), then a `respond` aggregate or list
+    term (RFC-0059, `_respond_term_offender`), then a guard reading a field
+    an earlier step assigns, a guard owning an `otherwise` item
+    (RFC-0060, `_assigned_guard_offender`, `_otherwise_offender`) and,
+    last, a `cached` read (RFC-0062, `_cached_read_offender`), in the
+    same positions in both.
+    The numeric-shape predicate (RFC-0050) is deliberately NOT checked
+    here either — it depends on `_lnpl_ops`'s seed/payload-truncated ops
+    stream (issue #186), which this document-level check cannot safely
+    replicate. `build()` checks it separately, right after this call
+    and still before `verify_lnpl_module()` reaches any toolchain
+    lookup, by running `_refuse_numeric_predicate` over `_lnpl_ops`'s
+    own result — the same function `_render_std` calls, so the two
+    cannot drift apart on that message either.
+    """
+    offender = _money_guard_offender(document, workflow_id)
+    if offender is not None:
+        step_name, guard_text = offender
+        raise BackendError(
+            "step %s: guard %r compares Money, which has no compiled "
+            "evaluator (RFC-0051 §Mode B) — run it in mode A"
+            % (step_name, guard_text))
+    lookup_offender = _lookup_offender(document, workflow_id)
+    if lookup_offender is not None:
+        step_name, entity_id, lookup_ref = lookup_offender
+        raise BackendError(
+            "step %s: %s uses a lookup key (by %s), which the single-key "
+            "seed projection cannot model (RFC-0052 §Mode B) — run it in "
+            "mode A" % (step_name, entity_id, lookup_ref))
+    optional_offender = _optional_guard_offender(document, workflow_id)
+    if optional_offender is not None:
+        step_name, guard_text = optional_offender
+        raise BackendError(
+            "step %s: guard %r reads an `optional` field, which mode B has "
+            "no compiled evaluator for (RFC-0053 §Mode B, recorded "
+            "exemption) — run it in mode A" % (step_name, guard_text))
+    text_offender = _text_guard_offender(document, workflow_id)
+    if text_offender is not None:
+        step_name, guard_text = text_offender
+        raise BackendError(
+            "step %s: guard %r compares a Text-family field, which mode B has "
+            "no compiled evaluator for (RFC-0054 §Mode B, recorded exemption) "
+            "— run it in mode A" % (step_name, guard_text))
+    fill_offender = _fill_source_create_offender(document, workflow_id)
+    if fill_offender is not None:
+        step_name, entity_id = fill_offender
+        raise BackendError(
+            "step %s: create %s fills a `derived generated`/`derived clock` "
+            "field from the run, which mode B has no channel for (RFC-0055 "
+            "§Mode B, recorded exemption) — run it in mode A"
+            % (step_name, entity_id))
+    fail_offender = _fail_offender(document, workflow_id)
+    if fail_offender is not None:
+        step_name, code = fail_offender
+        raise BackendError(
+            "step %s: `fail %s` has no compiled evaluator (RFC-0056 §Mode B, "
+            "recorded exemption) — run it in mode A" % (step_name, code))
+    respond_offender = _respond_term_offender(document, workflow_id)
+    if respond_offender is not None:
+        step_name, term_kind = respond_offender
+        raise BackendError(
+            "step %s: `respond` %s term has no compiled evaluator (RFC-0059 "
+            "§Mode B, recorded exemption) — run it in mode A"
+            % (step_name, term_kind))
+    assigned_offender = _assigned_guard_offender(document, workflow_id)
+    if assigned_offender is not None:
+        step_name, guard_text, field = assigned_offender
+        raise BackendError(
+            "step %s: guard %r reads %s, which an earlier step assigns — mode B "
+            "fixes condition fields at entry, so it would compare the value "
+            "before the assignment (RFC-0060 §Mode B, recorded exemption) — "
+            "run it in mode A" % (step_name, guard_text, field))
+    otherwise_offender = _otherwise_offender(document, workflow_id)
+    if otherwise_offender is not None:
+        step_name, guard_text = otherwise_offender
+        raise BackendError(
+            "step %s: guard %r owns an `otherwise` item, which mode B has no "
+            "compiled branch for (RFC-0060 §Mode B, recorded exemption) — run "
+            "it in mode A" % (step_name, guard_text))
+    cached_offender = _cached_read_offender(document, workflow_id)
+    if cached_offender is not None:
+        step_name, entity_id = cached_offender
+        raise BackendError(
+            "step %s: %s is read with `cached`, and mode B has no cache state "
+            "to consult (RFC-0062 §Mode B, recorded exemption) — run it in "
+            "mode A" % (step_name, entity_id))
 
 
 def encode_condition_value(value):
@@ -944,8 +1527,23 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
                 # makes routine, not exceptional.
                 if node["entity"] not in seeded_now and node["entity"] not in created:
                     fail_at = index
+            elif kind == "RepositoryCall" and operation == "delete":
+                # issue #183: an unconditional delete really removes the
+                # row (FakeRepository.execute / SqliteRepositoryDriver.
+                # _touch), so neither the seed nor an earlier
+                # unconditional create still backs this entity
+                # afterward -- a later unconditional `read` must now
+                # statically fail the same way mode A's Fake does, and a
+                # later unconditional `create` must insert rather than
+                # conflict, the same way a real DELETE followed by
+                # INSERT does.
+                seeded_now.discard(node["entity"])
+                created.discard(node["entity"])
             elif kind == "RepositoryCall" and operation == "create":
-                if node["entity"] in seeded_now or node["entity"] in created:
+                # RFC-0055 §6: mode A refuses an id-less create (id-required)
+                # before the write; a fill-source create never reaches here.
+                if (payload.get("id") is None or node["entity"] in seeded_now
+                        or node["entity"] in created):
                     fail_at = index
                 else:
                     created.add(node["entity"])
@@ -1227,6 +1825,12 @@ def _render_std(module_attrs, ops):
         # something to expand by hand in an emitter — xor with true does it.
         lines.append("    %true_i1 = arith.constant true")
 
+    # RFC-0050 §5: no compiled evaluator for `is-numeric`/`is-not-numeric`.
+    # One walk of `ops`, shared with `build()`'s pre-check (see
+    # `_refuse_numeric_predicate`) so the two call sites cannot raise
+    # different text for the same workflow.
+    _refuse_numeric_predicate(ops)
+
     # `entry`, not `op` — the guard branches below unpack `field, op, value` from
     # a parsed condition, and a loop named `op` would be shadowed mid-body.
     for entry in ops:
@@ -1336,7 +1940,11 @@ def emit_mlir(document, workflow_id, seeded=None, payload=None):
     standard-dialect module and the `lnpl` module cannot describe different
     workflows. The signature and the output are unchanged from before the dialect
     existed; `impl/tests/golden/` holds the pre-change bytes that prove it.
+
+    RFC-0051 §6: a guard comparing a declared Money field is refused before
+    any MLIR is rendered — Money's currency cannot ride an i64 parameter.
     """
+    _refuse_unsupported_guards(document, workflow_id)
     return _render_std(*_lnpl_ops(document, workflow_id, seeded, payload))
 
 
@@ -1427,6 +2035,8 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
     lnpl_text = emit_lnpl_mlir(document, workflow_id, seeded, payload)
     with open(lnpl_path, "w", encoding="utf-8") as fh:
         fh.write(lnpl_text)
+    _refuse_unsupported_guards(document, workflow_id)
+    _refuse_numeric_predicate(_lnpl_ops(document, workflow_id, seeded, payload)[1])
     verify_lnpl_module(lnpl_text, path=lnpl_path)
 
     with open(mlir_path, "w", encoding="utf-8") as fh:

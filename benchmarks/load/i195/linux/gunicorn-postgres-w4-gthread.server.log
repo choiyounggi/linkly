@@ -1,0 +1,13 @@
+[2026-10-08 02:58:15 +0000] [53701] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:58:15 +0000] [53701] [INFO] Listening at: http://127.0.0.1:18195 (53701)
+[2026-10-08 02:58:15 +0000] [53701] [INFO] Using worker: gthread
+[2026-10-08 02:58:15 +0000] [53705] [INFO] Booting worker with pid: 53705
+[2026-10-08 02:58:15 +0000] [53712] [INFO] Booting worker with pid: 53712
+[2026-10-08 02:58:15 +0000] [53716] [INFO] Booting worker with pid: 53716
+[2026-10-08 02:58:15 +0000] [53721] [INFO] Booting worker with pid: 53721
+[2026-10-08 03:02:00 +0000] [53701] [INFO] Handling signal: term
+[2026-10-08 03:02:00 +0000] [53716] [INFO] Worker exiting (pid: 53716)
+[2026-10-08 03:02:00 +0000] [53705] [INFO] Worker exiting (pid: 53705)
+[2026-10-08 03:02:00 +0000] [53712] [INFO] Worker exiting (pid: 53712)
+[2026-10-08 03:02:00 +0000] [53721] [INFO] Worker exiting (pid: 53721)
+[2026-10-08 03:02:00 +0000] [53701] [INFO] Shutting down: Master

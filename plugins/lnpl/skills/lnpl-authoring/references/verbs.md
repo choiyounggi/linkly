@@ -2,7 +2,7 @@
 
 # 동사 어휘 (VERB_LEXICON)
 
-> lnpl 0.8.0 기준.
+> lnpl 0.8.0 기준 (vocab 526c0136b2f1).
 
 워크플로 스텝의 **첫 낱말**이 동사다. 아래 표에 없는 동사는 에러가 아니라 **효과 없는 no-op**으로 실행된다 — 파일은 컴파일되고, 런타임은 아무것도 하지 않는다(issue #36). 진단 코드 `unknown-verb`가 그때 발생한다.
 
@@ -10,15 +10,15 @@
 |------|-----------------|------|
 | `set` | `Assignment` | — |
 | `validate` | `Validation` | — |
-| `authenticate` | `RepositoryCall` | operation=read |
-| `load` | `RepositoryCall` | operation=read |
-| `find` | `RepositoryCall` | operation=read |
-| `read` | `RepositoryCall` | operation=read |
+| `authenticate` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
+| `load` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
+| `find` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
+| `read` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
 | `list` | `RepositoryCall` | operation=query |
 | `create` | `RepositoryCall` | operation=create |
 | `insert` | `RepositoryCall` | operation=create |
-| `update` | `RepositoryCall` | operation=update |
-| `delete` | `RepositoryCall` | operation=delete |
+| `update` | `RepositoryCall` | operation=update; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
+| `delete` | `RepositoryCall` | operation=delete; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
 | `cache` | `CacheAccess` | operation=set |
 | `invalidate` | `CacheAccess` | operation=invalidate |
 | `call` | `NetworkCall` | — |
@@ -29,6 +29,7 @@
 | `format` | `Assignment` | — |
 | `respond` | `Response` | — |
 | `note` | `Annotation` | — |
+| `fail` | `Rejection` | — |
 
 `return`, `log`, `send`, `notify`, `verify` 같은 낱말은 이 표에 **없다**. 자연스러워 보여도 아무 효과가 없다.
 

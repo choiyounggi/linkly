@@ -90,6 +90,9 @@
             "$ref": "#/$defs/nodeResponse"
           },
           {
+            "$ref": "#/$defs/nodeRejection"
+          },
+          {
             "$ref": "#/$defs/nodeNetworkCall"
           },
           {
@@ -171,6 +174,19 @@
           },
           "required": {
             "type": "boolean"
+          },
+          "optional": {
+            "type": "boolean"
+          },
+          "derived": {
+            "type": "boolean"
+          },
+          "fill_source": {
+            "type": "string",
+            "enum": [
+              "generated",
+              "clock"
+            ]
           }
         },
         "required": [
@@ -826,12 +842,107 @@
             "type": "string"
           },
           "minItems": 1
+        },
+        "aggTerms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-zA-Z0-9]*$"
+              },
+              "func": {
+                "enum": [
+                  "sum",
+                  "count",
+                  "avg",
+                  "min",
+                  "max"
+                ]
+              },
+              "ref": {
+                "type": "string"
+              },
+              "agg_field_type": {
+                "enum": [
+                  "Integer",
+                  "DateTime",
+                  "Money"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "func",
+              "ref"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "listTerm": {
+          "type": "object",
+          "properties": {
+            "binding": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "binding"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "refs"
+          ]
+        },
+        {
+          "required": [
+            "aggTerms"
+          ]
+        },
+        {
+          "required": [
+            "listTerm"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "nodeRejection": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "Rejection"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "meta": {
+          "$ref": "#/$defs/meta"
+        },
+        "line": {
+          "$ref": "#/$defs/lineNumber"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
         }
       },
       "required": [
         "kind",
         "id",
-        "refs"
+        "code"
       ],
       "additionalProperties": false
     },
@@ -875,8 +986,25 @@
               },
               "minItems": 1
             },
+            "textEqualityOperands": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
             "children": {
-              "$ref": "#/$defs/nodeIdArray"
+              "allOf": [
+                {
+                  "$ref": "#/$defs/nodeIdArray"
+                },
+                {
+                  "minItems": 1,
+                  "maxItems": 2
+                }
+              ]
             }
           },
           "required": [
@@ -897,6 +1025,24 @@
                   "until",
                   "repeat"
                 ]
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "children"
+            ],
+            "properties": {
+              "mode": {
+                "enum": [
+                  "until",
+                  "repeat"
+                ]
+              },
+              "children": {
+                "minItems": 2
               }
             }
           }
@@ -941,6 +1087,25 @@
           "items": {
             "type": "string"
           }
+        },
+        "bodyMap": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "ref"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -984,6 +1149,12 @@
         },
         "result": {
           "type": "string"
+        },
+        "lookup": {
+          "type": "string"
+        },
+        "cached": {
+          "type": "boolean"
         },
         "predicate": {
           "type": "array",
@@ -1163,7 +1334,23 @@
           "$ref": "#/$defs/nodeId"
         },
         "payloadMap": {
-          "type": "string"
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "ref"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [

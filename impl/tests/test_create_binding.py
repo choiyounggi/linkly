@@ -18,6 +18,7 @@ never needed (a network result is never `set`-able).
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,7 @@ from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import MASK, Interpreter
 from lnpl.lower import LowerError, VERB_LEXICON, lower
 from lnpl.parser import parse
-from lnpl.repo_policy import row_key
+from lnpl.repo_policy import default_rows, row_key
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -43,6 +44,19 @@ def compile_doc(source, module="m"):
 
 def nodes_of(doc, kind):
     return [n for n in doc["nodes"] if n["kind"] == kind]
+
+
+def _tmp_store_dir(test):
+    """A per-test sqlite directory under `.claude/tmp`, removed on teardown.
+
+    `.claude/tmp`, never `/tmp`/`$TMPDIR`: repo policy, enforced for `mkdtemp`
+    by `test_tmp_hygiene.py`. Mirrors `test_repo_state.py`'s `_tmp_workdir`.
+    """
+    base = os.path.join(REPO_ROOT, ".claude", "tmp")
+    os.makedirs(base, exist_ok=True)
+    path = tempfile.mkdtemp(prefix="lnpl-t174-", dir=base)
+    test.addCleanup(shutil.rmtree, path, True)
+    return path
 
 
 def order_source(body, extra_fields=""):
@@ -120,18 +134,104 @@ class TestAsBinding(unittest.TestCase):
         calls = nodes_of(doc, "RepositoryCall")
         self.assertEqual(calls[0]["result"], "newOrder")
 
-    def test_update_and_delete_still_ignore_trailing_tokens(self):
-        """`update`/`delete` answer an affected-row count, not a row — issue
-        #97 extends the notation to `create` only, so trailing tokens after
-        `update`/`delete` are ignored exactly as before (no `result` field,
-        no error) rather than being read as an `as <name>` clause."""
-        mod = compile_doc(order_source(
-            "    find order\n"
-            "    update order as somethingElse\n"))
-        doc = mod.to_document()
-        calls = nodes_of(doc, "RepositoryCall")
-        update_call = next(c for c in calls if c["operation"] == "update")
-        self.assertNotIn("result", update_call)
+    def test_update_and_delete_refuse_trailing_words_other_than_by(self):
+        """issue #175 (Gate-1 ruling): trailing words after `update`/`delete`
+        used to be dropped silently (`update order as somethingElse` compiled
+        to a plain update). The only trailing clause they accept now is
+        `by <ref>` — anything else is a compile error naming that clause."""
+        for verb in ("update", "delete"):
+            with self.subTest(verb=verb):
+                with self.assertRaises(LowerError) as ctx:
+                    compile_doc(order_source(
+                        "    find order\n"
+                        "    %s order as somethingElse\n" % verb))
+                self.assertIn("`by <ref>`", str(ctx.exception))
+                self.assertIn("somethingElse", str(ctx.exception))
+
+
+class TestLookupKeyClause(unittest.TestCase):
+    """issue #175 / RFC-0052: `<verb> <Entity> by <ref>` on the read family,
+    `update` and `delete` carries the ref as the node's `lookup` field; every
+    other trailing word on those verbs is refused."""
+
+    def _call(self, body):
+        doc = compile_doc(order_source(body)).to_document()
+        return nodes_of(doc, "RepositoryCall")
+
+    def test_each_read_family_verb_carries_the_lookup(self):
+        for verb in ("find", "read", "load", "authenticate"):
+            with self.subTest(verb=verb):
+                calls = self._call("    %s order by input.id\n" % verb)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0]["operation"], "read")
+                self.assertEqual(calls[0]["lookup"], "input.id")
+
+    def test_update_and_delete_carry_the_lookup(self):
+        for verb in ("update", "delete"):
+            with self.subTest(verb=verb):
+                calls = self._call("    find order\n"
+                                   "    %s order by input.id\n" % verb)
+                call = next(c for c in calls if c["operation"] == verb)
+                self.assertEqual(call["lookup"], "input.id")
+                self.assertNotIn("result", call)
+
+    def test_a_by_less_read_carries_no_lookup_key(self):
+        calls = self._call("    find order\n")
+        self.assertEqual(set(calls[0]), {"kind", "id", "entity", "operation",
+                                         "line"})
+
+    def test_each_read_family_verb_refuses_other_trailing_words(self):
+        for verb in ("find", "read", "load", "authenticate"):
+            with self.subTest(verb=verb):
+                with self.assertRaises(LowerError) as ctx:
+                    compile_doc(order_source("    %s order as x\n" % verb))
+                msg = str(ctx.exception)
+                self.assertIn("`%s order`" % verb, msg)
+                self.assertIn("`by <ref>`", msg)
+
+    def test_create_by_is_refused_with_the_existing_create_message(self):
+        with self.assertRaises(LowerError) as ctx:
+            compile_doc(order_source("    create order by input.id\n"))
+        self.assertIn("create accepts either no trailing words or "
+                      "'as <name>'", str(ctx.exception))
+
+    def test_by_with_a_non_reference_token_is_refused(self):
+        for token in ("123", "and", "a.b.c"):
+            with self.subTest(token=token):
+                with self.assertRaises(LowerError) as ctx:
+                    compile_doc(order_source("    find order by %s\n" % token))
+                self.assertIn("`by <ref>`", str(ctx.exception))
+
+    def test_by_with_two_refs_or_no_ref_is_refused(self):
+        for tail in ("by input.id input.quantity", "by"):
+            with self.subTest(tail=tail):
+                with self.assertRaises(LowerError) as ctx:
+                    compile_doc(order_source("    find order %s\n" % tail))
+                self.assertIn("`by <ref>`", str(ctx.exception))
+
+    def test_by_less_documents_are_byte_identical_to_a_pre_change_compile(self):
+        """R2: `_node` drops `lookup=None`, so a by-less program lowers to
+        the same document as before #175 — pinned by comparing every shipped
+        example against its committed golden IR (minus provenance)."""
+        import glob
+        import json
+        from lnpl.lower import lower as _lower
+        checked = 0
+        for lir in sorted(glob.glob(os.path.join(REPO_ROOT, "examples",
+                                                 "*.lir.json"))):
+            src = lir[:-len(".lir.json")] + ".lnpl"
+            if not os.path.exists(src):
+                continue
+            with open(lir, encoding="utf-8") as fh:
+                golden = json.load(fh)
+            with open(src, encoding="utf-8") as fh:
+                doc = _lower(parse(fh.read()), golden["module"]).to_document()
+            golden.pop("provenance", None)
+            doc.pop("provenance", None)
+            self.assertEqual(doc, golden, src)
+            self.assertFalse(any("lookup" in n for n in doc["nodes"]), src)
+            checked += 1
+        self.assertGreaterEqual(checked, 6)
 
 
 class TestStaticRejections(unittest.TestCase):
@@ -247,6 +347,55 @@ class TestAssignmentAndScope(unittest.TestCase):
             self.assertEqual(reread["quantity"], 9)
             self.assertEqual(reread["total"], 12)
 
+    def test_two_consecutive_sets_on_one_found_row_both_persist_to_sqlite(self):
+        """Issue #174: `find` binds an existing row, and two `set`s on it in
+        one run must both land — the second must not see a phantom write
+        conflict from the first write's own version bump."""
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        doc = compile_doc(order_source(
+            "    find order\n    set order.quantity to 7\n"
+            "    set order.quantity to 9\n"
+        )).to_document()
+        payload = {"id": "o-1", "quantity": 3, "total": 12}
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        driver.seed(default_rows(doc, "wf.place", payload))
+
+        interp = Interpreter(doc, repo_rows={}, repository=driver)
+        result = interp.run_workflow("wf.place", payload)
+
+        self.assertEqual(result["status"], "completed")
+        reread = driver.execute("entity.order", "read",
+                                row_key("entity.order", payload))
+        self.assertEqual(reread["quantity"], 9)
+        # The seeded row starts at `_version` 0 (drivers.py's schema default)
+        # and each of the two successful persists bumps it by 1.
+        self.assertEqual(reread.observed_version, 2)
+
+    def test_set_update_set_update_on_one_found_row_all_persist_to_sqlite(self):
+        """Issue #182: `update`'s own `_version` bump must not phantom-
+        conflict a later `set` on the same bound row in the same run."""
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        doc = compile_doc(order_source(
+            "    find order\n    set order.quantity to 7\n    update order\n"
+            "    set order.quantity to 9\n    update order\n"
+        )).to_document()
+        payload = {"id": "o-1", "quantity": 3, "total": 12}
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        driver.seed(default_rows(doc, "wf.place", payload))
+
+        interp = Interpreter(doc, repo_rows={}, repository=driver)
+        result = interp.run_workflow("wf.place", payload)
+
+        self.assertEqual(result["status"], "completed", result.get("failure_reason"))
+        reread = driver.execute("entity.order", "read",
+                                row_key("entity.order", payload))
+        self.assertEqual(reread["quantity"], 9)
+        # Two persists + two updates, each bumping `_version` by 1 from
+        # the seeded 0.
+        self.assertEqual(reread.observed_version, 4)
+
     def test_respond_can_reference_a_create_as_binding(self):
         doc = compile_doc(order_source(
             "    create order as newOrder\n    respond newOrder.id newOrder.quantity\n"
@@ -330,6 +479,36 @@ class TestIrSchemaGate(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("CREATE_FIXTURE", result.stdout)
 
+    def test_a_compiled_document_with_lookup_validates_against_the_schema(self):
+        """issue #175: `lookup` is an optional string on `nodeRepositoryCall`
+        (closed by `additionalProperties: false`)."""
+        import json
+        import jsonschema
+
+        doc = compile_doc(order_source(
+            "    find order by input.id\n"
+            "    update order by input.id\n"
+            "    delete order by input.id\n")).to_document()
+        schema_path = os.path.join(REPO_ROOT, "schemas", "lir.schema.json")
+        with open(schema_path, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        jsonschema.validate(doc, schema)
+        bad = json.loads(json.dumps(doc))
+        next(n for n in bad["nodes"] if n.get("lookup"))["lookup"] = 42
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)
+
+    def test_the_validator_self_test_includes_lookup_negatives(self):
+        result = subprocess.run(
+            [sys.executable, os.path.join(REPO_ROOT, "scripts", "validate_ir.py"),
+             "--self-test"],
+            capture_output=True, text=True, cwd=REPO_ROOT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS (positive): LOOKUP_FIXTURE", result.stdout)
+        self.assertIn("REJECTED (negative): lookup is not a string", result.stdout)
+        self.assertIn("REJECTED (negative): required field removed: "
+                      "RepositoryCall.entity (lookup field present)", result.stdout)
+
 
 class TestModeBEquivalence(unittest.TestCase):
     """Mode B needs no new MLIR — the generic effect-kind recording
@@ -355,6 +534,89 @@ class TestModeBEquivalence(unittest.TestCase):
         payload = {"id": "o-1", "quantity": 3, "total": 12}
         ok, report = differential.verify(doc, "wf.place", payload, {}, self.workdir)
         self.assertTrue(ok, "\n".join(report))
+
+
+OPTIONAL_CUSTOMER_SRC = """capability postgres
+
+entity Customer
+    field
+        id UUID
+        name Text
+        nickname Text optional
+
+service CustomerService
+    policy
+        timeout 5s
+
+workflow RegisterCustomer
+    create customer
+"""
+
+OPTIONAL_CUSTOMER_ID = "0b6f1c2e-1111-4a2b-9c3d-000000000208"
+
+
+class TestOptionalFieldStoredRow(unittest.TestCase):
+    """RFC-0053: a stored row simply omits an absent (or JSON-null) optional
+    field — no invented default. Read back from the raw sqlite payload text,
+    not from `result`, so the key's absence is a fact about the store."""
+
+    def stored_payloads(self, payload, source=OPTIONAL_CUSTOMER_SRC):
+        import json
+        import sqlite3
+
+        db_path = os.path.join(_tmp_store_dir(self), "store.db")
+        doc = compile_doc(source).to_document()
+        driver = SqliteRepositoryDriver(db_path)
+        self.addCleanup(driver.close)
+        interp = Interpreter(doc, repo_rows={}, repository=driver)
+        wf_id = nodes_of(doc, "Workflow")[0]["id"]
+        result = interp.run_workflow(wf_id, payload)
+        self.assertEqual(result["status"], "completed", result.get("failure_reason"))
+        conn = sqlite3.connect(db_path)
+        self.addCleanup(conn.close)
+        rows = conn.execute(
+            "SELECT payload FROM lnpl_rows WHERE entity_id = ?",
+            ("entity.customer",)).fetchall()
+        return [json.loads(text) for (text,) in rows]
+
+    def test_create_omits_an_absent_optional_field_from_the_stored_row(self):
+        rows = self.stored_payloads({"id": OPTIONAL_CUSTOMER_ID, "name": "Ada"})
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("nickname", rows[0])
+        self.assertEqual(rows[0]["name"], "Ada")
+
+    def test_create_omits_a_null_optional_field_from_the_stored_row(self):
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": "Ada", "nickname": None})
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("nickname", rows[0])
+
+    def test_create_stores_a_present_optional_field(self):
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": "Ada", "nickname": "Countess"})
+        self.assertEqual(rows[0]["nickname"], "Countess")
+
+    def test_create_keeps_a_null_non_optional_field_unchanged(self):
+        # Regression: a required field's explicit null, with no `validate`
+        # step in front of it, is still copied into the row as-is.
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": None})
+        self.assertIn("name", rows[0])
+        self.assertIsNone(rows[0]["name"])
+
+    def test_create_drops_null_when_only_the_created_entity_marks_it_optional(self):
+        # `Account.nickname` is required, so the run-wide AND rule keeps the
+        # null in the payload; `create customer`'s own per-entity check is
+        # what keeps it out of Customer's row.
+        source = OPTIONAL_CUSTOMER_SRC.replace(
+            "service CustomerService",
+            "entity Account\n    field\n        id UUID\n"
+            "        nickname Text\n\nservice CustomerService")
+        rows = self.stored_payloads(
+            {"id": OPTIONAL_CUSTOMER_ID, "name": "Ada", "nickname": None},
+            source=source)
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("nickname", rows[0])
 
 
 if __name__ == "__main__":

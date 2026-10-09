@@ -18,7 +18,7 @@
 | `steps` | `steps <N>` — the number of steps the run executed. |
 | `slo` | `slo met` — whether the run's SLO was satisfied. |
 | `duration` | `duration <op> <limit>` — wall time against a comparator (`<`, `<=`, `>`, `>=`) and a duration literal (e.g. `50ms`). |
-| `cache` | `cache written` — whether the run wrote at least one cache entry. |
+| `cache` | `cache written` — whether the run wrote at least one cache entry; `cache hit` / `cache miss` — whether a `cached` read (RFC-0062) hit or missed at least once in the run. |
 | `attempts` | `attempts <N>` — the highest attempt count any step needed. |
 | `result` | `result <ref> <op> <value>` / `result <ref> exists\|missing`. |
 | `rows` | `rows <Entity> <N>` — the store's state after the run. |
@@ -40,6 +40,8 @@
 - `stored <entity>[<i>] <field> <value>` — 인덱스 다중 행 시드(RFC-0025 §8) — row_key=str(i). 같은 i에 여러 줄을 반복해 한 행에 필드를 더한다. 엔티티는 `stored`와 같이 선언명·바인딩명 둘 다 받는다. `list <entity>`가 읽는 RowSet을 이렇게 채운다
 - `call <target> returns <status>` — 네트워크 응답 스텁(RFC-0027 §7, issue #76). status는 정수. 스텁 없는 target은 fake 드라이버 기본값(200/빈 바디)을 결정적으로 받는다
 - `call <target> returns <status> body.<key> <value>` — 네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 행 필드를 쌓는 것과 같은 자리
+- `run.generated <uuid>` — 이 실행의 `derived generated` 값을 고정(RFC-0055). payload가 아니라 실행 문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다
+- `run.clock <instant>` — 이 실행의 `derived clock` 값을 고정(RFC-0055, 존 표기 필수). 없으면 가상 시계의 실행 시작 시각이 쓰인다
 
 선언되지 않은 이름을 쓰면 거부된다 — `--run` 없이 `lnpl spec`만 돌려도 매니페스트 단계에서 거부되고, 진단이 어느 워크플로의 어느 블록인지와 수용되는 이름 전체를 댄다 (issue #54).
 
@@ -90,4 +92,4 @@ repository create conflicts: entity.order already exists
 
 읽기가 실패하는 에러 경로를 계약하고 싶으면 `empty repository`를 쓴다 — 시드가 없으니 `find`/`load`가 행을 못 찾고 그 스텝이 실패한다.
 
-이 "엔티티당 행 하나" 불변식이 어디서 오는지는 `rfcs/0015-value-semantics.md` §Alternatives에 있다: 한 실행은 payload 하나를 가지므로 엔티티 E의 테이블에는 행이 최대 하나다.
+이 "키당 행 하나" 불변식이 어디서 오는지는 `rfcs/0015-value-semantics.md` §Alternatives에 있다: 한 실행은 payload 하나를 가지므로, 조회 키 없이 읽고 쓰는 엔티티 E의 테이블에는 행이 최대 하나다. 예외는 `by <ref>`(RFC-0052)다 — `find`/`update`/`delete <엔티티> by <ref>`는 payload의 id 대신 그 참조의 값을 키로 쓰므로, 한 실행이 엔티티마다 다른 행을 지목할 수 있다. 첫 읽기가 `by input.<필드>`인 엔티티는 그 필드 값의 키 아래 시드된다.

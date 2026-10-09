@@ -8,8 +8,8 @@ import unittest
 from lnpl import refinements
 from lnpl.lower import LowerError, lower
 from lnpl.openapi import (DECIMAL_FACET_KEYWORD, FACET_KEYWORD, NARROWING,
-                          TYPE_SCHEMA, OpenApiError, _refinement_schema, _slug,
-                          generate)
+                          TYPE_SCHEMA, OpenApiError, _refinement_schema,
+                          _response_schema, _slug, generate)
 from lnpl.parser import parse
 from lnpl.types import SEMANTIC_TYPES
 
@@ -81,6 +81,27 @@ entity Link
 service ShortenService
 workflow Shorten
     validate input
+"""
+
+# issue #173 / RFC-0030 §2's golden example: `create ... as` + `respond` —
+# `by_binding` only ever knew entity default binding names, never a
+# create-as alias, so `generate()` raised `KeyError: 'newOrder'` on this
+# exact fixture before the fix.
+CREATE_AS_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Money
+        placedAt DateTime
+service Checkout
+    policy
+        timeout 5s
+workflow PlaceOrder
+    create order as newOrder
+    set newOrder.quantity to input.quantity
+    respond newOrder.id newOrder.quantity
 """
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -194,6 +215,40 @@ class TestRefusals(unittest.TestCase):
         with self.assertRaises(OpenApiError) as ctx:
             generate(doc)
         self.assertIn("dangling", str(ctx.exception))
+
+
+class TestCreateAsOpenApi(unittest.TestCase):
+    """issue #173: `create ... as` + `respond` must not crash `generate()`."""
+
+    def test_200_schema_is_derived_from_the_created_entity(self):
+        spec = spec_for(CREATE_AS_SRC)
+        schema = spec["paths"]["/checkout/place-order"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(["newOrder"], schema["required"])
+        new_order = schema["properties"]["newOrder"]
+        self.assertEqual({"id", "quantity"}, set(new_order["properties"]))
+        self.assertEqual({"type": "string", "format": "uuid"},
+                         new_order["properties"]["id"])
+        self.assertEqual({"type": "integer", "format": "int64"},
+                         new_order["properties"]["quantity"])
+
+    def test_create_as_with_no_respond_gets_no_200_content(self):
+        src = CREATE_AS_SRC.replace(
+            "    respond newOrder.id newOrder.quantity\n", "")
+        spec = spec_for(src)
+        op200 = spec["paths"]["/checkout/place-order"]["post"]["responses"]["200"]
+        self.assertNotIn("content", op200)
+
+    def test_respond_to_an_unresolvable_binding_raises_openapi_error_not_keyerror(self):
+        nodes = {
+            "wf.step.1": {"id": "wf.step.1", "kind": "WorkflowStep",
+                         "children": ["wf.step.1.resp"]},
+            "wf.step.1.resp": {"id": "wf.step.1.resp", "kind": "Response",
+                               "refs": ["ghost.id"]},
+        }
+        steps = [nodes["wf.step.1"]]
+        with self.assertRaises(OpenApiError) as ctx:
+            _response_schema(steps, nodes, entities=[], refined=set())
+        self.assertIn("ghost", str(ctx.exception))
 
 
 class TestRefinementSchemas(unittest.TestCase):
@@ -1101,6 +1156,141 @@ class TestQuerySurface(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual([{"bearerAuth": []}], op["security"])
                 self.assertIn("401", op["responses"])
+
+
+# RFC-0053: `optional` fields — nullable and not required in the entity
+# (request) schema; not required, but never nullable, in the `respond` schema.
+OPTIONAL_SRC = """capability postgres
+
+entity Customer
+    field
+        id UUID
+        name Text
+        nickname Text optional
+        handle Slug optional
+        extra Json optional
+service CustomerService
+    policy
+        timeout 5s
+workflow RegisterCustomer
+    validate input
+    create customer as newCustomer
+    respond newCustomer.id newCustomer.nickname
+"""
+
+
+class TestOptionalFields(unittest.TestCase):
+
+    def setUp(self):
+        self.spec = spec_for(OPTIONAL_SRC)
+        self.customer = self.spec["components"]["schemas"]["Customer"]
+
+    def test_optional_text_field_is_nullable_and_not_required(self):
+        self.assertEqual(["id", "name"], self.customer["required"])
+        self.assertEqual({"type": ["string", "null"]},
+                         self.customer["properties"]["nickname"])
+
+    def test_optional_refinement_field_uses_oneOf_null(self):
+        self.assertEqual(
+            {"oneOf": [{"$ref": "#/components/schemas/Slug"}, {"type": "null"}]},
+            self.customer["properties"]["handle"])
+        self.assertIn("Slug", self.spec["components"]["schemas"])
+
+    def test_optional_json_field_schema_is_unchanged(self):
+        # Boundary: `Json`'s schema is `{}` — it already admits null.
+        self.assertEqual({}, self.customer["properties"]["extra"])
+        self.assertNotIn("extra", self.customer["required"])
+
+    def test_respond_optional_field_not_required_no_nullable(self):
+        post = next(item["post"] for item in self.spec["paths"].values()
+                    if "post" in item)
+        schema = post["responses"]["200"]["content"]["application/json"]["schema"]
+        new_customer = schema["properties"]["newCustomer"]
+        self.assertEqual(["id"], new_customer["required"])
+        self.assertEqual({"type": "string"},
+                         new_customer["properties"]["nickname"])
+
+    def test_respond_of_only_optional_fields_has_no_required_key(self):
+        spec = spec_for(OPTIONAL_SRC.replace(
+            "respond newCustomer.id newCustomer.nickname",
+            "respond newCustomer.nickname"))
+        post = next(item["post"] for item in spec["paths"].values()
+                    if "post" in item)
+        schema = post["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertNotIn("required", schema["properties"]["newCustomer"])
+        self.assertEqual(["newCustomer"], schema["required"])
+
+    def test_non_optional_entity_schema_byte_identical(self):
+        # Regression: the same entity without the modifiers generates the
+        # exact schema it did before RFC-0053.
+        plain = spec_for(OPTIONAL_SRC.replace(" optional", ""))
+        customer = plain["components"]["schemas"]["Customer"]
+        self.assertEqual(["id", "name", "nickname", "handle", "extra"],
+                         customer["required"])
+        self.assertEqual({"type": "string"}, customer["properties"]["nickname"])
+        self.assertEqual({"$ref": "#/components/schemas/Slug"},
+                         customer["properties"]["handle"])
+
+    def test_an_optional_field_with_an_unmapped_type_still_raises(self):
+        doc = lower(parse(OPTIONAL_SRC), "m").to_document()
+        entity = next(n for n in doc["nodes"] if n["kind"] == "Entity")
+        entity["fields"][2]["type"] = "NoSuchType"
+        with self.assertRaises(OpenApiError):
+            generate(doc)
+
+
+# RFC-0056: two declared rejections in one workflow, plus a sibling workflow
+# that declares none.
+FAIL_SRC = """
+entity Product
+    field
+        id UUID
+        stock Integer
+        limit Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    when product.limit < input.quantity
+    fail over-limit
+    when product.limit < 1
+    fail out-of-stock
+    create order
+workflow Browse
+    find product
+"""
+
+
+class TestDeclaredFailureCodes(unittest.TestCase):
+    """RFC-0056: an operation whose workflow can reach `fail` lists its codes
+    under a 422 response; any other operation is unchanged."""
+
+    def setUp(self):
+        self.paths = spec_for(FAIL_SRC)["paths"]
+
+    def test_the_422_response_names_every_declared_code_once_sorted(self):
+        responses = self.paths["/shop-service/reserve"]["post"]["responses"]
+        description = responses["422"]["description"]
+        self.assertIn("RFC-0056", description)
+        self.assertTrue(description.endswith("codes out-of-stock, over-limit"),
+                        description)
+
+    def test_an_operation_without_fail_has_no_422(self):
+        responses = self.paths["/shop-service/browse"]["post"]["responses"]
+        self.assertNotIn("422", responses)
+        self.assertEqual({"200", "400", "404", "409", "412", "504"},
+                         set(responses))
+
+    def test_a_document_without_fail_has_no_422_anywhere(self):
+        for path, item in spec_for()["paths"].items():
+            for method, op in item.items():
+                with self.subTest(path=path, method=method):
+                    self.assertNotIn("422", op.get("responses", {}))
 
 
 if __name__ == "__main__":

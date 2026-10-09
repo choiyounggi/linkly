@@ -77,6 +77,31 @@ class MapResultTest(unittest.TestCase):
             steps=[{"step": "validate input", "effects": ["Validation"]}])
         self.assertEqual((400, "validation-failed"), map_result(result))
 
+    def test_m8e_declared_rejection_maps_to_422_with_the_author_code(self):
+        # RFC-0056: the status is typed by `failure_kind`; the problem `code`
+        # IS the code the author wrote after `fail`.
+        result = result_stub(status="failed", failed_step="fail out-of-stock",
+                             failure_reason="out-of-stock",
+                             failure_kind="rejected",
+                             steps=[{"step": "fail out-of-stock",
+                                     "effects": ["Rejection"]}])
+        self.assertEqual((422, "out-of-stock"), map_result(result))
+
+    def test_each_failure_kind_maps_to_its_own_row_only(self):
+        # The typed rows dispatch on mutually exclusive `failure_kind`
+        # values, so their relative order can never confuse one for another.
+        cases = {"conflict": (409, "conflict"),
+                 "not-found": (404, "not-found"),
+                 "write-conflict": (409, "write-conflict"),
+                 "rejected": (422, "limit-exceeded")}
+        for kind, expected in cases.items():
+            with self.subTest(kind=kind):
+                result = result_stub(status="failed", failed_step="s",
+                                     failure_reason="limit-exceeded",
+                                     failure_kind=kind,
+                                     steps=[{"step": "s", "effects": []}])
+                self.assertEqual(expected, map_result(result))
+
     def test_m8_other_failure_maps_to_500(self):
         result = result_stub(
             status="failed", failed_step="cache link",
@@ -94,6 +119,18 @@ class ProblemTest(unittest.TestCase):
         self.assertEqual("field 'slug' rejected", body["detail"])
         self.assertEqual("req-1", body["correlation_id"])
         self.assertIn("title", body)
+
+    def test_an_author_rejection_code_gets_the_generic_title(self):
+        # RFC-0056: a `fail` code is not in `_TITLES` (it may not reuse one),
+        # so the title falls back instead of raising KeyError.
+        body = problem(422, "out-of-stock", "out-of-stock", failed_step="f")
+        self.assertEqual("the workflow rejected the request", body["title"])
+        self.assertEqual("out-of-stock", body["code"])
+        self.assertEqual(422, body["status"])
+
+    def test_a_known_code_keeps_its_own_title(self):
+        self.assertEqual("workflow execution failed",
+                         problem(500, "workflow-failed", "x")["title"])
 
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -120,6 +157,38 @@ class BuildRoutesTest(unittest.TestCase):
         self.assertEqual({}, build_routes(doc))
 
 
+# issue #173: same RFC-0030 golden example as test_openapi.py's
+# CREATE_AS_SRC — `build_routes` (wsgi.py:553) calls the same `generate()`
+# that used to KeyError on a create-as alias, so `lnpl serve` could not
+# bind either.
+CREATE_AS_SRC = """capability postgres
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+        total Money
+        placedAt DateTime
+service Checkout
+    policy
+        timeout 5s
+workflow PlaceOrder
+    create order as newOrder
+    set newOrder.quantity to input.quantity
+    respond newOrder.id newOrder.quantity
+"""
+
+
+class CreateAsBuildRoutesTest(unittest.TestCase):
+    """issue #173: `create ... as` + `respond` must not crash `build_routes`."""
+
+    def test_create_as_route_matches_the_openapi_contract(self):
+        doc = compile_src(CREATE_AS_SRC, module="m")
+        routes = build_routes(doc)
+        self.assertIn("/checkout/place-order", routes)
+        self.assertEqual(set(routes), set(generate(doc)["paths"]))
+
+
 # A full, valid Link payload — every field explicit so a reader can tell why
 # the run completes from the values alone (clicks 0 is ClickCount's boundary:
 # `refine ClickCount of Integer / min 0` admits a brand-new link).
@@ -133,6 +202,18 @@ LINK_PAYLOAD = {
 }
 
 SHORTEN_PATH = "/shorten-service/shorten"
+
+
+LOOKUP_SERVE_SRC = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service OrderService
+workflow Restock
+    find stock by input.productId
+"""
 
 
 class ServerTestCase(unittest.TestCase):
@@ -296,6 +377,26 @@ workflow Warm
 SMALL_PAYMENT = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "amountCents": 5}
 
 
+RESERVE_SRC = """
+entity Product
+    field
+        id UUID
+        stock Integer
+entity Order
+    field
+        id UUID
+        quantity Integer
+service ShopService
+workflow Reserve
+    find product
+    when product.stock < input.quantity
+    fail out-of-stock
+    create order
+"""
+
+RESERVE_PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3309"}
+
+
 class ServeSemanticsTest(ServerTestCase):
     """M6/M8, the guard-rejection contract (D2), masking (D7), concurrency (D5)."""
 
@@ -316,6 +417,26 @@ class ServeSemanticsTest(ServerTestCase):
         self.assertIn("correlation_id", body)
         self.assertNotIn("Traceback", json.dumps(body))
 
+    def test_m8e_declared_rejection_is_422_problem_json_over_http(self):
+        # RFC-0056 / issue #206: the issue's `Reserve` with `fail out-of-stock`.
+        port = self.start(compile_src(RESERVE_SRC, "shop"))
+        resp, body = self.post_json(port, "/shop-service/reserve",
+                                    dict(RESERVE_PAYLOAD, stock=1, quantity=5))
+        self.assertEqual(422, resp.status)
+        self.assertEqual("application/problem+json",
+                         resp.getheader("Content-Type"))
+        self.assertEqual("out-of-stock", body["code"])
+        self.assertEqual("the workflow rejected the request", body["title"])
+        self.assertEqual("fail out-of-stock", body["failed_step"])
+        self.assertEqual([], body["skipped"])
+
+    def test_a_skipped_fail_is_200_over_http(self):
+        port = self.start(compile_src(RESERVE_SRC, "shop"))
+        resp, body = self.post_json(port, "/shop-service/reserve",
+                                    dict(RESERVE_PAYLOAD, stock=5, quantity=5))
+        self.assertEqual(200, resp.status)
+        self.assertEqual(["fail out-of-stock"], body["skipped"][0]["steps"])
+
     def test_guard_rejection_is_200_with_skipped_in_the_body(self):
         # D2: RFC-0014's status-orthogonal signal — the guard doing its job is
         # not an HTTP failure; the observation contract rides skipped[].
@@ -326,6 +447,19 @@ class ServeSemanticsTest(ServerTestCase):
         self.assertEqual("completed", body["status"])
         skipped_steps = [s for rec in body["skipped"] for s in rec["steps"]]
         self.assertEqual(["update payment"], skipped_steps)
+
+    def test_a_by_input_read_finds_the_row_the_seed_rule_put_under_that_field(self):
+        """issue #175 / RFC-0052 §4: a served workflow seeds through
+        `default_rows`, so `find stock by input.productId` finds its row
+        under the product id although the request's own `id` is the order's.
+        Before the seed-key rule the row sat under `entity.stock#O1` and the
+        read missed (500)."""
+        port = self.start(compile_src(LOOKUP_SERVE_SRC, "orders"))
+        resp, body = self.post_json(port, "/order-service/restock",
+                                    {"id": "O1", "productId": "P1", "onHand": 5})
+        self.assertEqual(200, resp.status, body)
+        self.assertEqual("completed", body["status"])
+        self.assertEqual("P1", body["bindings"]["stock"]["productId"])
 
     def test_masking_holds_on_the_200_response_channel(self):
         # D7: the HTTP response is a NEW output channel — sweep it: raw canary

@@ -108,6 +108,18 @@
       {
         "code": "predicate-not-pushed-down",
         "severity": "info"
+      },
+      {
+        "code": "respond-field-missing",
+        "severity": "warning"
+      },
+      {
+        "code": "guard-scoped-binding-escape",
+        "severity": "warning"
+      },
+      {
+        "code": "optional-field-unguarded-arithmetic",
+        "severity": "warning"
       }
     ],
     "enforcement": [
@@ -235,7 +247,16 @@
       "logical_operators": [
         "and"
       ],
+      "numeric_predicate_kinds": [
+        "is-numeric",
+        "is-not-numeric"
+      ],
+      "otherwise_keyword": "otherwise",
       "payload_namespace": "input",
+      "presence_kinds": [
+        "exists",
+        "missing"
+      ],
       "read_verbs": [
         "authenticate",
         "load",
@@ -331,6 +352,16 @@
           "doc": "네트워크 스텁에 바디 필드 하나를 더한다. 한 줄 한 필드 — `stored`가 행 필드를 쌓는 것과 같은 자리",
           "id": "network-stub-body",
           "pattern": "call <target> returns <status> body.<key> <value>"
+        },
+        {
+          "doc": "이 실행의 `derived generated` 값을 고정(RFC-0055). payload가 아니라 실행 문맥으로 들어간다. 그런 엔티티를 만드는 케이스는 이 줄이 없으면 실패한다",
+          "id": "run-generated",
+          "pattern": "run.generated <uuid>"
+        },
+        {
+          "doc": "이 실행의 `derived clock` 값을 고정(RFC-0055, 존 표기 필수). 없으면 가상 시계의 실행 시작 시각이 쓰인다",
+          "id": "run-clock",
+          "pattern": "run.clock <instant>"
         }
       ]
     },
@@ -607,7 +638,7 @@
             "type": "object"
           },
           "sample": {
-            "amount": "0",
+            "amount": "1.00",
             "currency": "USD"
           }
         },
@@ -690,6 +721,10 @@
       "emit": {
         "attrs": {},
         "effect": "EventEmit"
+      },
+      "fail": {
+        "attrs": {},
+        "effect": "Rejection"
       },
       "find": {
         "attrs": {

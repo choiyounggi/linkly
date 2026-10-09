@@ -1,0 +1,7 @@
+captured 2026-10-08T03:16:59Z after all diagnosis runs; netstat counters are totals since boot, so they include those runs
+	0 listen queue overflow
+	0 embryonic connection dropped
+net.inet.tcp.msl: 1000
+net.inet.ip.portrange.first: 32768
+net.inet.ip.portrange.last: 65535
+kern.ipc.somaxconn: 128

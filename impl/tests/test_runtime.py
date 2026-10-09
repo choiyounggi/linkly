@@ -100,6 +100,32 @@ class TestPolicyEnforcement(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(failed["attempts"], 1, "a non-idempotent effect was retried")
 
+    def test_a_reached_fail_is_never_retried(self):
+        # RFC-0056: the guard already held against this run's bindings, so a
+        # retry would reject identically — `retry 3` must not replay it.
+        src = """
+entity Product
+    field
+        id UUID
+        stock Integer
+service ShopService
+    policy
+        retry 3
+workflow Reserve
+    find product
+    when product.stock < 1
+    fail out-of-stock
+"""
+        doc = lower(parse(src), "shop").to_document()
+        payload = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3307"}
+        interp = Interpreter(doc, repo_rows={"entity.product": {
+            row_key("entity.product", payload): dict(payload, stock=0)}})
+        result = interp.run_workflow("wf.reserve", payload)
+        failed = [s for s in result["steps"] if s["step"] == "fail out-of-stock"][0]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_kind"], "rejected")
+        self.assertEqual(failed["attempts"], 1, "a reached `fail` was retried")
+
     def test_an_idempotent_effect_under_the_same_policy_is_retried(self):
         # The contrast that makes the assertion above meaningful: same `retry 3`,
         # same failure shape, but a read is idempotent so it *is* replayed.
@@ -336,6 +362,114 @@ class TestGuardExecution(unittest.TestCase):
         with self.assertRaises(ParseError) as ctx:
             self._run(src, dict(PAYLOAD))
         self.assertIn("invalid condition", str(ctx.exception))
+
+
+CANCEL_SOURCE = """
+capability postgres
+refine OrderStatus of Text
+    enum pending paid cancelled
+entity Order
+    field
+        id UUID
+        status OrderStatus
+        expected OrderStatus
+        stock Integer
+entity Audit
+    field
+        id UUID
+service OrderService
+    policy
+        retry 0
+workflow CancelOrder
+    find order
+%s
+"""
+
+CANCEL_ID = "00000000-0000-4000-8000-000000000207"
+
+
+class TestTextEqualityGuardExecution(unittest.TestCase):
+    """RFC-0054: a guard's Text equality runs in mode A — a bare literal is
+    its own text, a qualified reference resolves, the two compare as text."""
+
+    def _run(self, body, row, payload=None):
+        doc = lower(parse(CANCEL_SOURCE % body), "shop").to_document()
+        stored = dict({"id": CANCEL_ID, "expected": "pending", "stock": 0}, **row)
+        interp = Interpreter(doc, repo_rows={"entity.order": {
+            row_key("entity.order", {"id": CANCEL_ID}): stored}})
+        result = interp.run_workflow("wf.cancel.order",
+                                     dict({"id": CANCEL_ID}, **(payload or {})))
+        self.assertEqual("completed", result["status"], result.get("failure_reason"))
+        return result
+
+    def test_guard_text_equality_runtime_holds_true(self):
+        result = self._run("    when order.status == input.expected\n    create audit",
+                           {"status": "pending"}, {"expected": "pending"})
+        self.assertEqual([], result["skipped"])
+        self.assertIn("create audit", [s["step"] for s in result["steps"]])
+
+    def test_guard_text_equality_runtime_holds_false(self):
+        result = self._run("    when order.status == input.expected\n    create audit",
+                           {"status": "cancelled"}, {"expected": "pending"})
+        self.assertEqual(1, len(result["skipped"]))
+        self.assertNotIn("create audit", [s["step"] for s in result["steps"]])
+
+    def test_bare_literal_is_compared_as_its_own_text(self):
+        ran = self._run("    when order.status == paid\n    create audit",
+                        {"status": "paid"})
+        skipped = self._run("    when order.status == paid\n    create audit",
+                            {"status": "pending"})
+        self.assertEqual([], ran["skipped"])
+        self.assertEqual(1, len(skipped["skipped"]))
+
+    def test_a_payload_key_named_like_the_literal_is_not_read(self):
+        # `paid` is a literal here: a payload field `paid` must not change it.
+        result = self._run("    when order.status == paid\n    create audit",
+                           {"status": "paid"}, {"paid": "cancelled"})
+        self.assertEqual([], result["skipped"])
+
+    def test_an_absent_text_value_makes_the_comparison_false(self):
+        # Boundary: an unresolved reference is false on either operator.
+        for body in ("    when order.status == input.expected\n    create audit",
+                     "    when order.status != input.expected\n    create audit"):
+            with self.subTest(body=body):
+                self.assertEqual(1, len(self._run(body, {"status": "paid"})["skipped"]))
+
+    def test_until_text_equality_runtime(self):
+        # Holds at entry: zero rounds, recorded as a skip with the values.
+        held = self._run("    until order.status == paid\n    update order",
+                         {"status": "paid"})
+        self.assertEqual(0, held["skipped"][0]["rounds"])
+        # Never holds: the loop runs to the round cap and records no skip.
+        looped = self._run("    until order.status == paid\n    update order",
+                           {"status": "pending"})
+        self.assertEqual([], looped["skipped"])
+        self.assertEqual(16, [s["step"] for s in looped["steps"]].count("update order"))
+
+    def test_two_bare_integer_names_in_equality_unaffected_at_runtime(self):
+        # `stock == available`: both payload lookups, compared as numbers.
+        ran = self._run("    when stock == available\n    create audit", {},
+                        {"stock": 3, "available": 3})
+        skipped = self._run("    when stock == available\n    create audit", {},
+                            {"stock": 3, "available": 4})
+        self.assertEqual([], ran["skipped"])
+        self.assertEqual([{"ref": "stock", "value": 3, "op": "==",
+                           "expected": 4, "holds": False}],
+                         skipped["skipped"][0]["evaluations"])
+
+    def test_a_text_value_without_a_recorded_term_still_fails_as_before(self):
+        # Error path: an IR guard that never went through RFC-0054 lowering
+        # (no textEqualityOperands) keeps today's numeric evaluator.
+        doc = lower(parse(CANCEL_SOURCE % (
+            "    when order.status == paid\n    create audit")), "shop").to_document()
+        for node in doc["nodes"]:
+            node.pop("textEqualityOperands", None)
+        interp = Interpreter(doc, repo_rows={"entity.order": {
+            row_key("entity.order", {"id": CANCEL_ID}): {
+                "id": CANCEL_ID, "status": "pending"}}})
+        with self.assertRaises(RunError) as caught:
+            interp.run_workflow("wf.cancel.order", {"id": CANCEL_ID})
+        self.assertIn("Cannot compare non-numeric order.status", str(caught.exception))
 
 
 class TestGuardSkipManifest(unittest.TestCase):
@@ -843,6 +977,67 @@ class TestRunResultAdditions(unittest.TestCase):
                       "the reason must carry the repository's own message so a "
                       "spec can assert on it; got %r" % result["failure_reason"])
 
+
+
+LOOKUP_SOURCE = """capability postgres
+
+entity Product
+    field
+        id UUID
+        sku Text
+        stock Integer
+
+service Shop
+    policy
+        retry 0
+
+workflow Restock
+    find product
+    %s product by input.sku
+"""
+
+
+class TestLookupKeyNeverFallsBackToThePayloadId(unittest.TestCase):
+    """issue #175 / RFC-0052 §3: a `by <ref>` step addresses the ref's value
+    and nothing else. The only seeded row sits under the payload-`id` key a
+    silent fallback would use; the lookup value names a key with no row. So
+    a `find` must fail on the missing row, and no verb may touch the
+    payload-keyed row. (Track A pinned the same property through an interim
+    refusal; this is its permanent form.)"""
+
+    PAYLOAD = {"id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "sku": "SKU-9",
+               "stock": 4}
+
+    def _run(self, verb):
+        doc = lower(parse(LOOKUP_SOURCE % verb), "shop").to_document()
+        key = row_key("entity.product", self.PAYLOAD)
+        rows = {"entity.product": {key: dict(self.PAYLOAD)}}
+        interp = Interpreter(doc, repo_rows=rows)
+        return interp, key, interp.run_workflow("wf.restock", dict(self.PAYLOAD))
+
+    def test_a_by_find_misses_instead_of_reading_the_payload_id_row(self):
+        interp, key, result = self._run("find")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_step"], "find product by input.sku")
+        self.assertIn("no row", result["failure_reason"])
+        self.assertNotIn(row_key("entity.product", {"id": "-"}),
+                         interp.repo.rows["entity.product"])
+
+    def test_no_by_verb_touches_the_payload_id_row(self):
+        for verb in ("find", "update", "delete"):
+            with self.subTest(verb=verb):
+                interp, key, _result = self._run(verb)
+                self.assertEqual(interp.repo.rows["entity.product"][key],
+                                 self.PAYLOAD)
+
+    def test_a_by_less_read_of_the_same_row_still_completes(self):
+        doc = lower(parse(LOOKUP_SOURCE.replace(
+            "    %s product by input.sku\n", "")), "shop").to_document()
+        key = row_key("entity.product", self.PAYLOAD)
+        interp = Interpreter(doc, repo_rows={"entity.product": {
+            key: dict(self.PAYLOAD)}})
+        result = interp.run_workflow("wf.restock", dict(self.PAYLOAD))
+        self.assertEqual(result["status"], "completed")
 
 if __name__ == "__main__":
     unittest.main()

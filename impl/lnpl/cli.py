@@ -19,12 +19,15 @@ from . import __version__
 from .diagnostics import (Diagnostics, ExtensionDiagnosticsError, SEVERITIES,
                           extension_diagnostic_records,
                           format_lines_from_records, to_records)
-from .drivers import (DriverError, TokenError, audience_for_path, open_cache,
-                      open_network, open_repository, open_token_provider,
+from .drivers import (MIN_SECRET_BYTES, DriverError, PublishRejected,
+                      RotatingHmacTokenProvider, TokenError,
+                      audience_for_path, open_cache, open_network,
+                      open_publisher, open_repository, open_secret_provider,
+                      open_token_provider, _http_capabilities,
                       _is_url_literal)
 from .interp import (Interpreter, RunError, _duration_ms, open_clock,
                      refinement_index, row_shape_mismatches, sample_payload)
-from .lexer import LexError
+from .lexer import LexError, RESERVED
 from .lower import LowerError, load_sources, lower
 from .migrate import MigrateError, run_migration
 from .parser import ParseError
@@ -37,14 +40,18 @@ from .cost_model import cost_model_document
 from .grammar import grammar_json_document, render_gbnf
 from .vocab import vocabulary_document
 from .agents import run_cycle
-from .config import load_config
+from .config import SecretFileRef, SecretProviderRef, load_config
 from .differential import DifferentialError, verify as verify_modes
-from .generators import GeneratorError, resolve_generator, run_generator
+from .generators import (GeneratorError, parse_generator_options,
+                         resolve_generator, run_generator)
 from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
-                   resolve_schedule_triggers, _schedule_events)
+                   resolve_schedule_triggers, _schedule_events,
+                   _validate_rate_limit, _merge_endpoint_args,
+                   _build_rotating_token_provider, _read_secret_file,
+                   _resolve_backend, _resolve_jwt_secret_source)
 from .spec import SpecError, extract, run_manifest
 
 
@@ -324,10 +331,15 @@ def _dry_run_plan(doc, workflow_id):
         if kind == "WorkflowStep":
             return {"kind": "step", "name": node["name"], "line": node.get("line")}
         if kind == "Guard":
-            return {"kind": "guard", "mode": node["mode"],
-                    "condition": node.get("condition"), "count": node.get("count"),
-                    "line": node.get("line"),
-                    "children": [_walk(node["children"][0])]}
+            entry = {"kind": "guard", "mode": node["mode"],
+                     "condition": node.get("condition"), "count": node.get("count"),
+                     "line": node.get("line"),
+                     "children": [_walk(node["children"][0])]}
+            # RFC-0060: the `otherwise` item, keyed apart from `children` so a
+            # reader never mistakes it for a second guarded item.
+            if len(node["children"]) > 1:
+                entry["otherwise"] = _walk(node["children"][1])
+            return entry
         if kind == "Concurrency":
             return {"kind": "parallel",
                     "children": [_walk(c) for c in node["children"]]}
@@ -369,6 +381,9 @@ def _print_dry_run_plan_node(node, indent):
             print("%sguard %s %s" % (prefix, node["mode"], node["condition"] or ""))
         for child in node["children"]:
             _print_dry_run_plan_node(child, indent + 1)
+        if "otherwise" in node:
+            print("%sotherwise" % prefix)
+            _print_dry_run_plan_node(node["otherwise"], indent + 1)
     elif node["kind"] == "parallel":
         print("%sparallel" % prefix)
         for child in node["children"]:
@@ -500,9 +515,16 @@ def _print_human(result, interp, log_level="warn"):
     for record in skipped:
         # The guard's own text, so the reader learns WHY the step did not run
         # rather than only that something did not.
-        print("  skipped by `%s %s`: %s"
-              % (record["mode"], record["condition"] or "",
-                 ", ".join(record["steps"]) or "(no step)"))
+        if record["mode"] == "otherwise":
+            # RFC-0060: `condition` is the guard that HELD — not a condition
+            # of the `otherwise` itself.
+            print("  skipped by `otherwise` (`when %s` held): %s"
+                  % (record["condition"],
+                     ", ".join(record["steps"]) or "(no step)"))
+        else:
+            print("  skipped by `%s %s`: %s"
+                  % (record["mode"], record["condition"] or "",
+                     ", ".join(record["steps"]) or "(no step)"))
         for e in record.get("evaluations") or []:
             # Issue #83: the same evaluations[] the JSON trace carries (already
             # masked), printed for a reader who never asked for --json. No new
@@ -708,27 +730,14 @@ def cmd_openapi(args):
 
 
 def cmd_generate(args):
-    # options is fixed at {} (issue #139 D4): no flag exists yet to fill it
-    # from, and inventing one ahead of a real consumer is exactly the
-    # speculative surface this repo's SPIs avoid (drivers.py/wsgi.py/kb.py
-    # all open their entry-points groups the same way, with no options
-    # channel until one was needed).
+    # issue #189: --set KEY=VALUE (repeatable) fills `options`; each
+    # generator validates its own keys (docs/backends.md section 12).
+    options = parse_generator_options(args.set)
     doc = compile_source(args.source)
     generator = resolve_generator(args.name)
-    written = run_generator(generator, doc, {}, args.out)
+    written = run_generator(generator, doc, options, args.out)
     print("wrote %d file(s) to %s" % (len(written), args.out))
     return 0
-
-
-def _resolve_backend(args, cfg):
-    """`--backend` > `lnpl.toml` `backend` > the built-in `"fake"` (issue
-    #114 D6) — CLI wins because `args.backend` is only `None` when the flag
-    was not given (the `serve` subparser's own default moved to `None` so
-    this function can tell "omitted" from "typed fake")."""
-    value = getattr(args, "backend", None)
-    if value is not None:
-        return value
-    return cfg.backend if cfg.backend is not None else "fake"
 
 
 def _resolve_log_format(args, cfg):
@@ -747,39 +756,6 @@ def _resolve_trace_exporter(args, cfg):
     if value is not None:
         return value
     return cfg.trace_exporter
-
-
-def _resolve_jwt_secret_env(args, cfg):
-    """`--jwt-secret-env` > `lnpl.toml` `[*.secrets].jwt` (an ENV NAME,
-    never the secret — issue #101 discipline, enforced by `config.py` at
-    load time) > unset (presence-checked, not verified — the pre-#114
-    default)."""
-    value = getattr(args, "jwt_secret_env", None)
-    if value is not None:
-        return value
-    return cfg.secrets.get("jwt")
-
-
-def _merge_endpoint_args(endpoint_args, cfg_endpoints):
-    """`--endpoint` entries, plus one `NAME=URL` per `lnpl.toml` endpoint
-    that neither `--endpoint` nor `LNPL_ENDPOINT_<NAME>` already covers
-    (issue #114 D6/D7).
-
-    `_open_endpoints` still owns the CLI-vs-ENV judgment call (issue #101) —
-    this only appends the file as a third tier beneath both, by handing it
-    a `--endpoint`-shaped entry it cannot tell apart from one actually typed
-    on the command line. `_open_endpoints`'s signature stays untouched
-    (t109 owns `open_network`; this task does not touch either)."""
-    endpoint_args = list(endpoint_args or [])
-    given_names = {item.partition("=")[0] for item in endpoint_args}
-    merged = list(endpoint_args)
-    for name, url in (cfg_endpoints or {}).items():
-        if name in given_names:
-            continue
-        if os.environ.get("LNPL_ENDPOINT_%s" % name.upper()) is not None:
-            continue
-        merged.append("%s=%s" % (name, url))
-    return merged
 
 
 def cmd_serve(args):
@@ -820,10 +796,36 @@ def cmd_serve(args):
     cache = _open_cache(getattr(args, "cache", "fake"))
     if cache is _REJECTED:
         return 2
-    jwt_secret_env = _resolve_jwt_secret_env(args, cfg)
-    token_provider = _token_provider(jwt_secret_env,
-                                     getattr(args, "jwt_issuer", None),
-                                     getattr(args, "token_provider", None))
+    try:
+        secret_source = _resolve_jwt_secret_source(
+            getattr(args, "jwt_secret_env", None),
+            getattr(args, "jwt_secret_file", None), cfg,
+            "--jwt-secret-env", "--jwt-secret-file")
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    issuer = getattr(args, "jwt_issuer", None)
+    provider_name = getattr(args, "token_provider", None)
+    if secret_source is not None and secret_source.kind == "file":
+        jwt_secret_env = None
+        token_provider = _token_provider_from_file(
+            secret_source.value, secret_source.role, issuer, provider_name)
+    elif secret_source is not None and secret_source.kind == "provider":
+        # issue #192 D17: config-only, hmac-only; a non-hmac --token-provider
+        # ignores the source and the provider is never opened (D8's rule).
+        jwt_secret_env = None
+        if (provider_name or "hmac") != "hmac":
+            token_provider = _token_provider(None, issuer, provider_name)
+        else:
+            try:
+                token_provider = _build_rotating_token_provider(
+                    secret_source.value, secret_source.role, issuer=issuer)
+            except WsgiConfigError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 2
+    else:
+        jwt_secret_env = secret_source.value if secret_source is not None else None
+        token_provider = _token_provider(jwt_secret_env, issuer, provider_name)
     if token_provider is _REJECTED:
         return 2
     network_spec = getattr(args, "network", "fake")
@@ -844,8 +846,10 @@ def cmd_serve(args):
         return 2
 
     rate_limit = getattr(args, "rate_limit", None)
-    if rate_limit is not None and rate_limit <= 0:
-        print("error: --rate-limit must be a positive number", file=sys.stderr)
+    try:
+        _validate_rate_limit(rate_limit, "--rate-limit")
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
         return 2
     grace_period_s = getattr(args, "grace_period", 30.0)
     if grace_period_s < 0:
@@ -878,6 +882,8 @@ def cmd_serve(args):
         pass
     finally:
         server.server_close()
+        if isinstance(token_provider, RotatingHmacTokenProvider):
+            token_provider.close()
     return 0
 
 
@@ -1022,6 +1028,42 @@ def _relay_drain_once(repository, event_names, source, target):
     return len(acked)
 
 
+def _relay_drain_once_via_publisher(repository, event_names, source, publisher):
+    """One outbox drain -> publish -> ack cycle through a registered
+    `EventPublisher` (issue #191, RFC-0061) -- the non-http(s) sibling
+    of `_relay_drain_once`: same envelope shape, same `seq`-ascending
+    drain order, same "ack only after confirmed success or a
+    confirmed permanent rejection" discipline (RFC-0040 §7 mirrored
+    via `PublishRejected`).
+    """
+    acked = []
+    for emission in repository.drain_outbox():
+        name = event_names.get(emission["event"])
+        if name is None:
+            print("relay: seq=%d references event id %r, which this "
+                 "document does not declare -- left un-acked"
+                 % (emission["seq"], emission["event"]), file=sys.stderr)
+            continue
+        envelope = {"specversion": "1.0", "id": "outbox-%d" % emission["seq"],
+                   "source": source, "type": name, "data": emission["payload"]}
+        try:
+            publisher.publish(envelope)
+        except PublishRejected as exc:
+            acked.append(emission["seq"])
+            print("relay: dead-letter -- seq=%d event=%s rejected: %s"
+                 % (emission["seq"], name, exc), file=sys.stderr)
+        except DriverError as exc:
+            print("relay: seq=%d event=%s publish failed: %s -- left "
+                 "un-acked for the next drain"
+                 % (emission["seq"], name, exc), file=sys.stderr)
+            continue
+        else:
+            acked.append(emission["seq"])
+    if acked:
+        repository.ack_outbox(acked)
+    return len(acked)
+
+
 def cmd_relay(args):
     """`lnpl relay <source...> --backend sqlite:... --target <base-url>
     [--once]` (issue #118, D8) -- the reference relay: drains this
@@ -1033,6 +1075,9 @@ def cmd_relay(args):
     `source` is compiled (never re-executed) only to map an emission's
     event id back to the event's declared NAME -- the `type`/routing-slug
     CloudEvents needs and the outbox row does not itself carry.
+
+    '--target' may also name a registered 'lnpl.publishers' scheme
+    (RFC-0061) -- http(s) stays byte-identical.
     """
     doc, _, module_name, diagnostics = _compile(args.source)
     _emit_diagnostics(diagnostics)
@@ -1047,18 +1092,37 @@ def cmd_relay(args):
               file=sys.stderr)
         return 2
     try:
-        while True:
-            acked = _relay_drain_once(repository, event_names, module_name,
-                                      args.target)
-            if args.once:
-                print("relay: acked %d emission(s)" % acked)
-                return 0
-            time.sleep(RELAY_POLL_INTERVAL_S)
+        publisher = open_publisher(args.target)
+    except (ValueError, DriverError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        repository.close()
+        return 2
+    try:
+        if publisher is None:
+            while True:
+                acked = _relay_drain_once(repository, event_names,
+                                          module_name, args.target)
+                if args.once:
+                    print("relay: acked %d emission(s)" % acked)
+                    return 0
+                time.sleep(RELAY_POLL_INTERVAL_S)
+        else:
+            while True:
+                acked = _relay_drain_once_via_publisher(
+                    repository, event_names, module_name, publisher)
+                if args.once:
+                    print("relay: acked %d emission(s)" % acked)
+                    return 0
+                time.sleep(RELAY_POLL_INTERVAL_S)
     except DriverError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
     finally:
-        repository.close()
+        try:
+            if publisher is not None:
+                publisher.close()
+        finally:
+            repository.close()
 
 
 def cmd_migrate(args):
@@ -1067,9 +1131,13 @@ def cmd_migrate(args):
     `E` that lacks it (expand semantics — an existing value is never
     overwritten), re-stamping `_schema_gen`. Prints
     `{"scanned", "updated", "skipped"}` as JSON; `--dry-run` counts without
-    writing. `--backend` is required and `fake` is rejected — the same
-    shape `cmd_db_check` already established for an operation meaningless
-    without a real store.
+    writing. When `scanned == 0` an explicit note also goes to stderr.
+    Returns 2 (via the `except MigrateError` below) when the request is
+    refused before writing anything, when a candidate row cannot be
+    confirmed migrated under any key, or when candidates existed but nothing
+    was written (issue #179). `--backend` is required and `fake` is rejected
+    — the same shape `cmd_db_check` already established for an operation
+    meaningless without a real store.
     """
     field_name, sep, raw_value = args.set.partition("=")
     if not sep:
@@ -1095,6 +1163,11 @@ def cmd_migrate(args):
             return 2
     finally:
         repository.close()
+    if result["scanned"] == 0:
+        # issue #179 D5: "nothing to migrate" must be visible on its own
+        # channel, not inferred from a JSON field. stdout and rc unchanged.
+        print("migrate: 0 rows scanned for entity %r -- nothing to migrate"
+              % args.entity, file=sys.stderr)
     sys.stdout.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
     return 0
 
@@ -1197,14 +1270,6 @@ def _network_targets(doc):
     return seen
 
 
-def _http_capabilities(doc):
-    """name -> {"method", "auth"} for every declared `capability http` node
-    (issue #101) — `method` is present only on those, so it doubles as the
-    filter for "is this Capability node an http one"."""
-    return {n["name"]: {"method": n["method"], "auth": n.get("auth")}
-            for n in doc["nodes"] if n["kind"] == "Capability" and "method" in n}
-
-
 def _open_endpoints(doc, endpoint_args, network_spec):
     """`--endpoint`/`LNPL_ENDPOINT_*` + declared `capability http` auth ->
     (endpoints, capabilities) for `HttpNetworkDriver`, or `_REJECTED`.
@@ -1260,7 +1325,9 @@ def _open_endpoints(doc, endpoint_args, network_spec):
                 headers["Authorization"] = "Bearer %s" % value
             else:
                 headers[auth["header"]] = value
-        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers}
+        resolved_caps[name] = {"method": cap["method"].upper(), "headers": headers,
+                               "retry": cap.get("retry"), "breaker": cap.get("breaker"),
+                               "path": cap.get("path")}
     return endpoints, resolved_caps
 
 
@@ -1277,9 +1344,10 @@ def cmd_config_check(args):
     """`lnpl config check <source...> [--profile P] [--config PATH]` —
     issue #114 D8: judge, before `lnpl serve` would bind a socket, whether
     (a) every NetworkCall logical target resolves to an endpoint, (b) every
-    `lnpl.toml` `[*.secrets]` entry names a variable that is actually set,
-    and (c) a `security jwt` declaration has a secret mapped. Every failing
-    item is printed — unlike `_open_endpoints`, which stops at the first,
+    `lnpl.toml` `[*.secrets]` entry names a variable that is set, a
+    readable, non-empty file, or a registered provider that returns the
+    value (issue #192; opened, read and closed), and (c) a `security jwt`
+    declaration has a secret mapped. Every failing item is printed — unlike `_open_endpoints`, which stops at the first,
     because `cmd_serve` only needs one reason to refuse to start, but an
     operator running this diagnostic wants the whole list at once.
 
@@ -1315,11 +1383,60 @@ def cmd_config_check(args):
                 "declares `auth %s from %s`)"
                 % (auth["env"], name, auth["kind"], auth["env"]))
 
-    for key, env_name in sorted(cfg.secrets.items()):
-        if os.environ.get(env_name) is None:
-            problems.append(
-                "lnpl.toml secrets.%s names %s, which is not set in the "
-                "environment" % (key, env_name))
+    for key, value in sorted(cfg.secrets.items()):
+        if isinstance(value, str):
+            if os.environ.get(value) is None:
+                problems.append(
+                    "lnpl.toml secrets.%s names %s, which is not set in the "
+                    "environment" % (key, value))
+        elif isinstance(value, SecretFileRef):
+            try:
+                data = _read_secret_file(value.path, "lnpl.toml secrets.%s.file" % key)
+            except WsgiConfigError as exc:
+                problems.append(str(exc))
+                continue
+            if key == "jwt" and len(data) < MIN_SECRET_BYTES:
+                problems.append(
+                    "the JWT signing secret must be at least %d bytes, got %d "
+                    "(from lnpl.toml secrets.jwt.file)" % (MIN_SECRET_BYTES, len(data)))
+        elif isinstance(value, SecretProviderRef):
+            # issue #192 D18: the same open + read `lnpl serve` does, with
+            # the same value-free texts; every opened provider is closed.
+            role = "lnpl.toml secrets.%s provider %r" % (key, value.provider)
+            try:
+                provider = open_secret_provider(value.provider)
+            except (ValueError, DriverError) as exc:
+                problems.append("lnpl.toml secrets.%s: %s" % (key, exc))
+                continue
+            try:
+                current = provider.get(value.key)
+                previous = provider.get_previous(value.key)
+            except Exception:
+                problems.append(
+                    "the secret provider failed to return the secret (from %s)"
+                    % role)
+                continue
+            finally:
+                try:
+                    provider.close()
+                except Exception:
+                    pass
+            if not isinstance(current, bytes) or (
+                    previous is not None and not isinstance(previous, bytes)):
+                problems.append(
+                    "the secret provider returned a value that is not bytes "
+                    "(from %s)" % role)
+                continue
+            if key == "jwt" and len(current) < MIN_SECRET_BYTES:
+                problems.append(
+                    "the JWT signing secret must be at least %d bytes, got %d "
+                    "(from %s)" % (MIN_SECRET_BYTES, len(current), role))
+            if (key == "jwt" and previous is not None
+                    and len(previous) < MIN_SECRET_BYTES):
+                problems.append(
+                    "the previous JWT signing secret must be at least %d "
+                    "bytes, got %d (from %s)"
+                    % (MIN_SECRET_BYTES, len(previous), role))
 
     if _declares_jwt(doc) and "jwt" not in cfg.secrets:
         problems.append(
@@ -1408,8 +1525,37 @@ def _token_provider(secret_env, issuer=None, provider_name=None):
         return _REJECTED
 
 
+def _token_provider_from_file(path, role, issuer=None, provider_name=None):
+    """issue #192 D8: the file-sourced twin of `_token_provider`. A
+    non-hmac --token-provider never reads the file (same rule as the env
+    secret); hmac keeps open_token_provider's built-in shadow check."""
+    if (provider_name or "hmac") != "hmac":
+        return _token_provider(None, issuer, provider_name)
+    try:
+        secret = _read_secret_file(path, role)
+    except WsgiConfigError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+    try:
+        return open_token_provider("hmac", secret=secret, issuer=issuer)
+    except (ValueError, DriverError, TokenError) as exc:
+        print("error: %s (from %s)" % (exc, role), file=sys.stderr)
+        return _REJECTED
+
+
+def _is_valid_role(role):
+    """Exactly the character set `security role <r>` accepts at parse
+    time (`lexer.tokenize` + `lower._parse_security_line`): non-empty,
+    no whitespace, no '#', not a RESERVED word. No Unicode-category
+    exclusion, no length cap — mirrors the grammar exactly."""
+    if not role or any(ch.isspace() for ch in role) or "#" in role:
+        return False
+    return role not in RESERVED
+
+
 def cmd_token(args):
-    """Issue a bearer token for one served path (issue #25).
+    """Issue a bearer token for one served path (issue #25, extended by
+    issue #202's `--role`).
 
     The audience is derived from the path rather than configured, so the token
     this prints and the check `lnpl serve` runs read the same function and
@@ -1423,15 +1569,37 @@ def cmd_token(args):
         print("error: --path %r is not served (valid: %s)"
               % (args.path, ", ".join(sorted(routes))), file=sys.stderr)
         return 2
+    role = args.role
+    if role is not None and not _is_valid_role(role):
+        print("error: --role %r is not a value `security role <r>` can "
+              "parse (no whitespace, no '#', not a reserved word: if, "
+              "for, while, switch)" % role, file=sys.stderr)
+        return 2
     provider = _token_provider(args.secret_env, getattr(args, "jwt_issuer", None))
     if provider is _REJECTED:
         return 2
     try:
         ttl_ms = _duration_ms(args.ttl)
-        print(provider.issue(args.subject, audience_for_path(args.path), ttl_ms))
+        token = provider.issue(args.subject, audience_for_path(args.path),
+                               ttl_ms, role=role)
     except (TokenError, ValueError) as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 2
+    route = routes[args.path]
+    required_role = route.get("role")
+    role_enforced = bool(route.get("auth")) and bool(required_role)
+    if role_enforced:
+        if role is None:
+            print("warning: the service at %r requires role %r; this "
+                  "token carries no role, so the request will be "
+                  "refused with 403" % (args.path, required_role),
+                  file=sys.stderr)
+        elif role != required_role:
+            print("warning: the service at %r requires role %r; this "
+                  "token carries role %r, so the request will be "
+                  "refused with 403" % (args.path, required_role, role),
+                  file=sys.stderr)
+    print(token)
     return 0
 
 
@@ -1660,7 +1828,10 @@ def cmd_agents(args):
     return 0
 
 
-def main(argv=None):
+def _build_parser(subparsers_out=None):
+    """The whole `lnpl` argument parser. `subparsers_out`, when given, is a
+    dict that receives the `serve` subparser under "serve" — the handle the
+    build_app/serve parity test enumerates options from (issue #187)."""
     ap = argparse.ArgumentParser(prog="lnpl", description="compile and run LNPL sources")
     ap.add_argument("--version", action="version",
                     version="lnpl %s" % __version__)
@@ -1774,13 +1945,19 @@ def main(argv=None):
     gn = sub.add_parser("generate",
                         help="run a registered generator against the IR "
                              "(lnpl.generators SPI, issue #139)")
-    gn.add_argument("name", help="registered generator name (e.g. openapi)")
+    gn.add_argument("name",
+                    help="generator name: built-in openapi, compose, k8s, or a "
+                         "registered lnpl.generators entry-point")
     gn.add_argument("source", nargs="+",
                     help="one or more .lnpl files (merged in the given order), "
                          "or a single directory (its *.lnpl, filename-sorted — "
                          "RFC-0031, issue #77)")
     gn.add_argument("--out", required=True,
                     help="directory to write the generator's output under")
+    gn.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="generator option (repeatable); compose: image, port, "
+                         "source, postgres_image, redis_image; k8s: image, name, "
+                         "replicas, cpu_request, cpu_limit, memory (issue #189)")
     gn.set_defaults(func=cmd_generate)
 
     sv = sub.add_parser("serve",
@@ -1815,6 +1992,12 @@ def main(argv=None):
                          "command line. Falls back to lnpl.toml's "
                          "`[*.secrets].jwt` (issue #114) — also a NAME, "
                          "never the secret itself.")
+    sv.add_argument("--jwt-secret-file", default=None, metavar="PATH",
+                    help="absolute path of a file holding the HS256 signing "
+                         "secret (issue #192) -- a mounted Kubernetes/Docker "
+                         "secret; one trailing LF or CRLF is stripped. Refused "
+                         "together with --jwt-secret-env; beats lnpl.toml's "
+                         "[*.secrets].jwt.")
     sv.add_argument("--jwt-issuer", default=None, metavar="ISS",
                     help="expected `iss` claim a verified token must carry "
                          "(issue #119b). Omitted, defaults to the built-in "
@@ -1901,6 +2084,15 @@ def main(argv=None):
                          "--jwt-issuer` value under test.")
     tk.add_argument("--ttl", default="15m",
                     help="access-token lifetime (default: 15m)")
+    tk.add_argument("--role", default=None, metavar="ROLE",
+                    help="the `role` claim to mint (issue #202). Self-asserted, "
+                         "built-in `hmac` provider only — not a production "
+                         "identity check. Omitted, the claim set is byte-"
+                         "identical to before this flag existed. If `--path`'s "
+                         "service declares `security role <r>` and this is "
+                         "absent or different, a warning is printed to stderr "
+                         "(the token is still minted — the 403 path must stay "
+                         "testable)")
     tk.set_defaults(func=cmd_token)
 
     ob = sub.add_parser("outbox",
@@ -2071,8 +2263,8 @@ def main(argv=None):
 
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "
-                              "repository/cache/network/token/exporter/kb "
-                              "(#134)")
+                              "repository/cache/network/token/exporter/"
+                              "generators/diagnostics/kb/publishers/secrets (#134)")
     cap.add_argument("--json", action="store_true",
                      help="explicit stable form (default: same document)")
     cap.set_defaults(func=cmd_capabilities)
@@ -2100,6 +2292,13 @@ def main(argv=None):
     ag.add_argument("-o", "--output", help="write the resulting IR here")
     ag.set_defaults(func=cmd_agents)
 
+    if subparsers_out is not None:
+        subparsers_out["serve"] = sv
+    return ap
+
+
+def main(argv=None):
+    ap = _build_parser()
     args = ap.parse_args(argv)
     try:
         return args.func(args)
