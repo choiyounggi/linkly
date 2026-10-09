@@ -1,0 +1,41 @@
+seed save=409 get=200
+point backend=postgres workers=2 class=gthread threads=4 rate=50 seconds=55 warmup=5 started=2026-10-08T02:51:37Z
+total=2750 post_warmup=2500 ok=2500 error_or_non2xx=0
+p50=5.63ms p95=8.50ms p99=12.16ms
+error_rate=0.00%
+bucket=0-10s mean=6.03ms max=13.87ms n=500
+bucket=10-20s mean=6.60ms max=14.26ms n=500
+bucket=20-30s mean=5.70ms max=8.67ms n=500
+bucket=30-40s mean=5.68ms max=7.97ms n=500
+bucket=40-50s mean=5.77ms max=9.74ms n=500
+verdict=STABLE worst_bucket_ratio=1.094x
+point backend=postgres workers=2 class=gthread threads=4 rate=100 seconds=55 warmup=5 started=2026-10-08T02:52:34Z
+total=5500 post_warmup=5000 ok=5000 error_or_non2xx=0
+p50=4.44ms p95=5.41ms p99=5.90ms
+error_rate=0.00%
+bucket=0-10s mean=4.62ms max=6.98ms n=1000
+bucket=10-20s mean=4.55ms max=10.23ms n=1000
+bucket=20-30s mean=4.50ms max=6.92ms n=1000
+bucket=30-40s mean=4.56ms max=11.28ms n=1000
+bucket=40-50s mean=4.54ms max=6.66ms n=1000
+verdict=STABLE worst_bucket_ratio=1.000x
+point backend=postgres workers=2 class=gthread threads=4 rate=200 seconds=55 warmup=5 started=2026-10-08T02:53:31Z
+total=11000 post_warmup=10000 ok=10000 error_or_non2xx=0
+p50=3.75ms p95=5.03ms p99=6.06ms
+error_rate=0.00%
+bucket=0-10s mean=3.99ms max=10.49ms n=2000
+bucket=10-20s mean=3.89ms max=9.08ms n=2000
+bucket=20-30s mean=3.90ms max=6.63ms n=2000
+bucket=30-40s mean=3.95ms max=13.00ms n=2000
+bucket=40-50s mean=3.97ms max=9.85ms n=2000
+verdict=STABLE worst_bucket_ratio=1.000x
+point backend=postgres workers=2 class=gthread threads=4 rate=400 seconds=55 warmup=5 started=2026-10-08T02:54:28Z
+total=22000 post_warmup=20000 ok=20000 error_or_non2xx=0
+p50=4.63ms p95=6.92ms p99=10.98ms
+error_rate=0.00%
+bucket=0-10s mean=5.21ms max=31.78ms n=4000
+bucket=10-20s mean=4.94ms max=23.08ms n=4000
+bucket=20-30s mean=5.07ms max=22.23ms n=4000
+bucket=30-40s mean=5.11ms max=21.70ms n=4000
+bucket=40-50s mean=4.60ms max=18.02ms n=4000
+verdict=STABLE worst_bucket_ratio=1.000x

@@ -10,11 +10,12 @@ in the t114 plan): every value this module resolves must be traceable to one
 line in one file.
 
 `[*.secrets]` values are never the secret itself — issue #101's discipline —
-only the NAME of an environment variable that holds it, checked against
-`_ENV_NAME_RE` before anything else touches it. `${VAR}` substitution inside
-ordinary scalar/endpoint strings reads `os.environ` directly and never the
-`[*.secrets]` table, so a value can never smuggle a secret through the file
-by way of a placeholder.
+only a pointer to it: the NAME of an environment variable that holds it,
+checked against `_ENV_NAME_RE` before anything else touches it, or (issue
+#192) `{ file = "<absolute path>" }`, the path of a file that holds it.
+`${VAR}` substitution inside ordinary scalar/endpoint strings reads
+`os.environ` directly and never the `[*.secrets]` table, so a value can
+never smuggle a secret through the file by way of a placeholder.
 
 A missing `lnpl.toml` (the default path, not an explicit `--config`) resolves
 to an all-`None`/empty `ResolvedConfig` — every existing flag/env-var-driven
@@ -36,6 +37,8 @@ _VAR_REF_RE = re.compile(r"\$\{([^}]*)\}")
 
 _SCALAR_KEYS = ("backend", "log_format", "trace_exporter")
 _SECTION_KEYS = ("endpoints", "secrets")
+_SECRET_TABLE_FORMS = ('{ file = "<absolute path>" }',
+                       '{ provider = "<name>", key = "<key>" }')
 
 
 @dataclasses.dataclass(frozen=True)
@@ -50,6 +53,22 @@ class ResolvedConfig:
     trace_exporter: object = None
     endpoints: dict = dataclasses.field(default_factory=dict)
     secrets: dict = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(frozen=True)
+class SecretFileRef:
+    """`[*.secrets] <key> = { file = "<absolute path>" }` (issue #192): a
+    pointer to a file holding the secret, never the secret itself."""
+    path: str
+
+
+@dataclasses.dataclass(frozen=True)
+class SecretProviderRef:
+    """`[*.secrets] <key> = { provider = "<name>", key = "<key>" }` (issue
+    #192): a pointer to a registered `lnpl.secrets` provider and the key it
+    resolves, never the value."""
+    provider: str
+    key: str
 
 
 def _substitute(value, path):
@@ -83,8 +102,33 @@ def _validate_secret_name(value, path):
         raise WsgiConfigError(
             "%s looks like a value, not an ENV name — only a bare "
             "environment variable name (e.g. MY_SECRET) is allowed here, "
-            "the secret's own value never belongs in lnpl.toml: %r"
-            % (path, value))
+            "the secret's own value never belongs in lnpl.toml"
+            % (path,))
+
+
+def _load_secret_table(table, path):
+    """issue #192 D1/D2: a `[*.secrets]` table value -> `SecretFileRef` or
+    `SecretProviderRef`. No message carries a value from the table — the
+    operator may have pasted the secret into it."""
+    if set(table) == {"provider", "key"}:
+        for field in ("provider", "key"):
+            if not isinstance(table[field], str) or not table[field]:
+                raise WsgiConfigError(
+                    "%s.%s must be a non-empty string" % (path, field))
+        return SecretProviderRef(table["provider"], table["key"])
+    if set(table) != {"file"}:
+        raise WsgiConfigError(
+            "%s must be an environment variable NAME string or one of: %s"
+            " — got key(s) %s"
+            % (path, ", ".join(_SECRET_TABLE_FORMS),
+               ", ".join(sorted(table)) or "none"))
+    raw = table["file"]
+    if not isinstance(raw, str) or not raw:
+        raise WsgiConfigError("%s.file must be a non-empty string (a path)" % path)
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        raise WsgiConfigError("%s.file must be an absolute path" % path)
+    return SecretFileRef(expanded)
 
 
 def _load_table(display_path, name, table):
@@ -131,6 +175,9 @@ def _load_table(display_path, name, table):
             "%s: [%s.secrets] must be a table" % (display_path, name))
     for key, value in raw_secrets.items():
         path = "%s: %s.secrets.%s" % (display_path, name, key)
+        if isinstance(value, dict):
+            secrets[key] = _load_secret_table(value, path)
+            continue
         if not isinstance(value, str):
             raise WsgiConfigError(
                 "%s must be a string (an environment variable NAME), got %s"

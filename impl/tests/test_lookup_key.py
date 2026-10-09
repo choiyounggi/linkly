@@ -292,15 +292,19 @@ class TestF3F6Scenario(unittest.TestCase):
                          .observed_version, 4)
 
     def test_two_sets_in_one_run_both_persist_under_the_lookup_key_on_sqlite(self):
-        """t174's contract under the lookup key: the second persist sees the
-        first persist's own version bump, not a phantom write conflict.
+        """t174's contract under the lookup key: the second persist sees
+        the first persist's own version bump, not a phantom write
+        conflict.
 
-        (A `set` after an `update` of the same bound row still conflicts on
-        SQLite with or without `by` — `update` bumps `_version` without
-        advancing the bound row's `observed_version`; pre-existing, recorded
-        for a follow-up, coordinator ruling on #175 DoD 1.)"""
+        Issue #182 folded in: an `update` BETWEEN the two `set`s no
+        longer phantom-conflicts the second one either, with the lookup
+        key in play exactly as it is without one
+        (test_create_binding.py's
+        `test_set_update_set_update_on_one_found_row_all_persist_to_sqlite`
+        is the bare-key twin of this test)."""
         doc = compile_doc("    find stock by input.productId\n"
                           "    set stock.onHand to stock.onHand - input.qty\n"
+                          "    update stock by input.productId\n"
                           "    set stock.onHand to stock.onHand - input.qty\n"
                           "    update stock by input.productId\n")
         driver = SqliteRepositoryDriver(os.path.join(_tmp_store_dir(self), "s.db"))
@@ -312,7 +316,11 @@ class TestF3F6Scenario(unittest.TestCase):
         self.assertEqual(result["status"], "completed", result.get("failure_reason"))
         stock = driver.execute(STOCK, "read", "entity.stock#P1")
         self.assertEqual(stock["onHand"], 1)
-        self.assertEqual(stock.observed_version, 3)
+        # Two persists + two updates, each bumping `_version` by 1 from
+        # the seeded 0 (issue #182's fix: the extra `update` no longer
+        # costs an extra phantom conflict, only its own real version
+        # bump).
+        self.assertEqual(stock.observed_version, 4)
         # The order-id key was never written.
         self.assertIsNone(driver.execute(STOCK, "read", "entity.stock#O1"))
 
@@ -332,11 +340,15 @@ class TestF3F6Scenario(unittest.TestCase):
         self.assertEqual([r["id"] for r in driver.query(STOCK)], ["S2"])
 
     def test_delete_by_on_the_fake_touches_no_other_row(self):
-        """`FakeRepository` never removes a row on `delete` (it answers 1
-        unconditionally — pre-existing, with or without `by`; coordinator
-        ruling on #175 DoD 1). What the lookup key must still guarantee
-        there: the run completes, the other row is untouched, and nothing is
-        written under the payload id or the `"-"` sentinel."""
+        """issue #183: `FakeRepository` now really removes the keyed row
+        (it used to answer `affected: 1` unconditionally and remove
+        nothing — coordinator ruling on #175 DoD 1, superseded by the
+        user's #183 decision: option 1). Mirrors
+        `test_delete_by_removes_exactly_the_addressed_row_on_sqlite`: the
+        named row is gone, the other row is byte-identical to its seed,
+        and the key set is exactly the other row's key — so nothing
+        stray was written under the payload id or the `"-"` sentinel
+        either."""
         doc = compile_doc("    delete stock by input.productId\n")
         rows = seed_rows()
         rows[STOCK]["entity.stock#P2"] = {"id": "S2", "productId": "P2",
@@ -344,9 +356,10 @@ class TestF3F6Scenario(unittest.TestCase):
         interp = Interpreter(doc, repo_rows=copy.deepcopy(rows))
         result = interp.run_workflow(WORKFLOW, {"id": "O1", "productId": "P1"})
         self.assertEqual(result["status"], "completed")
+        self.assertNotIn("entity.stock#P1", interp.repo.rows[STOCK])
         self.assertEqual(interp.repo.rows[STOCK]["entity.stock#P2"],
                          rows[STOCK]["entity.stock#P2"])
-        self.assertEqual(sorted(interp.repo.rows[STOCK]), sorted(rows[STOCK]))
+        self.assertEqual(sorted(interp.repo.rows[STOCK]), ["entity.stock#P2"])
 
 if __name__ == "__main__":
     unittest.main()

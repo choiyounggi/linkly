@@ -107,8 +107,9 @@ OpenAPI `x-lnpl-schedules` 메타데이터(기존 생성물)를 소비해 `lnpl 
 
 ### `generate <name> <src.lnpl>... --out <dir>` — 등록된 생성기 실행 (`lnpl.generators` SPI, 이슈 #139)
 
-`name`은 등록된 생성기 이름(내장은 `openapi` 하나 — 그 자체가 이 SPI의 첫
-독푸딩 사례다), `<src.lnpl>...`는 `openapi`/`compile`과 같은 소스 인자다.
+`name`은 생성기 이름(내장은 `openapi`·`compose`·`k8s` — `openapi`는 이 SPI의 첫
+독푸딩 사례이고 `compose`·`k8s`는 배포 매니페스트 생성기다, 이슈 #189; 그 밖은
+등록된 entry-point), `<src.lnpl>...`는 `openapi`/`compile`과 같은 소스 인자다.
 생성기는 `{relative_path: bytes}`를 반환하고, 그 맵을 실제 파일로 쓰는 것은
 코어의 일이다(protoc 플러그인 모델) — `docs/backends.md` §12가 등록·경로
 이탈 거부·TCK를 자세히 다룬다.
@@ -116,6 +117,7 @@ OpenAPI `x-lnpl-schedules` 메타데이터(기존 생성물)를 소비해 `lnpl 
 | 플래그 | 뜻 |
 |--------|-----|
 | `--out` | 생성된 파일을 쓸 디렉터리(필수) |
+| `--set` | 생성기 옵션 `KEY=VALUE`(반복 가능). compose: image, port, source, postgres_image, redis_image / k8s: image, name, replicas, cpu_request, cpu_limit, memory — `docs/backends.md` §12 |
 
 ### `serve` — OpenAPI 경로에 워크플로를 HTTP로 바인딩 (모드 A, 이슈 #26)
 
@@ -132,6 +134,7 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--network` | `run`과 같다. 이슈 #101 전에는 `serve`에 이 플래그 자체가 없어서 모든 요청이 `fake` 드라이버로 나갔다 |
 | `--endpoint` | `run`과 같다 — `--network http`에서 소켓을 바인드하기 전에 검사한다(백엔드·jwt 시크릿과 같은 자리). 이슈 #101 |
 | `--jwt-secret-env` | HS256 서명 시크릿이 담긴 **환경변수 이름**. 주면 `security jwt` 서비스가 베어러 토큰을 실제로 검증하고(401 `auth-invalid`), 안 주면 헤더 존재 검사만 한다. 시크릿 **값**은 명령줄로 받지 않는다 |
+| `--jwt-secret-file` | HS256 서명 시크릿이 담긴 파일의 **절대경로**(이슈 #192 — 마운트된 Kubernetes/Docker secret). 끝의 개행 하나(`\n` 또는 `\r\n`)만 벗긴다. `--jwt-secret-env`와 함께 주면 rc 2로 거부하고, 하나만 주면 `lnpl.toml`의 `[*.secrets].jwt`를 이긴다. 오류는 플래그 이름만 싣는다 |
 | `--jwt-issuer` | 검증된 토큰이 실려야 할 기대 `iss` 클레임. 안 주면 기존 `"lnpl"`(이슈 #119b 이전과 바이트 단위로 동일). `--jwt-secret-env`와 함께일 때만 의미가 있다 |
 | `--token-provider` | `security jwt` 검증기를 고른다(이슈 #119b): 내장 `hmac`(기본 — `--jwt-secret-env`/`--jwt-issuer`를 그대로 읽는다) 또는 `lnpl.tokens` entry-points 그룹에 등록된 이름(실제 외부 IdP를 RS256/ES256으로 검증). 등록된 이름이 `hmac`을 가리키면 거부된다(`docs/backends.md`) |
 | `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics, 존재할 때만 trace_id/span_id/notes/effects/input_digest). 이슈 #78/#107/#111 |
@@ -172,7 +175,8 @@ lnpl config check <source...> [--profile NAME] [--config PATH]
 `serve`가 소켓을 바인드하기 전에 실패할 조건 셋을 미리 판정한다: (a) 소스의
 모든 `NetworkCall` 논리명에 `lnpl.toml`/`LNPL_ENDPOINT_<NAME>` 매핑이 있는가,
 (b) `lnpl.toml`의 `[*.secrets]` 항목이 가리키는 환경변수가 실제로 설정돼
-있는가, (c) `security jwt`를 선언했다면 `[*.secrets].jwt` 매핑이 있는가.
+있는가 — `{ file = "<절대경로>" }` 항목(이슈 #192)이면 그 파일이 있고 읽히고
+비지 않았는가(`jwt`는 32바이트 이상인가까지), `{ provider = "<이름>", key = "<키>" }` 항목(이슈 #192)이면 그 `lnpl.secrets` 프로바이더를 열어 현재 키 + 이전 키를 읽고 닫았을 때 실패가 없는가(`jwt`는 두 값 모두 32바이트 이상인가까지 — 메시지는 프로바이더 이름만 싣고 값은 싣지 않는다), (c) `security jwt`를 선언했다면 `[*.secrets].jwt` 매핑이 있는가.
 `--endpoint`/`--jwt-secret-env`는 받지 않는다 — `serve` 실행 시 즉석으로 줄
 값이 아니라 `lnpl.toml`+환경변수로 이미 서 있는 표면만 진단한다.
 
@@ -242,13 +246,16 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
 ```
 
 `outbox drain`(발행 쪽)과 `POST /-/events/<slug>`(소비 쪽, `consume by`)를
-잇는 최소 구현 — 브로커 없이 두 `lnpl serve` 인스턴스 사이에서 이벤트
-계약을 실측한다. `stdlib urllib`만 쓴다(브로커·HTTP 클라이언트 의존 없음).
+잇는 최소 구현 — `http(s)://`는 브로커 없이 두 `lnpl serve` 인스턴스
+사이에서 이벤트 계약을 실측한다(`stdlib urllib`만 쓴다, 바이트 동일
+유지). `--target`이 다른 스킴이면 등록된 `lnpl.publishers` 드라이버로
+발행한다(issue #191, RFC-0061) — 코어는 스킴 선택 레지스트리만 소유하고
+실제 브로커 바인딩은 여전히 외부 패키지의 몫이다.
 
 | 플래그 | 뜻 |
 |--------|-----|
 | `--backend` | 필수. 드레인할 영속 백엔드(`sqlite:<path>`). `fake`는 outbox가 없어 거부(rc 2) |
-| `--target` | 필수. 소비 인스턴스의 base URL — 봉투는 `<--target>/-/events/<slug>`로 POST된다 |
+| `--target` | 필수. `http(s)://<base-url>`이면 소비 인스턴스의 base URL — 봉투는 `<--target>/-/events/<slug>`로 POST된다(바이트 동일). 그 외 스킴(예: `kafka://…`)이면 등록된 `lnpl.publishers` 드라이버가 발행한다 — 미등록 스킴은 rc!=0 + 스킴/등록 목록을 담은 에러(크리덴셜은 절대 로그에 남지 않는다) |
 | `--once` | 한 번 드레인·POST하고 종료(rc 0) — 테스트나 cron이 미는 모양. 기본은 무한 반복(폴링 간격 1초) |
 | (위치 인자) `source` | 컴파일만 한다(재실행 아님) — emission의 이벤트 id를 이벤트의 선언된 이름(슬러그/`type`)으로 되돌리는 데만 쓴다 |
 
@@ -257,7 +264,9 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
 offset-commit discipline): 200 → ack. 422 → ack(재시도해도 같은 결과이므로
 dead-letter, stderr에 경고 한 줄) + ack. 503 또는 응답 없음(연결 실패) →
 ack 안 함 — 다음 드레인이 같은 행을 다시 시도한다(at-least-once). 그 외
-상태 코드도 안전한 쪽으로 ack 안 함.
+상태 코드도 안전한 쪽으로 ack 안 함. 등록 드라이버 경로도 같은 두 갈래다:
+`publish`가 예외 없이 돌아오면 ack, `PublishRejected`면 ack + dead-letter,
+그 밖의 `DriverError`면 ack 안 함.
 
 상태코드 3갈래(200/503/422)의 정본은 `docs/serving.md`§이벤트 소비.
 
@@ -384,7 +393,7 @@ declarations·types 넷을 생성한다)가 같은 함수를 공유한다.
 |--------|-----|
 | `--json` | 명시적 안정형 — bare와 같은 문서를 낸다 |
 
-`repository`/`cache`/`network`/`token`/`exporter`/`kb` 6슬롯 각각의 내장 이름과
+`repository`/`cache`/`network`/`token`/`exporter`/`generators`/`diagnostics`/`kb`/`publishers`/`secrets` 10슬롯 각각의 내장 이름과
 등록된 entry-point 이름·로드 가능 여부를 한 JSON 문서로 낸다(`pg_available_
 extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 `--trace-exporter`에 틀린 값을 줘서 실패를 읽는 대신 미리 나열해서 본다. 로드

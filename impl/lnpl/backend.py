@@ -568,6 +568,47 @@ def workflow_uses_numeric_predicate(document, workflow_id):
     return False
 
 
+def _numeric_predicate_offender(ops):
+    """`(step_name, guard_text)` of the first `when`/`until` guard in `ops`
+    -- `_lnpl_ops`'s seed/payload-truncated op stream, not a fresh
+    document scan -- using the numeric-shape predicate (RFC-0050), or
+    `None`.
+
+    Shared by `build()`'s pre-check (run on `_lnpl_ops`'s own result, with
+    `build()`'s own `seeded`/`payload`, before any toolchain lookup) and
+    `_render_std` (which renders that same stream) -- one walk, so neither
+    can disagree about which step is first, and the pre-check cannot
+    refuse a step `_render_std` would never reach (the
+    `seeded=frozenset()` counterexample, issue #186).
+    """
+    for entry in ops:
+        if entry["guard_mode"] not in ("when", "until"):
+            continue
+        for text in (entry["guard_condition"],) + tuple(
+                entry["guard_alternatives"] or ()):
+            if _uses_numeric_predicate(_parsed(text)):
+                return entry["name"], text
+    return None
+
+
+def _refuse_numeric_predicate(ops):
+    """Raise RFC-0050's refusal if `ops` reaches a numeric-shape-predicate
+    guard. Called by `build()` (on its own `_lnpl_ops` result, before
+    `verify_lnpl_module()`) and by `_render_std` (on the `ops` it
+    renders) -- the one place this message is written, so the two call
+    sites cannot drift apart (mirrors `_refuse_unsupported_guards`'s own
+    reasoning).
+    """
+    offender = _numeric_predicate_offender(ops)
+    if offender is not None:
+        step_name, guard_text = offender
+        raise BackendError(
+            "step %s: guard %r uses the numeric-shape predicate "
+            "(is-numeric/is-not-numeric), which mode B has no "
+            "compiled evaluator for (RFC-0050 §Mode B) — this "
+            "workflow runs in mode A only" % (step_name, guard_text))
+
+
 def _money_declared_fields(document):
     """Every guard reference name that resolves to a declared Money field
     (RFC-0051 §6): `<binding>.<field>` for each Entity's default binding and
@@ -959,6 +1000,27 @@ def workflow_uses_otherwise(document, workflow_id):
     return _otherwise_offender(document, workflow_id) is not None
 
 
+def _cached_read_offender(document, workflow_id):
+    """`(step_name, entity_id)` of the first reachable RepositoryCall of
+    `workflow_id` carrying a `cached` read-through clause (issue #188), or
+    None. Raises `BackendError` for an unknown workflow."""
+    nodes, steps = _workflow_steps(document, workflow_id)
+    for step, _cond in steps:
+        for cid in step.get("children", []):
+            effect = nodes.get(cid)
+            if (effect is not None and effect["kind"] == "RepositoryCall"
+                    and effect.get("cached")):
+                return step["name"], effect["entity"]
+    return None
+
+
+def workflow_uses_cached_read(document, workflow_id):
+    """RFC-0062 §Mode B: does any reachable RepositoryCall of `workflow_id`
+    carry `cached`? Mode B has no cache state, so it refuses; this is
+    asked by `differential.verify` before the toolchain check."""
+    return _cached_read_offender(document, workflow_id) is not None
+
+
 def _refuse_unsupported_guards(document, workflow_id):
     """RFC-0051/0052/0053/0054 §Mode B: refuse, by name, a Money-guard,
     lookup-key, optional-field-guard or Text-guard workflow — called by
@@ -971,13 +1033,18 @@ def _refuse_unsupported_guards(document, workflow_id):
     (RFC-0055, `_fill_source_create_offender`) is refused next, then a `fail`
     step (RFC-0056, `_fail_offender`), then a `respond` aggregate or list
     term (RFC-0059, `_respond_term_offender`), then a guard reading a field
-    an earlier step assigns and, last, a guard owning an `otherwise` item
-    (RFC-0060, `_assigned_guard_offender`, `_otherwise_offender`), in the
+    an earlier step assigns, a guard owning an `otherwise` item
+    (RFC-0060, `_assigned_guard_offender`, `_otherwise_offender`) and,
+    last, a `cached` read (RFC-0062, `_cached_read_offender`), in the
     same positions in both.
     The numeric-shape predicate (RFC-0050) is deliberately NOT checked
-    here — its refusal in `_render_std` depends on `_lnpl_ops`'s
-    seed/payload-truncated ops stream, which a document-level check here
-    cannot safely replicate.
+    here either — it depends on `_lnpl_ops`'s seed/payload-truncated ops
+    stream (issue #186), which this document-level check cannot safely
+    replicate. `build()` checks it separately, right after this call
+    and still before `verify_lnpl_module()` reaches any toolchain
+    lookup, by running `_refuse_numeric_predicate` over `_lnpl_ops`'s
+    own result — the same function `_render_std` calls, so the two
+    cannot drift apart on that message either.
     """
     offender = _money_guard_offender(document, workflow_id)
     if offender is not None:
@@ -1043,6 +1110,13 @@ def _refuse_unsupported_guards(document, workflow_id):
             "step %s: guard %r owns an `otherwise` item, which mode B has no "
             "compiled branch for (RFC-0060 §Mode B, recorded exemption) — run "
             "it in mode A" % (step_name, guard_text))
+    cached_offender = _cached_read_offender(document, workflow_id)
+    if cached_offender is not None:
+        step_name, entity_id = cached_offender
+        raise BackendError(
+            "step %s: %s is read with `cached`, and mode B has no cache state "
+            "to consult (RFC-0062 §Mode B, recorded exemption) — run it in "
+            "mode A" % (step_name, entity_id))
 
 
 def encode_condition_value(value):
@@ -1453,6 +1527,18 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
                 # makes routine, not exceptional.
                 if node["entity"] not in seeded_now and node["entity"] not in created:
                     fail_at = index
+            elif kind == "RepositoryCall" and operation == "delete":
+                # issue #183: an unconditional delete really removes the
+                # row (FakeRepository.execute / SqliteRepositoryDriver.
+                # _touch), so neither the seed nor an earlier
+                # unconditional create still backs this entity
+                # afterward -- a later unconditional `read` must now
+                # statically fail the same way mode A's Fake does, and a
+                # later unconditional `create` must insert rather than
+                # conflict, the same way a real DELETE followed by
+                # INSERT does.
+                seeded_now.discard(node["entity"])
+                created.discard(node["entity"])
             elif kind == "RepositoryCall" and operation == "create":
                 # RFC-0055 §6: mode A refuses an id-less create (id-required)
                 # before the write; a fill-source create never reaches here.
@@ -1739,6 +1825,12 @@ def _render_std(module_attrs, ops):
         # something to expand by hand in an emitter — xor with true does it.
         lines.append("    %true_i1 = arith.constant true")
 
+    # RFC-0050 §5: no compiled evaluator for `is-numeric`/`is-not-numeric`.
+    # One walk of `ops`, shared with `build()`'s pre-check (see
+    # `_refuse_numeric_predicate`) so the two call sites cannot raise
+    # different text for the same workflow.
+    _refuse_numeric_predicate(ops)
+
     # `entry`, not `op` — the guard branches below unpack `field, op, value` from
     # a parsed condition, and a loop named `op` would be shadowed mid-body.
     for entry in ops:
@@ -1746,19 +1838,6 @@ def _render_std(module_attrs, ops):
         sym = strings[entry["name"]]
         guard_mode = entry["guard_mode"]
         guard_str = entry["guard_condition"]
-
-        # RFC-0050 §5: no compiled evaluator for `is-numeric`/`is-not-numeric`.
-        # Refuse by name — compiling only the Comparison half of a mixed `and`,
-        # or falling back to the run-level `%skip` flag, would let mode B take a
-        # branch mode A does not.
-        if guard_mode in ("when", "until"):
-            for text in (guard_str,) + tuple(entry["guard_alternatives"] or ()):
-                if _uses_numeric_predicate(_parsed(text)):
-                    raise BackendError(
-                        "step %s: guard %r uses the numeric-shape predicate "
-                        "(is-numeric/is-not-numeric), which mode B has no "
-                        "compiled evaluator for (RFC-0050 §Mode B) — this "
-                        "workflow runs in mode A only" % (entry["name"], text))
 
         guard_desc = ""
         if guard_mode and guard_str:
@@ -1957,6 +2036,7 @@ def build(document, workflow_id, workdir, keep_intermediate=True, seeded=None,
     with open(lnpl_path, "w", encoding="utf-8") as fh:
         fh.write(lnpl_text)
     _refuse_unsupported_guards(document, workflow_id)
+    _refuse_numeric_predicate(_lnpl_ops(document, workflow_id, seeded, payload)[1])
     verify_lnpl_module(lnpl_text, path=lnpl_path)
 
     with open(mlir_path, "w", encoding="utf-8") as fh:

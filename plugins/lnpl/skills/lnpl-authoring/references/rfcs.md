@@ -71,5 +71,7 @@
 | RFC-0058 파이프라인 암묵 종결과 모순되는 들여쓰기의 거부 | `pipeline` 안에 들여 쓴 가드·블록이 왜 거부되는지, 가드된 `pipeline`을 이어 다단 조건 흐름을 쓰는 법과 그것이 기대는 '미바인딩 참조 비교는 거짓' 계약이 궁금하다 | `rfcs/0058-pipeline-implicit-close-indentation.md` |
 | RFC-0059 `respond`의 이름 붙인 집계 항과 목록 항 | 조회 전용 워크플로가 개수·합계·조건부 목록을 행을 쓰지 않고 응답하고 싶다(`respond <name> as <func> <ref>`, `respond list <binding>`) — `limit`이 필요한 이유, `next`가 늘 null인 이유, OpenAPI·spec이 항을 다루는 법과 모드 B가 거부하는 이유 | `rfcs/0059-respond-aggregate-and-list-terms.md` |
 | RFC-0060 할당한 필드를 읽는 가드와 `otherwise` 항목 | 가드가 앞 스텝이 바꾼 값을 읽어도 되는지(RFC-0015 OQ1), 가드가 거짓일 때 다른 항목을 실행하고 싶다(`otherwise`) — 어디에 쓸 수 있고 skipped[]에 무엇이 남는지, 모드 B는 왜 둘 다 거부하는지 | `rfcs/0060-assigned-field-guard-and-otherwise.md` |
+| RFC-0061 이벤트 발행 SPI — `lnpl.publishers`, `EventPublisher` 계약, 레퍼런스 릴레이 스킴 디스패치 | 브로커로 이벤트를 보낼 공식 SPI가 필요하다 — `lnpl.publishers` entry-points 그룹과 `EventPublisher` 계약이 무엇을 받는지, `lnpl relay --target`이 스킴으로 어떻게 드라이버를 고르는지, `http(s)://`가 왜 바이트 동일인지, TCK가 발행-전-ack 드라이버를 어떻게 잡는지 | `rfcs/0061-event-publisher-spi.md` |
+| RFC-0062 읽기 동사의 `cached` 절 — read-through | 같은 행을 반복해 읽는 부하를 캐시가 흡수하게 하고 싶다(`cached`) — hit/miss가 무엇을 하는지, TTL이 어디서 오는지, 쓰기·롤백 뒤 캐시가 어떻게 비워지는지, 모드 B는 왜 거부하는지 | `rfcs/0062-cached-read-through-clause.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

@@ -1,0 +1,7 @@
+[2026-10-08 02:23:58 +0000] [16978] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:23:58 +0000] [16978] [INFO] Listening at: http://127.0.0.1:18195 (16978)
+[2026-10-08 02:23:58 +0000] [16978] [INFO] Using worker: gthread
+[2026-10-08 02:23:58 +0000] [16982] [INFO] Booting worker with pid: 16982
+[2026-10-08 02:27:46 +0000] [16978] [INFO] Handling signal: term
+[2026-10-08 02:27:46 +0000] [16982] [INFO] Worker exiting (pid: 16982)
+[2026-10-08 02:27:47 +0000] [16978] [INFO] Shutting down: Master

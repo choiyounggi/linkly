@@ -34,6 +34,7 @@ import random
 import sqlite3
 import threading
 import time
+import urllib.parse
 import uuid
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -74,6 +75,24 @@ CACHES_ENTRY_POINT_GROUP = "lnpl.caches"
 # above) are matched first and always win.
 NETWORKS_ENTRY_POINT_GROUP = "lnpl.networks"
 
+# The closed table of built-in `--target` schemes the reference relay
+# already implements inline (byte-identical, untouched by this SPI).
+PUBLISHERS = ("http", "https")
+
+# issue #191, RFC-0061: the entry-points group an external package
+# registers an EventPublisher factory under
+# (`[project.entry-points."lnpl.publishers"]` in its own pyproject.toml).
+# Built-in http/https are matched before this group is ever consulted,
+# so a registered entry-point can never shadow them.
+PUBLISHERS_ENTRY_POINT_GROUP = "lnpl.publishers"
+
+# issue #192: the entry-points group an external package registers a
+# SecretProvider factory under (`[project.entry-points."lnpl.secrets"]`).
+# `env` and `file` are the sources core implements inline; a registered
+# entry-point named either is refused, never silently used or ignored.
+SECRETS_ENTRY_POINT_GROUP = "lnpl.secrets"
+BUILTIN_SECRET_SOURCES = ("env", "file")
+
 # Every connection waits this long for a lock instead of raising at once.
 BUSY_TIMEOUT_MS = 5000
 
@@ -101,6 +120,18 @@ BUILTIN_TOKEN_PROVIDERS = ("hmac",)
 LEEWAY_S = 60
 # 256 bits of key material, matching the digest HS256 signs with.
 MIN_SECRET_BYTES = 32
+# issue #192 D15: a provider-sourced key pair is re-read lazily, on the first
+# verify()/issue() after this many seconds, and also forced by every
+# /-/readyz probe. No timer and no jitter: traffic triggers the re-read, so
+# workers do not expire together.
+SECRET_REFRESH_S = 60.0
+# issue #192 review C1: /-/readyz is unauthenticated and exempt from
+# --rate-limit, so a probe re-reads the provider only when the last read
+# (success or failure) is at least this old; otherwise it reports that read's
+# result. 5 s is half the kubelet's default probe period (10 s), so every
+# real probe still reads, while a loop of probes costs at most one
+# provider read pair per 5 s per worker.
+READYZ_REFRESH_FLOOR_S = 5.0
 # Access tokens are short-lived because the revocation gap equals their
 # lifetime: there is no session store here to check a denylist against, so
 # expiry is the only thing that ends a token's life.
@@ -130,6 +161,15 @@ class WriteConflictError(DriverError):
     Unlike `ConflictError` (a duplicate `create`, never resolved by retrying
     the same call), this one IS retryable: a caller that re-reads and
     re-runs the whole workflow can succeed (issue #92, #201)."""
+
+
+class PublishRejected(DriverError):
+    """A publisher permanently rejected one envelope (mirrors RFC-0040
+    D7's 422 bucket). The caller acks the row anyway and emits one
+    dead-letter stderr line -- retrying an identical envelope can never
+    turn a permanent rejection into a success. Any OTHER DriverError (or
+    plain DriverError) means "could not confirm, leave un-acked, try
+    again next drain" (mirrors the 503/no-response bucket)."""
 
 
 # --------------------------------------------------------------------------
@@ -400,6 +440,70 @@ class NetworkDriver:
         raise NotImplementedError
 
 
+class EventPublisher:
+    """The `lnpl.publishers` capability's adapter contract (issue #191,
+    RFC-0061). Carries one outbox emission, already shaped as a
+    CloudEvents structured-mode envelope dict (the same shape
+    `_relay_drain_once` already builds for http(s): specversion/id/
+    source/type/data), to a broker/topic.
+
+    Ack-after-confirm (RFC-0061 D1): the caller acks an outbox row ONLY
+    when `publish`/`publish_batch` returns without raising. Raising
+    `PublishRejected` signals a permanent rejection (caller acks +
+    dead-letters); raising any other `DriverError` signals "could not
+    confirm" (caller leaves the row un-acked for the next drain).
+    """
+
+    def publish(self, envelope):
+        """Publish one CloudEvents envelope. Returns None on confirmed
+        publish. Raises `PublishRejected` for a permanent rejection, or
+        `DriverError` for any other failure."""
+        raise NotImplementedError
+
+    def publish_batch(self, envelopes):
+        """Default: `publish` each envelope in order, stopping at the
+        first raise (ordering preserved; the rest are left exactly as
+        the default per-envelope loop would leave them). A driver may
+        override this for a real batch API, but must preserve order
+        and must not swallow a mid-batch failure."""
+        for envelope in envelopes:
+            self.publish(envelope)
+
+    def close(self):
+        """Release resources. Safe to call more than once."""
+        raise NotImplementedError
+
+
+class SecretProvider:
+    """The `lnpl.secrets` capability's adapter contract (issue #192).
+    Reads a secret (e.g. the JWT signing key) from an external store such
+    as Vault or a cloud secret manager, so the value never has to live in
+    an environment variable or in lnpl.toml.
+
+    The factory registered under `lnpl.secrets` is called with NO
+    arguments (like `lnpl.tokens`): connection settings (store URL,
+    authentication) are the driver package's own configuration. The
+    `key` arrives per call.
+
+    Values are `bytes` only — a `str` return is a contract violation.
+    Any failure (unknown key, store down, permission) raises
+    `DriverError`, and its text must never carry secret bytes.
+    """
+
+    def get(self, key):
+        """Return the CURRENT value of `key` as bytes."""
+        raise NotImplementedError
+
+    def get_previous(self, key):
+        """Return the value `key` held before its last rotation, as
+        bytes, or None when there is none."""
+        raise NotImplementedError
+
+    def close(self):
+        """Release resources. Safe to call more than once."""
+        raise NotImplementedError
+
+
 # --------------------------------------------------------------------------
 # sqlite
 # --------------------------------------------------------------------------
@@ -448,8 +552,14 @@ _INSERT_IF_ABSENT = ("INSERT OR IGNORE INTO lnpl_rows (entity_id, row_key, paylo
 _INSERT_ROW = "INSERT INTO lnpl_rows (entity_id, row_key, payload) VALUES (?, ?, ?)"
 # Every successful write bumps `_version`, whether or not this call checks it
 # against a prior read (`_touch`'s bare update never reads-then-mutates
-# through a binding, so it has no observed version to check — issue #92 scopes
-# the guard to `persist()`, the read-modify-write path that loses updates).
+# through a binding, so it has no observed version of its own to check —
+# issue #92 scopes the guard to `persist()`, the read-modify-write path that
+# loses updates). `_touch` still does NOT compare `_version` before writing —
+# but after a successful update (`cursor.rowcount > 0`) it advances
+# `observed_version` on whatever row this run already has bound for the same
+# key (`execute`'s `_bound_rows` bookkeeping), so the bump this statement just
+# made is not mistaken for a concurrent write by that bound row's next
+# `persist` (issue #182).
 _UPDATE_ROW = ("UPDATE lnpl_rows SET payload = ?, _version = _version + 1 "
               "WHERE entity_id = ? AND row_key = ?")
 # `persist()`'s conditional form: the write only lands if `_version` still
@@ -558,6 +668,10 @@ class _VersionedRow(dict):
     also WRITES it, advancing it in place after a successful versioned
     UPDATE so a second write through the same object is checked against the
     version that write left behind rather than the now-stale read (#174).
+    `_touch`'s `update` path (issue #182) advances it the same way after
+    its own successful write (`cursor.rowcount > 0`), for whichever row
+    `execute`'s `read` branch last handed out under that same
+    `(entity_id, key)` — the bookkeeping gap #174 left open.
     """
 
     def __init__(self, data, version):
@@ -594,6 +708,14 @@ class SqliteRepositoryDriver(RepositoryDriver):
         # because BEGIN is deferred to the first write (see `begin`).
         self._in_transaction = False
         self._sql_transaction_open = False
+        # issue #182: the exact _VersionedRow object execute()'s `read`
+        # branch last handed out for this (entity_id, key), so _touch's
+        # `update` can advance ITS observed_version too. Keyed per driver
+        # instance (one connection = one run's worth of bookkeeping),
+        # last read under a key wins -- the same last-write-wins rule
+        # the interpreter's own binding scope already uses (RFC-0012
+        # SS G12.2).
+        self._bound_rows = {}
         try:
             # issue #108 D4: a `parallel` block's steps run this driver from
             # worker threads. The default `check_same_thread=True` would
@@ -821,7 +943,16 @@ class SqliteRepositoryDriver(RepositoryDriver):
 
     def execute(self, entity_id, operation, key):
         if operation in READ_OPS:
-            return self._read(entity_id, key)
+            row = self._read(entity_id, key)
+            if operation == "read" and row is not None:
+                # issue #182: register the exact object handed out
+                # here -- never inside `_read` itself, which `_touch`
+                # also calls directly below for its own internal,
+                # throwaway read. That internal call must NOT overwrite
+                # this registration, or `_touch` would have nothing
+                # left of the caller's real binding to advance.
+                self._bound_rows[(entity_id, key)] = row
+            return row
         if operation == "create":
             return self._create(entity_id, key)
         if operation in ("update", "delete"):
@@ -891,6 +1022,8 @@ class SqliteRepositoryDriver(RepositoryDriver):
             # caller still holds is now one version behind the store. Advance
             # it in place — a second `set` on the same binding within one run
             # would otherwise fail the version check as a phantom conflict.
+            # `_touch`'s `update` path does the same for its own write,
+            # against `_bound_rows` instead of a parameter (issue #182).
             row.observed_version = version + 1
             self._end_write()
         except sqlite3.Error as exc:
@@ -1024,9 +1157,10 @@ class SqliteRepositoryDriver(RepositoryDriver):
         return {"affected": 1}
 
     def _touch(self, entity_id, operation, key):
-        """`affected` is the true row count here, where the Fake answers 1
-        unconditionally. The difference never reaches an observable: the
-        interpreter reads only `row is not None` from a write's answer.
+        """`affected` is the true row count here -- as of issue #183, the
+        Fake reports it too. The difference never reaches an observable:
+        the interpreter reads only `row is not None` from a write's
+        answer.
         """
         statement = _DELETE_ROW if operation == "delete" else _UPDATE_ROW
         try:
@@ -1045,6 +1179,22 @@ class SqliteRepositoryDriver(RepositoryDriver):
             self._end_write()
         except sqlite3.Error as exc:
             raise DriverError("cannot %s %s: %s" % (operation, entity_id, exc)) from exc
+        if operation == "update" and cursor.rowcount > 0:
+            # issue #182: this call's own UPDATE just bumped `_version`
+            # in the store. `current` above is a throwaway local -- it
+            # came from `_read` directly, never through `execute`'s
+            # "read" branch, so it was never registered in
+            # `_bound_rows` and is NOT what gets advanced here. What
+            # does is whatever row THIS run already has bound for the
+            # same key, if any: advance it in place so a later
+            # `persist` on it sees the version this call just left
+            # behind rather than the now-stale read that produced the
+            # binding. 0 rows affected (no row exists for this key)
+            # leaves any such bound row untouched -- nothing landed,
+            # so there is nothing to advance.
+            bound = self._bound_rows.get((entity_id, key))
+            if bound is not None:
+                bound.observed_version += 1
         return {"affected": cursor.rowcount if cursor.rowcount >= 0 else 0}
 
 
@@ -1084,21 +1234,16 @@ class HmacTokenProvider(TokenProvider):
     constant-time comparison. What is written here is the encoding and the
     verification checklist, neither of which is a cryptographic algorithm.
 
-    Refresh tokens, rotation, and revocation are deliberately absent — all
-    three need a server-side session store this platform does not have, and a
-    refresh flow without one would be a longer-lived access token wearing a
-    different name. `docs/backends.md` records that.
+    Refresh tokens and revocation are deliberately absent; signing-key
+    rotation is supported only as current + previous key (issue #192,
+    `previous_secret`) — refresh and revocation need a server-side session
+    store this platform does not have, and a refresh flow without one would
+    be a longer-lived access token wearing a different name.
+    `docs/backends.md` records that.
     """
 
-    def __init__(self, secret, issuer=None):
-        if isinstance(secret, str):
-            secret = secret.encode("utf-8")
-        # Measured in bytes, not characters: "é" * 16 is 16 characters and 32
-        # bytes of key material, and it is the bytes that HMAC consumes.
-        if len(secret) < MIN_SECRET_BYTES:
-            raise TokenError(
-                "the JWT signing secret must be at least %d bytes, got %d"
-                % (MIN_SECRET_BYTES, len(secret)))
+    def __init__(self, secret, issuer=None, previous_secret=None):
+        self._set_keys(secret, previous_secret)
         # issue #119b, D3: `issuer` replaces the module-level `ISSUER` hard-
         # coding. `None` (the default, e.g. `--jwt-issuer` unset) keeps the
         # pre-existing `"lnpl"` behavior byte-identical — the module constant
@@ -1118,7 +1263,26 @@ class HmacTokenProvider(TokenProvider):
         # `lnpl.tokens` SPI provider built on this same checklist carry its
         # own allowlist without this method changing.
         self._accepted_algs = ACCEPTED_ALGS
-        self._secret = secret
+
+    def _set_keys(self, current, previous):
+        """Validate both keys, then install them as ONE tuple, so a
+        concurrent verify() sees either the old pair or the new pair, never
+        a mix; on error the old pair stays (issue #192 D14)."""
+        if isinstance(current, str):
+            current = current.encode("utf-8")
+        if isinstance(previous, str):
+            previous = previous.encode("utf-8")
+        # Measured in bytes, not characters: "é" * 16 is 16 characters and 32
+        # bytes of key material, and it is the bytes that HMAC consumes.
+        if len(current) < MIN_SECRET_BYTES:
+            raise TokenError(
+                "the JWT signing secret must be at least %d bytes, got %d"
+                % (MIN_SECRET_BYTES, len(current)))
+        if previous is not None and len(previous) < MIN_SECRET_BYTES:
+            raise TokenError(
+                "the previous JWT signing secret must be at least %d bytes, "
+                "got %d" % (MIN_SECRET_BYTES, len(previous)))
+        self._keys = (current, previous)
 
     # -- contract ----------------------------------------------------------
 
@@ -1193,14 +1357,125 @@ class HmacTokenProvider(TokenProvider):
         `RepositoryDriverTCK`'s `_NoOpRollbackDriver` uses against
         `rollback()`. The call site in `verify()` did not move, so this is
         not a checklist-order change: the algorithm is still settled first,
-        this still runs before any claim is trusted."""
-        expected = self._sign("%s.%s" % (encoded_header, encoded_claims))
-        if not hmac.compare_digest(expected, _b64u_decode(encoded_signature)):
+        this still runs before any claim is trusted. The previous key
+        (issue #192) is accepted for verification only; both MACs are
+        always computed, with no early exit."""
+        given = _b64u_decode(encoded_signature)
+        signing_input = "%s.%s" % (encoded_header, encoded_claims)
+        matched = False
+        for key in self._keys:
+            if key is not None and hmac.compare_digest(
+                    self._sign(signing_input, key), given):
+                matched = True
+        if not matched:
             raise TokenError("token signature does not verify")
 
-    def _sign(self, signing_input):
-        return hmac.new(self._secret, signing_input.encode("ascii"),
+    def _sign(self, signing_input, key=None):
+        key = self._keys[0] if key is None else key
+        return hmac.new(key, signing_input.encode("ascii"),
                         hashlib.sha256).digest()
+
+
+class RotatingHmacTokenProvider(HmacTokenProvider):
+    """An `HmacTokenProvider` whose current + previous key come from a
+    `SecretProvider` (issue #192 D15). The pair is re-read lazily on the
+    first verify()/issue() once `refresh_s` seconds have passed (single-
+    flight: a thread that cannot take the lock keeps the current keys), on
+    every `refresh_keys()`, and by `refresh_for_probe()` (/-/readyz) when the
+    last read is at least `READYZ_REFRESH_FLOOR_S` old; a failed lazy re-read
+    keeps the last good keys silently. TokenError (a DriverError) from a
+    short value is also kept out."""
+
+    def __init__(self, secret_provider, key, issuer=None,
+                 refresh_s=SECRET_REFRESH_S, monotonic=time.monotonic):
+        self._secret_provider = secret_provider
+        self._secret_key = key
+        self._refresh_s = refresh_s
+        self._monotonic = monotonic
+        self._refresh_lock = threading.Lock()
+        self._closed = False
+        current, previous = self._read_pair()
+        super().__init__(current, issuer=issuer, previous_secret=previous)
+        self._read_at = monotonic()
+        self._last_read_ok = True
+
+    def _read_pair(self):
+        # The value-free error is raised AFTER the except block: raised
+        # inside it, the driver's exception (its text may hold the secret)
+        # would stay reachable as `__context__` for any reporter that walks
+        # the chain by hand (`from None` only hides it from `traceback`).
+        failed = False
+        try:
+            current = self._secret_provider.get(self._secret_key)
+            previous = self._secret_provider.get_previous(self._secret_key)
+        except Exception:
+            failed = True
+        if failed:
+            raise DriverError("the secret provider failed to return the secret")
+        if not isinstance(current, bytes) or (
+                previous is not None and not isinstance(previous, bytes)):
+            raise DriverError(
+                "the secret provider returned a value that is not bytes")
+        return current, previous
+
+    def refresh_keys(self):
+        """Re-read now (blocking). Raises the value-free DriverError /
+        TokenError on failure; the keys are unchanged then."""
+        with self._refresh_lock:
+            self._read_and_install()
+
+    def refresh_for_probe(self, floor_s=READYZ_REFRESH_FLOOR_S):
+        """/-/readyz check 5 (issue #192 D16, review C1): re-read unless
+        the last read (success or failure) is younger than `floor_s`, and
+        return whether the last read succeeded. Never raises."""
+        with self._refresh_lock:
+            if self._monotonic() - self._read_at >= floor_s:
+                try:
+                    self._read_and_install()
+                except DriverError:
+                    pass
+            return self._last_read_ok
+
+    def _read_and_install(self):
+        """Stamp, read, install; record the outcome. Caller holds the lock."""
+        self._read_at = self._monotonic()
+        try:
+            current, previous = self._read_pair()
+            self._set_keys(current, previous)
+        except DriverError:
+            self._last_read_ok = False
+            raise
+        self._last_read_ok = True
+
+    def _refresh_if_stale(self):
+        if self._monotonic() - self._read_at < self._refresh_s:
+            return
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
+            try:
+                self._read_and_install()
+            except DriverError:
+                pass  # last good keys stay; /-/readyz reports `secret-provider`
+        finally:
+            self._refresh_lock.release()
+
+    def issue(self, subject, audience, ttl_ms=None, role=None):
+        self._refresh_if_stale()
+        return super().issue(subject, audience, ttl_ms=ttl_ms, role=role)
+
+    def verify(self, token, audience):
+        self._refresh_if_stale()
+        return super().verify(token, audience)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._secret_provider.close()
+        except Exception:
+            pass
 
 
 def audience_for_path(path):
@@ -1935,3 +2210,125 @@ def open_network(spec, endpoints=None, capabilities=None):
     raise ValueError(
         "unknown network %r (built-in: %s; registered entry-points: %s)"
         % (spec, ", ".join(NETWORKS), ", ".join(_registered_network_names()) or "none"))
+
+
+def _publisher_entry_points():
+    """Every entry-point registered under `lnpl.publishers` -- same
+    stdlib version split `_cache_entry_points()` handles."""
+    try:
+        return importlib_metadata.entry_points(group=PUBLISHERS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            PUBLISHERS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_publisher_names():
+    return sorted(ep.name for ep in _publisher_entry_points())
+
+
+def open_publisher(target):
+    """`--target`'s value -> an EventPublisher, or None for an
+    `http(s)://` target (the relay's own existing byte-identical
+    urllib path handles it -- `cli._relay_drain_once`/`_relay_post`,
+    untouched by this SPI).
+
+    Beyond the two built-in schemes, `urllib.parse.urlsplit(target)
+    .scheme.lower()` is looked up in the `lnpl.publishers`
+    entry-points group -- an external package registers `scheme =
+    "module:factory"`, and a matching selector loads that factory and
+    calls it with the FULL original `target` string (not a
+    colon-split remainder -- a URL-shaped value is for the factory's
+    own `urlsplit`, unlike a cache DSN). `http`/`https` are matched
+    first and always win: the check runs before any entry-point
+    lookup, so a package cannot register either name and shadow it.
+
+    An unregistered scheme raises `ValueError` naming the bare scheme
+    (never the full `target`, which may carry `user:pass@` userinfo),
+    `PUBLISHERS`, and `_registered_publisher_names()` (or "none"). An
+    entry-point whose `.load()` raises becomes `DriverError` (cause
+    chain preserved), not a raw `ImportError`.
+    """
+    scheme = urllib.parse.urlsplit(target).scheme.lower()
+    if scheme in ("http", "https"):
+        return None
+    for entry_point in _publisher_entry_points():
+        if entry_point.name == scheme:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "publisher scheme %r registered via entry-point "
+                    "%r failed to load: %s"
+                    % (scheme, entry_point.value, exc)) from exc
+            return factory(target)
+    raise ValueError(
+        "unknown publisher scheme %r (built-in: %s; registered: %s)"
+        % (scheme, ", ".join(PUBLISHERS),
+           ", ".join(_registered_publisher_names()) or "none"))
+
+
+def _secret_entry_points():
+    """Every entry-point registered under `lnpl.secrets` -- same stdlib
+    version split `_publisher_entry_points()` handles."""
+    try:
+        return importlib_metadata.entry_points(group=SECRETS_ENTRY_POINT_GROUP)
+    except TypeError:
+        return importlib_metadata.entry_points().get(
+            SECRETS_ENTRY_POINT_GROUP, [])
+
+
+def _registered_secret_provider_names():
+    return sorted(ep.name for ep in _secret_entry_points())
+
+
+def open_secret_provider(name):
+    """A registered `lnpl.secrets` name -> a SecretProvider (issue #192).
+
+    `env` and `file` (`BUILTIN_SECRET_SOURCES`) are sources the core reads
+    inline, never providers. A registration under either name is refused
+    with `DriverError` naming the entry-point (the `lnpl.tokens` `hmac`
+    precedent: the secret source is a trust boundary, so a same-named
+    package must neither win nor be silently ignored); without one, asking
+    for a built-in name is a `ValueError` pointing at the inline forms.
+
+    A matching entry-point is loaded and its factory called with no
+    arguments. A load failure or a raising factory becomes `DriverError`
+    naming only the exception TYPE — no driver exception's own text is
+    ever copied, since a module or factory may put a URL or a secret value
+    in it (and a raising factory's chain is dropped, `from None`, so a
+    formatted traceback cannot print it either). An unregistered name is a
+    `ValueError` listing the built-in names and the registered ones (or
+    "none").
+    """
+    entry_points = list(_secret_entry_points())
+    if name in BUILTIN_SECRET_SOURCES:
+        shadow = next((ep for ep in entry_points if ep.name == name), None)
+        if shadow is not None:
+            raise DriverError(
+                "entry-point %r (registered via %r) attempts to shadow the "
+                "built-in secret source %r; built-in names are reserved "
+                "(lnpl.secrets SPI, docs/backends.md)"
+                % (shadow.name, shadow.value, shadow.name))
+        raise ValueError(
+            "secret provider %r is a built-in source, not a registered "
+            "provider — write jwt = \"ENV_NAME\" or jwt = { file = "
+            "\"/absolute/path\" } instead" % name)
+    for entry_point in entry_points:
+        if entry_point.name == name:
+            try:
+                factory = entry_point.load()
+            except Exception as exc:
+                raise DriverError(
+                    "secret provider %r registered via entry-point %r failed "
+                    "to load (%s)"
+                    % (name, entry_point.value, type(exc).__name__)) from exc
+            try:
+                return factory()
+            except Exception as exc:
+                raise DriverError(
+                    "secret provider %r failed to start (%s)"
+                    % (name, type(exc).__name__)) from None
+    raise ValueError(
+        "unknown secret provider %r (built-in: %s; registered entry-points: %s)"
+        % (name, ", ".join(BUILTIN_SECRET_SOURCES),
+           ", ".join(_registered_secret_provider_names()) or "none"))

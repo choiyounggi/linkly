@@ -386,26 +386,25 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
     `network` (RFC-0027 §8) is mode A's `NetworkDriver` only — see
     `observe_mode_a`.
 
-    A workflow using the numeric-shape predicate is a recorded exemption
-    (RFC-0050 §Mode B): mode B refuses to build it, so there is nothing to
-    compare. That is checked first, so the answer does not depend on whether
-    a toolchain happens to be installed. A workflow whose guard compares a
-    declared Money field is the same kind of exemption (RFC-0051 §Mode B), and
-    so is one whose repository call carries a `by <ref>` lookup key (RFC-0052
-    §Mode B), one whose guard reads an `optional` field (RFC-0053 §Mode B),
-    one whose guard compares a Text-family field (RFC-0054 §Mode B), one that
-    creates a fill-source entity (RFC-0055 §Mode B), one that reaches a `fail`
-    step (RFC-0056 §Mode B), one that answers a `respond` aggregate or list
-    term (RFC-0059 §Mode B), one whose guard reads a field an earlier step
-    assigns and, last, one whose guard owns an `otherwise` item (RFC-0060
-    §Mode B).
+    A workflow whose guard compares a declared Money field is a recorded
+    exemption (RFC-0051 §Mode B): mode B refuses to build it, so there is
+    nothing to compare. A workflow whose repository call carries a `by <ref>`
+    lookup key is the same kind of exemption (RFC-0052 §Mode B), and so is
+    one whose guard reads an `optional` field (RFC-0053 §Mode B), one whose
+    guard compares a Text-family field (RFC-0054 §Mode B), one that creates
+    a fill-source entity (RFC-0055 §Mode B), one that reaches a `fail` step
+    (RFC-0056 §Mode B), one that answers a `respond` aggregate or list term
+    (RFC-0059 §Mode B), one whose guard reads a field an earlier step
+    assigns, one whose guard owns an `otherwise` item (RFC-0060 §Mode B),
+    one that reads with `cached` (RFC-0062 §Mode B) and, last, one using
+    the numeric-shape predicate (RFC-0050 §Mode B).
+    These are checked in that order — matching `backend.build()`'s own
+    order (`_refuse_unsupported_guards`, then `_refuse_numeric_predicate`),
+    so the two commands report the same first-refusal RFC for any workflow
+    exempted on more than one ground (issue #185). None of them depends on
+    whether a toolchain happens to be installed, so all are checked before
+    the toolchain-availability check below.
     """
-    if backend.workflow_uses_numeric_predicate(document, workflow_id):
-        raise DifferentialError(
-            "workflow %r uses the numeric-shape predicate (is-numeric/"
-            "is-not-numeric) — mode B has no compiled evaluator for it "
-            "(RFC-0050 §Mode B, recorded exemption); differential comparison "
-            "is not attempted" % workflow_id)
     if backend.workflow_uses_money_guard(document, workflow_id):
         raise DifferentialError(
             "workflow %r uses a Money guard comparison — mode B has no "
@@ -460,6 +459,17 @@ def verify(document, workflow_id, payload, repo_rows, workdir, seeded=None,
             "workflow %r uses `otherwise` — mode B has no compiled branch for "
             "it (RFC-0060 §Mode B, recorded exemption); differential "
             "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_cached_read(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r reads with `cached` — mode B has no cache state to "
+            "consult (RFC-0062 §Mode B, recorded exemption); differential "
+            "comparison is not attempted" % workflow_id)
+    if backend.workflow_uses_numeric_predicate(document, workflow_id):
+        raise DifferentialError(
+            "workflow %r uses the numeric-shape predicate (is-numeric/"
+            "is-not-numeric) — mode B has no compiled evaluator for it "
+            "(RFC-0050 §Mode B, recorded exemption); differential comparison "
+            "is not attempted" % workflow_id)
     if not backend.toolchain_available():
         raise DifferentialError(
             "mode B toolchain unavailable — cannot compare. Install it with "

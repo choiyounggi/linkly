@@ -1,0 +1,7 @@
+[2026-10-08 02:43:02 +0000] [24009] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:43:02 +0000] [24009] [INFO] Listening at: http://127.0.0.1:18195 (24009)
+[2026-10-08 02:43:02 +0000] [24009] [INFO] Using worker: sync
+[2026-10-08 02:43:02 +0000] [24013] [INFO] Booting worker with pid: 24013
+[2026-10-08 02:45:55 +0000] [24009] [INFO] Handling signal: term
+[2026-10-08 02:45:55 +0000] [24013] [INFO] Worker exiting (pid: 24013)
+[2026-10-08 02:45:55 +0000] [24009] [INFO] Shutting down: Master

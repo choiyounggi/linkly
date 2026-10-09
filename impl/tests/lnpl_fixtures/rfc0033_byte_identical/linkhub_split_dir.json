@@ -335,7 +335,9 @@
       "generators": [],
       "kb": [],
       "network": [],
+      "publishers": [],
       "repository": [],
+      "secrets": [],
       "token": []
     },
     "vocabulary_digest": "sha256:7faeabf5cdef8d2986f7fbc3f10f7b724e829cae6a423ad269bf10a78b596442"

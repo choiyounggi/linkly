@@ -1,0 +1,10 @@
+.git
+.venv
+.worktrees
+.orchestration
+.dev-loop
+__pycache__
+*.pyc
+*.egg-info
+dist
+build
