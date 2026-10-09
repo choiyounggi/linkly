@@ -58,8 +58,10 @@ payload의 한 필드가 된다. 필드 이름은 참조 자신의 마지막 dot
   (RFC-0030 §3); 이 `emit`과 같은 가드 스코프에서 그 필드를 채우는 `set`/
   `format`이 이 `emit`보다 앞에 있으면 값의 존재가 보장되므로 허용되고(issue
   #204), 없으면 거부된다
-- **Password 계열 필드** (`with customer.secret`) — 마스킹 chokepoint(issue
-  #43)를 `emit`으로 우회하는 경로를 막는다. `respond`가 이미 같은 규칙을 쓴다
+- **Password 계열 필드** (`with customer.secret`, `with input.secret`) — 마스킹
+  chokepoint(issue #43)를 `emit`으로 우회하는 경로를 막는다. `respond`가 이미 같은
+  규칙을 쓴다. `input.<field>`는 그 이름을 선언한 엔티티 중 하나라도 `Password`나
+  `refine ... of Password`로 선언했으면 거부된다 — 선언 순서와 무관하다(issue #219)
 - **같은 매핑 필드명을 두 번 쓰는 것** (`with newOrder.id otherRow.id` — 둘 다
   `id`) — 어느 쪽 값이 실리는지 저자도 읽는 사람도 알 수 없는 모호함을 컴파일
   타임에 없앤다
@@ -127,8 +129,13 @@ derived_assigned, guard_key, emit_line)`가
    무가드 — `_guard_owner_map`/`_guard_key`, issue #98/#198이 이미 쓰는
    판정)에서 이 `emit`보다 앞서 있는지 본다 — 있으면 허용한다(issue #204),
    없으면 `LowerError`(이 `emit` 앞에 그 필드를 채우는 `set`/`format`이 없다고
-   줄 번호와 함께 말한다). 아니면 선언된 타입의 base가 `Password`이면
-   `LowerError`(`_check_respond`와 같은 규칙, issue #43).
+   줄 번호와 함께 말한다). 아니면 참조가 Password 계열이면 `LowerError`(issue #43).
+   Password 계열 판정(issue #219): `<binding>.<field>`는 그 바인딩 엔티티가 선언한
+   필드 타입의 base가 `Password`일 때, `input.<field>`는 그 이름을 선언한 모든
+   엔티티(`registry` 전체, 네임스페이스 포함 — RFC-0053과 같은 열거) 중 하나라도 타입의
+   base가 `Password`일 때다. 마지막에 선언한 엔티티 하나만 보지 않는다. 메시지는
+   `input.<field>`일 때 판정에 걸린 선언을 `<타입> (entity <엔티티>)`로 모두 적는다.
+   `call/request ... send`와 `call/request ... with`도 같은 판정을 쓴다(RFC-0057 §3).
 4. 중복 매핑 필드명은 문법 시점(`_derive_effect`, 스코프가 필요 없는 순수
    텍스트 검사)에 먼저 거부된다 — 같은 `with` 절 안에서 트레일링 세그먼트가
    겹치는 두 참조.

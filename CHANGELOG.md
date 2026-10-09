@@ -370,6 +370,18 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   sends a byte-identical body. Mode B is unchanged (it builds no call
   body). This replaces the earlier note that a call without `send` is
   byte-identical to before (issue #200, RFC-0057).
+- Compatibility (issues #218, #219; RFC-0049, RFC-0057 and RFC-0063
+  amended): the compile-time Password-family refusal now judges an
+  `input.<field>` (or bare) reference over every entity that declares
+  that name — it is refused when any of them declares it `Password` or a
+  `refine ... of Password`, whatever the declaration order. Before, only
+  the last-declared entity counted, so a same-named `Text` field declared
+  later let `send input.secret` and `emit ... with input.secret` compile.
+  `call`/`request ... with <ref>` path arguments now get the same
+  refusal, so a Password-family value can no longer be substituted into
+  the request URL path. A document that compiled only through one of
+  these gaps now fails with `LowerError`; references to fields no entity
+  declares Password-family compile exactly as before, with an unchanged IR.
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
