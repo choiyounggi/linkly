@@ -238,6 +238,84 @@ def _predicate_money_guard_doc():
     return doc, wf
 
 
+MONEY_AND_NUMERIC_GUARD = """capability postgres
+
+entity Order
+    field
+        id UUID
+        stock Integer
+        total Money
+        threshold Money
+
+service OrderService
+    policy
+        timeout 5s
+
+workflow Approve
+    read order
+    when order.total > order.threshold
+    create order
+    when order.stock is-numeric
+    note "flagged"
+"""
+
+LOOKUP_AND_NUMERIC_GUARD = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+service Orders
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    when stock.onHand is-numeric
+    note "flagged"
+workflow Audit
+    find stock
+"""
+
+MONEY_LOOKUP_AND_NUMERIC_GUARD = """capability postgres
+entity Stock
+    field
+        id Text
+        productId Text
+        onHand Integer
+        price Money
+        limit Money
+service Orders
+    policy
+        retry 0
+workflow Restock
+    find stock by input.productId
+    when stock.price > stock.limit
+    update stock
+    when stock.onHand is-numeric
+    note "flagged"
+workflow Audit
+    find stock
+"""
+
+
+PREDICATE_READ_THEN_GUARD = """capability postgres
+
+entity Product
+    field
+        id UUID
+        rate Integer
+
+service CheckoutService
+    policy
+        timeout 5s
+
+workflow Checkout
+    find product
+    when product.rate is-numeric
+    create product
+"""
+
+
 class TestLookupKeyExemption(unittest.TestCase):
     """RFC-0052 §6 (issue #175): a workflow with a `by <ref>` repository call
     is a recorded mode B exemption, reported before the toolchain check —
@@ -384,6 +462,56 @@ class TestLookupKeyExemption(unittest.TestCase):
         self.assertIn("RFC-0051", diff_text)
         self.assertIn("RFC-0051", build_text)
 
+    def test_build_and_diff_agree_on_a_money_and_numeric_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "money_numeric.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(MONEY_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.approve"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.approve"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
+    def test_build_and_diff_agree_on_a_lookup_and_numeric_document(self):
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "lookup_numeric.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(LOOKUP_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0052", diff_text)
+        self.assertIn("RFC-0052", build_text)
+
+    def test_build_and_diff_agree_on_a_money_lookup_and_numeric_document(self):
+        # Boundary (design.md D4): all three exemptions in one workflow —
+        # proves the full Money -> lookup -> numeric chain, not only each pair.
+        from tests.test_cli import run_cli_err
+        workdir = self._workdir()
+        src = os.path.join(workdir, "triple.lnpl")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(MONEY_LOOKUP_AND_NUMERIC_GUARD)
+        self._hide_tools()
+        diff_rc, diff_text = run_cli_err(["diff", src, "--workdir", workdir,
+                                          "--workflow", "wf.restock"])
+        build_rc, build_text = run_cli_err(["build", src, "--workdir", workdir,
+                                            "--workflow", "wf.restock"])
+        self.assertEqual(diff_rc, 4, diff_text)
+        self.assertEqual(build_rc, 4, build_text)
+        self.assertIn("RFC-0051", diff_text)
+        self.assertIn("RFC-0051", build_text)
+
     def test_build_and_emit_mlir_raise_identical_lookup_messages(self):
         doc = self._doc("    find stock by input.productId")
         self._hide_tools()
@@ -401,6 +529,52 @@ class TestLookupKeyExemption(unittest.TestCase):
         with self.assertRaises(backend.BackendError) as emit_ctx:
             backend.emit_mlir(doc, wf)
         self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_build_refuses_the_numeric_predicate_before_any_toolchain_lookup(self):
+        from tests.test_backend import PREDICATE_WHEN, _predicate_doc
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate is-numeric")
+        workdir = self._workdir()
+        self._forbid_tool()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir)
+        self.assertIn("RFC-0050", str(ctx.exception))
+
+    def test_build_and_emit_mlir_raise_identical_numeric_messages(self):
+        from tests.test_backend import PREDICATE_WHEN, _predicate_doc
+        doc, wf = _predicate_doc(PREDICATE_WHEN % "when input.rate is-numeric")
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as build_ctx:
+            backend.build(doc, wf, self._workdir())
+        with self.assertRaises(backend.BackendError) as emit_ctx:
+            backend.emit_mlir(doc, wf)
+        self.assertEqual(str(build_ctx.exception), str(emit_ctx.exception))
+
+    def test_an_unreachable_numeric_guard_after_an_unseeded_read_still_succeeds(self):
+        # Boundary (design.md D1/D2; issue #186's own counterexample): the
+        # is-numeric guard sits after an unguarded, unseeded `find` that
+        # fails and truncates `_lnpl_ops`'s stream before the guard step is
+        # ever appended to it -- `_render_std` never sees that step, so the
+        # pre-check (walking the SAME truncated stream) must not invent a
+        # refusal a naive whole-document scan would. Two assertions, BOTH
+        # required -- neither alone proves the fix:
+        #   (1) emit_mlir(doc, wf, seeded=frozenset()) still succeeds
+        #   (2) build() on the SAME input, tools hidden, does not newly
+        #       refuse with RFC-0050 -- it still reaches the (hidden)
+        #       toolchain lookup and fails with the ordinary tool-not-found
+        #       text instead
+        doc = lower(parse(PREDICATE_READ_THEN_GUARD), "checkout").to_document()
+        wf = next(n["id"] for n in doc["nodes"] if n["kind"] == "Workflow")
+        self.assertTrue(backend.workflow_uses_numeric_predicate(doc, wf))
+        # Assertion 1: emit_mlir succeeds under the truncating seed.
+        text = backend.emit_mlir(doc, wf, seeded=frozenset())
+        self.assertIn("func.func", text)
+        # Assertion 2: build() on the same input does not newly refuse.
+        workdir = self._workdir()
+        self._hide_tools()
+        with self.assertRaises(backend.BackendError) as ctx:
+            backend.build(doc, wf, workdir, seeded=frozenset())
+        self.assertNotIn("RFC-0050", str(ctx.exception))
+        self.assertIn("mlir-opt", str(ctx.exception))
 
 
 class TestNormaliseSkips(unittest.TestCase):
@@ -1058,6 +1232,19 @@ class TestFailExemption(unittest.TestCase):
                             self._diff_refusal(doc, wf)):
                     self.assertIn(first, msg)
                     self.assertNotIn("RFC-0056", msg)
+
+    def test_fail_wins_over_the_numeric_predicate_in_both_commands(self):
+        # Issue #185: the numeric-shape predicate is checked LAST in both
+        # `build` and `diff`, so a workflow also reaching `fail` names
+        # RFC-0056 from both, never RFC-0050 from one of them.
+        doc, wf = _fail_doc("read order\n    when order.stock is-numeric\n"
+                            "    note \"flagged\"\n"
+                            "    when order.stock < 1\n    fail out-of-stock")
+        self.assertTrue(backend.workflow_uses_fail(doc, wf))
+        self.assertTrue(backend.workflow_uses_numeric_predicate(doc, wf))
+        for msg in (self._build_refusal(doc, wf), self._diff_refusal(doc, wf)):
+            self.assertIn("RFC-0056", msg)
+            self.assertNotIn("RFC-0050", msg)
 
     def test_lnpl_diff_and_build_report_the_refusal_as_rc_4(self):
         from tests.test_backend import TEXT_GUARD

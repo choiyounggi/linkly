@@ -1,0 +1,13 @@
+[2026-10-08 02:35:24 +0000] [41131] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:35:24 +0000] [41131] [INFO] Listening at: http://127.0.0.1:18195 (41131)
+[2026-10-08 02:35:24 +0000] [41131] [INFO] Using worker: sync
+[2026-10-08 02:35:24 +0000] [41135] [INFO] Booting worker with pid: 41135
+[2026-10-08 02:35:24 +0000] [41137] [INFO] Booting worker with pid: 41137
+[2026-10-08 02:35:25 +0000] [41144] [INFO] Booting worker with pid: 41144
+[2026-10-08 02:35:25 +0000] [41149] [INFO] Booting worker with pid: 41149
+[2026-10-08 02:39:13 +0000] [41131] [INFO] Handling signal: term
+[2026-10-08 02:39:13 +0000] [41149] [INFO] Worker exiting (pid: 41149)
+[2026-10-08 02:39:13 +0000] [41135] [INFO] Worker exiting (pid: 41135)
+[2026-10-08 02:39:13 +0000] [41144] [INFO] Worker exiting (pid: 41144)
+[2026-10-08 02:39:13 +0000] [41137] [INFO] Worker exiting (pid: 41137)
+[2026-10-08 02:39:13 +0000] [41131] [INFO] Shutting down: Master

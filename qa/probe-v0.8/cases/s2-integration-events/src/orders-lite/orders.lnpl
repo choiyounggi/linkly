@@ -1,0 +1,64 @@
+capability http Fx
+    method get
+    retry 2 backoff 200ms
+    breaker after 10 within 1m
+
+refine FxStatus of Text
+    enum live fallback
+
+entity Order
+    field
+        id UUID
+        totalUsd Integer
+        totalKrw Integer derived
+        fxStatus FxStatus derived
+
+service OrdersLite
+    policy
+        timeout 1s
+
+event OrderPlaced on Order create
+
+workflow CreateOrder
+    create order as o
+    call Fx as fxResult
+    when fxResult.status == 200
+    pipeline
+    set o.totalKrw to o.totalUsd
+    format o.fxStatus from "live"
+    when fxResult.status != 200
+    pipeline
+    set o.totalKrw to o.totalUsd
+    format o.fxStatus from "fallback"
+    pipeline
+    emit orderPlaced
+    spec
+        given
+            valid order
+            call Fx returns 200 body.rate 1350.5
+        when
+            createOrder
+        expect
+            completed
+            effects complete
+            result fxResult.status == 200
+    spec
+        given
+            valid order
+            call Fx returns 500
+        when
+            createOrder
+        expect
+            completed
+            effects complete
+            result fxResult.status != 200
+    spec
+        given
+            valid order
+            call Fx returns 200 body.rate abc
+        when
+            createOrder
+        expect
+            completed
+            effects complete
+            result fxResult.status != 200

@@ -1,0 +1,16 @@
+uptime 10:28  up 14 days, 14:35, 14 users, load averages: 3.07 2.85 3.07
+This is ApacheBench, Version 2.3 <$Revision: 1913912 $>
+Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Licensed to The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient)
+Completed 1100 requests
+Completed 2200 requests
+Completed 3300 requests
+Completed 4400 requests
+Completed 5500 requests
+Completed 6600 requests
+Completed 7700 requests
+Completed 8800 requests
+apr_socket_recv: Operation timed out (60)
+Total of 9879 requests completed

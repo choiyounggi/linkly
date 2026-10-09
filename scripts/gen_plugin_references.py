@@ -270,8 +270,12 @@ def render_verbs():
         attr = (", ".join("%s=%s" % (k, v) for k, v in meta["attrs"].items())
                 or "—")
         if meta["attrs"].get("operation") in ("read", "update", "delete"):
-            # issue #175 / RFC-0052: the only trailing clause these verbs take.
+            # issue #175 / RFC-0052: the lookup-key clause these verbs take.
             attr += "; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052)"
+        if meta["attrs"].get("operation") == "read":
+            # issue #188 / RFC-0062: the read-through clause, after `by <ref>`.
+            attr += ("; 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 "
+                     "읽어 캐시에 기록(RFC-0062)")
         lines.append("| `%s` | `%s` | %s |" % (verb, meta["effect"], attr))
     lines.append("\n`return`, `log`, `send`, `notify`, `verify` 같은 낱말은 "
                  "이 표에 **없다**. 자연스러워 보여도 아무 효과가 없다.\n")
@@ -765,6 +769,14 @@ RFC_ROUTES = {
     "0060": ("가드가 앞 스텝이 바꾼 값을 읽어도 되는지(RFC-0015 OQ1), 가드가 "
              "거짓일 때 다른 항목을 실행하고 싶다(`otherwise`) — 어디에 쓸 수 "
              "있고 skipped[]에 무엇이 남는지, 모드 B는 왜 둘 다 거부하는지", ()),
+    "0061": ("브로커로 이벤트를 보낼 공식 SPI가 필요하다 — `lnpl.publishers` "
+             "entry-points 그룹과 `EventPublisher` 계약이 무엇을 받는지, "
+             "`lnpl relay --target`이 스킴으로 어떻게 드라이버를 고르는지, "
+             "`http(s)://`가 왜 바이트 동일인지, TCK가 발행-전-ack 드라이버를 "
+             "어떻게 잡는지", ()),
+    "0062": ("같은 행을 반복해 읽는 부하를 캐시가 흡수하게 하고 싶다(`cached`) — "
+             "hit/miss가 무엇을 하는지, TTL이 어디서 오는지, 쓰기·롤백 뒤 캐시가 "
+             "어떻게 비워지는지, 모드 B는 왜 거부하는지", ()),
     "0063": ("send 없는 call/request가 입력의 어떤 필드를 빼는지 — 어느 "
              "엔티티든 Password·refine … of Password로 선언한 이름이 기본 "
              "본문에서 빠지는 이유와 그 판정 규칙, 그런 필드가 없으면 본문이 "

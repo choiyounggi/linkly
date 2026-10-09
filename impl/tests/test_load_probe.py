@@ -222,6 +222,64 @@ class BucketTableTest(unittest.TestCase):
                          "bucket=10-20s mean=- max=- n=0")
 
 
+class StabilityVerdictTest(unittest.TestCase):
+    CLEAN = {"post_warmup": 20, "errors": 0}
+
+    def test_flat_run_is_stable(self):
+        """정상: 구간 평균이 평평하고 에러가 없으면 STABLE이다."""
+        buckets = [(0.0, 10.0, 12.0, 10), (10.0, 10.0, 11.0, 10)]
+        verdict, ratio = load_probe.stability_verdict(self.CLEAN, buckets)
+        self.assertEqual(verdict, "STABLE")
+        self.assertAlmostEqual(ratio, 1.0)
+        self.assertEqual(load_probe.format_verdict(verdict, ratio),
+                         "verdict=STABLE worst_bucket_ratio=1.000x")
+
+    def test_any_error_is_unstable(self):
+        """에러: 평평해도 에러가 하나라도 있으면 UNSTABLE이다."""
+        buckets = [(0.0, 10.0, 12.0, 10), (10.0, 10.0, 11.0, 10)]
+        summary = {"post_warmup": 20, "errors": 1}
+        verdict, ratio = load_probe.stability_verdict(summary, buckets)
+        self.assertEqual(verdict, "UNSTABLE")
+        self.assertAlmostEqual(ratio, 1.0)
+
+    def test_ratio_just_over_two_is_unstable(self):
+        """에러: 첫 구간의 2배를 조금이라도 넘으면 UNSTABLE이다."""
+        buckets = [(0.0, 10.0, 12.0, 10), (10.0, 20.01, 25.0, 10)]
+        verdict, ratio = load_probe.stability_verdict(self.CLEAN, buckets)
+        self.assertEqual(verdict, "UNSTABLE")
+        self.assertEqual(load_probe.format_verdict(verdict, ratio),
+                         "verdict=UNSTABLE worst_bucket_ratio=2.001x")
+
+    def test_ratio_exactly_two_is_stable(self):
+        """경계값: 정확히 2배는 STABLE이다."""
+        buckets = [(0.0, 10.0, 12.0, 10), (10.0, 20.0, 25.0, 10)]
+        verdict, ratio = load_probe.stability_verdict(self.CLEAN, buckets)
+        self.assertEqual(verdict, "STABLE")
+        self.assertEqual(load_probe.format_verdict(verdict, ratio),
+                         "verdict=STABLE worst_bucket_ratio=2.000x")
+
+    def test_no_post_warmup_rows_is_no_data(self):
+        """경계값: 워밍업 이후 행이 없으면 NO-DATA이고 비율이 없다."""
+        summary = load_probe.summarize([], 5.0)
+        buckets = load_probe.bucket_table([], 5.0, 15.0)
+        result = load_probe.stability_verdict(summary, buckets)
+        self.assertEqual(result, ("NO-DATA", None))
+        self.assertEqual(load_probe.format_verdict(*result),
+                         "verdict=NO-DATA worst_bucket_ratio=-")
+
+    def test_bucket_without_samples_is_unstable_without_ratio(self):
+        """경계값: 2xx 표본이 없는 구간이 있으면 비율 없이 UNSTABLE이다."""
+        buckets = [(0.0, 10.0, 10.0, 2), (10.0, None, None, 0)]
+        result = load_probe.stability_verdict(self.CLEAN, buckets)
+        self.assertEqual(result, ("UNSTABLE", None))
+
+    def test_first_bucket_without_samples_is_unstable(self):
+        """경계값: 첫 구간에 표본이 없으면 기준이 없어 UNSTABLE이다."""
+        buckets = [(0.0, None, None, 0), (10.0, 5.0, 5.0, 3)]
+        result = load_probe.stability_verdict(self.CLEAN, buckets)
+        self.assertEqual(result, ("UNSTABLE", None))
+
+
 class OutputTest(unittest.TestCase):
     ROWS = [
         row(1.0, 200, 50.0),
@@ -267,6 +325,7 @@ class OutputTest(unittest.TestCase):
             "error_rate=33.33%",
             "bucket=0-10s mean=20.00ms max=30.00ms n=2",
             "bucket=10-20s mean=- max=- n=0",
+            "verdict=UNSTABLE worst_bucket_ratio=-",
         ])
 
     def test_main_with_no_requests_prints_counts_and_empty_buckets_only(self):
@@ -277,6 +336,7 @@ class OutputTest(unittest.TestCase):
         self.assertEqual(lines, [
             "total=0 post_warmup=0 ok=0 error_or_non2xx=0",
             "bucket=0-10s mean=- max=- n=0",
+            "verdict=NO-DATA worst_bucket_ratio=-",
         ])
 
 

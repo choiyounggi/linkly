@@ -1153,6 +1153,9 @@
         "lookup": {
           "type": "string"
         },
+        "cached": {
+          "type": "boolean"
+        },
         "predicate": {
           "type": "array",
           "minItems": 1,

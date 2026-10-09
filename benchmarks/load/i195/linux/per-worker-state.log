@@ -1,0 +1,22 @@
+metrics: gunicorn fake workers=2 class=sync LNPL_METRICS=1, seed, 100 get-bookmark requests, 10 scrapes of /-/metrics
+seed save=200 get=200
+requests sent after the seed: 100
+scrape 1: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 53 lnpl_workflow_runs_total{service="LinkHubService",workflow="SaveBookmark",status="completed"} 1 
+scrape 2: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 53 lnpl_workflow_runs_total{service="LinkHubService",workflow="SaveBookmark",status="completed"} 1 
+scrape 3: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 53 lnpl_workflow_runs_total{service="LinkHubService",workflow="SaveBookmark",status="completed"} 1 
+scrape 4: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 48 
+scrape 5: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 48 
+scrape 6: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 48 
+scrape 7: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 48 
+scrape 8: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 48 
+scrape 9: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 48 
+scrape 10: lnpl_workflow_runs_total{service="LinkHubService",workflow="GetBookmark",status="completed"} 48 
+rate limit: gunicorn fake workers=2 class=sync LNPL_RATE_LIMIT=20, load_probe 100 rps for 10 s
+total=1000 post_warmup=999 ok=433 error_or_non2xx=566
+p50=1.23ms p95=2.29ms p99=3.20ms
+error_rate=56.66%
+bucket=0-10s mean=1.68ms max=10.83ms n=433
+verdict=UNSTABLE worst_bucket_ratio=1.000x
+status histogram (count status):
+    434 200
+    566 429

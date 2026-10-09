@@ -15,6 +15,8 @@ import contextlib
 import io
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from importlib import metadata as importlib_metadata
@@ -22,8 +24,10 @@ from unittest import mock
 
 from lnpl import cli
 from lnpl import generators as generators_module
+from lnpl.deploy_gen import generate_compose, generate_k8s
 from lnpl.generators import (BUILTIN_GENERATORS, GeneratorError,
-                             resolve_generator, run_generator)
+                             parse_generator_options, resolve_generator,
+                             run_generator)
 from lnpl.openapi import generate_files
 from lnpl.testing import GeneratorTCK
 
@@ -202,6 +206,78 @@ class BuiltinShadowingTest(unittest.TestCase):
 
         self.assertIs(generator, generate_files)
 
+    def test_a_same_named_entry_point_never_shadows_builtin_compose(self):
+        shadow = entry_point("compose", "tests.generator_spi_fixture:generate")
+
+        with registered(shadow):
+            generator = resolve_generator("compose")
+
+        self.assertIs(generator, generate_compose)
+
+    def test_a_same_named_entry_point_never_shadows_builtin_k8s(self):
+        shadow = entry_point("k8s", "tests.generator_spi_fixture:generate")
+
+        with registered(shadow):
+            generator = resolve_generator("k8s")
+
+        self.assertIs(generator, generate_k8s)
+
+
+class BuiltinSetTest(unittest.TestCase):
+    """issue #189: the built-in set is closed at three names."""
+
+    def test_builtin_tuple(self):
+        self.assertEqual(BUILTIN_GENERATORS, ("openapi", "compose", "k8s"))
+
+    def test_each_builtin_resolves_without_entry_points(self):
+        with registered():
+            for name in BUILTIN_GENERATORS:
+                with self.subTest(name=name):
+                    self.assertTrue(callable(resolve_generator(name)))
+
+
+class ParseGeneratorOptionsTest(unittest.TestCase):
+    """issue #189: `lnpl generate --set KEY=VALUE` -> options dict."""
+
+    def test_only_the_first_equals_splits(self):
+        self.assertEqual(parse_generator_options(["port=9000", "image=a=b"]),
+                         {"port": "9000", "image": "a=b"})
+
+    def test_empty_and_none_give_empty_options(self):
+        self.assertEqual(parse_generator_options([]), {})
+        self.assertEqual(parse_generator_options(None), {})
+
+    def test_empty_value_is_kept_for_the_generator_to_judge(self):
+        self.assertEqual(parse_generator_options(["image="]), {"image": ""})
+
+    def test_missing_equals_is_refused(self):
+        with self.assertRaises(GeneratorError) as caught:
+            parse_generator_options(["port"])
+        self.assertIn("KEY=VALUE", str(caught.exception))
+
+    def test_empty_key_is_refused(self):
+        with self.assertRaises(GeneratorError):
+            parse_generator_options(["=x"])
+
+    def test_duplicate_key_is_refused(self):
+        with self.assertRaises(GeneratorError) as caught:
+            parse_generator_options(["port=1", "port=2"])
+        self.assertIn("'port'", str(caught.exception))
+
+
+class ImportOrderTest(unittest.TestCase):
+    """issue #189: `deploy_gen` imports `GeneratorError` from `generators`,
+    so neither import order may be circular."""
+
+    def test_both_import_orders_succeed(self):
+        env = dict(os.environ, PYTHONPATH=os.path.join(REPO, "impl"))
+        for code in ("import lnpl.deploy_gen; import lnpl.generators",
+                     "import lnpl.generators; import lnpl.deploy_gen"):
+            with self.subTest(code=code):
+                done = subprocess.run([sys.executable, "-c", code], env=env,
+                                      capture_output=True, text=True, timeout=60)
+                self.assertEqual(done.returncode, 0, done.stderr)
+
 
 class PathEscapeRejectionTest(unittest.TestCase):
     """Error: a returned key that escapes `--out` is rejected — at the CLI
@@ -300,6 +376,59 @@ class OpenApiGeneratorTCKTest(GeneratorTCK, unittest.TestCase):
 
     def make_out_dir(self):
         return _tmp_out_dir(self)
+
+
+SRC_PG = os.path.join(REPO, "impl", "tests", "golden", "deploy", "pg-redis.lnpl")
+
+
+class GenerateSetOptionCliTest(unittest.TestCase):
+    """issue #189: `lnpl generate --set KEY=VALUE` reaches the generator."""
+
+    def test_set_port_reaches_compose(self):
+        d = _tmp_out_dir(self)
+        rc, _, _ = _main(["generate", "compose", SRC_PG, "--out", d,
+                          "--set", "port=9000"])
+        self.assertEqual(rc, 0)
+        with open(os.path.join(d, "compose.yaml"), "rb") as fh:
+            self.assertIn(b'"127.0.0.1:9000:8000"', fh.read())
+
+    def test_k8s_writes_one_file(self):
+        d = _tmp_out_dir(self)
+        rc, _, _ = _main(["generate", "k8s", SRC_PG, "--out", d])
+        self.assertEqual(rc, 0)
+        self.assertEqual(os.listdir(d), ["k8s.yaml"])
+
+    def test_malformed_set_is_rc2(self):
+        d = _tmp_out_dir(self)
+        rc, _, err = _main(["generate", "compose", SRC_PG, "--out", d,
+                            "--set", "port"])
+        self.assertEqual(rc, 2)
+        self.assertIn("KEY=VALUE", err)
+        self.assertEqual(os.listdir(d), [])
+
+    def test_duplicate_set_is_rc2(self):
+        d = _tmp_out_dir(self)
+        rc, _, err = _main(["generate", "compose", SRC_PG, "--out", d,
+                            "--set", "port=1", "--set", "port=2"])
+        self.assertEqual(rc, 2)
+        self.assertIn("'port'", err)
+
+    def test_unknown_key_is_rc2(self):
+        d = _tmp_out_dir(self)
+        rc, _, err = _main(["generate", "compose", SRC_PG, "--out", d,
+                            "--set", "replicas=2"])
+        self.assertEqual(rc, 2)
+        self.assertIn("accepted:", err)
+        self.assertEqual(os.listdir(d), [])
+
+    def test_no_set_is_empty_options(self):
+        d = _tmp_out_dir(self)
+        rc, _, _ = _main(["generate", "compose", SRC_PG, "--out", d])
+        self.assertEqual(rc, 0)
+        golden = os.path.join(os.path.dirname(SRC_PG), "pg-redis", "compose.yaml")
+        with open(os.path.join(d, "compose.yaml"), "rb") as fh, \
+                open(golden, "rb") as gold:
+            self.assertEqual(fh.read(), gold.read())
 
 
 if __name__ == "__main__":

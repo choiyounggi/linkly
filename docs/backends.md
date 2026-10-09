@@ -34,6 +34,8 @@ class TokenProvider:         # security jwt
 같은 계약 스위트(`impl/tests/test_driver_contract.py`)가 fake와 sqlite를 **같은
 단언으로** 통과시킨다.
 
+읽기 동사의 `cached` 절(RFC-0062, issue #188)은 `CacheDriver.get`을 실제로 부르는 첫 표면이다. hit이면 저장소를 읽지 않고, miss면 저장소에서 읽은 행을 같은 키로 `set`(TTL = `performance cache` 예산)한다. 같은 문서가 그 엔티티를 `update`/`delete`/`set`으로 쓰면 그 키를 `invalidate`하고, 실행이 롤백되면 그 실행이 기록한 키를 `invalidate`한다. 드라이버가 구현할 메서드는 늘지 않는다 — 읽기 경유 캐시가 기대는 `get`/`set`/`invalidate` 동작은 `CacheDriverTCK`가 이미 검사한다(그 테스트 메서드 7개가 모두 결과를 `get`으로 관측한다).
+
 ### 실패는 한 종류로 나간다
 
 드라이버의 모든 실패는 `DriverError`(토큰은 그 하위 `TokenError`)로 나가고,
@@ -74,6 +76,17 @@ lnpl token <src>.lnpl --path /shop/checkout --subject alice \
 `--secret-env`/`--jwt-secret-env`는 **환경변수 이름**을 받는다. 값 자체는 명령줄로
 받지 않는다 — 셸 히스토리와 `ps`에 남기 때문이다. 변수가 없거나 32바이트 미만이면
 **서버가 소켓을 열기 전에** rc 2로 죽고, 메시지는 변수 **이름만** 싣는다.
+
+`lnpl serve --jwt-secret-file PATH`(이슈 #192)는 마운트된 시크릿 파일을 읽는다
+(Kubernetes/Docker secret). 경로는 절대경로여야 하고, 끝의 개행 하나만
+벗긴다. 파일이 없거나 읽히지 않거나 비었거나 32바이트 미만이면 같은 규칙으로
+rc 2이고, 메시지는 플래그 이름(`--jwt-secret-file`)만 싣는다 — 경로도 내용도
+싣지 않는다. `--jwt-secret-env`와 함께 주면 거부한다. 형태·우선순위·오류 문구
+전체는 `docs/serving.md` "시크릿 원천" 절.
+
+`lnpl.toml`의 `jwt = { provider = "<이름>", key = "<키>" }`(이슈 #192, 설정 파일
+전용)는 `lnpl.secrets`로 등록된 외부 프로바이더에서 키를 읽고, 현재 키 + 이전
+키로 검증해 무중단 교체를 지원한다 — 등록·계약·재조회 규칙은 §16.
 
 ```bash
 export LNPL_JWT_SECRET="…여기에 32바이트 이상의 무작위 값. 이 문자열이 아니라…"
@@ -143,6 +156,13 @@ failed`, `failure_kind: "write-conflict"`, 이슈 #201). `WriteConflictError`는
 옵트인한다 — 평범한 `DriverError`를 내는 드라이버는 문구가 같아도 종전대로 분류
 없는 실패다. fake 드라이버는 단일 프로세스
 인메모리라 이 충돌이 존재할 수 없으므로 `persist()`가 그대로 no-op이다.
+
+`update`가 성공하면(영향받은 행이 1개 이상) 드라이버는 이 실행이 이미 읽어
+바인딩해 둔 같은 키의 행에도 그 UPDATE가 만든 `_version` 증가분을 그대로
+반영한다 — 그 결과 한 실행 안의 `set; update; set` 순서가 더 이상 자기
+자신과 충돌하지 않는다(이슈 #182). 다른 연결(다른 실행)이 그 사이에
+실제로 쓴 경우에는 지금과 똑같이 충돌한다 — 이 반영은 이 실행이 이미
+아는 값에서 1만큼만 전진하므로, 모르는 동시 쓰기를 절대 앞지르지 않는다.
 
 **충돌이 났을 때 누가 재시도하는가.** 한 `WorkflowStep`은 소스 한 줄이라
 (`lower.py`의 `_step`), `read`와 그 뒤의 `set`은 항상 서로 다른 스텝이다. 실패한
@@ -241,6 +261,15 @@ CLI 계약(`plugins/lnpl/skills/lnpl-authoring/cli-surface.md`에 상세):
 퍼블리시가 확인된 뒤에만 불러야 한다 — 미리 ack하면 퍼블리시가 실패했을 때
 그 emission을 다시 볼 방법이 없다(at-least-once가 깨진다).
 
+**이번 확장(issue #191, RFC-0061).** 위 문단의 "외부 릴레이"가 `lnpl
+relay` 자신일 때는 더 이상 전부 프로세스 밖이 아니다 — `--target`이
+`http(s)://`가 아닌 스킴이면 코어가 소유하는 `lnpl.publishers`
+레지스트리가 등록된 `EventPublisher` 드라이버를 골라, 그 드라이버의
+`publish`가 확인한 뒤에만 ack한다(아래 §15). 실제 브로커 바인딩(카프카
+클라이언트 코드 등)은 여전히 그 드라이버를 구현하는 외부 패키지의
+몫이다 — 바뀐 것은 코어가 "어느 드라이버를 쓸지 고르는 지점"까지
+소유하게 된 것뿐이다.
+
 **하지 않는 것.** HTTP 드레인(`GET /_outbox`)과 웹훅 push는 이슈가 후속으로
 명시한 범위라 `serve.py`를 건드리지 않았다. 브로커 바인딩(kafka 등)은 릴레이
 구현체의 몫이다. `#79`의 워크플로 단위 트랜잭션 경계와의 결합(실패한 실행이
@@ -251,7 +280,7 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | 항목 | 값 |
 |------|-----|
 | 알고리즘 | **HS256 고정.** 발급자와 검증자가 같은 서비스이므로 대칭키가 맞는 모양이다 |
-| 키 | ≥32바이트(256비트). 환경변수에서 런타임에 읽는다 |
+| 키 | ≥32바이트(256비트). 환경변수·파일·`lnpl.secrets` 프로바이더에서 읽는다. 프로바이더 원천은 현재 키 + 이전 키로 검증한다(이슈 #192) |
 | 검증 순서 | 3조각 → **alg allowlist** → 서명(`hmac.compare_digest`) → `typ` → `iss` → `aud` → `nbf`/`exp` |
 | leeway | 60초 (RFC 7519가 승인하는 상한은 "몇 분") |
 | 클레임 | `iss`/`aud`/`sub`/`jti`/`iat`/`nbf`/`exp`, 그리고 `--role`을 주면 `role`(이슈 #202, 자기 주장). payload는 암호문이 아니라 base64이므로 PII를 넣지 않는다 |
@@ -280,15 +309,16 @@ emit한 행이 남는가)은 명시적으로 이월했다 — 그 결합 규칙 
 | 하지 않는 것 | 왜 |
 |--------------|-----|
 | **`redis` 실제 바인딩** | 클록 원인은 해소됐다(RFC-0003 §Execution Model/Clock, RFC-0029, 이슈 #100) — `CacheDriver.set`이 받는 `ttl_ms`를 스토어 네이티브 만료(예: Redis `SETEX`)에 위임하면 프로세스를 넘는 클록 리셋 문제가 애초에 생기지 않는다(`--clock real`로 클록 비교 경로도 가능하지만 위임이 권장 경로다). `CacheDriver` 계약은 정의돼 있고 `FakeCache`가 그 구현이다 — SPI 표면(`lnpl.caches` entry-points, `open_cache`)은 이슈 #131이 열었다(§10). 실드라이버를 싣는 외부 패키지는 채워졌다: `lnpl-redis`(§10)가 위임 권장 경로의 실구현(단일 원자 `SET key value PX ttl_ms`)이다 — 코어가 싣지 않는다는 경계 설계 자체는 그대로다 |
-| **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 |
+| **refresh 토큰·회전·폐기 목록** | 셋 다 서버 측 세션 저장소를 요구한다. 저장소 없는 refresh는 수명만 긴 액세스 토큰에 다른 이름을 붙인 것이다. 폐기 간극 = 액세스 토큰 수명 (서명 키 교체는 §16) |
 | **postgres / redis 서버 바인딩** | 코어가 싣지 않는다는 사실은 그대로다 — 그게 §8의 경계 설계다. postgres 쪽은 경계 밖 절반이 채워졌다: 외부 레포 [`lnpl-postgres`](https://github.com/choiyounggi/lnpl-postgres)가 `lnpl.drivers`에 `postgres = "lnpl_postgres:make_driver"`로 등록되는 `RepositoryDriver`(psycopg 3)를 싣고, 이 레포의 TCK를 자기 Testcontainers CI에서 실 postgres 서버로 통과시킨다(이슈 #115의 레포 안 절반=TCK 강화에 이은 이슈 #121, 2026-08-30 완료). redis 쪽도 채워졌다: 외부 레포 [`lnpl-redis`](https://github.com/choiyounggi/lnpl-redis)가 `lnpl.caches`에 `redis = "lnpl_redis:make_cache"`로 등록되는 `CacheDriver`(redis-py 8)를 싣고, 이 레포의 `CacheDriverTCK`를 자기 Testcontainers CI에서 실 redis 서버로 통과시킨다(이슈 #143, 2026-09-02 완료) |
 | **트랜잭션 경계 밖 `NetworkCall`의 보상** | `policy rollback`은 저장소 쓰기만 되돌린다(RFC-0032 §Open Questions ②) — `call`/`request`는 이미 나간 뒤라 되돌아가지 않는다. 컴파일러는 그 워크플로마다 `rollback-escapes-network`(warning, 이슈 #112)로 **신고만** 한다. 보상 방식은 RFC-0034(Draft)가 결정했고 구현은 후속(Batch B) |
 | **모드 B(네이티브)의 부수효과** | 모드 B는 구조 트레이스 전용이라는 계약이 그대로다. 어댑터는 모드 B에 아무것도 하지 않는다 |
 | **아웃박스 HTTP 드레인(`GET /_outbox`)·웹훅 push** | 이슈 #102가 후속으로 명시한 범위다. `serve.py`는 건드리지 않았다 — CLI(`lnpl outbox drain`/`ack`)까지가 이 태스크다 |
-| **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 |
+| **아웃박스 → 브로커 실바인딩(kafka 등)** | 코어는 테이블 스키마와 drain/ack 의미론만 소유한다(#88 원칙). 실제로 퍼블리시하는 폴링 퍼블리셔는 릴레이 구현체(cron/systemd/k8s `CronJob`)의 몫이다 — `lnpl relay` 자신이 그 퍼블리셔 역할을 할 때는 `lnpl.publishers`로 등록된 드라이버를 통해서다(§15, issue #191); 실 드라이버 구현 자체는 여전히 별도 패키지의 몫이다 |
 | **브로커 → `consume by` 인입의 실바인딩(kafka 컨슈머 등)** | #88 원칙을 소비 쪽에 대칭 적용한 것(이슈 #118). 코어가 소유하는 것은 구독 선언(`consume by`)·인입 엔드포인트(`POST /-/events/<slug>`)·멱등/오류-분류 의미론뿐이다 — 브로커에서 읽어 그 엔드포인트를 찌르는 것은 `lnpl relay`(레퍼런스, urllib만) 또는 외부 릴레이 구현체의 몫이다. 실제 kafka 컨슈머 그룹·오프셋 관리는 이 레포 밖 |
 | **`security encrypt <field>`** | 제거됨 — RFC-0035 §D3 참조(issue #127). 실제로 집행할 외부 드라이버가 0건이었던 것이 "드라이버 의존"이 아니라 항상 빈 집합이었다는 이유로, 닫힌 어휘에서 빠졌다. `Password` 마스킹(#43, 필드 타입이 `Password` 계열일 때 응답/트레이스에서 값을 가리는 관측 채널 규칙)은 이 결정과 무관하게 그대로 남는다 |
 | **`NetworkDriver`의 커넥션 풀 실드라이버** | `HttpNetworkDriver`는 매 호출 연결을 열고 닫는다 — RFC-0037(이슈 #109)이 더한 것은 retry/backoff/jitter/서킷브레이커/경로 템플릿뿐이다. `lnpl.networks` entry-points SPI 표면 자체는 이슈 #132가 열었다(§10) — keep-alive 풀이 있는 실드라이버(`urllib3`/`httpx` 기반)를 그 표면에 등록하는 외부 패키지는 여전히 이 레포 밖이다 |
+| **오브젝트 스토리지(S3/GCS/Blob) 전용 capability** | `capability http` 우회로 가능한 범위를 실제 시나리오로 판정했다(issue #193) — [docs/object-storage-http-assessment.md](object-storage-http-assessment.md) |
 
 **소비 측 대칭 경계 (이슈 #118).** 발행 쪽에서 이미 세운 경계 — 코어는 계약
 (테이블 스키마, drain/ack 의미론)만 소유하고 실제 브로커 바인딩은 릴레이의
@@ -437,12 +467,17 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 
 `RepositoryDriverTCK`는 `unittest.TestCase`를 상속하지 않는 순수 믹스인이다
 — 구체 클래스가 `unittest.TestCase`와 다중 상속해야 한다. 검증 항목: 읽기·
-쓰기·삭제·부재 행의 `None` 반환·중복 create의 `DriverError`, 그리고 읽은 행이
+쓰기·삭제·부재 행 삭제의 `affected` 0(이슈 #183)·부재 행의 `None` 반환·
+중복 create의 `DriverError`, 그리고 읽은 행이
 `observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
 #92), 그리고 그 충돌이 `WriteConflictError` 타입인지(이슈 #201) — 이 속성이 없으면
 두 케이스 모두 스킵된다. `observed_version`을 내면서 충돌에 평범한 `DriverError`를
 내던 외부 드라이버는 이 두 번째 케이스에서 실패하므로, `lnpl.drivers`의
 `WriteConflictError`를 내도록 바꿔야 한다.
+이슈 #182부터는 `observed_version`을 갖는 드라이버에 대해 한 실행 안에서
+`set; update; set; update` 순서가 전부 성공하는지, 그리고 그 `update`
+전후로 다른 연결의 실제 쓰기가 끼어들어도 여전히 충돌이 나는지(두 순서
+모두)를 함께 검증한다.
 
 **`begin`/`commit`/`rollback`(이슈 #79, RFC-0032) — 이슈 #115로 파괴적 변경됨.**
 전에는 셋이 예외 없이 순서대로 호출 가능한지만 확인했고, 기본 계약이 no-op을
@@ -791,8 +826,9 @@ stderr에 경고 한 줄이 뜬다 — 확장 전체를 죽이지도, 조용히 
 Frontend SDK·k8s 매니페스트 등)이 전부 코어에 하드와이어돼 있으면 그 주장은
 실증된 적이 없다는 뜻이다. §5가 브로커 실바인딩에 대해 이미 말한 원칙 —
 "코어는 계약만 소유하고 실구현은 조직마다 다르다" — 이 생성물에도 그대로
-적용된다. 이 절이 여는 것은 자리뿐이다: GraphQL·gRPC·k8s 생성기 자체는
-코어가 만들지 않는다("통합 테스트 없는 바인딩 금지"와 같은 원칙, 이슈
+적용된다. 이 절이 여는 것은 자리다: 코어는 배포 생성기 `compose`·`k8s`를
+내장으로 싣고(이슈 #189, 아래 두 절), GraphQL·gRPC 생성기는 코어가 만들지
+않고 외부 패키지가 채운다("통합 테스트 없는 바인딩 금지"와 같은 원칙, 이슈
 #115).
 
 계약은 [protoc 플러그인 모델](https://protobuf.dev/reference/cpp/api-docs/google.protobuf.compiler.plugin/)
@@ -818,8 +854,11 @@ protoc 플러그인 모델에는 생성마다 새로 만들 상태가 없어서 
 `document`는 `.lir.json`과 바이트 동일한 dict(provenance 포함, RFC-0042)를
 그대로 받는다 — 소스 텍스트나 파일 경로는 절대 넘어가지 않는다(파서를
 두 번째로 구현하게 만들지 않기 위해서다, §11과 같은 이유). `options`는
-예약 인자로 지금은 항상 `{}`다(옵션 채널은 이번 범위 밖 — 소비자 관측
-전 추측성 표면을 만들지 않는다).
+`lnpl generate ... --set KEY=VALUE`가 채우는 `{KEY: VALUE}` 문자열 dict다
+(이슈 #189; `--set`은 반복할 수 있고, `=`가 없거나 KEY가 비었거나 같은 KEY가
+두 번 나오면 rc 2로 끝난다). 키의 의미와 검증은 생성기마다 따로 가진다 —
+`compose`·`k8s`는 닫힌 키 집합 밖의 키와 빈 값을 거부하고, `openapi`는
+옵션을 무시한다.
 
 패키지가 설치돼 있으면:
 
@@ -870,6 +909,122 @@ LF 종료)로 bytes화해 `{"openapi.json": <bytes>}`를 반환한다 — 이름
 `lnpl generate openapi <src> --out <dir>`가 쓰는 `<dir>/openapi.json`은
 `lnpl openapi <src>`가 stdout에 내는 것과 바이트 단위로 동일하다
 (`test_generator_spi.py`의 차동 테스트).
+
+### `compose` — 내장 배포 생성기 (이슈 #189)
+
+`lnpl generate compose <src.lnpl> --out <dir>`는 `<dir>/compose.yaml`
+하나를 쓴다. 같은 입력과 옵션이면 바이트가 같다(타임스탬프·호스트 경로 없음,
+ASCII, LF). YAML 라이브러리를 쓰지 않으므로(코어 런타임 의존성은
+jsonschema 하나다) 값을 끼워 넣는 자리는 전부 YAML 큰따옴표 문자열로
+이스케이프한다. 생성기가 알 수 없는 값(이미지 태그, 소스 경로)은
+`# PLACEHOLDER:` 주석이 붙은 자리표시자로 남기고 옵션으로 채운다.
+
+| 옵션 | 기본값 | 뜻 |
+|------|--------|-----|
+| `image` | `ghcr.io/OWNER/linkly:VERSION` (자리표시자) | 앱 이미지. 공식 태그는 `vX.Y.Z`·`X.Y`이고 `latest`는 발행되지 않으므로 기본값은 일부러 쓸 수 없는 값이다 |
+| `port` | `8000` | 호스트 포트(1~65535). `127.0.0.1:<port>:8000`으로만 게시한다(컨테이너 포트 8000은 `docker/Dockerfile`의 `EXPOSE`) |
+| `source` | `./app.lnpl` (자리표시자) | `.lnpl` 파일의 호스트 경로. 상대 경로는 compose 파일 위치 기준([Compose spec](https://github.com/compose-spec/compose-spec/blob/main/05-services.md)). 컨테이너의 `/srv/lnpl/app.lnpl`에 읽기 전용으로 bind mount한다 |
+| `postgres_image` | `postgres:16` | `postgres` capability가 있을 때의 이미지(`docs/postgres-load-ceiling.md`가 측정한 버전) |
+| `redis_image` | `redis:7` | `redis` capability가 있을 때의 이미지 |
+
+**환경 변수.** `docs/serving.md` 표에 있는 이름만 쓴다. 항상 `LNPL_SOURCE`.
+`jwt`가 선언되면 `LNPL_JWT_SECRET_ENV=LNPL_JWT_SECRET`. 논리 이름으로 호출하는
+NetworkCall 대상마다 `LNPL_ENDPOINT_<대상 대문자>`(값은 예약 도메인
+`.invalid`를 쓴 `http://endpoint-placeholder.invalid`라서 잊어버리면 남의
+호스트가 아니라 DNS에서 실패한다; 대상 이름이 환경 변수 이름 규칙 `[A-Za-z_][A-Za-z0-9_]*`을 못 채우면 — 예: `foo:bar` — 컴파일러는 받아도 생성기는 그 대상 이름을 대며 거부한다). `postgres`·`redis`가 선언돼도
+`LNPL_BACKEND`·`LNPL_CACHE`는 **주석으로만** 나온다: 공식 이미지는 `fake`·
+`sqlite` 백엔드만 담고 있어서, `lnpl-postgres` 등을 설치한 파생 이미지
+(`docs/RELEASING.md`)를 쓸 때 주석을 푼다. 생성기가 내보내지 않는 변수
+(필요하면 손으로 추가): `LNPL_JWT_SECRET_FILE`, `LNPL_CLOCK`, `LNPL_LOG_FORMAT`, `LNPL_TRACE_EXPORTER`,
+`LNPL_IDEMPOTENCY_TTL_S`, `LNPL_METRICS`, `LNPL_CAPTURE_ON_FAILURE`,
+`LNPL_TRUST_INCOMING_TRACE`, `LNPL_RATE_LIMIT`, `LNPL_CONFIG`, `LNPL_PROFILE`,
+`LNPL_NETWORK`, `LNPL_TOKEN_PROVIDER`, `LNPL_JWT_ISSUER`.
+
+**비밀은 이름으로만.** 문서가 이름을 대는 비밀 변수(`LNPL_JWT_SECRET`,
+`capability http`의 `auth ... from <ENV>` 변수)와 `postgres` 서비스의
+`POSTGRES_PASSWORD`는 값 없이 `"${VAR:?set VAR before docker compose up}"`
+참조로만 나온다. 호스트 환경에 없으면 compose가 시작을 거부한다 — `up`뿐
+아니라 `down`도 보간을 하므로 둘 다 앞에서 `export`해야 한다.
+
+**capability → 서비스.** `postgres` → 서비스 `postgres`(named volume
+`postgres-data`, `pg_isready` healthcheck), `redis` → 서비스 `redis`
+(`redis-cli ping` healthcheck); 앱은 만들어진 서비스마다 `depends_on:
+condition: service_healthy`를 건다. 서비스 순서는 선언 순서와 무관하게
+app, postgres, redis다. `jwt`와 `capability http <이름>`은 환경 변수만
+만든다. capability가 하나도 없으면 앱 서비스만 나온다. 위 매핑에 없는 이름은
+건너뛰고 stderr에 한 줄을 낸다:
+`lnpl generate compose: capability 'foo' has no deployment mapping; skipped (mapped: postgres, redis, jwt, http <name>)`.
+
+**healthcheck는 `/-/readyz`다.** Compose는 unhealthy 컨테이너를 다시 띄우지
+않으므로 compose healthcheck는 liveness 프로브가 아니다. 쓰는 곳은
+`depends_on: condition: service_healthy`와 `docker compose up --wait` 둘뿐이고
+둘 다 "지금 서비스할 수 있는가"를 묻는다 — 곧 readiness다. `/-/readyz`는
+저장소와 jwt 비밀 변수까지 보고, `/-/healthz`는 백엔드가 깨져도 healthy를
+답한다. 프로브는 이미지에 curl/wget이 없어서 `python -c "import urllib.request;
+urllib.request.urlopen('http://127.0.0.1:8000/-/readyz', timeout=3)"`이고, 503이면
+urlopen이 예외를 던져 0이 아닌 코드로 끝난다([healthcheck·depends_on](https://github.com/compose-spec/compose-spec/blob/main/05-services.md)).
+
+**`$`는 `$$`로.** Compose는 값 안의 `$VAR`·`${VAR}`를 보간하므로 옵션 값의
+`$`는 `$$`로 이중화해 리터럴로 만든다([보간 규칙](https://github.com/compose-spec/compose-spec/blob/main/12-interpolation.md)).
+`docker compose config`는 이 값을 같은 `$$` 형태로 출력한다.
+
+### `k8s` — 내장 배포 생성기 (이슈 #189)
+
+`lnpl generate k8s <src.lnpl> --out <dir>`는 `<dir>/k8s.yaml` 하나를 쓴다:
+ConfigMap, Deployment, Service가 이 순서로 `---`로 구분돼 들어 있다.
+Secret 오브젝트는 만들지 않는다.
+
+| 옵션 | 기본값 | 뜻 |
+|------|--------|-----|
+| `image` | `ghcr.io/OWNER/linkly:VERSION` (자리표시자) | `compose`와 같다 |
+| `name` | 모듈 이름(소스 파일 이름) | Deployment·Service의 이름이자 `app.kubernetes.io/name` 라벨 값. DNS-1035 라벨(소문자로 시작, 소문자·숫자·`-`, 영문/숫자로 끝, 63자 이하)이어야 한다. Service 이름이기 때문이며, 어긋나면 고쳐 쓰지 않고 거부한다(`--set name=<label>`으로 지정) |
+| `replicas` | `1` (자리표시자) | 1 이상의 정수. 생성기는 레플리카 수를 모른다 |
+| `cpu_request`, `cpu_limit`, `memory` | 없음 | Kubernetes quantity(`100m`, `0.5`, `256Mi`). 하나도 없으면 `resources:` 없이 BestEffort 주석만 나온다. `memory`는 requests와 limits 양쪽에 들어간다 |
+
+**프로브·종료.** `livenessProbe`는 `/-/healthz`, `readinessProbe`는 `/-/readyz`
+(둘 다 이름 붙은 컨테이너 포트 `http`=8000, 시간 필드는 Kubernetes 기본값 —
+생성기에는 측정값이 없다). `terminationGracePeriodSeconds: 30`은 `lnpl serve
+--grace-period` 기본값(30.0)과 gunicorn `graceful_timeout`(30)에 맞춘 값이고
+`deploy_gen.GRACE_PERIOD_S`가 이를 들고 있으며 테스트가 둘의 일치를 확인한다
+(`docs/serving.md` "SIGTERM 그레이스풀 드레인").
+근거: [Pod 수명주기](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/),
+[liveness/readiness/startup 프로브](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/).
+
+**직접 만들어야 하는 오브젝트.** 생성된 매니페스트는 이름으로만 참조한다.
+
+```bash
+kubectl create configmap <name>-source --from-file=app.lnpl=<path>
+kubectl create secret generic <name>-secrets --from-literal=<KEY>=<value>
+```
+
+`--from-literal`은 `secretKeyRef`의 키마다 하나씩이다(`postgres` → `LNPL_BACKEND`,
+`redis` → `LNPL_CACHE`, `jwt` → `LNPL_JWT_SECRET`, `capability http`의 `auth` 변수).
+근거: [ConfigMap](https://kubernetes.io/docs/concepts/configuration/configmap/),
+[Secret](https://kubernetes.io/docs/concepts/configuration/secret/).
+환경 변수(`LNPL_SOURCE`, `LNPL_JWT_SECRET_ENV`, `LNPL_ENDPOINT_*`)는 ConfigMap
+`<name>-config`가 `envFrom`으로 주입한다. 백킹 서비스(DB·캐시)는 운영자의
+선택이므로 만들지 않는다. 알 수 없는 capability는 `compose`와 같은 stderr 한
+줄(`lnpl generate k8s: ...`)로 건너뛴다.
+
+**검사.** 이 환경에서 `kubectl apply --dry-run=client -f k8s.yaml`은
+API 서버 없이 끝나지 않는다: rc 1 `failed to download openapi: Get
+"http://localhost:8080/openapi/v2?timeout=32s"`, `--validate=false`를 줘도
+rc 1 `couldn't get current server API group list`(실측, kubectl v1.30.5).
+클러스터 없이 쓸 수 있는 가장 가까운 검사는 kubeconform이다(스키마는
+네트워크에서 받는다):
+
+```bash
+docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - < k8s.yaml
+```
+
+kubeconform은 오브젝트 이름을 검사하지 않는다(실측: `Pg_Redis`를 통과시킴).
+이름은 생성기의 DNS-1035 규칙이 막는다.
+
+**골든 갱신.** 골든(`impl/tests/golden/deploy/<fixture>/`)은 CLI로만 다시
+만든다 — 저장소 루트에서 `--set` 없이
+`PYTHONPATH=impl .venv/bin/python -m lnpl generate compose impl/tests/golden/deploy/<fixture>.lnpl --out impl/tests/golden/deploy/<fixture>`
+(`k8s`도 같다) 후 `git diff impl/tests/golden/deploy`를 읽고 커밋한다. 자동
+갱신 스위치는 없다.
 
 ### TCK로 검증하기
 
@@ -1026,6 +1181,215 @@ PITR은 WAL 아카이빙 기반의 별도 절차다 — `pg_dump`/`pg_dumpall`
 ([Continuous Archiving and Point-in-Time Recovery (PITR)](https://www.postgresql.org/docs/current/continuous-archiving.html)).
 이 레포는 그 드라이버를 구현하지 않는다 — `RepositoryDriver` SPI(§8)를
 구현하는 쪽의 책임이다.
+
+## 15. SPI: 외부 이벤트 발행자 등록 (issue #191, RFC-0061)
+
+`outbox`가 쌓은 emission을 실제 브로커로 보내는 경계를 연다 — §8/§10과
+같은 규율: 내장 스킴(`http`/`https`)이 entry-points 조회보다 먼저
+검사돼 절대 가려지지 않고, 미등록 스킴의 메시지는 받은 스킴·내장
+목록·등록된 entry-points 목록을 함께 싣되 **대상 URL 전체는 싣지
+않는다**(userinfo로 크리덴셜을 실어 보낼 수 있어서다) — entry-point
+로드 실패는 `ImportError`를 그대로 흘리지 않고 `DriverError`로 번역한다
+("ONE ERROR TYPE OUT").
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.publishers"]
+kafka = "my_lnpl_kafka:make_publisher"
+```
+
+`my_lnpl_kafka.make_publisher`는 `target`(`--target`에 준 전체 URL
+문자열 — 콜론 뒤 나머지가 아니라 scheme까지 포함한 원문 그대로) 하나를
+받아 `EventPublisher`를 반환하는 콜러블이다. `lnpl relay --target
+kafka://broker:9092/topic`이 그 팩토리를 찾아 부른다 — 코어 쪽에 이
+스킴에 대한 if문이 하나도 없다.
+
+`EventPublisher`는 `publish(envelope)`·`publish_batch(envelopes)`·`close()`
+셋이다. `publish`가 예외 없이 돌아오면 ack, `PublishRejected`(영구 거부)면
+ack + dead-letter 경고, 그 외 `DriverError`면 ack하지 않고 다음 드레인이
+재시도한다.
+
+### 내장 스킴은 절대 가려지지 않는다
+
+`open_publisher`는 `http`/`https`를 entry-points 조회보다 **먼저**
+검사한다. 어떤 패키지가 `lnpl.publishers`에 그 두 이름으로 등록해도
+그 등록은 결코 조회되지 않는다 — §8/§10의 `sqlite`/`fake`/`http`와
+같은 이유, 같은 보장이다.
+
+### 미등록 스킴의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 스킴은 `ValueError`로
+거부되며, 메시지가 **받은 스킴**(전체 target이 아니다)·**내장
+목록**(`http`, `https`)·**등록된 entry-points 목록**(없으면 "none")을
+함께 싣는다.
+
+### entry-point 로드 실패
+
+등록은 됐지만 그 값(`module:attr`)을 import할 수 없으면
+`open_publisher`가 `ImportError`를 `DriverError`로 번역한다(원인 체인
+보존) — §8/§9/§10과 같은 규칙.
+
+### TCK로 검증하기
+
+외부 발행 드라이버는 `lnpl.testing.EventPublisherTCK`를 상속해 자기
+CI에서 돌린다:
+
+```python
+import unittest
+from lnpl.testing import EventPublisherTCK
+
+class MyKafkaPublisherTCKTest(EventPublisherTCK, unittest.TestCase):
+    def make_publisher(self, fail_ids=frozenset()):
+        return MyKafkaPublisher(..., fail_ids=fail_ids)
+```
+
+검증 항목: 발행 확인 후에만 ack, 발행 실패는 미ack(다음 드레인이
+재시도), 재시작 뒤 미확인 행 재발행, outbox `seq` 순서 보존. TCK가
+실제로 이것을 잡는다는 증거는 "발행 전에 ack하는" 드라이버와 "오류를
+삼키고 ack하는" 드라이버 둘 다에 같은 케이스를 돌려 실패를 확인한
+discriminating test다(`impl/tests/test_publisher_spi.py`의
+`EventPublisherTCKDiscriminatesTest`, §8의 `RollbackTCKDiscriminatesTest`와
+같은 방식). `make_publisher(fail_ids)`가 돌려주는 객체는 `fail_ids`에 든
+`id`의 `publish`에서 `DriverError`를 던져야 하고, 확인된 봉투 `id`를 발행
+순서대로 담은 `published` 리스트를 노출해야 한다 — 실브로커 드라이버는 이를
+테스트 전용 래퍼로 제공한다.
+
+## 16. SPI: 외부 시크릿 프로바이더 등록 (issue #192)
+
+JWT 서명 키 같은 시크릿을 환경변수나 `lnpl.toml`이 아니라 Vault·클라우드
+시크릿 매니저 같은 외부 저장소에서 읽는 경계를 연다 — §10/§15와 같은
+규율이되, 내장 이름의 처리는 `lnpl.tokens`(§9)를 따른다: 시크릿 원천은
+신뢰 경계라서 같은 이름의 등록을 조용히 무시하지 않고 **거부한다**.
+어떤 오류 메시지에도 드라이버 예외의 원문은 실리지 않는다 — 모듈이나
+팩토리가 URL이나 시크릿 값을 메시지에 넣을 수 있어서다.
+
+### 등록
+
+외부 패키지의 `pyproject.toml`:
+
+```toml
+[project.entry-points."lnpl.secrets"]
+vault = "lnpl_vault:make_provider"
+```
+
+`lnpl_vault.make_provider`는 **인자 없이** 불려 `SecretProvider`를 반환하는
+콜러블이다(`lnpl.tokens`와 같은 모양). 저장소 주소·인증 같은 연결 설정은
+드라이버 패키지 자신의 설정이고, 읽을 `key`는 호출마다 넘어온다.
+
+### 계약
+
+`SecretProvider`(`lnpl.drivers`)는 셋이다:
+
+- `get(key) -> bytes` — 현재 값
+- `get_previous(key) -> bytes 또는 None` — 마지막 교체 직전의 값, 없으면 `None`
+- `close()` — 자원 해제, 여러 번 불려도 안전
+
+값은 `bytes`만이다(`str` 반환은 계약 위반). 실패(없는 키, 저장소 장애,
+권한)는 전부 `DriverError`이고, 그 메시지에 시크릿 바이트가 실리면 안 된다.
+
+### 내장 이름은 절대 가려지지 않는다
+
+`env`와 `file`은 코어가 직접 읽는 원천이지 프로바이더가 아니다
+(`BUILTIN_SECRET_SOURCES`). `lnpl.secrets`에 그 이름으로 등록된 entry-point가
+있으면 `open_secret_provider`는 로드하지 않고 `DriverError`로 거부한다:
+
+```text
+entry-point 'file' (registered via 'my_pkg:make') attempts to shadow the built-in secret source 'file'; built-in names are reserved (lnpl.secrets SPI, docs/backends.md)
+```
+
+그런 등록이 없을 때 내장 이름을 프로바이더로 요청하면 인라인 형태를
+가리키는 `ValueError`다:
+
+```text
+secret provider 'file' is a built-in source, not a registered provider — write jwt = "ENV_NAME" or jwt = { file = "/absolute/path" } instead
+```
+
+### 미등록 이름의 진단
+
+내장에도 없고 등록된 entry-points에도 없는 이름은 `ValueError`로
+거부되며, 받은 이름·내장 목록·등록된 entry-points 목록(없으면 "none")을
+함께 싣는다:
+
+```text
+unknown secret provider 'nope' (built-in: env, file; registered entry-points: vault)
+```
+
+### entry-point 로드 실패
+
+등록은 됐지만 그 값(`module:attr`)을 import할 수 없으면, 또는 팩토리가
+예외를 던지면 `DriverError`로 번역된다. 둘 다 **예외 타입 이름만** 싣고
+드라이버 자신의 메시지는 절대 옮기지 않는다 — 팩토리 실패는 원인 체인도
+끊어(`from None`) 포맷된 traceback에도 남지 않는다:
+
+```text
+secret provider 'vault' registered via entry-point 'lnpl_vault:make_provider' failed to load (ModuleNotFoundError)
+secret provider 'vault' failed to start (RuntimeError)
+```
+
+### 교체와 재조회
+
+프로바이더 원천(`[*.secrets] jwt = { provider, key }`)의 JWT 검증자는
+`RotatingHmacTokenProvider`(`lnpl.drivers`)다:
+
+- 검증은 **현재 키 또는 이전 키**와 맞으면 통과한다(두 MAC을 항상 다 계산하고
+  `hmac.compare_digest`로 비교한다). 서명은 현재 키로만 한다. 이전 키도
+  32바이트 이상이어야 한다. 키 둘은 한 튜플로 원자적으로 바뀌므로, 동시에 도는
+  검증은 옛 쌍이나 새 쌍 중 하나만 본다.
+- 기동 시 `get` + `get_previous`를 한 번 읽는다. 이후 `SECRET_REFRESH_S`(60초)가
+  지난 뒤 처음 오는 `verify`/`issue`가 다시 읽는다 — 한 번에 한 스레드만
+  읽고(single-flight), 실패하면 마지막 정상 키를 조용히 유지한 채 60초 뒤에
+  다시 시도한다. 잘못된 토큰이 올 때마다 다시 읽지는 않는다(쓰레기 토큰으로
+  프로바이더 호출을 무한히 일으킬 수 없게).
+- `/-/readyz` 프로브도 다시 읽는다(검사 ⑤ `secret-provider`, 상세는
+  `docs/serving.md`). 단 마지막 읽기(성공이든 실패든)가 `READYZ_REFRESH_FLOOR_S`
+  (5초)보다 최근이면 그 결과를 재사용한다 — 인증 없는 readyz 반복 호출이
+  프로바이더 호출을 무한히 일으킬 수 없게. 실패는 503, 회복하면 200이고 새 키가
+  설치된다.
+- 운영 절차: 프로바이더에서 새 값을 현재로, 직전 값을 이전으로 바꾼 뒤 **최소
+  60초** 기다렸다가 발급자가 새 키로 서명하게 한다. 이전 키는 발급자가 새 키로
+  바꾼 시점부터 가장 긴 토큰 수명이 지난 뒤에 프로바이더에서 지운다 — 기본 수명은
+  `DEFAULT_TTL_MS`(15분, `lnpl token --ttl` 기본값 `15m`)이고 검증은
+  `LEEWAY_S`(60초)만큼 만료를 늦게 보므로, 기본값이면 16분 뒤다. 지운 뒤에도
+  워커가 다시 읽기까지(최대 60초) 이전 키는 살아 있다 — 유출된 옛 키를 끊으려면
+  기다리지 말고 지금 지운다.
+- `lnpl serve`는 종료 시 프로바이더를 `close()`한다. `build_app()` 경로에는
+  종료 훅이 없다.
+
+### TCK로 검증하기
+
+외부 시크릿 드라이버는 `lnpl.testing.SecretProviderTCK`를 상속해 자기
+CI에서 돌린다. 훅은 셋이다 — `make_provider(initial)`은 `TCK_KEY`의 현재
+값이 `initial`이고 이전 값이 없는 새 프로바이더를, `rotate`는 새 값을
+현재로·옛 현재 값을 이전으로 만드는 테스트 전용 조작을, `break_provider`는
+이후 `get`/`get_previous`가 `DriverError`를 던지게 하는 테스트 전용 조작을
+제공한다:
+
+```python
+import unittest
+from lnpl.testing import SecretProviderTCK
+
+class MyVaultTCKTest(SecretProviderTCK, unittest.TestCase):
+    def make_provider(self, initial):
+        return MyVaultProvider(...)   # TCK_KEY에 initial을 써 둔 저장소
+
+    def rotate(self, provider, new_value):
+        ...                           # 새 버전 쓰기
+
+    def break_provider(self, provider):
+        ...                           # 이후 읽기가 실패하게
+```
+
+검증 항목(7): 설정한 바이트를 그대로 돌려줌(32바이트 이상), 교체 전
+`get_previous`는 `None`, 교체하면 현재 값이 이전으로 이동, 두 번 교체해도
+이전 값은 하나만, 없는 키는 두 메서드 모두 `DriverError`, 고장 난
+프로바이더도 두 메서드 모두 `DriverError`, `close()` 두 번 호출 안전. TCK가
+실제로 잡는다는 증거는 "이전 값으로 현재 값을 돌려주는" 프로바이더와 "없는
+키에서 `KeyError`를 흘리는" 프로바이더에 같은 케이스를 돌려 실패를 확인한
+discriminating test다(`impl/tests/test_secret_spi.py`의
+`SecretProviderTCKDiscriminatesTest`).
 
 ## 참고
 

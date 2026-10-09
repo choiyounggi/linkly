@@ -20,9 +20,12 @@ import os
 import tempfile
 import threading
 import unittest
+from importlib import metadata as importlib_metadata
+from unittest import mock
 from wsgiref.simple_server import make_server
 
 from lnpl import cli
+from lnpl import drivers as drivers_module
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.wsgi import make_wsgi_app
@@ -240,6 +243,116 @@ class UnknownEventIdTest(unittest.TestCase):
 
         self.assertEqual(0, count)
         self.assertEqual([], acked_seqs)
+
+
+
+def _publishers_registered(*entry_points):
+    """Patch `lnpl.publishers` discovery to exactly `entry_points` (the
+    `test_publisher_spi.py` helper, mirrored)."""
+    return mock.patch.object(drivers_module.importlib_metadata, "entry_points",
+                             lambda **_kw: list(entry_points))
+
+
+DEMO_PUBLISHER = importlib_metadata.EntryPoint(
+    name="demo", value="tests.publisher_spi_fixture:make_demo_publisher",
+    group=drivers_module.PUBLISHERS_ENTRY_POINT_GROUP)
+
+
+class RegisteredPublisherSchemeTest(RelayCliTestCase):
+    """R7/R9: a registered scheme publishes through the matched
+    EventPublisher; ack happens only after publish confirms; the driver is
+    closed whichever way the relay ends."""
+
+    def record_opened(self):
+        real = cli.open_publisher
+        opened = []
+
+        def opener(target):
+            publisher = real(target)
+            opened.append(publisher)
+            return publisher
+
+        cli.open_publisher = opener
+        self.addCleanup(setattr, cli, "open_publisher", real)
+        return opened
+
+    def test_a_registered_scheme_publishes_and_acks(self):
+        self.emit_one()
+        opened = self.record_opened()
+
+        with _publishers_registered(DEMO_PUBLISHER):
+            rc, out, err = self.run_cli(
+                ["relay", self.publish_source, "--backend", "sqlite:" + self.db,
+                 "--target", "demo://broker/topic", "--once"])
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 1", out)
+        self.assertEqual([], self.drain())
+        self.assertEqual(1, len(opened))
+        self.assertEqual(["outbox-1"], opened[0].published)
+        self.assertEqual("demo://broker/topic", opened[0].target)
+        self.assertTrue(opened[0].closed)
+
+    def test_a_failed_publish_leaves_the_row_for_the_next_drain(self):
+        self.emit_one()
+        opened = self.record_opened()
+        real_factory = cli.open_publisher
+
+        def failing(target):
+            publisher = real_factory(target)
+            publisher.fail_ids.add("outbox-1")
+            return publisher
+
+        cli.open_publisher = failing
+
+        with _publishers_registered(DEMO_PUBLISHER):
+            rc, out, err = self.run_cli(
+                ["relay", self.publish_source, "--backend", "sqlite:" + self.db,
+                 "--target", "demo://broker/topic", "--once"])
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 0", out)
+        self.assertIn("left un-acked", err)
+        self.assertEqual(1, len(self.drain()))   # still there, retryable
+        self.assertTrue(opened[0].closed)
+
+
+class UnknownPublisherSchemeTest(RelayCliTestCase):
+    """Error: an unregistered --target scheme is a clear rc!=0 error
+    naming the scheme and the registered names, never a traceback,
+    never the target's userinfo -- and the outbox is left untouched."""
+
+    def test_an_unregistered_scheme_is_rejected_cleanly(self):
+        self.emit_one()
+
+        with _publishers_registered(DEMO_PUBLISHER):
+            rc, out, err = self.run_cli(
+                ["relay", self.publish_source, "--backend", "sqlite:" + self.db,
+                 "--target", "kafka://user:s3cr3t@broker/topic", "--once"])
+
+        self.assertEqual(2, rc)
+        self.assertEqual("", out)
+        self.assertIn("'kafka'", err)
+        self.assertIn("demo", err)
+        self.assertNotIn("s3cr3t", err)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(1, len(self.drain()))
+
+    def test_an_unloadable_registered_scheme_is_rejected_cleanly(self):
+        self.emit_one()
+        broken = importlib_metadata.EntryPoint(
+            name="broken", value="tests.no_such_fixture_module_xyz:make",
+            group=drivers_module.PUBLISHERS_ENTRY_POINT_GROUP)
+
+        with _publishers_registered(broken):
+            rc, out, err = self.run_cli(
+                ["relay", self.publish_source, "--backend", "sqlite:" + self.db,
+                 "--target", "broken://user:s3cr3t@broker/topic", "--once"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("failed to load", err)
+        self.assertNotIn("s3cr3t", err)
+        self.assertEqual(1, len(self.drain()))
 
 
 if __name__ == "__main__":

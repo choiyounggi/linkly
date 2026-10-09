@@ -1,0 +1,7 @@
+[2026-10-08 02:20:09 +0000] [75398] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 02:20:09 +0000] [75398] [INFO] Listening at: http://127.0.0.1:18195 (75398)
+[2026-10-08 02:20:09 +0000] [75398] [INFO] Using worker: sync
+[2026-10-08 02:20:09 +0000] [75402] [INFO] Booting worker with pid: 75402
+[2026-10-08 02:23:58 +0000] [75398] [INFO] Handling signal: term
+[2026-10-08 02:23:58 +0000] [75402] [INFO] Worker exiting (pid: 75402)
+[2026-10-08 02:23:58 +0000] [75398] [INFO] Shutting down: Master

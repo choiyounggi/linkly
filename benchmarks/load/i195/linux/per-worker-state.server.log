@@ -1,0 +1,22 @@
+[2026-10-08 03:02:00 +0000] [94998] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 03:02:00 +0000] [94998] [INFO] Listening at: http://127.0.0.1:18195 (94998)
+[2026-10-08 03:02:00 +0000] [94998] [INFO] Using worker: sync
+[2026-10-08 03:02:00 +0000] [95002] [INFO] Booting worker with pid: 95002
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 03:02:00 +0000] [95004] [INFO] Booting worker with pid: 95004
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 03:02:00 +0000] [94998] [INFO] Handling signal: term
+[2026-10-08 03:02:00 +0000] [95002] [INFO] Worker exiting (pid: 95002)
+[2026-10-08 03:02:00 +0000] [95004] [INFO] Worker exiting (pid: 95004)
+[2026-10-08 03:02:01 +0000] [94998] [INFO] Shutting down: Master
+[2026-10-08 03:02:01 +0000] [95149] [INFO] Starting gunicorn 26.2.0
+[2026-10-08 03:02:01 +0000] [95149] [INFO] Listening at: http://127.0.0.1:18195 (95149)
+[2026-10-08 03:02:01 +0000] [95149] [INFO] Using worker: sync
+[2026-10-08 03:02:01 +0000] [95153] [INFO] Booting worker with pid: 95153
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 03:02:01 +0000] [95157] [INFO] Booting worker with pid: 95157
+lnpl serve: Idempotency-Key support is disabled -- the `fake` backend seeds a fresh in-memory store per request, so there is nowhere to durably record a claim (issue #113, D11). Use --backend sqlite:<path> to enable it.
+[2026-10-08 03:02:11 +0000] [95149] [INFO] Handling signal: term
+[2026-10-08 03:02:11 +0000] [95157] [INFO] Worker exiting (pid: 95157)
+[2026-10-08 03:02:11 +0000] [95153] [INFO] Worker exiting (pid: 95153)
+[2026-10-08 03:02:11 +0000] [95149] [INFO] Shutting down: Master

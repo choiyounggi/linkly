@@ -1,0 +1,25 @@
+capability http Hook
+    method post
+
+refine NotificationStatus of Text
+    enum delivered needsManual
+
+entity Notification
+    field
+        id UUID
+        orderId Text
+        status NotificationStatus derived
+
+event OrderPlaced
+    consume by NotifyOrder
+
+workflow NotifyOrder
+    create notification as n
+    format n.orderId from "{}" with input.id
+    call Hook as hookResult
+    when hookResult.status == 200
+    pipeline
+    format n.status from "delivered"
+    when hookResult.status != 200
+    pipeline
+    format n.status from "needsManual"

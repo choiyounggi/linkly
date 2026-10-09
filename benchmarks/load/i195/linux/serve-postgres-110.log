@@ -1,0 +1,15 @@
+seed save=409 get=200
+point backend=postgres server=lnpl-serve rate=110 seconds=90 warmup=5 started=2026-10-08T01:49:42Z
+total=9900 post_warmup=9350 ok=9350 error_or_non2xx=0
+p50=5.51ms p95=19.85ms p99=204.09ms
+error_rate=0.00%
+bucket=0-10s mean=4.50ms max=8.07ms n=1100
+bucket=10-20s mean=143.01ms max=5155.77ms n=1100
+bucket=20-30s mean=5.59ms max=12.82ms n=1100
+bucket=30-40s mean=5.52ms max=10.26ms n=1100
+bucket=40-50s mean=5.57ms max=11.92ms n=1100
+bucket=50-60s mean=5.69ms max=7.86ms n=1100
+bucket=60-70s mean=5.65ms max=17.33ms n=1100
+bucket=70-80s mean=5.65ms max=8.32ms n=1100
+bucket=80-90s mean=5.73ms max=9.58ms n=550
+verdict=UNSTABLE worst_bucket_ratio=31.767x

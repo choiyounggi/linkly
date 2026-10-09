@@ -167,6 +167,9 @@ class FakeRepository:
                 conflict.failure_kind = "conflict"
                 raise conflict
             table[key] = {"id": key}
+        if operation == "delete":
+            existed = table.pop(key, None) is not None
+            return {"affected": 1 if existed else 0}
         return {"affected": 1}
 
     def query(self, entity_id, predicate=None, order=None, limit=None):
@@ -1639,6 +1642,14 @@ class Interpreter:
             if isinstance(self.repo, FakeRepository):
                 self.repo.seed(repo_rows or {})
         self.cache = cache if cache is not None else FakeCache(self.clock)
+        # issue #188 / RFC-0062: entities some `cached` read targets, the
+        # keys this run cached (discarded on rollback), and the keys this
+        # run's writes touched (invalidated only after commit, D7).
+        self._read_through_entities = {
+            n["entity"] for n in document["nodes"]
+            if n["kind"] == "RepositoryCall" and n.get("cached")}
+        self._read_through_writes = []
+        self._read_through_invalidations = []
         # RFC-0027 §1: no stub table by default — every unstubbed target gets
         # the deterministic (200, {}) FakeNetworkDriver already answers.
         self.network = network if network is not None else FakeNetworkDriver()
@@ -1730,6 +1741,29 @@ class Interpreter:
                 binding_name(node): node["id"]
                 for node in self.doc["nodes"] if node["kind"] == "Entity"}
         return self._entity_by_binding.get(binding)
+
+    def _invalidate_read_through(self, key):
+        """issue #188 / RFC-0062: best-effort delete of a read-through key —
+        a cache outage leaves the TTL to bound the staleness."""
+        try:
+            self.cache.invalidate(key)
+        except DriverError:
+            pass
+
+    def _discard_read_through_writes(self):
+        """A rolled-back run must not leave rows it read in the cache."""
+        for key in self._read_through_writes:
+            self._invalidate_read_through(key)
+        self._read_through_writes = []
+
+    def _invalidate_written_after_commit(self):
+        """D7 (review C1): the keys this run's writes touched are invalidated
+        only once `repo.commit()` has returned — invalidating inside the open
+        transaction lets a concurrent `cached` reader re-cache the pre-write
+        row for a whole TTL."""
+        for key in self._read_through_invalidations:
+            self._invalidate_read_through(key)
+        self._read_through_invalidations = []
 
     # ---- constraint lookup -------------------------------------------------
     def _service_for(self, workflow_id):
@@ -2003,6 +2037,11 @@ class Interpreter:
         # a guard condition `_flatten_items` cannot evaluate) never reaches
         # the per-step `except` below, so it is caught here too — otherwise
         # that path would leave the transaction open.
+        self._read_through_writes = []
+        # D7: a run that never committed (rollback, or a failing commit)
+        # leaves its pending invalidations here; they are dropped, not
+        # carried into the next run.
+        self._read_through_invalidations = []
         self.repo.begin()
         try:
             for item_id in _flatten_items(self.nodes, wf.get("children", []), self,
@@ -2104,6 +2143,7 @@ class Interpreter:
                     break
         except RunError:
             self.repo.rollback()
+            self._discard_read_through_writes()
             raise
         # RFC-0059 §4: `respond`'s terms are evaluated here, after the last
         # step and before the commit — a term that cannot be evaluated (`avg`
@@ -2129,8 +2169,10 @@ class Interpreter:
                     break
         if result["status"] == "completed":
             self.repo.commit()
+            self._invalidate_written_after_commit()
         else:
             self.repo.rollback()
+            self._discard_read_through_writes()
             if con["rollback"]:
                 self.trace.log(
                     "INFO", "rollback: execution boundary rolled back, "
@@ -2356,6 +2398,9 @@ class Interpreter:
             finally:
                 if stamped:
                     row.pop(SCHEMA_GEN_KEY, None)
+            if entity_id in self._read_through_entities:
+                self._read_through_invalidations.append(binding_keys.get(
+                    binding, row_key(entity_id, payload)))
             child.attrs["target"] = target
             child.attrs["value"] = value
             self.trace.log("INFO", "assignment applied",
@@ -2446,13 +2491,39 @@ class Interpreter:
                 # fault.
                 key = _resolve_lookup_key(effect["entity"], effect.get("lookup"),
                                           payload, bindings, self.caller)
-            try:
-                row = self.repo.execute(effect["entity"], effect["operation"], key)
-            except DriverError as exc:
-                raise RunError(str(exc)) from exc
-            # issue #147 D3: never expose the storage-layer stamp through a
-            # `read` binding — the row's only observable surface here.
-            row = strip_schema_gen(row)
+            cache_hit = None
+            if effect.get("cached"):
+                # issue #188 / RFC-0062: read-through. A cache outage counts
+                # as a miss (RFC-0003: fall back to the source).
+                try:
+                    cached_row = self.cache.get(key)
+                except DriverError:
+                    cached_row = None
+                cache_hit = cached_row is not None
+                child.attrs["cache_hit"] = cache_hit
+                self.trace.metric("cache.hit" if cache_hit else "cache.miss",
+                                  {"step": span.name}, 1)
+            if cache_hit:
+                row = cached_row
+            else:
+                try:
+                    row = self.repo.execute(effect["entity"], effect["operation"], key)
+                except DriverError as exc:
+                    raise RunError(str(exc)) from exc
+                # issue #147 D3: never expose the storage-layer stamp through a
+                # `read` binding — the row's only observable surface here.
+                row = strip_schema_gen(row)
+                if cache_hit is False and isinstance(row, dict):
+                    try:
+                        self.cache.set(key, row, con["cache_ttl_ms"])
+                        self._read_through_writes.append(key)
+                    except DriverError:
+                        pass
+            if (effect["operation"] in ("update", "delete")
+                    and effect["entity"] in self._read_through_entities):
+                # D7: invalidated after commit, not here inside the open
+                # transaction.
+                self._read_through_invalidations.append(key)
             child.attrs["found"] = row is not None
             if effect.get("lookup"):
                 # D6: the ref text only — never the key or value it resolved

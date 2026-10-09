@@ -1367,6 +1367,79 @@ class TestModeBDerivesRepositoryOutcomes(unittest.TestCase):
                           for op in ops}, a["effects"])
 
 
+# Issue #183: `_lnpl_ops` had no branch for `operation == "delete"`, so an
+# unconditional delete never updated `seeded_now`/`created` -- a later
+# unconditional repository call on the SAME entity kept being judged
+# against stale state. Two independent boundaries, two tests: a `read`
+# after `delete` must now fail statically (mirrors mode A's real delete,
+# issue #183's own Fake fix); a `create` after `delete` must insert
+# rather than conflict (mirrors what a real delete-then-create does on
+# both backends). Reproduced with a REAL mode B build via
+# `differential.verify()` during planning (plans/t183/analysis.md Spike
+# 2): `FAIL 2/4 policy outcome` before this fix, `EQUIVALENT` after it.
+# No toolchain needed here -- like `TestModeBDerivesRepositoryOutcomes`
+# above, this reads the op stream `_lnpl_ops` builds directly and
+# compares it to mode A's own trace.
+DELETE_THEN_FIND = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+service CheckoutService
+workflow Checkout
+    delete product
+    find product
+"""
+
+CREATE_DELETE_CREATE = """
+capability postgres
+entity Product
+    field
+        id UUID
+        stock Integer
+service CheckoutService
+workflow Checkout
+    create product
+    delete product
+    create product
+"""
+
+
+class TestModeBHandlesDelete(unittest.TestCase):
+
+    def test_a_delete_removes_the_entity_from_the_seed_so_the_next_read_fails(self):
+        d = checkout_doc(DELETE_THEN_FIND)
+        payload = sample_payload([n for n in d["nodes"] if n["kind"] == "Entity"])
+        rows = default_rows(d, "wf.checkout", payload)
+        a = differential.observe_mode_a(d, "wf.checkout", payload, rows)
+        attrs, ops = backend._lnpl_ops(d, "wf.checkout", payload=payload)
+        self.assertEqual(a["status"], "failed")
+        self.assertEqual(attrs["lnpl.terminal_status"], "failed")
+        self.assertEqual(op_names(ops), a["order"])
+        self.assertEqual({op["name"]: [e["kind"] for e in op["effects"]]
+                          for op in ops}, a["effects"])
+
+    def test_a_delete_lets_a_later_create_insert_instead_of_conflicting(self):
+        # No per-step effects comparison here, unlike the sibling test
+        # above and `test_the_derived_outcome_matches_mode_a_on_a_read_
+        # miss`: this workflow's two `create product` steps share the
+        # same NAME, and `observe_mode_a` accumulates mode A's effects
+        # dict per step NAME (its own docstring, RFC-0018) while a
+        # `{op["name"]: ... for op in ops}` comprehension over mode B's
+        # `ops` instead keeps only the LAST same-named entry — verified
+        # by running it: that comparison reads 1 effect where mode A
+        # reports 2, a false mismatch this test must not make. Order and
+        # terminal status are this boundary's actual claim anyway.
+        d = checkout_doc(CREATE_DELETE_CREATE)
+        payload = sample_payload([n for n in d["nodes"] if n["kind"] == "Entity"])
+        a = differential.observe_mode_a(d, "wf.checkout", payload, {})
+        attrs, ops = backend._lnpl_ops(d, "wf.checkout", payload=payload)
+        self.assertEqual(a["status"], "completed")
+        self.assertNotIn("lnpl.terminal_status", attrs)
+        self.assertEqual(op_names(ops), a["order"])
+
+
 # Issue #48: a refinement facet (`PositiveInteger`, min 1) on the SECOND entity,
 # behind a `validate order` step. Mode B derives the validation outcome at build
 # time from the payload it is specialised against, exactly as it derives

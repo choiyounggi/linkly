@@ -1,0 +1,35 @@
+session start 2026-10-07T11:31:16Z
+ProductName:		macOS
+ProductVersion:		26.1
+BuildVersion:		25B78
+hw.ncpu: 12
+hw.memsize: 25769803776
+kern.ipc.somaxconn: 128
+kern.num_taskthreads: 6144
+net.inet.ip.portrange.first: 32768
+net.inet.ip.portrange.last: 65535
+docker server 27.4.0
+postgres  PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+Python 3.13.1
+gunicorn (version 26.2.0)
+Name: psycopg
+Version: 3.3.6
+Name: lnpl-postgres
+Version: 0.1.0
+lnpl commit 5e81fd01b04ef4278b68f2b753648f5b147e799c
+lnpl-postgres commit 14b113e
+gunicorn defaults kept: --timeout 30 --backlog 2048 (kernel cap kern.ipc.somaxconn above)
+ladder=50 100 200 400 point_seconds=55 refine_seconds=90 warmup=5 repetitions=1
+uptime 20:31  up 14 days, 37 mins, 15 users, load averages: 3.15 3.23 3.04
+seed save=200 get=200
+control start backend=fake workers=4 class=gthread threads=4 rate=400 seconds=55 warmup=5 started=2026-10-07T11:31:17Z
+total=22000 post_warmup=20000 ok=13771 error_or_non2xx=6229
+p50=339.34ms p95=7778.13ms p99=7781.09ms
+error_rate=31.14%
+bucket=0-10s mean=1.33ms max=44.26ms n=4000
+bucket=10-20s mean=1.18ms max=18.47ms n=3963
+bucket=20-30s mean=2137.91ms max=5911.39ms n=185
+bucket=30-40s mean=1492.06ms max=5898.94ms n=2586
+bucket=40-50s mean=2622.08ms max=5917.36ms n=3037
+verdict=UNSTABLE worst_bucket_ratio=1968.276x
+SESSION INVALID: control start not STABLE

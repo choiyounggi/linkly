@@ -320,8 +320,11 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 실행한다(D9/D11 기존 규약과 동일).
 
 **레퍼런스 릴레이 — `lnpl relay`.** `lnpl outbox drain`(발행)과 이 라우트
-(소비)를 잇는 최소 구현. 브로커 의존 없이 두 인스턴스 사이에서 계약을
-실측한다. 자세한 ack 규율은 `lnpl relay --help`와 이슈 #118 D8 참조.
+(소비)를 잇는 최소 구현. `--target http(s)://...`는 브로커 의존 없이 두
+인스턴스 사이에서 계약을 실측한다(바이트 동일). `--target`이 다른
+스킴이면 등록된 `lnpl.publishers` 드라이버로 발행한다(issue #191,
+RFC-0061, `docs/backends.md` §15) — 이 절(소비 쪽 계약)은 바뀌지
+않는다. 자세한 ack 규율은 `lnpl relay --help`와 이슈 #118 D8 참조.
 
 ## 계약 한계 (이 서버가 아닌 것)
 
@@ -415,7 +418,7 @@ liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
 
 ### `/-/readyz` — readiness
 
-닫힌 목록 넷만 본다(임의로 늘리지 않는다):
+닫힌 목록 다섯만 본다(임의로 늘리지 않는다):
 
 1. 라우팅↔OpenAPI 대조 통과 여부 — `build_routes`가 기동 시 이미 판정했다
    (실패했다면 `ServeError`로 애초에 뜨지 못했으므로, 이 앱이 존재한다는
@@ -425,11 +428,23 @@ liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
 3. `--jwt-secret-env`가 지정돼 있으면 그 환경변수가 **지금도** 설정돼
    있는지 — 기동 시 검증(`cli.cmd_serve`)과 별개로, 매 프로브마다 다시
    읽는다(프로세스가 떠 있는 동안 그 변수가 사라지는 드문 드리프트도
-   다음 프로브가 잡는다).
+   다음 프로브가 잡는다). `build_app()`(gunicorn) 경로에서도 똑같이
+   돈다 — `LNPL_JWT_SECRET_ENV`(또는 `jwt_secret_env` 인자)로 이름을 주면
+   검사하고, 주지 않으면 검사할 것이 없어 통과한다(이슈 #187).
 4. `--network http`를 썼으면 논리명 endpoint 매핑이 전부 해소돼 있는지 —
    (1)과 같은 이유로, 기동 시 이미 판정된 사실을 노출한다.
+5. `secret-provider` — JWT 시크릿이 `lnpl.secrets` 프로바이더 원천일 때만
+   돈다(이슈 #192). 프로브가 프로바이더에서 현재 키 + 이전 키를 다시
+   읽는다 — 검증이 기대는 바로 그 읽기다. 단 마지막 읽기(성공이든 실패든)가
+   5초(`READYZ_REFRESH_FLOOR_S`)보다 최근이면 프로바이더를 부르지 않고 그
+   읽기의 결과를 그대로 보고한다 — readyz는 인증이 없고 `--rate-limit`에서도
+   빠지므로, 프로브를 반복해 보내도 워커당 5초에 한 번만 읽게 하는 바닥이다
+   (kubelet 기본 프로브 주기 10초의 절반이라 실제 프로브는 매번 읽는다).
+   실패하면 503에 `secret-provider`를 싣고 마지막으로 정상이던 키를 그대로
+   쓰며, 바닥이 지난 뒤 다음 프로브가 읽기에 성공하면 새 키를 설치하고
+   200으로 돌아온다. 본문에는 검사 이름만 실린다.
 
-SIGTERM은 이 넷보다 **먼저** 본다 — 받는 즉시 나머지 검사 없이 503이다.
+SIGTERM은 이 다섯보다 **먼저** 본다 — 받는 즉시 나머지 검사 없이 503이다.
 전부 통과하면 200 `{"status": "ok"}`; 하나라도 깨졌으면 503 +
 `application/problem+json`(`code: "not-ready"`)에 **깨진 검사 이름**을
 `checks`로 싣는다. 401/403(위 M3/M3a/M3b)과 반대 판단이다 — readyz는
@@ -478,25 +493,31 @@ kind}`, RFC-0003)가 소스에서부터 이 계약을 막아 왔고, 이 issue�
 `threading.Lock`으로 보호한다(D10) — dev 서버는 스레드-퍼-요청이라 락 없는
 `+=`는 동시 요청 아래서 갱신을 잃는다.
 
-**`lnpl serve`/`serve.serve()` 전용.** `--metrics`와 readyz 검사 ③(살아있는
-`--jwt-secret-env` 재확인)은 지금은 `lnpl serve` 경로에만 있다 —
-`build_app()`(운영 배치, gunicorn)의 환경 변수 표(아래 "운영 배치" 절)에는
-아직 대응 항목이 없다. `--trust-incoming-trace`(이슈 #107)가 이미 세운
-같은 전례다: `serve()`에 새 플래그가 늘 때마다 자동으로 `build_app()`의
-env-var 표면까지 넓히지 않는다. `/-/healthz`/`/-/readyz` 자체는 `build_app()`
-경로에서도 그대로 뜬다 — 둘 다 `make_wsgi_app()` 안에서 무조건 합류하는
-`build_ops_routes`가 만들기 때문이다(위).
+**`build_app()` 경로에서도 켤 수 있다(이슈 #187).** `--metrics`,
+`--trust-incoming-trace`, readyz 검사 ③(살아있는 `--jwt-secret-env`
+재확인)은 `lnpl serve` 경로에만 있었다 — 이제 `build_app()`(운영 배치,
+gunicorn)도 같은 것을 받는다: `LNPL_METRICS`, `LNPL_TRUST_INCOMING_TRACE`,
+그리고 `LNPL_JWT_SECRET_ENV`가 주어졌을 때의 검사 ③(아래 "운영 배치" 절의
+환경 변수 표). `serve`의 옵션마다 `build_app()` 대응 변수가 있거나, 없는
+이유가 적혀 있는지는 `impl/tests/test_build_app_serve_parity.py`가 지킨다 —
+새 `serve` 플래그를 대응 없이 더하면 그 테스트가 실패한다. `/-/healthz`/
+`/-/readyz` 자체는 `build_app()` 경로에서도 그대로 뜬다 — 둘 다
+`make_wsgi_app()` 안에서 무조건 합류하는 `build_ops_routes`가 만들기
+때문이다(위).
 
 ## Rate limit — `--rate-limit` (이슈 #148)
 
 `--rate-limit N` (기본: 미지정 = 무제한, 이슈 #148 이전 동작) — 프로세스
 전역 토큰 버킷 하나, `rate == capacity == N`(초당 N개, 버스트도 N개까지).
-분산/per-IP 한도가 아니다 — 프록시 뒤에서 클라이언트 주소는
-`X-Forwarded-For` 신뢰 문제 없이는 식별할 수 없고, 그건 이 이슈가 아니라
-#143(레디스 캐시) 후속의 범위다. 여러 lnpl serve 프로세스를 앞단
-로드밸런서 뒤에 둔다면, 진짜 전역 한도는 그 게이트웨이(nginx
-`limit_req`, 클라우드 API 게이트웨이 등)에서 걸어야 한다 — 이 프로세스
-내부 버킷은 그 앞단이 없는 단일 인스턴스 배치를 위한 최소 방어선이다.
+인스턴스(또는 gunicorn 워커)가 K개면 실제 허용량은 N × K로 느슨해지고,
+클라이언트별 한도는 전혀 없다 — linkly는 **단일 인스턴스 방어선만
+제공한다**는 것이 이 프로젝트의 공식 입장이다(이슈 #194). 전역 한도와
+클라이언트별 한도는 둘 다 게이트웨이의 일이다 — nginx `limit_req`(공식
+문서: https://nginx.org/en/docs/http/ngx_http_limit_req_module.html,
+참조 설정은 `examples/deploy/nginx.conf`), 클라우드 API 게이트웨이 등.
+공유 저장소 기반의 분산 한도(#143 레디스 캐시 드라이버를 카운터로 쓰는
+방식)는 검토했지만 채택하지 않았다 — 이 프로세스 내부 버킷은 앞단
+게이트웨이가 없는 단일 인스턴스 배치를 위한 최소 방어선일 뿐이다.
 
 **`/-/` 경로는 전부 면제된다** — k8s 프로브가 429를 맞으면 안 되므로
 (위 "운영 표면" 절과 같은 이유).
@@ -663,7 +684,8 @@ grpc·http 수신을 각각 검증한다(span↔OTel semconv 매핑 정본은 �
 
 `lnpl serve`는 CLI 플래그·개별 환경변수(`LNPL_ENDPOINT_<NAME>`)뿐이던 설정
 통로에 파일 하나를 더한다 — 시크릿 **값**은 절대 담기지 않는다(이슈 #101
-규율 그대로): `[*.secrets]`는 그 값을 담은 환경변수의 **이름**만 받는다.
+규율 그대로): `[*.secrets]`는 그 값을 담은 환경변수의 **이름**, 또는 그 값을
+담은 파일의 절대경로(`{ file = "..." }`, 이슈 #192)만 받는다.
 
 ```toml
 # lnpl.toml — 기본 위치는 cwd, --config로 재지정
@@ -677,6 +699,8 @@ payments = "https://api.example.com/pay"
 
 [default.secrets]
 jwt = "LNPL_JWT_SECRET"          # 값이 아니라 환경변수 이름
+# jwt = { file = "/run/secrets/jwt" }   # 또는 파일 원천(이슈 #192)
+# jwt = { provider = "vault", key = "kv/app/jwt" }   # 또는 등록된 프로바이더(이슈 #192)
 
 [staging]                        # [default] 위에 얕게(1단) 오버레이
 backend = "sqlite:./staging.db"
@@ -690,13 +714,28 @@ payments = "https://staging.example.com/pay"   # payments만 덮는다
 전체가 아니라 `endpoints`/`secrets`의 개별 키만 덮이므로, 프로파일이 건드리지
 않은 키는 `[default]`에서 그대로 내려온다. include·상속·조건부는 없다.
 
+`build_app()`(gunicorn) 경로도 이 파일을 쓸 수 있다(이슈 #187):
+`LNPL_CONFIG`/`LNPL_PROFILE` 환경 변수(또는 `config`/`profile` 인자)를 주면
+`backend`/`jwt_secret_env`/`endpoints`가 `lnpl serve`와 **같은 방식**으로
+얹힌다. 다른 점은 셋이다. 첫째, 이 경로에는 CLI 플래그가 없으므로 아래 표의
+1순위는 `build_app()`의 명시 인자와 `LNPL_BACKEND`/`LNPL_JWT_SECRET_ENV` 같은
+환경 변수가 대신한다. 둘째, `lnpl serve`는 `--config`가 없으면 cwd의
+`./lnpl.toml`을 읽지만 `build_app()`은 cwd의 `lnpl.toml`을 **절대 저절로 읽지
+않는다** — `LNPL_CONFIG`/`config`를 명시했을 때만 읽는다. 셋째, 파일의
+`log_format`/`trace_exporter`는 이 경로에서 적용되지 않는다 — 그 값은
+`LNPL_LOG_FORMAT`/`LNPL_TRACE_EXPORTER`(또는 `log_format`/`trace_exporter`
+인자)로 준다. 파일이 둘 중 하나라도 정하면 `build_app()`은 기동 시 stderr에
+한 줄(`lnpl build_app: LNPL_CONFIG sets ...`)로 적용하지 않은 키 이름과 대신
+쓸 환경 변수를 알린다 — 값은 싣지 않는다. `LNPL_PROFILE`만 주고
+`LNPL_CONFIG`가 없으면 아무 효과가 없다.
+
 ### 우선순위 (정본)
 
 값 하나를 결정할 때, 위에서부터 먼저 있는 것이 이긴다:
 
 | 순위 | 소스 | 비고 |
 |------|------|------|
-| 1 | CLI 플래그 (`--backend`/`--jwt-secret-env`/`--log-format`/`--trace-exporter`/`--endpoint`) | |
+| 1 | CLI 플래그 (`--backend`/`--jwt-secret-env`/`--jwt-secret-file`/`--log-format`/`--trace-exporter`/`--endpoint`) | |
 | 2 | 환경변수 (`LNPL_ENDPOINT_<NAME>`) | 오늘은 endpoint 매핑에만 있다(이슈 #101 계약) |
 | 3 | `lnpl.toml` `[<profile>]` | `--profile`/`LNPL_PROFILE`로 선택 |
 | 4 | `lnpl.toml` `[default]` | |
@@ -705,6 +744,12 @@ payments = "https://staging.example.com/pay"   # payments만 덮는다
 `lnpl.toml`이 없으면(기본 경로 `./lnpl.toml`이 없을 때) 5개 값 전부가 이 파일이
 생기기 전과 바이트 단위로 동일하게 해석된다 — 도입 자체는 회귀가 아니다. 반면
 `--config`로 명시한 경로가 없으면 그건 조작자 실수로 취급해 rc 2다.
+
+`--jwt-secret-env`와 `--jwt-secret-file`(build_app: `LNPL_JWT_SECRET_ENV`/
+`LNPL_JWT_SECRET_FILE`, 인자 포함)을 함께 주면 rc 2/`WsgiConfigError`로
+거부한다. 하나만 주면 lnpl.toml의 `[*.secrets].jwt`(형태 무관)를 이긴다.
+`LNPL_JWT_SECRET_ENV=""`(빈 문자열)도 "줬다"로 친다 — 파일 쪽으로 바꿀 때는
+그 변수를 비우는 게 아니라 통째로 지워야 한다.
 
 ### `${VAR}` 치환
 
@@ -727,7 +772,106 @@ lnpl config check <src>.lnpl... [--profile staging] [--config lnpl.toml]
 선언했다면 `[*.secrets].jwt` 매핑이 있는가. 전부 통과하면 rc 0, 아니면 발견한
 문제 **전부**를 stderr에 나열하고 rc 2 — `--endpoint`/`--jwt-secret-env`는
 받지 않는다(즉석 오버라이드가 아니라 이미 서 있는 lnpl.toml+환경변수 표면만
-진단한다).
+진단한다). `{ file = "..." }` 항목은 (b)에서 파일이 있는지, 일반 파일이고
+읽히는지, 비지 않았는지, 65536바이트 이하인지를 보고, `jwt` 키는 32바이트 이상인지까지 본다
+(이슈 #192) — 메시지는 `lnpl.toml secrets.<key>.file`이라는 역할 이름만 싣고
+경로·내용은 싣지 않는다. `{ provider = "...", key = "..." }` 항목은 기동과
+같은 방식으로 프로바이더를 열고 현재 키 + 이전 키를 읽은 뒤 닫는다 —
+미등록·로드 실패·읽기 실패·`bytes`가 아닌 값을 보고하고, `jwt` 키는 두 값이
+32바이트 이상인지까지 본다. 메시지는 기동 때와 같은 문구이고 값은 싣지 않는다.
+
+### 시크릿 원천 — 환경변수·파일·프로바이더 (이슈 #192)
+
+JWT 서명 시크릿은 세 원천에서 온다. 어느 쪽이든 설정에 적히는 것은
+**포인터**이고 값이 아니다.
+
+| 원천 | `lnpl serve` | `build_app()` | `lnpl.toml` |
+|------|--------------|---------------|-------------|
+| 환경변수 | `--jwt-secret-env NAME` | `jwt_secret_env` / `LNPL_JWT_SECRET_ENV` | `jwt = "NAME"` |
+| 파일 | `--jwt-secret-file PATH` | `jwt_secret_file` / `LNPL_JWT_SECRET_FILE` | `jwt = { file = "<절대경로>" }` |
+| 프로바이더 | (없음 — 설정 파일 전용) | (없음 — 설정 파일 전용) | `jwt = { provider = "<이름>", key = "<키>" }` |
+
+파일 원천은 Kubernetes/Docker가 마운트한 시크릿 파일을 그대로 읽는다:
+
+- 경로는 `~`를 펼친 뒤 **절대경로**여야 한다. 상대경로는 거부한다 —
+  cwd는 호스트(gunicorn, 컨테이너)가 정하므로 같은 설정이 다른 파일을
+  가리킬 수 있다. `--jwt-secret-file ""`도 절대경로가 아니므로 거부한다
+  (`build_app()`에서는 `""`가 미설정과 같다).
+- 끝의 개행 **하나**만 벗긴다: `\r\n` 하나, 아니면 `\n` 하나. 그 밖의
+  바이트(공백, 홀로 남은 `\r`, 두 번째 `\n`)는 키의 일부다.
+  `kubectl create secret --from-file`이나 `echo ... > file`이 붙이는 끝
+  개행 때문에 검증이 조용히 실패하는 일을 막는다.
+- **일반 파일**만 연다. 심볼릭 링크는 따라가므로 일반 파일을 가리키는
+  링크(Kubernetes가 마운트하는 형태)는 그대로 읽힌다. 디렉터리·FIFO·소켓·
+  장치(`/dev/zero`, `/dev/null` 포함)는 열기 전에 거부한다 — 쓰는 쪽이 없는
+  FIFO를 `open()`하면 기동이 영원히 멈추기 때문이다.
+- 개행을 벗긴 뒤 0바이트면 오류다. 65536바이트를 넘으면 거기서 읽기를
+  멈추고 거부한다. HMAC 시크릿은 기존 규칙대로 32바이트 이상이어야 한다.
+- 파일은 **기동 시 한 번** 읽는다. 키를 바꾸려면 프로세스를 다시 띄운다.
+  그래서 readyz 검사 ③(환경변수 생존 확인)은 파일 원천에 적용되지 않는다.
+- `--token-provider`가 `hmac`이 아니면 파일을 읽지 않는다(환경변수
+  원천과 같은 규칙 — 외부 프로바이더의 키는 그 프로바이더가 관리한다).
+
+오류 메시지는 **역할 이름**만 싣는다 — `--jwt-secret-file`,
+`LNPL_JWT_SECRET_FILE`, `lnpl.toml secrets.jwt.file` 중 하나. 경로도 파일
+내용도 싣지 않는다(경로 자리에 시크릿을 잘못 붙여 넣은 경우에도 출력에
+남지 않도록). 서버 경로는 `error: ...` 한 줄과 rc 2, `build_app()`은
+`WsgiConfigError`다:
+
+| 상황 | 메시지 (`<role>` = 역할 이름) |
+|------|------------------------------|
+| 상대경로 | `<role> must be an absolute path` |
+| 파일 없음 | `<role> names a file that does not exist` |
+| 일반 파일이 아님(디렉터리·FIFO·소켓·장치)·권한 없음·경로에 NUL 문자 등 | `<role> names a file that cannot be read` |
+| 65536바이트 초과 | `<role> names a file larger than 65536 bytes` |
+| 개행을 벗긴 뒤 비었음 | `<role> names an empty file` |
+| 32바이트 미만 | `the JWT signing secret must be at least 32 bytes, got <n> (from <role>)` |
+| 환경변수 이름과 파일을 함께 줌 | `--jwt-secret-env and --jwt-secret-file both name the JWT signing secret — give exactly one` (build_app: `LNPL_JWT_SECRET_ENV and LNPL_JWT_SECRET_FILE ...`) |
+
+`lnpl.toml`의 `[*.secrets]` 값이 환경변수 이름 모양이 아니면 로드 시점에
+거부하고, 이때 받은 값은 메시지에 싣지 않는다 — 그 자리에 들어온 값이
+시크릿 자체일 수 있기 때문이다. 표 형태가 `{ file = "..." }`도
+`{ provider = "...", key = "..." }`도 아니면(다른 키, 빈 표, 섞인 키) 받은 키
+이름과 허용 형태만 알린다.
+
+#### 프로바이더 원천과 키 교체
+
+`jwt = { provider = "<이름>", key = "<키>" }`는 `lnpl.secrets`로 등록된
+외부 프로바이더(Vault, 클라우드 시크릿 매니저 등 — 등록과 계약은
+`docs/backends.md` §16)에서 키를 읽는다. CLI 플래그나 환경변수는 없다 —
+설정 파일 전용이다. 우선순위는 위 표 그대로다: `--jwt-secret-env`/
+`--jwt-secret-file`(또는 그 `build_app()` 짝)을 주면 그쪽이 이기고
+프로바이더는 열리지도 않는다. `--token-provider`가 `hmac`이 아니어도
+프로바이더를 열지 않는다.
+
+- **교체(무중단 회전).** 검증은 프로바이더의 **현재 키와 이전 키** 둘 다
+  받아들이고, 서명(`issue`)은 현재 키로만 한다. 이전 키는 하나만 둔다.
+- **재조회 규칙.** 기동 시 한 번 읽고, 이후 60초(`SECRET_REFRESH_S`)가 지난
+  뒤 처음 오는 검증·발급 요청이 다시 읽는다(한 번에 한 스레드만 읽고, 나머지는
+  기존 키로 계속 처리한다). 그와 별개로 `/-/readyz` 프로브도 다시 읽는다
+  (검사 ⑤, 마지막 읽기가 5초보다 최근이면 그 결과를 재사용). 재조회가 실패하면 마지막으로 정상이던 키를 계속 쓰고, readyz가
+  `secret-provider`로 503을 낸다. 타이머 스레드는 없다 — 트래픽이 재조회를
+  일으키므로 워커들이 동시에 만료되지 않는다.
+- **운영 절차.** 프로바이더에서 키를 바꾼다(새 값이 현재, 직전 값이 이전).
+  그다음 **최소 60초**를 기다린 뒤에 발급자가 새 키로 서명하게 한다 — 그 전에는
+  아직 새 키를 읽지 않은 워커가 새 토큰을 거부할 수 있다.
+- **종료.** `lnpl serve`는 종료 시 프로바이더를 `close()`한다. `build_app()`
+  경로에는 종료 훅이 없으므로 프로바이더가 프로세스와 수명을 같이한다.
+
+프로바이더 실패는 기동을 막는다(서버 경로 `error: ...` 한 줄 + rc 2,
+`build_app()`은 원인 체인 없는 `WsgiConfigError`). 드라이버 예외의 문구는
+절대 옮겨 싣지 않는다 — 드라이버 메시지에 URL이나 값이 들어 있을 수 있다:
+
+| 상황 | 메시지 |
+|------|--------|
+| 미등록 이름 | `lnpl.toml secrets.jwt: unknown secret provider '<이름>' (built-in: env, file; registered entry-points: ...)` |
+| 내장 이름(`env`, `file`)을 가리는 등록 | `lnpl.toml secrets.jwt: entry-point '<이름>' (registered via '...') attempts to shadow the built-in secret source '<이름>'; ...` |
+| 내장 이름(`env`, `file`)을 프로바이더로 지정 | `lnpl.toml secrets.jwt: secret provider '<이름>' is a built-in source, not a registered provider — ...` |
+| entry-point 로드 실패 | `lnpl.toml secrets.jwt: secret provider '<이름>' registered via entry-point '...' failed to load (<예외 타입>)` |
+| 팩토리 실패 | `lnpl.toml secrets.jwt: secret provider '<이름>' failed to start (<예외 타입>)` |
+| 읽기 실패 | `the secret provider failed to return the secret (from lnpl.toml secrets.jwt provider '<이름>')` |
+| `bytes`가 아닌 값 | `the secret provider returned a value that is not bytes (from lnpl.toml secrets.jwt provider '<이름>')` |
+| 32바이트 미만 | `the JWT signing secret must be at least 32 bytes, got <n> (from lnpl.toml secrets.jwt provider '<이름>')` (이전 키는 `the previous JWT signing secret ...`) |
 
 ## 운영 배치 — WSGI 호스트(gunicorn) (이슈 #80)
 
@@ -757,13 +901,124 @@ env-var 대응:
 | `LNPL_SOURCE` | `lnpl serve <src>` | (필수) — 파일들(`os.pathsep` 구분) 또는 디렉터리 1개, t77 `load_sources` 그대로 소비 |
 | `LNPL_BACKEND` | `--backend` | `fake` |
 | `LNPL_JWT_SECRET_ENV` | `--jwt-secret-env` | (미설정 — presence-checked, not verified) |
-| `LNPL_CLOCK` | `--clock` | `virtual` |
+| `LNPL_JWT_SECRET_FILE` | `--jwt-secret-file` | (미설정) — 시크릿 파일의 절대경로(이슈 #192). `LNPL_JWT_SECRET_ENV`와 함께 주면 거부 |
+| `LNPL_CLOCK` | (없음 — `serve`에는 `--clock` 플래그가 없다. `serve`의 내장 dev 서버는 항상 virtual clock으로 돌고, `LNPL_CLOCK`은 gunicorn 워커 전용 편의다) | `virtual` |
 | `LNPL_ENDPOINT_<NAME>` | `--endpoint NAME=URL` | (이슈 #101 계약 그대로 재사용 — `build_app()`이 새로 발명하지 않는다) |
 | `LNPL_LOG_FORMAT` | `--log-format` | `text` (이슈 #78) |
 | `LNPL_TRACE_EXPORTER` | `--trace-exporter` | (미설정 — 아무것도 내보내지 않음, 이슈 #78) |
+| `LNPL_IDEMPOTENCY_TTL_S` | `--idempotency-ttl` | `86400` (24시간, 정수 초 — 이슈 #113) |
+| `LNPL_METRICS` | `--metrics` | (미설정 = 꺼짐) — 불리언: `1`/`true`/`yes`/`on` 또는 `0`/`false`/`no`/`off`, 대소문자 무시 |
+| `LNPL_CAPTURE_ON_FAILURE` | `--capture-on-failure` | (미설정 = 꺼짐) — 같은 불리언 표기 |
+| `LNPL_TRUST_INCOMING_TRACE` | `--trust-incoming-trace` | (미설정 = 꺼짐) — 같은 불리언 표기 |
+| `LNPL_RATE_LIMIT` | `--rate-limit` | (미설정 = 무제한) — 0보다 큰 유한한 수 |
+| `LNPL_CONFIG` | `--config` | (미설정 — `lnpl.toml`을 읽지 않는다. cwd의 `./lnpl.toml`도 자동으로 읽지 않는다) — `lnpl.toml` 파일 경로 |
+| `LNPL_PROFILE` | `--profile` | `default` — 읽은 `lnpl.toml` 안의 프로파일 이름. `LNPL_CONFIG`가 없으면 효과가 없다 |
+| `LNPL_CACHE` | `--cache` | (미설정 = 내장 `fake` 캐시) — `<scheme>[:<arg>]`, `lnpl.caches` entry-point |
+| `LNPL_NETWORK` | `--network` | (미설정 = 기존 해석 그대로: 논리명 target마다 endpoint 매핑을 검사) — `fake`, `http`, 또는 `lnpl.networks` entry-point `<scheme>[:<arg>]` |
+| `LNPL_TOKEN_PROVIDER` | `--token-provider` | `hmac` — 또는 `lnpl.tokens` entry-point 이름. 시크릿은 `hmac`일 때만 읽는다 |
+| `LNPL_JWT_ISSUER` | `--jwt-issuer` | `lnpl` — 기대하는 `iss` 클레임, 임의의 비지 않은 문자열 |
 
-해석 실패(존재하지 않는 소스, 알 수 없는 backend/clock 선택자, 미설정
-JWT secret, 매핑되지 않은 network target)는 `lnpl.wsgi.WsgiConfigError`를
+표의 마지막 열 변수(`LNPL_METRICS`부터 `LNPL_JWT_ISSUER`까지)는 빈 문자열을
+미설정으로 본다 — 그 위의 변수들은 이전 동작 그대로다. 닫힌 목록
+밖의 불리언 표기, 숫자가 아니거나 0 이하·`nan`·`inf`인 `LNPL_RATE_LIMIT`은
+그 변수 이름을 담은 `WsgiConfigError`로 기동이 실패한다. 이슈 #187로 더한
+여섯 변수의 잘못된 값도 기동 실패이고, 메시지는 변수 이름만 담고 **값은
+담지 않는다**(DSN 비밀번호·경로가 로그에 남지 않게): 알 수 없는 선택자는
+`LNPL_CACHE is not a recognized selector`/`LNPL_NETWORK is not a recognized
+selector`, 알 수 없는 토큰 제공자는 `LNPL_TOKEN_PROVIDER is not a recognized
+token provider`, 없거나 읽을 수 없거나 문법이 틀린 파일은 `LNPL_CONFIG is not a
+valid configuration file`, 파일에 없는 프로파일은 `LNPL_PROFILE is not a
+recognized profile`. `LNPL_JWT_ISSUER`만은 잘못된 값이라는 것이 없다 —
+issuer는 자유 문자열이라 그대로 받는다. `LNPL_PROFILE`은 `LNPL_CONFIG`도
+설정돼 있지 않으면 효과가 없다. 빈 `LNPL_JWT_ISSUER`는 미설정으로 보고 기본
+issuer(`lnpl`)가 적용된다 — CLI의 `--jwt-issuer ""`는 운영자 오류로 거부되는
+것과 다르다. `LNPL_JWT_SECRET_ENV`가 가리키는 시크릿이 없거나 짧을 때의 두
+메시지는 이전 그대로다(시크릿 값이 아니라 변수 이름과 바이트 수만 담는다).
+`build_app()`을 인자로 직접 부를 때는 명시 인자(`None`이 아닌 값)가 환경
+변수를 이긴다 — `metrics=False`는 `LNPL_METRICS=1`을 끈다(이슈 #187).
+
+gunicorn이 여러 워커 프로세스를 띄우면(`--workers K`, 기본 1) 각 워커가
+독립된 OS 프로세스이므로 `LNPL_RATE_LIMIT`의 토큰 버킷도 워커마다 따로
+생긴다 — 위 "Rate limit" 절의 N × 인스턴스 수와 같은 산술이 한 호스트
+안에서도 적용된다: `--workers K`에 `LNPL_RATE_LIMIT=N`이면 그 호스트
+하나가 합산 최대 N × K개/초를 통과시킬 수 있다. 전역 한도는 여기서도
+게이트웨이의 일이다(위 "Rate limit" 절).
+
+레이트 리밋 버킷만이 아니다. 요청 사이에 살아남는 프로세스 로컬 상태는 전부
+워커마다 하나씩이다: 메트릭 레지스트리(`wsgi.MetricsRegistry`)와 토큰 버킷
+(`wsgi.TokenBucket`). 그래서 `--workers K`이면 `/-/metrics`는 그 스크레이프를
+받은 워커 하나의 누적값만 돌려준다 — 호스트 전체 합계가 아니다. 실측(이슈
+#195, `benchmarks/load/i195/linux/per-worker-state.log`): 워커 2개에 시드 뒤 get-bookmark
+요청 100건을 보낸 뒤 열 번 스크레이프하면 `GetBookmark` 실행 수가 53 또는 48로
+나왔고(합 101 = 100건 + 시드의 get 1건), `LNPL_RATE_LIMIT=20`에 워커 2개로 100 rps를 10초 보내면 200이 434건,
+429가 566건이었다(워커 하나라면 20 × 10초 + 버스트 20 = 약 220건). 호스트 단위 메트릭이
+필요하면 워커별 값을 수집 쪽에서 합산하거나 워커를 1개로 둔다.
+
+해석 순서는 소스 컴파일 → `LNPL_CONFIG`/`LNPL_PROFILE`(파일 로드) →
+`LNPL_BACKEND` → `LNPL_JWT_SECRET_ENV`/`LNPL_JWT_SECRET_FILE` → `LNPL_TOKEN_PROVIDER`/
+`LNPL_JWT_ISSUER` → `LNPL_CLOCK` → `LNPL_CACHE` → `LNPL_NETWORK` → 나머지다.
+`LNPL_CACHE`로 연 캐시는 그 뒤 단계가 실패하면 닫고 나서 기동이 실패한다.
+
+### 워커 수와 워커 클래스 (이슈 #195)
+
+아래 숫자는 `docs/gunicorn-load-measurement.md`(Docker Linux 컨테이너 한 대,
+점마다 1회 측정)에서 온 것이므로 배치 호스트의 값이 아니라 모양으로만
+읽는다. 조합마다 사다리 50·100·200·400 rps를 올려 처음 STABLE이 아닌 점
+앞까지를 상한으로 적었다.
+
+| 백엔드 | 워커 수 | 클래스 | 상한(rps) | p99 |
+|--------|---------|--------|-----------|-----|
+| postgres | 1 | sync | 100 | 6.74ms |
+| postgres | 1 | gthread | 50 | 7.54ms |
+| postgres | 2 | sync | 400 (사다리 끝) | 1566.89ms |
+| postgres | 2 | gthread | 400 (사다리 끝) | 10.98ms |
+| postgres | 4 | sync | 100 | 22.28ms |
+| postgres | 4 | gthread | 400 (사다리 끝) | 60.12ms |
+
+상한이 목표 처리량 이상인 조합 중 워커 수가 가장 작은 것을 고르고, 배치
+호스트에서 `scripts/load_probe.py`로 다시 잰다. 이 표가 뒷받침하는 100 rps용
+조합은 postgres 워커 1개 sync(상한 100, p99 6.74ms)다. 100 rps를 넘는 목표에는
+워커 2개 gthread(상한 400, p99 10.98ms)가 가장 작은 깨끗한 행이다. 워커 2개
+sync도 400까지 갔지만 첫 구간부터 느려서(p95 1493.78ms) STABLE 규칙이 그것을
+못 잡았다. 상한이 워커 수에 따라 단조롭게 오르지 않는다(워커 4개 sync는 100,
+워커 2개 sync는 400) — 점마다 1회 측정이라 워커 수의 효과와 실행마다의 잡음을
+이 표만으로는 가를 수 없다. 표의 p99 가운데 워커 4개 gthread(60.12ms)와 워커 4개
+sync(22.28ms)는 첫 10초 구간이 이후보다 높았던 점(17.10ms와 9.13ms 대 6.57ms
+이하와 4.80ms 이하)에서 오므로 정상 상태 값이 아니라 기동 직후의 튐으로 읽는다.
+
+postgres에 동시에 열리는 연결 수의 상한은 sync가 K, gthread가 K × 스레드 수
+(`--threads 4`이면 4K)다. 요청마다 자기 연결을 열기 때문에
+(`docs/postgres-load-ceiling.md` Root cause) K × 스레드 수를 postgres 기본
+`max_connections` 100보다 한참 아래로 둔다. gunicorn 문서의 `(2 × 코어 수) + 1`
+(https://gunicorn.org/design/ — "workers = (2 × CPU cores) + 1")과 `--workers`
+설정 문서의 "generally in the 2-4 x $(NUM_CORES) range"
+(https://gunicorn.org/reference/settings/)는 출발점일 뿐이고 측정이 그것을
+대체한다. 워커 클래스별 차이도 design 문서에 있다. fake와
+sqlite 백엔드는 워커 1·2·4개, sync·gthread 모두 사다리 끝 400 rps까지
+STABLE이었고(p99 최대 43.96ms, sqlite 워커 1개 gthread) 병목이 되지 않았다.
+
+새 postgres DB에서 `--workers 2` 이상으로 처음 띄우면 `LNPL_BACKEND is not a
+recognized selector`로 기동이 실패할 수 있다. 모든 워커의 기동 점검이 같은
+순간 드라이버의 `CREATE TABLE IF NOT EXISTS`를 돌려 서로 부딪치기 때문이다
+(`duplicate key value violates unique constraint "pg_type_typname_nsp_index"`).
+테이블을 먼저 한 번 만든 뒤(워커 하나를 띄우거나
+`python -c "from lnpl.drivers import open_repository; open_repository('postgres:<dsn>').close()"`)
+K개 워커를 띄운다. lnpl-postgres 후속 과제이다(이슈 #195 측정에서 발견).
+
+### 기존 배치에 생기는 변화 — 정확히 둘 (이슈 #187)
+
+이슈 #187(`build_app()`이 `serve` 옵션을 모두 받게 한 작업)이 위 변수를
+하나도 설정하지 않은 기존 gunicorn 배치에서 바꾸는 동작은 이 둘뿐이다:
+
+1. readyz 검사 ③이 `build_app()` 경로에서도 돈다 — 위 "운영 표면" 절의 검사
+   목록 ③에 적혀 있다.
+2. 알 수 없는 `LNPL_BACKEND` 값의 기동 실패 메시지가 값을 담지 않는다:
+   `LNPL_BACKEND is not a recognized selector`(이전에는
+   `"LNPL_BACKEND %r: %s"`로 값과 내부 오류 문장을 그대로 실었다).
+
+해석 실패(존재하지 않는 소스, 알 수 없는 backend/clock/cache/network 선택자·
+토큰 제공자, 읽을 수 없는 설정 파일, 미설정 JWT secret, 매핑되지 않은 network
+target)는 `lnpl.wsgi.WsgiConfigError`를
 내며 **요청이 아니라 기동이 실패한다** — `cli.cmd_serve`가 이미 CLI 경로에서
 세운 것과 같은 원칙(첫 요청에서야 발견되는 게 아니라 뜨지 않는다).
 

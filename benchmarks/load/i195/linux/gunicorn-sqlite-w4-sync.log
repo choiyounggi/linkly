@@ -1,0 +1,41 @@
+seed save=409 get=200
+point backend=sqlite workers=4 class=sync threads=1 rate=50 seconds=55 warmup=5 started=2026-10-08T02:35:25Z
+total=2750 post_warmup=2500 ok=2500 error_or_non2xx=0
+p50=3.21ms p95=4.61ms p99=8.29ms
+error_rate=0.00%
+bucket=0-10s mean=3.31ms max=10.77ms n=500
+bucket=10-20s mean=3.32ms max=15.23ms n=500
+bucket=20-30s mean=3.38ms max=10.98ms n=500
+bucket=30-40s mean=3.24ms max=14.68ms n=500
+bucket=40-50s mean=3.22ms max=11.72ms n=500
+verdict=STABLE worst_bucket_ratio=1.021x
+point backend=sqlite workers=4 class=sync threads=1 rate=100 seconds=55 warmup=5 started=2026-10-08T02:36:22Z
+total=5500 post_warmup=5000 ok=5000 error_or_non2xx=0
+p50=2.26ms p95=3.69ms p99=6.18ms
+error_rate=0.00%
+bucket=0-10s mean=2.23ms max=15.19ms n=1000
+bucket=10-20s mean=2.46ms max=14.38ms n=1000
+bucket=20-30s mean=2.46ms max=17.37ms n=1000
+bucket=30-40s mean=2.55ms max=18.42ms n=1000
+bucket=40-50s mean=2.34ms max=25.58ms n=1000
+verdict=STABLE worst_bucket_ratio=1.142x
+point backend=sqlite workers=4 class=sync threads=1 rate=200 seconds=55 warmup=5 started=2026-10-08T02:37:19Z
+total=11000 post_warmup=10000 ok=10000 error_or_non2xx=0
+p50=1.70ms p95=3.04ms p99=4.44ms
+error_rate=0.00%
+bucket=0-10s mean=1.77ms max=15.79ms n=2000
+bucket=10-20s mean=1.85ms max=15.35ms n=2000
+bucket=20-30s mean=1.91ms max=19.23ms n=2000
+bucket=30-40s mean=1.90ms max=26.29ms n=2000
+bucket=40-50s mean=1.94ms max=22.94ms n=2000
+verdict=STABLE worst_bucket_ratio=1.097x
+point backend=sqlite workers=4 class=sync threads=1 rate=400 seconds=55 warmup=5 started=2026-10-08T02:38:16Z
+total=22000 post_warmup=20000 ok=20000 error_or_non2xx=0
+p50=1.09ms p95=2.10ms p99=3.44ms
+error_rate=0.00%
+bucket=0-10s mean=1.35ms max=18.14ms n=4000
+bucket=10-20s mean=1.17ms max=22.72ms n=4000
+bucket=20-30s mean=1.19ms max=6.36ms n=4000
+bucket=30-40s mean=1.19ms max=16.95ms n=4000
+bucket=40-50s mean=1.17ms max=5.31ms n=4000
+verdict=STABLE worst_bucket_ratio=1.000x

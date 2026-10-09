@@ -24,18 +24,29 @@ indifference to the flag (getting this backwards makes k8s restart a pod
 that is already draining).
 """
 
+import contextlib
+import io
 import json
 import os
 import signal
 import unittest
+from unittest import mock
 
-from lnpl.drivers import DriverError, HmacTokenProvider
+from lnpl.drivers import (READYZ_REFRESH_FLOOR_S, DriverError,
+                          HmacTokenProvider, RotatingHmacTokenProvider,
+                          audience_for_path)
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.serve import serve
-from lnpl.wsgi import ServeError, build_ops_routes, build_routes, make_wsgi_app
+from lnpl.wsgi import (ServeError, build_app, build_ops_routes, build_routes,
+                       make_wsgi_app)
 
+from tests.secret_spi_fixture import (DEMO_SECRET_K0, DEMO_SECRET_K1,
+                                      DemoSecretProvider)
 from tests.test_wsgi_contract import call_wsgi
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SHORTEN = os.path.join(REPO, "examples", "shorten.lnpl")
 
 # No `security` clause at all — the plain case for the assertions that are
 # not about auth.
@@ -174,6 +185,31 @@ class NormalTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual({"status": "ok"}, body)
 
+    # issue #187: the build_app-path twins of the readyz check 3 cases.
+    # `build_app` used to drop `jwt_secret_env` before `make_wsgi_app`, so
+    # the check never evaluated behind gunicorn.
+
+    def test_normal_readyz_stays_200_on_a_source_and_backend_only_build_app_deployment(self):
+        with mock.patch.dict(os.environ, {"LNPL_TEST_R9_SECRET": "x" * 32}):
+            app = build_app(sources=[SHORTEN], jwt_secret_env="LNPL_TEST_R9_SECRET")
+
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+
+        self.assertEqual("LNPL_TEST_R9_SECRET", app.jwt_secret_env)
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, body)
+
+    def test_normal_readyz_stays_200_when_no_jwt_secret_env_is_configured_at_all(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LNPL_JWT_SECRET_ENV", None)
+            app = build_app(sources=[SHORTEN])
+
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+
+        self.assertIsNone(app.jwt_secret_env)
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, body)
+
 
 class ErrorTest(unittest.TestCase):
 
@@ -204,6 +240,20 @@ class ErrorTest(unittest.TestCase):
 
         self.assertEqual(503, status)
         self.assertEqual(["repository", "jwt-secret-env"], body["checks"])
+
+    def test_error_readyz_is_503_when_jwt_secret_env_is_removed_after_build_on_build_app_path(self):
+        # issue #187: built with the secret present, then the variable goes
+        # away (a rotated/unmounted secret) — readyz must report it.
+        with mock.patch.dict(os.environ, {"LNPL_TEST_R9_SECRET": "x" * 32}):
+            app = build_app(sources=[SHORTEN], jwt_secret_env="LNPL_TEST_R9_SECRET")
+            os.environ.pop("LNPL_TEST_R9_SECRET")
+
+            status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+
+        self.assertEqual(503, status)
+        self.assertEqual("not-ready", body["code"])
+        self.assertEqual(["jwt-secret-env"], body["checks"])
+        self.assertNotIn("x" * 32, json.dumps(body))
 
 
 class BoundaryTest(unittest.TestCase):
@@ -281,6 +331,138 @@ class ShutdownTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertEqual({"status": "ok"}, body)
+
+
+# issue #192: a jwt-gated service (POST /rollup/get-report) for the
+# provider-sourced readyz check 5.
+JWT_SRC = """entity Report
+    field
+        id UUID
+
+service Rollup
+    security
+        jwt
+
+workflow GetReport
+    read report
+"""
+JWT_PATH = "/rollup/get-report"
+
+
+class ReadyzSecretProviderTest(unittest.TestCase):
+    """issue #192 D16 + review C1: with a provider-sourced JWT secret, a
+    readyz probe re-reads current+previous unless the last provider read
+    (success or failure) is younger than `READYZ_REFRESH_FLOOR_S`, in which
+    case it reports that read's result without calling the provider. A
+    failure is 503 naming only `secret-provider`, recovery is 200, and a
+    rotation becomes visible after one probe past the floor. The clock is
+    injected (`now`), so nothing sleeps."""
+
+    FLOOR = READYZ_REFRESH_FLOOR_S
+
+    def setUp(self):
+        self.now = [0.0]
+        self.source = DemoSecretProvider({"jwt": DEMO_SECRET_K0})
+        self.app = make_wsgi_app(
+            _doc(JWT_SRC),
+            token_provider=RotatingHmacTokenProvider(
+                self.source, "jwt", monotonic=lambda: self.now[0]))
+
+    def _probe(self, at):
+        self.now[0] = at
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status, _headers, body = call_wsgi(self.app, "GET", "/-/readyz")
+        return status, body, err.getvalue()
+
+    def _post_status(self, secret):
+        token = HmacTokenProvider(secret).issue("u", audience_for_path(JWT_PATH))
+        status, _headers, _body = call_wsgi(
+            self.app, "POST", JWT_PATH, body=b"{}",
+            headers={"Authorization": "Bearer " + token,
+                     "Content-Type": "application/json"})
+        return status
+
+    def test_error_failing_provider_is_503_naming_the_check(self):
+        self.source.fail = True
+
+        status, body, err = self._probe(self.FLOOR)
+
+        self.assertEqual(503, status)
+        self.assertEqual("not-ready", body["code"])
+        self.assertEqual(["secret-provider"], body["checks"])
+        self.assertNotIn("FAKE-SECRET-192", json.dumps(body))
+        self.assertNotIn("FAKE-SECRET-192", err)
+        self.assertEqual(200, self._post_status(DEMO_SECRET_K0))
+
+    def test_normal_recovery_is_200(self):
+        self.source.fail = True
+        self.assertEqual(503, self._probe(self.FLOOR)[0])
+        self.source.fail = False
+
+        status, body, _err = self._probe(2 * self.FLOOR)
+
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, body)
+
+    def test_normal_rotation_visible_after_one_probe(self):
+        self.source.rotate("jwt", DEMO_SECRET_K1)
+        self.assertEqual(401, self._post_status(DEMO_SECRET_K1))
+        calls = self.source.get_calls
+
+        status, _body, _err = self._probe(self.FLOOR)
+
+        self.assertEqual(200, status)
+        self.assertEqual(calls + 1, self.source.get_calls)
+        self.assertEqual(200, self._post_status(DEMO_SECRET_K1))
+        self.assertEqual(200, self._post_status(DEMO_SECRET_K0))
+
+    def test_boundary_probes_within_the_floor_read_the_provider_once(self):
+        calls = self.source.get_calls
+
+        statuses = [self._probe(at)[0] for at in
+                    (self.FLOOR, self.FLOOR + 1.0, self.FLOOR + 2.5,
+                     2 * self.FLOOR - 0.1)]
+
+        self.assertEqual([200, 200, 200, 200], statuses)
+        self.assertEqual(calls + 1, self.source.get_calls)
+
+    def test_normal_probe_after_the_floor_reads_again(self):
+        calls = self.source.get_calls
+
+        self._probe(self.FLOOR)
+        self._probe(2 * self.FLOOR)
+
+        self.assertEqual(calls + 2, self.source.get_calls)
+
+    def test_boundary_probe_right_after_startup_reports_the_startup_read(self):
+        status, body, _err = self._probe(self.FLOOR - 0.1)
+
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual(1, self.source.get_calls)
+
+    def test_error_failure_is_reported_until_the_floor_passes(self):
+        self.source.fail = True
+        self.assertEqual(503, self._probe(self.FLOOR)[0])
+        self.source.fail = False
+        calls = self.source.get_calls
+
+        status, body, _err = self._probe(2 * self.FLOOR - 0.1)
+
+        self.assertEqual(503, status)
+        self.assertEqual(["secret-provider"], body["checks"])
+        self.assertEqual(calls, self.source.get_calls)
+        self.assertEqual(200, self._probe(2 * self.FLOOR)[0])
+
+    def test_boundary_env_sourced_app_keeps_its_exact_check_list(self):
+        app = make_wsgi_app(_doc(JWT_SRC), jwt_secret_env="LNPL_NO_SUCH_VAR")
+        self.assertNotIn("LNPL_NO_SUCH_VAR", os.environ)
+
+        status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
+
+        self.assertEqual(503, status)
+        self.assertEqual(["jwt-secret-env"], body["checks"])
 
 
 if __name__ == "__main__":

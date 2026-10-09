@@ -1,0 +1,8 @@
+entity Note
+    field
+        id UUID
+
+service NoteService
+
+workflow SaveNote
+    create note

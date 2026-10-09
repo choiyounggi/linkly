@@ -10,10 +10,10 @@
 |------|-----------------|------|
 | `set` | `Assignment` | — |
 | `validate` | `Validation` | — |
-| `authenticate` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
-| `load` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
-| `find` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
-| `read` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052) |
+| `authenticate` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
+| `load` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
+| `find` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
+| `read` | `RepositoryCall` | operation=read; 선택 절 `by <ref>` — 그 참조의 값이 행 키(RFC-0052); 선택 절 `cached` — 캐시를 먼저 읽고 miss면 저장소를 읽어 캐시에 기록(RFC-0062) |
 | `list` | `RepositoryCall` | operation=query |
 | `create` | `RepositoryCall` | operation=create |
 | `insert` | `RepositoryCall` | operation=create |
