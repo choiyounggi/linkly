@@ -416,7 +416,7 @@ extensions`처럼) — `--backend`/`--cache`/`--network`/`--token-provider`/
 
 플래그 없음. `list where`(pushdown 유/무)·`order by`·`limit`·집계 5종·
 cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다 — 형식은
-하나뿐이라 `--format`이 없다(사람용 뷰는 [docs/cost-model.md](../../../../docs/cost-model.md)
+하나뿐이라 `--format`이 없다(사람용 뷰는 [docs/cost-model.md](https://github.com/choiyounggi/linkly/blob/main/docs/cost-model.md)
 가 따로 맡는다). 정본 함수는 `impl/lnpl/cost_model.py`의
 `cost_model_document()`이고, `scripts/gen_plugin_references.py`의
 `SCHEMA_RENDERERS`(`schemas/cost-model.json`)가 같은 함수를 공유한다.

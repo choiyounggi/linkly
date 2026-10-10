@@ -442,8 +442,13 @@ LAUNCHER_STATE_DIR = os.path.join(REPO, ".claude", "tmp", "launchertest-state")
 LAUNCHER_STATE = os.path.join(LAUNCHER_STATE_DIR, "state.json")
 
 
-def run_launcher(env, cwd):
-    """런처를 실제 프로세스로 띄우고 initialize 한 줄을 넣는다.
+TOOLS_CALL = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                         "params": {"name": "lnpl_compile",
+                                   "arguments": {"text": "x"}}}) + "\n"
+
+
+def run_launcher(env, cwd, stdin_text=INITIALIZE, launcher=LAUNCHER):
+    """런처를 실제 프로세스로 띄우고 `stdin_text`를 넣는다.
 
     `serve()`를 직접 부르면 런처가 하는 유일한 일 — 패키지를 **찾는 것** —
     을 건너뛴다. 그 해석이 이 파일의 전부이므로 프로세스로 돌려야 한다.
@@ -451,16 +456,21 @@ def run_launcher(env, cwd):
     """
     base = {"PATH": "/usr/bin:/bin", "LNPL_MCP_STATE": LAUNCHER_STATE}
     base.update(env)
-    return subprocess.run(["python3", LAUNCHER], input=INITIALIZE,
+    return subprocess.run(["python3", launcher], input=stdin_text,
                           capture_output=True, text=True, env=base, cwd=cwd)
 
 
 class LauncherResolutionTest(unittest.TestCase):
-    """런처의 세 해석 분기와 fail-loud 경로.
+    """런처의 해석 분기, cwd-주입 거부, fail-open(여전히 뜨는) 경로.
 
     감사가 지적한 공백이다: `.mcp.json`이 이 파일을 가리킨다는 것만 확인하고
     **이 파일이 실제로 무엇을 하는지**는 아무 테스트도 보지 않았다. 여기가
     깨지면 서버는 뜨지 않고, 클라이언트는 "연결 실패"만 본다.
+
+    두 번째 감사(follow-up)는 cwd에서 위로 올라가며 찾은 첫 `impl/lnpl`을
+    쓰는 것을 지적했다 — 프로젝트 디렉터리가 그 경로에 코드를 심어 이 서버
+    프로세스 안에서 돌릴 수 있다는 뜻이다. 그 기능은 제거됐고, 아래
+    `test_a_planted_impl_lnpl_*` 테스트들이 지금도 그렇다는 것을 증명한다.
     """
 
     def setUp(self):
@@ -472,25 +482,80 @@ class LauncherResolutionTest(unittest.TestCase):
         self.assertTrue(proc.stdout.strip(), "런처가 아무것도 내지 않았다")
         return json.loads(proc.stdout.splitlines()[0])["result"]
 
-    def test_it_uses_lnpl_impl_when_given(self):
-        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl")}, cwd="/")
+    def _planted_impl_lnpl(self, marker):
+        """`impl/lnpl/__init__.py`를 만들어, 임포트되면 `marker`에 흔적을 남긴다."""
+        pkg_dir = os.path.dirname(marker)
+        os.makedirs(os.path.join(pkg_dir, "impl", "lnpl"), exist_ok=True)
+        with open(os.path.join(pkg_dir, "impl", "lnpl", "__init__.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("import pathlib\n"
+                    "pathlib.Path(%r).write_text('pwned')\n" % marker)
+
+    def test_it_uses_lnpl_impl_path_when_given(self):
+        proc = run_launcher({"LNPL_IMPL_PATH": os.path.join(REPO, "impl")}, cwd="/")
         result = self._initialized(proc)
         self.assertEqual(result["serverInfo"]["name"], "lnpl")
         self.assertEqual(result["serverInfo"]["version"], __version__)
         # issue #205: one stderr line naming the step and the path; stdout
         # (the protocol channel) carries only the initialize response.
-        self.assertEqual(proc.stderr, "lnpl-mcp: resolved via $LNPL_IMPL -> %s\n"
+        self.assertEqual(proc.stderr,
+                         "lnpl-mcp: resolved via $LNPL_IMPL_PATH -> %s\n"
                          % os.path.join(REPO, "impl"))
         self.assertEqual(len(proc.stdout.splitlines()), 1, proc.stdout)
 
-    def test_it_walks_up_from_the_working_directory(self):
-        # LNPL_IMPL 없이, 레포 안의 하위 디렉터리에서 띄운다.
-        proc = run_launcher({}, cwd=os.path.join(REPO, "examples"))
+    def test_a_relative_lnpl_impl_path_is_ignored(self):
+        # boundary: a relative value could resolve differently depending on
+        # the launcher's cwd — that is exactly the cwd-derivation this fix
+        # removes, so a relative LNPL_IMPL_PATH is ignored, not resolved.
+        proc = run_launcher({"LNPL_IMPL_PATH": "impl"}, cwd=REPO)
+        self.assertIn("$LNPL_IMPL_PATH='impl' is not an absolute path",
+                      proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("could not locate", proc.stderr)
+
+    def test_an_lnpl_impl_path_without_the_package_is_ignored(self):
+        tmp = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        proc = run_launcher({"LNPL_IMPL_PATH": tmp}, cwd="/")
+        self.assertIn("has no lnpl/__init__.py; ignoring", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("could not locate", proc.stderr)
+
+    def test_a_planted_impl_lnpl_in_cwd_is_not_imported(self):
+        # security (reviewer follow-up): a project's own directory must not
+        # be able to plant impl/lnpl and have the launcher import it just
+        # because the server happened to start there.
+        tmp = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        marker = os.path.join(tmp, "pwned.marker")
+        self._planted_impl_lnpl(marker)
+        proc = run_launcher({}, cwd=tmp)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(os.path.exists(marker),
+                         "cwd에 심은 impl/lnpl이 임포트됐다 — 프로젝트가 서버 "
+                         "프로세스 안에서 코드를 돌릴 수 있었다는 뜻이다")
+
+    def test_a_planted_impl_lnpl_under_claude_project_dir_is_not_imported(self):
+        tmp = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        marker = os.path.join(tmp, "pwned.marker")
+        self._planted_impl_lnpl(marker)
+        proc = run_launcher({"CLAUDE_PROJECT_DIR": tmp}, cwd="/")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(os.path.exists(marker),
+                         "CLAUDE_PROJECT_DIR로 가리킨 impl/lnpl이 임포트됐다")
+
+    def test_lnpl_impl_path_wins_over_a_planted_cwd_package(self):
+        # 명시가 추론(혹은 투입)을 이긴다 — cwd에 심어진 패키지가 있어도
+        # LNPL_IMPL_PATH가 가리키는 진짜 체크아웃이 쓰인다.
+        tmp = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        marker = os.path.join(tmp, "pwned.marker")
+        self._planted_impl_lnpl(marker)
+        proc = run_launcher({"LNPL_IMPL_PATH": os.path.join(REPO, "impl")}, cwd=tmp)
         result = self._initialized(proc)
         self.assertEqual(result["serverInfo"]["version"], __version__)
-        self.assertEqual(proc.stderr, "lnpl-mcp: resolved via cwd walk-up -> %s\n"
-                         % os.path.join(REPO, "impl"))
-        self.assertEqual(len(proc.stdout.splitlines()), 1, proc.stdout)
+        self.assertFalse(os.path.exists(marker))
 
     def test_the_state_file_records_the_resolved_digest(self):
         from lnpl import provenance
@@ -498,19 +563,19 @@ class LauncherResolutionTest(unittest.TestCase):
         tmp = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
         self.addCleanup(shutil.rmtree, tmp, True)
         state = os.path.join(tmp, "nested", "state.json")
-        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl"),
+        proc = run_launcher({"LNPL_IMPL_PATH": os.path.join(REPO, "impl"),
                              "LNPL_MCP_STATE": state}, cwd="/")
         self._initialized(proc)
         with open(state, encoding="utf-8") as fh:
             recorded = json.load(fh)
         self.assertEqual(recorded["vocabulary_digest"],
                          provenance._current_vocabulary_digest())
-        self.assertEqual(recorded["discovery"], "$LNPL_IMPL")
+        self.assertEqual(recorded["discovery"], "$LNPL_IMPL_PATH")
         self.assertEqual(recorded["path"], os.path.join(REPO, "impl"))
         self.assertEqual(recorded["lnpl_version"], __version__)
 
     def test_a_write_failure_in_the_state_file_does_not_block_the_server(self):
-        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl"),
+        proc = run_launcher({"LNPL_IMPL_PATH": os.path.join(REPO, "impl"),
                              "LNPL_MCP_STATE": os.path.join("/nonexistent-xyz-t205",
                                                             "state.json")},
                             cwd="/")
@@ -519,39 +584,77 @@ class LauncherResolutionTest(unittest.TestCase):
         self.assertFalse(os.path.exists("/nonexistent-xyz-t205"))
         self.assertEqual(proc.stderr.count("\n"), 1, proc.stderr)
 
-    def test_the_failure_path_announces_nothing_and_writes_no_state(self):
-        # boundary: no package found -> fail-loud text only, no success line
+    def test_the_failure_path_still_starts_the_server(self):
+        # nothing importable -> the handshake still succeeds; failing the
+        # connection outright would leave the client with no reason at all.
         proc = run_launcher({}, cwd="/")
-        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertNotIn("resolved via", proc.stderr)
+        self.assertIn("could not locate", proc.stderr)
+        self.assertIn("LNPL_IMPL_PATH", proc.stderr,
+                      "무엇을 시도했는지, 무엇을 설정해야 하는지 말하지 않으면 고칠 수가 없다")
         self.assertFalse(os.path.exists(LAUNCHER_STATE))
+        result = self._initialized(proc)
+        self.assertEqual(result["serverInfo"]["version"], "unavailable")
 
-    def test_walk_up_beats_nothing_but_lnpl_impl_beats_walk_up(self):
-        # 둘 다 가능한 자리에서 LNPL_IMPL이 이겨야 한다 — 명시가 추론을 이긴다.
-        proc = run_launcher({"LNPL_IMPL": os.path.join(REPO, "impl")},
-                            cwd=os.path.join(REPO, "examples"))
-        self._initialized(proc)
+    def test_every_tool_call_returns_a_structured_error_when_lnpl_is_unavailable(self):
+        proc = run_launcher({}, cwd="/", stdin_text=INITIALIZE + TOOLS_CALL)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        self.assertEqual(len(responses), 2, proc.stdout)
+        call_result = responses[1]["result"]
+        self.assertTrue(call_result["isError"])
+        self.assertIn("LNPL_IMPL_PATH", call_result["content"][0]["text"])
 
-    def test_it_fails_loudly_when_the_package_cannot_be_found(self):
-        # 어디서도 못 찾는 자리. 조용히 죽으면 클라이언트는 이유를 모른다.
-        proc = run_launcher({}, cwd="/")
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("could not locate", proc.stderr)
-        self.assertIn("LNPL_IMPL", proc.stderr,
-                      "무엇을 시도했는지 말하지 않으면 고칠 수가 없다")
+    def test_the_fallback_lists_the_known_tools(self):
+        stdin_text = INITIALIZE + json.dumps(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n"
+        proc = run_launcher({}, cwd="/", stdin_text=stdin_text)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        self.assertEqual(len(responses), 2, proc.stdout)
+        names = {tool["name"] for tool in responses[1]["result"]["tools"]}
+        self.assertEqual(names, {"lnpl_compile", "lnpl_kb_route", "lnpl_spec",
+                                 "lnpl_vocabulary", "lnpl_capabilities"})
 
-    def test_a_bad_lnpl_impl_does_not_pretend_to_work(self):
-        proc = run_launcher({"LNPL_IMPL": "/nonexistent/impl"}, cwd="/")
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("could not locate", proc.stderr)
+    def test_the_fallback_sends_no_reply_to_notifications(self):
+        stdin_text = ('{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
+                     '{"jsonrpc":"2.0","method":"some/notification"}\n') + INITIALIZE
+        proc = run_launcher({}, cwd="/", stdin_text=stdin_text)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        # 알림 둘은 응답 없이 삼켜지고, 뒤이은 initialize 하나만 답장을 받는다.
+        self.assertEqual(len(responses), 1, proc.stdout)
+        self.assertEqual(responses[0]["result"]["serverInfo"]["version"],
+                         "unavailable")
+
+    def test_the_fallback_does_not_crash_on_non_object_json(self):
+        # boundary/error: valid JSON that is not a JSON-RPC object (a bare
+        # number, array, or null) must not kill the loop — `.get("method")`
+        # on it would raise AttributeError if dispatched unchecked.
+        stdin_text = "42\nnull\n[1,2]\n" + INITIALIZE
+        proc = run_launcher({}, cwd="/", stdin_text=stdin_text)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        self.assertEqual(len(responses), 4, proc.stdout)
+        for bad_response in responses[:3]:
+            self.assertEqual(bad_response["error"]["code"], -32700)
+        self.assertEqual(responses[3]["result"]["serverInfo"]["version"],
+                         "unavailable")
 
 
 class PluginPackagingTest(unittest.TestCase):
 
-    def test_the_mcp_config_points_at_the_shipped_launcher(self):
+    def test_the_mcp_config_wraps_the_server_in_mcpServers(self):
+        """플러그인 카탈로그는 `mcpServers`로 감싼 모양만 읽는다 — 감사 지적.
+
+        최상위에 서버 객체를 바로 두면(`{"lnpl": {...}}`) 클라이언트가 이
+        서버를 전혀 로드하지 못한다.
+        """
         with open(os.path.join(PLUGIN, ".mcp.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
-        server = cfg["lnpl"]
+        self.assertIn("mcpServers", cfg)
+        server = cfg["mcpServers"]["lnpl"]
         self.assertEqual(server["command"], "python3")
         self.assertEqual(server["args"], ["${CLAUDE_PLUGIN_ROOT}/server.py"])
         # 절대 경로를 박으면 설치된 위치에서 깨진다.
@@ -561,14 +664,15 @@ class PluginPackagingTest(unittest.TestCase):
         """`env` 로 변수를 되넘기지 않는다.
 
         stdio 서버는 자식 프로세스라 부모 환경을 그대로 물려받는다. 그래서
-        `"env": {"LNPL_IMPL": "${LNPL_IMPL}"}` 같은 passthrough는 사용자가
-        `export` 했을 때 얻는 것이 없고, 그 변수가 보통 설정돼 있지 않다는
-        점에서 실패 모드만 하나 늘린다. 런처는 `os.environ` 에서 직접 읽는다.
+        `"env": {"LNPL_IMPL_PATH": "${LNPL_IMPL_PATH}"}` 같은 passthrough는
+        사용자가 `export` 했을 때 얻는 것이 없고, 그 변수가 보통 설정돼 있지
+        않다는 점에서 실패 모드만 하나 늘린다. 런처는 `os.environ` 에서 직접
+        읽는다.
         """
         with open(os.path.join(PLUGIN, ".mcp.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
         self.assertNotIn(
-            "env", cfg["lnpl"],
+            "env", cfg["mcpServers"]["lnpl"],
             "설정돼 있지 않은 변수를 되넘기면 서버 기동만 위태로워진다")
 
     def test_the_plugin_manifest_names_itself(self):
