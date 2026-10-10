@@ -212,7 +212,9 @@ class RepositoryDriver:
 
         read / query    -> the stored row as a dict, or None when absent
         create          -> {"affected": 1}; DriverError when (entity, key) exists
-        update / delete -> {"affected": n}
+        update / delete -> {"affected": n}; n is 0 when no row has the key, and
+        the interpreter then fails the step with failure_kind "not-found"
+        (issue #215, RFC-0064)
         """
         raise NotImplementedError
 
@@ -1158,9 +1160,8 @@ class SqliteRepositoryDriver(RepositoryDriver):
 
     def _touch(self, entity_id, operation, key):
         """`affected` is the true row count here -- as of issue #183, the
-        Fake reports it too. The difference never reaches an observable:
-        the interpreter reads only `row is not None` from a write's
-        answer.
+        Fake reports it too. The interpreter fails the step with
+        failure_kind "not-found" when it is 0 (issue #215, RFC-0064).
         """
         statement = _DELETE_ROW if operation == "delete" else _UPDATE_ROW
         try:

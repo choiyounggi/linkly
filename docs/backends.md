@@ -196,6 +196,13 @@ E6의 503) — 재시도는 클라이언트가 워크플로 전체를 다시 부
 일이 없다. 영속 드라이버에 데이터를 미리 깔아야 하면 — 테스트든 운영이든 —
 `seed()`를 직접 부르거나 `create` 워크플로를 쓴다.
 
+**0행 쓰기(이슈 #215, RFC-0064).** `update`/`delete`(bare 또는 `by <ref>`)가
+0행에 영향을 주면(`execute`가 `{"affected": 0}`을 돌려주면) 그 스텝도 같은
+`failure_kind` `not-found`로 실패한다 — `fake`·`sqlite:`·외부 드라이버 모두
+같다. 기본 시드는 여전히 처음 `read`하는 엔티티만 채우므로, `fake`에서 어떤
+엔티티를 `update`/`delete`로 처음 건드리는 워크플로는 기본 시드로 돌려도
+`not-found`로 실패한다.
+
 `persist()`는 RFC-0015의 `set`이 **바인딩된 행에 쓴 값**을 디스크로 내린다. fake는
 바인딩된 dict가 곧 저장된 행이라 no-op이지만, 실제 저장소에서 이 flush가 없으면
 갱신이 실행 중에만 보이고 끝나서 사라진다.
@@ -467,7 +474,7 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 
 `RepositoryDriverTCK`는 `unittest.TestCase`를 상속하지 않는 순수 믹스인이다
 — 구체 클래스가 `unittest.TestCase`와 다중 상속해야 한다. 검증 항목: 읽기·
-쓰기·삭제·부재 행 삭제의 `affected` 0(이슈 #183)·부재 행의 `None` 반환·
+쓰기·삭제·부재 행 갱신과 삭제의 `affected` 0(이슈 #183, #215)·부재 행의 `None` 반환·
 중복 create의 `DriverError`, 그리고 읽은 행이
 `observed_version` 속성을 갖는 드라이버에 한해 스테일 쓰기가 충돌하는지(이슈
 #92), 그리고 그 충돌이 `WriteConflictError` 타입인지(이슈 #201) — 이 속성이 없으면

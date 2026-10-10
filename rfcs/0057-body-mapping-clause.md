@@ -76,6 +76,11 @@ call PaymentGateway with o.id send o.id                  # 컴파일 에러 — 
 `set`/`format`이 없는 `derived` 필드. RFC-0055의 실행이 채우는 필드(`derived
 generated`/`derived clock`)는 `create`가 언제나 채우므로 그대로 쓸 수 있다.
 
+`with <ref>...`의 경로 인자도 Password 계열 참조를 같은 판정으로 컴파일 거부한다(issue
+#218) — 맨 이름(`with secret`)은 실행 시점에 같은 이름의 입력 필드로 풀리므로
+`input.secret`과 같이 판정한다. `input.<field>`의 Password 계열 판정은 그 이름을 선언한
+모든 엔티티를 본다(issue #219, §3 규칙 4).
+
 ## Reference-level Specification
 
 ### 1. 문법과 고정 순서 — RFC-0027 §2 갱신 (치환 후 최종 텍스트) (D1, D2, D3)
@@ -95,7 +100,7 @@ generated`/`derived clock`)는 `create`가 언제나 채우므로 그대로 쓸 
 |---|---|
 | `()` (없음) | 바인딩·경로·본문 매핑 없음 — RFC-0027 §3의 "바인딩 없는 호출" 그대로(후방 호환, 노드 모양 불변) |
 | `send <ref>...` | `bodyMap`을 노드에 싣는다(§2) |
-| `with <ref>...` | `path_args`를 노드에 싣는다(issue #109 — 대상 capability의 `path` `{}` 개수와 참조 개수가 같아야 한다) |
+| `with <ref>...` | `path_args`를 노드에 싣는다(issue #109 — 대상 capability의 `path` `{}` 개수와 참조 개수가 같아야 한다). 참조가 Password 계열이면 컴파일 거부한다(issue #218, §3 규칙 4의 판정) |
 | `as <name>` | `name`이 아래 두 검사를 통과하면 `result=name`을 싣는다 |
 | 위 셋의 부분집합을 `send`, `with`, `as` 순서로 | 각 절의 판정을 모두 적용한다 |
 | 표지가 아닌 낱말로 시작 | `LowerError` — `line %d: call/request accepts trailing clauses 'send <ref>...', 'with <ref>...', 'as <name>' in that order, got %r` |
@@ -161,11 +166,20 @@ generated`/`derived clock`)는 `create`가 언제나 채우므로 그대로 쓸 
      허용한다 — `create`가 언제나 채우고 `set`/`format`으로는 채울 수 없으므로 가드
      스코프 조건이 없다. 아니면 같은 `<binding>.<field>`를 채우는 `set`/`format`이
      같은 가드 스코프에서 앞서 있을 때만 허용한다(issue #204). 없으면 `LowerError`.
-  4. 선언된 타입의 base가 `Password`면 `LowerError`(issue #43, `respond`·`emit ...
-     with`와 같은 규칙).
+  4. 참조가 Password 계열이면 `LowerError`(issue #43, `respond`·`emit ... with`와 같은
+     규칙). `<binding>.<field>`는 그 행 엔티티가 선언한 필드 타입의 base로,
+     `input.<field>`는 그 이름을 선언한 모든 엔티티 중 하나라도 base가 `Password`인지로
+     판정한다(issue #219 — 마지막에 선언한 엔티티 하나만 보지 않는다).
 
 3번의 실행이 채우는 필드 허용은 두 절에 함께 적용된다 — `emit ... with o.id`(`id`가
 `derived generated`)도 이제 허용된다. 같은 함수를 쓰는 이상 한쪽만 허용할 근거가 없다.
+
+`with <ref>...` 경로 인자(issue #218): 의미 시점의 `NetworkCall` 검사가 `path_args`의 각
+참조에 규칙 4의 Password 계열 판정만 적용한다(라벨 `call/request with`, 메시지 끝은
+"in an outbound request path"). 맨 이름(`with secret`)은 실행 시점에 같은 이름의 입력
+필드로 풀리므로 `input.secret`과 같은 판정을 받는다. 그 밖의 `with` 검사(모양, `{}` 개수)는
+그대로다. 선언되지 않은 입력 필드, 알 수 없는 바인딩, 네트워크 결과, `caller` 참조는 이
+판정에서 Password 계열이 아니다 — 새 거부 종류를 더하지 않는다.
 
 ### 4. 런타임 본문 구성 (D8, D9)
 
