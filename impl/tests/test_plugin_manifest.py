@@ -6,7 +6,9 @@
 """
 import json
 import os
+import struct
 import subprocess
+import tempfile
 import unittest
 
 import lnpl
@@ -116,6 +118,70 @@ class PluginContentsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn(lnpl.__version__, proc.stdout)
         self.assertNotIn("건너뜀", proc.stdout)
+
+
+# Anthropic 플러그인 디렉터리가 plugin.json의 icon을 목록 아이콘으로 읽는다.
+# 아이콘은 처음 제출할 때 한 번만 정해지고 나중에 바꿔도 반영되지 않으므로,
+# 규격(정사각형 PNG, 한 변 512~2048px, 2MB 미만)을 테스트로 고정한다.
+LISTED_PLUGINS = ("lnpl", "lnpl-mcp")
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def directory_icon_problem(path):
+    """규격에 맞으면 None, 아니면 이유 문자열을 돌려준다."""
+    if not os.path.isfile(path):
+        return "파일이 없다"
+    if os.path.getsize(path) >= 2 * 1024 * 1024:
+        return "2MB 이상이다"
+    with open(path, "rb") as fh:
+        head = fh.read(24)
+    if len(head) < 24 or head[:8] != PNG_SIGNATURE or head[12:16] != b"IHDR":
+        return "PNG가 아니다"
+    width, height = struct.unpack(">II", head[16:24])
+    if width != height:
+        return "정사각형이 아니다 (%dx%d)" % (width, height)
+    if not 512 <= width <= 2048:
+        return "한 변이 512~2048px 밖이다 (%d)" % width
+    return None
+
+
+def _png_header(width, height):
+    return PNG_SIGNATURE + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + b"\x08\x02\x00\x00\x00"
+
+
+class DirectoryListingTest(unittest.TestCase):
+    def test_listed_plugins_declare_license_and_icon(self):
+        for name in LISTED_PLUGINS:
+            manifest = load(os.path.join(REPO, "plugins", name, ".claude-plugin", "plugin.json"))
+            self.assertEqual(manifest["license"], "MIT", name)
+            self.assertEqual(manifest["icon"], "./assets/icon.png", name)
+
+    def test_listed_plugin_icons_meet_the_directory_spec(self):
+        for name in LISTED_PLUGINS:
+            plugin_dir = os.path.join(REPO, "plugins", name)
+            icon = os.path.normpath(os.path.join(plugin_dir, load(os.path.join(plugin_dir, ".claude-plugin", "plugin.json"))["icon"]))
+            self.assertTrue(icon.startswith(plugin_dir + os.sep), "%s의 icon이 플러그인 밖을 가리킨다" % name)
+            self.assertIsNone(directory_icon_problem(icon), name)
+
+    def test_icon_check_rejects_non_png_and_non_square(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svg = os.path.join(tmp, "icon.svg")
+            with open(svg, "w", encoding="utf-8") as fh:
+                fh.write("<svg xmlns='http://www.w3.org/2000/svg'/>")
+            self.assertEqual(directory_icon_problem(svg), "PNG가 아니다")
+            wide = os.path.join(tmp, "wide.png")
+            with open(wide, "wb") as fh:
+                fh.write(_png_header(1024, 512))
+            self.assertIn("정사각형이 아니다", directory_icon_problem(wide))
+            self.assertEqual(directory_icon_problem(os.path.join(tmp, "missing.png")), "파일이 없다")
+
+    def test_icon_check_size_boundaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for side, ok in ((511, False), (512, True), (2048, True), (2049, False)):
+                path = os.path.join(tmp, "%d.png" % side)
+                with open(path, "wb") as fh:
+                    fh.write(_png_header(side, side))
+                self.assertEqual(directory_icon_problem(path) is None, ok, side)
 
 
 if __name__ == "__main__":
