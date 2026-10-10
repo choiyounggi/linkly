@@ -316,6 +316,17 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   are regenerated (issue #216).
 
 ### Changed
+- `update`/`delete` (bare or `by <ref>`) that affects no row now fails its
+  step with `failure_kind` `not-found` instead of completing: `lnpl serve`
+  answers `404 not-found` with `failed_step` (consume path: 422
+  `event-rejected`), on `fake`, `sqlite:` and mode B alike, and the run's
+  earlier writes roll back. `FakeRepository.update` reports the true
+  affected count, and `RepositoryDriverTCK` gains
+  `test_updating_an_absent_row_reports_affected_zero`, which external
+  drivers must pass. Compatibility: a workflow whose first touch of an
+  entity is `update`/`delete` now fails on the default `fake` seed too.
+  Delete fails by default; no idempotent-delete notation is offered
+  (issue #215, RFC-0064).
 - Persistent backends (sqlite, postgres) are no longer seeded from the
   request payload, so a read of a missing row no longer stores a phantom
   row. The step now fails with `failure_kind` `not-found` and `lnpl serve`

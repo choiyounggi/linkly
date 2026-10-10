@@ -412,9 +412,15 @@ class TestKeyedStore(unittest.TestCase):
         self.assertEqual(list(seed["entity.product"]), ["entity.product#1"])
 
     def test_update_and_delete_report_an_affected_row(self):
-        # `update` unchanged by issue #35 — recorded so the non-goal is visible.
+        # issue #215: `update` reports the TRUE affected count, like `delete`
+        # below (issue #183). A never-created key affects 0 rows; a created
+        # one affects 1. Key #2 is used for the present case so key #1 stays
+        # never-created for the delete assertion below.
         repo = FakeRepository()
         self.assertEqual(repo.execute("entity.product", "update", "entity.product#1"),
+                         {"affected": 0})
+        repo.execute("entity.product", "create", "entity.product#2")
+        self.assertEqual(repo.execute("entity.product", "update", "entity.product#2"),
                          {"affected": 1})
         # issue #183: `delete` now reports the TRUE affected count. This key
         # was never created, so deleting it affects 0 rows, not 1

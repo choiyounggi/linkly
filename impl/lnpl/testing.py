@@ -135,6 +135,14 @@ class RepositoryDriverTCK:
         result = self.driver.execute("widget", "delete", "no-such-row")
         self.assertEqual(result, {"affected": 0})
 
+    def test_updating_an_absent_row_reports_affected_zero(self):
+        result = self.driver.execute("widget", "update", "no-such-row")
+
+        self.assertEqual(result, {"affected": 0})
+        # issue #215 / RFC-0064: an update never inserts (no upsert); the
+        # interpreter turns this 0 into a `not-found` step failure.
+        self.assertIsNone(self.driver.execute("widget", "read", "no-such-row"))
+
     def test_deleting_one_row_leaves_other_rows_of_the_same_entity_untouched(self):
         self.driver.execute("widget", "create", "w6")
         self.driver.execute("widget", "create", "w7")

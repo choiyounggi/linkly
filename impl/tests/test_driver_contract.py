@@ -231,6 +231,23 @@ class FakeDriverPassesDeleteTCKCasesTest(unittest.TestCase):
                              (case, result.failures, result.errors))
 
 
+class FakeDriverPassesUpdateTCKCasesTest(unittest.TestCase):
+    """Issue #215: the Fake's `update` reports the TRUE affected count,
+    held to the same TCK cases the sqlite driver runs. Run one at a time
+    via `_run_one_tck_case` for the reason the delete class above gives
+    (the Fake cannot inherit the whole TCK)."""
+
+    CASES = ("test_update_reports_the_row_as_affected",
+             "test_updating_an_absent_row_reports_affected_zero")
+
+    def test_the_fake_passes_every_update_tck_case(self):
+        for case in self.CASES:
+            result = _run_one_tck_case(lambda: FakeRepository(), case)
+            self.assertEqual(result.testsRun, 1, case)
+            self.assertEqual(len(result.failures) + len(result.errors), 0,
+                             (case, result.failures, result.errors))
+
+
 class _NoOpRollbackDriver(SqliteRepositoryDriver):
     """Negative control (`testing/quality/harness-reverse-controls`) — this
     is a driver the rollback TCK case must NOT pass. `begin`/`commit` are

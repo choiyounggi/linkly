@@ -244,7 +244,7 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**~5,300 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**~5,330 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
@@ -267,7 +267,7 @@ trace-side counterpart is [lnpl-otel](https://github.com/choiyounggi/lnpl-otel) 
 otel-collector in its own Testcontainers CI
 ([issue #144](https://github.com/choiyounggi/linkly/issues/144)).
 
-**64 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`, RFC-0048 `Draft`, RFC-0049 `Draft`, RFC-0050 `Draft`, RFC-0051 `Draft`, RFC-0052 `Draft`, RFC-0053 `Draft`, RFC-0054 `Draft`, RFC-0055 `Draft`, RFC-0056 `Draft`, RFC-0057 `Draft`, RFC-0058 `Draft`, RFC-0059 `Draft`, RFC-0060 `Draft`, RFC-0061 `Draft`, RFC-0062 `Draft`, RFC-0063 `Draft`.** RFC-0007 was formally
+**65 RFCs — 46 `Accepted`, RFC-0000 `Superseded` by RFC-0007, RFC-0034 `Draft`, RFC-0048 `Draft`, RFC-0049 `Draft`, RFC-0050 `Draft`, RFC-0051 `Draft`, RFC-0052 `Draft`, RFC-0053 `Draft`, RFC-0054 `Draft`, RFC-0055 `Draft`, RFC-0056 `Draft`, RFC-0057 `Draft`, RFC-0058 `Draft`, RFC-0059 `Draft`, RFC-0060 `Draft`, RFC-0061 `Draft`, RFC-0062 `Draft`, RFC-0063 `Draft`, RFC-0064 `Draft`.** RFC-0007 was formally
 accepted 2026-08-03, having been the binding process since RFC-0000 was superseded on
 2026-07-31 ([issue #11](https://github.com/choiyounggi/linkly/issues/11)). See the
 [roadmap](docs/ROADMAP.md).
@@ -347,8 +347,9 @@ suite is defined against.
 | [0061 Event Publisher SPI — `lnpl.publishers`](rfcs/0061-event-publisher-spi.md) | Outbox events had two ways out of a process: hand-rolled consumer code after `outbox drain`, or `lnpl relay --target <base-url>` (HTTP-only, CloudEvents, to another `lnpl` process). Neither reaches a real broker without bespoke retry/ordering/DLQ code (issue #191). Adds the `lnpl.publishers` entry-point group and an `EventPublisher` contract (`publish`, `publish_batch`, `close`) `lnpl relay --target <scheme>://...` dispatches to by URL scheme — `http(s)://` stays byte-identical, any other scheme loads a registered driver; ack happens only after a confirmed publish, a `PublishRejected` exception acks-and-dead-letters (mirroring RFC-0040 §7's 422 bucket), any other failure leaves the row un-acked for the next drain. `EventPublisherTCK` proves publish-then-ack, failure->no-ack, a restart re-publishing, and ordering by the outbox `seq` — a discriminating test fails an ack-before-publish driver and a drop-on-error driver. Consumption stays unchanged: a driver provides its own broker -> HTTP `/-/events` bridge; this RFC adds no consume-side SPI. A real broker driver ships in a separate repository, out of scope here. Draft. *Updates RFC-0040 §Motivation, §Reference-level Specification/7. 오류 분류, §Reference-level Specification/8. 레퍼런스 릴레이, §Reference-level Specification/9. 문서, §Alternatives* |
 | [0062 `cached` read-through clause](rfcs/0062-cached-read-through-clause.md) | `.lnpl` could write a cache (`cache`) and invalidate it but never read it, so a read-through could not be written and `redis MONITOR` showed no `GET` across repeated reads (probe-v0.8 s4 F-2, issue #188). Adds an optional trailing `cached` to `find`/`read`/`load`/`authenticate`, after any `by <ref>` (`find product by input.sku cached`): a hit binds the cached row and skips the repository; a miss reads the repository and records the row under the same key with the owning service's `performance cache` TTL. A `cached` step on a service with no `performance cache` budget, or in a workflow that also writes that entity (`update`/`delete`/`set`), is a compile error; a cache outage counts as a miss. Writes this document makes invalidate the key after the repository commit, and a rolled-back run discards the keys it cached. Spec blocks observe `cache hit` / `cache miss`; mode B refuses a `cached` workflow as a recorded differential exemption. Draft. *Updates RFC-0002 §Full grammar (+RFC-0012, RFC-0052, RFC-0060), RFC-0003 §Reference-level Specification/Execution Model (+RFC-0032, RFC-0056)* |
 | [0063 Default call body leaves out Password-family fields](rfcs/0063-default-body-omits-password-fields.md) | A `call`/`request` with no `send` clause sent the whole run input, so a Password-family input field reached the peer in clear text — the one output channel issue #43's masking contract did not cover (issue #214). The default body now leaves out every input key that any entity declares as `Password` or a `refine ... of Password` (the key is absent, never `***`); an input with no such field is passed through as the same object, byte-identical. One filter at the one network-call site, sharing `mask_payload`'s name derivation. `send` and mode B are unchanged. Path arguments (`with input.<Password field>`) and the compile-time same-name gap in `send`/`emit ... with` are now refused at compile time over every declaring entity (issues #218, #219); the first-entity view of the other masking channels is a named follow-up. Draft. *Updates RFC-0057 §Guide-level Explanation, §Reference-level Specification/4, /5, /8* |
+| [0064 Update/delete that affects no row fails not-found](rfcs/0064-write-miss-not-found.md) | `update`/`delete` (bare or `by <ref>`) that touched no row ended `completed` (serve 200) while the same key's `find` was a 404 since issue #197 (issue #215). A write whose driver answers `{"affected": 0}` now fails its step with `failure_kind` `not-found` — serve 404, consume path 422 — on `fake`, `sqlite:` and mode B alike, and earlier writes of the run roll back (RFC-0032). Delete fails by default; an idempotent-delete notation is not offered in this change. The driver TCK gains an update-on-absent-row case external drivers must pass. Draft. |
 
-Forty-six are `Accepted`, seventeen (`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0053`, `0054`, `0055`, `0056`, `0057`, `0058`, `0059`, `0060`, `0061`, `0062`, `0063`) are `Draft`; 0000 is superseded by 0007, which was itself formally
+Forty-six are `Accepted`, eighteen (`0034`, `0048`, `0049`, `0050`, `0051`, `0052`, `0053`, `0054`, `0055`, `0056`, `0057`, `0058`, `0059`, `0060`, `0061`, `0062`, `0063`, `0064`) are `Draft`; 0000 is superseded by 0007, which was itself formally
 accepted 2026-08-03 (issue #11). Every cross-consistency check passes and the owner
 approved. From here a substantive change is never made by editing an RFC. There are
 two ways to change one, and they are sized to the change (RFC-0007 §2.2): **Supersedes**
@@ -408,7 +409,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 5302 tests in 156.159s
+Ran 5330 tests in 163.572s
 OK
 ```
 
