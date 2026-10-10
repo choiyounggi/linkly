@@ -41,15 +41,23 @@ that one answers "what words exist".
 
 ## Finding the compiler
 
-The server needs the `lnpl` package. It resolves it in this order and fails loudly
-if none works:
+The server needs the `lnpl` package. It resolves it in this order:
 
-1. `$LNPL_IMPL` — the `impl/` directory of a linkly checkout
+1. `$LNPL_IMPL_PATH` — an absolute path to the `impl/` directory of a linkly
+   checkout, set by you. A relative path, or a path with no `lnpl/__init__.py`
+   in it, is ignored (not fatal — the server moves on to the next step and
+   notes why on stderr).
 2. `import lnpl` — installed with `pip install .`
-3. Walking up from the working directory for `impl/lnpl/` — this is what makes it
-   work inside a linkly checkout with no install at all
 
-Set `LNPL_IMPL` if you run Claude Code from outside the repo and have not
+It never derives a path from the working directory, `CLAUDE_PROJECT_DIR`, or
+the file you have open — any of those let a project plant its own `impl/lnpl`
+and have it run inside this server process.
+
+If neither resolves, the server still starts: the handshake succeeds, and
+every tool call returns a structured error explaining how to install `lnpl`
+or set `LNPL_IMPL_PATH`, instead of the connection just failing silently.
+
+Set `LNPL_IMPL_PATH` if you run Claude Code from outside the repo and have not
 installed the package.
 
 ## What it does not do
