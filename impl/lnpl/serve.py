@@ -62,6 +62,11 @@ class _Server(socketserver.ThreadingMixIn, WSGIServer):
     pairing, with `WSGIServer` standing in for `HTTPServer`."""
 
     daemon_threads = True
+    # Issue #226: socketserver's default listen backlog is 5. A short burst
+    # while the accept loop is busy overflowed it, the kernel dropped the
+    # extra SYNs, and those clients waited 1–2 s to retry. The kernel caps
+    # this at net.core.somaxconn (kern.ipc.somaxconn on macOS, 128).
+    request_queue_size = 128
 
 
 def _install_sigterm_handler(app, server, grace_period_s):
