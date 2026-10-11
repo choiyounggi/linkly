@@ -135,6 +135,12 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   `role` still answers 401/403 as before. Compatibility: a document that
   declared `role` without `jwt` compiled before and no longer compiles;
   add `jwt` to that service's `security` block (issue #213).
+- `lnpl serve` listened with socketserver's default backlog of 5, so a
+  burst of more than about 6 connections arriving while the accept loop
+  was busy had its extra SYNs dropped, and those clients waited 1 s or
+  more to retry. The backlog is now 128 (the kernel still caps it at
+  `somaxconn`). Production serving through gunicorn is unaffected
+  (issue #226).
 
 ### Added
 - `scripts/load_probe.py` (stdlib open-loop load generator) and
