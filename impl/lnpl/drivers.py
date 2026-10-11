@@ -316,6 +316,16 @@ class RepositoryDriver:
         """
         raise NotImplementedError
 
+    # contract: t1-driver-capability-contract owns the implementation
+    def supports_idempotency(self):
+        """True when this driver implements every idempotency-claim method (issue #228)."""
+        raise NotImplementedError
+
+    # contract: t1-driver-capability-contract owns the implementation
+    def supports_outbox_drain(self):
+        """True when this driver implements both outbox drain/ack methods (issue #229)."""
+        raise NotImplementedError
+
     def close(self):
         """Release resources. Safe to call more than once."""
         raise NotImplementedError
