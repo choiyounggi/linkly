@@ -27,14 +27,17 @@ import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
+from lnpl import drivers as drivers_module
 from lnpl.cli import main
-from lnpl.drivers import HmacTokenProvider, SqliteRepositoryDriver, audience_for_path
+from lnpl.drivers import (HmacTokenProvider, RepositoryDriver, SqliteRepositoryDriver,
+                          audience_for_path, open_repository)
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows
 from lnpl.serve import serve
 
 from tests.fixtures import SECRET_ACCOUNT
+from tests.test_driver_spi import DEMO_ENTRY_POINT, entry_point, registered
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SHORTEN = os.path.join(REPO, "examples", "shorten.lnpl")
@@ -62,6 +65,22 @@ def compile_file(path):
 
 def compile_source(source, module="m"):
     return lower(parse(source), module).to_document()
+
+
+def _non_driver_schemes():
+    """issue #228 (ruling t2 D1 r2): the registered `lnpl.drivers` schemes
+    whose `open_repository` result is NOT a RepositoryDriver -- the only
+    way a production object could reach wsgi.py's legacy branch."""
+    bad = []
+    for ep in drivers_module._driver_entry_points():
+        repo = open_repository(ep.name + ":unused")
+        try:
+            if not isinstance(repo, RepositoryDriver):
+                bad.append(ep.name)
+        finally:
+            if hasattr(repo, "close"):
+                repo.close()
+    return sorted(bad)
 
 
 class BackendServerTestCase(unittest.TestCase):
@@ -185,15 +204,18 @@ class RealStoreServingTest(BackendServerTestCase):
         and released whichever way the request ends."""
         port = self.start(compile_file(SHORTEN),
                           repository_factory=self.sqlite_factory(self.store()))
+        # issue #228: `serve()` -> `make_wsgi_app` opens and closes one
+        # store for the boot capability probe before any request.
+        boot = len(self.opened)
 
         self.post(port, SHORTEN_PATH, LINK_PAYLOAD,
                   {"Authorization": "Bearer anything"})
         self.post(port, SHORTEN_PATH, LINK_PAYLOAD,
                   {"Authorization": "Bearer anything"})   # this one fails (409)
 
-        self.wait_until(lambda: len(self.closed) == 2,
+        self.wait_until(lambda: len(self.closed) == boot + 2,
                         "both requests to release their store")
-        self.assertEqual(2, len(self.opened))
+        self.assertEqual(boot + 2, len(self.opened))
         self.assertEqual(self.opened, self.closed,
                          "a request did not release the store it opened")
 
@@ -450,6 +472,32 @@ class ServingDocumentTest(unittest.TestCase):
 
         self.assertTrue(os.path.isfile(path))
         self.assertIn("docs/backends.md", self.serving)
+
+
+class OpenRepositoryReturnsDriversTest(unittest.TestCase):
+    """issue #228: wsgi.py's legacy branch serves non-RepositoryDriver test
+    doubles only; this pins that `open_repository` never hands one out."""
+
+    def test_normal_a_sqlite_spec_opens_a_repository_driver(self):
+        base = os.path.join(REPO, ".claude", "tmp")
+        os.makedirs(base, exist_ok=True)
+        box = tempfile.TemporaryDirectory(prefix="lnpl-t228-", dir=base)
+        self.addCleanup(box.cleanup)
+        repo = open_repository("sqlite:" + os.path.join(box.name, "s.db"))
+        self.addCleanup(repo.close)
+        self.assertIsInstance(repo, RepositoryDriver)
+
+    def test_normal_every_registered_entry_point_opens_a_repository_driver(self):
+        with registered(DEMO_ENTRY_POINT):
+            self.assertEqual(["demo"], [ep.name for ep in drivers_module._driver_entry_points()])
+            self.assertEqual([], _non_driver_schemes())
+
+    def test_error_a_registration_that_returns_a_plain_object_is_caught(self):
+        with registered(DEMO_ENTRY_POINT, entry_point("plain", "builtins:str")):
+            self.assertEqual(["plain"], _non_driver_schemes())
+
+    def test_boundary_the_fake_backend_opens_nothing(self):
+        self.assertIsNone(open_repository("fake"))
 
 
 if __name__ == "__main__":

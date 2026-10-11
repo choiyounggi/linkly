@@ -37,7 +37,7 @@ import uuid
 from importlib import metadata as importlib_metadata
 
 from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
-                      RotatingHmacTokenProvider, TokenError,
+                      RepositoryDriver, RotatingHmacTokenProvider, TokenError,
                       _http_capabilities, _is_url_literal, audience_for_path,
                       open_cache, open_network, open_repository,
                       open_secret_provider, open_token_provider)
@@ -866,6 +866,7 @@ _TITLES = {
     "conflict": "the request conflicts with the current state of the target resource",
     "write-conflict": "a concurrent write changed the row since it was read -- retry is safe",
     "idempotency-in-progress": "a request with this Idempotency-Key is already running",
+    "idempotency-unsupported": "this server's repository driver cannot honour an idempotency key",
     "precondition-failed": "the If-Match version no longer matches the stored row",
     "precondition-invalid": "the If-Match header value is not a recognized ETag",
     "precondition-unsupported": "this workflow's first read cannot be evaluated against If-Match before it runs",
@@ -992,6 +993,37 @@ def _read_json_body(environ, start_response):
     return payload, None
 
 
+def _idempotency_mode(repo):
+    """issue #228: what an idempotency key may do against `repo`.
+
+    A `RepositoryDriver` instance -- the only thing `open_repository` returns
+    (pinned by test_serve_backend.OpenRepositoryReturnsDriversTest):
+      "claim"  -- `supports_idempotency()` is True: claim/replay (#113).
+      "refuse" -- it is False: 501 `idempotency-unsupported`, boot line,
+                  readyz `capabilities.idempotency` False.
+    Anything else -- LEGACY branch, coordinator ruling t2 D1 r2
+    (.orchestration/notes/decisions.md:15):
+    `None` (the `fake` backend) and test doubles such as
+    `interp.FakeRepository` keep the exact pre-#228 opt-in -- claim iff the
+    object has `idempotency_begin`; never 501, no boot line, readyz omits
+    `capabilities`. A plain class that defines its own
+    `supports_idempotency` is still legacy: the type decides, not the
+    method (no getattr fallback, ruling S2).
+      "legacy-claim" -- has `idempotency_begin`.
+      "legacy-skip"  -- does not (includes `None`).
+    """
+    if isinstance(repo, RepositoryDriver):
+        return "claim" if repo.supports_idempotency() else "refuse"
+    return "legacy-claim" if hasattr(repo, "idempotency_begin") else "legacy-skip"
+
+
+def _driver_name(repository):
+    """issue #228: the driver as the operator configured it -- no backend
+    scheme reaches this module on the `lnpl serve` path (cli.py passes a bare
+    factory), so the class path is the identifier both entry points share."""
+    return type(repository).__module__ + "." + type(repository).__qualname__
+
+
 class LnplWsgiApp:
     """A PEP-3333 callable bound to one compiled document + routing table.
 
@@ -1101,6 +1133,30 @@ class LnplWsgiApp:
                 "so there is nowhere to durably record a claim (issue "
                 "#113, D11). Use --backend sqlite:<path> to enable it.",
                 file=sys.stderr)
+        else:
+            # issue #228: one repository, opened once here, says whether
+            # this driver can honour Idempotency-Key. Both entry points
+            # (`serve()`, `build_app()`) construct through here. An
+            # unreachable store prints nothing: production probes the
+            # backend before this point, and readyz reports it.
+            try:
+                probe = repository_factory()
+            except DriverError:
+                probe = None
+            if probe is not None:
+                try:
+                    mode = _idempotency_mode(probe)
+                finally:
+                    probe.close()
+                if mode == "refuse":
+                    print(
+                        "lnpl serve: repository driver %s -- idempotency: "
+                        "unsupported (it does not implement "
+                        "idempotency_begin, idempotency_finish and "
+                        "idempotency_release); requests carrying "
+                        "Idempotency-Key are refused with 501 "
+                        "idempotency-unsupported" % _driver_name(probe),
+                        file=sys.stderr)
 
     def _resolve_trace_context(self, environ):
         """issue #107: decide this request's `(trace_id, span_id, link,
@@ -1711,17 +1767,23 @@ class LnplWsgiApp:
                                          "the server received SIGTERM and is "
                                          "shutting down",
                                          checks=["shutting-down"]))
-        broken = self._readyz_broken()
+        capabilities = {}
+        broken = self._readyz_broken(capabilities)
         if broken:
             return _json_response(start_response, 503,
                                   problem(503, "not-ready",
                                          "readiness check(s) failed: %s"
                                          % ", ".join(broken),
                                          checks=broken))
-        return _json_response(start_response, 200, {"status": "ok"},
+        body = {"status": "ok"}
+        if capabilities:
+            # issue #228: data, not a check -- the closed list of five
+            # (issue #110 D4) is unchanged and never names it.
+            body["capabilities"] = capabilities
+        return _json_response(start_response, 200, body,
                               content_type="application/json")
 
-    def _readyz_broken(self):
+    def _readyz_broken(self, capabilities):
         """issue #110, D4's closed list of five, by name — extending this
         list is a decision (D4 says so explicitly), not a one-line patch:
 
@@ -1743,6 +1805,12 @@ class LnplWsgiApp:
              (review C1: readyz is unauthenticated); failure keeps the last
              good keys and reports `secret-provider`.
 
+        Check 2 also fills `capabilities` (issue #228) from the repository it
+        already opened -- `{"idempotency": bool}` for a RepositoryDriver,
+        nothing for a legacy test double -- and `{"idempotency": False}` when
+        no backend is configured. Data for the 200 body, never a broken-check
+        name.
+
         Returns the broken ones' names, in the order above; empty means
         ready.
         """
@@ -1753,7 +1821,12 @@ class LnplWsgiApp:
             except DriverError:
                 broken.append("repository")
             else:
+                mode = _idempotency_mode(repository)
+                if mode in ("claim", "refuse"):
+                    capabilities["idempotency"] = mode == "claim"
                 repository.close()
+        else:
+            capabilities["idempotency"] = False
         if self.jwt_secret_env and not os.environ.get(self.jwt_secret_env):
             broken.append("jwt-secret-env")
         if (isinstance(self.token_provider, RotatingHmacTokenProvider)
@@ -1953,12 +2026,22 @@ class LnplWsgiApp:
     def _respond(self, environ, start_response, doc, workflow_id, payload,
                 correlation_id, repository, claims=None, log_sink=None,
                 trace_ctx=None, idempotency_key=None, if_match=None):
-        # issue #113, D8/D9/D11: opt-in on the repository object, the same
-        # `getattr` idiom D12's ETag opt-in uses -- covers "no backend at
-        # all" (fake -> `repository is None`) and "a backend that never
-        # implemented it" in one check, no special-casing either.
-        claim = (idempotency_key is not None and repository is not None
-                and hasattr(repository, "idempotency_begin"))
+        # issue #228: the driver declares the capability; `_idempotency_mode`
+        # (ruling t2 D1 r2) keeps the pre-#228 opt-in for non-driver objects.
+        mode = (_idempotency_mode(repository)
+                if idempotency_key is not None else None)
+        if mode == "refuse":
+            return _json_response(
+                start_response, 501,
+                problem(501, "idempotency-unsupported",
+                       "repository driver %s does not support Idempotency-Key "
+                       "(it does not implement idempotency_begin, "
+                       "idempotency_finish and idempotency_release); install "
+                       "or upgrade to a driver that implements them, or "
+                       "resend the request without the Idempotency-Key header"
+                       % _driver_name(repository),
+                       correlation_id=correlation_id))
+        claim = mode in ("claim", "legacy-claim")
         if claim:
             now_ms = int(time.time() * 1000)
             claim_status, stored = repository.idempotency_begin(
@@ -2114,11 +2197,21 @@ class LnplWsgiApp:
         factory = self.repository_factory
         repository = factory() if factory is not None else None
         try:
-            # issue #113, D8/D9's same opt-in `getattr` idiom `_respond`
-            # uses: covers "no backend" (fake) and "a backend that never
-            # implemented it" in one check.
-            claim = (repository is not None
-                    and hasattr(repository, "idempotency_begin"))
+            # issue #228: same rule as `_respond`; the CloudEvents id is the
+            # key, so a driver without the claim set refuses every event.
+            mode = _idempotency_mode(repository)
+            if mode == "refuse":
+                return _json_response(
+                    start_response, 501,
+                    problem(501, "idempotency-unsupported",
+                           "repository driver %s does not support idempotency "
+                           "(it does not implement idempotency_begin, "
+                           "idempotency_finish and idempotency_release), and "
+                           "this route uses the CloudEvents id as its "
+                           "idempotency key; install or upgrade to a driver "
+                           "that implements them" % _driver_name(repository),
+                           correlation_id=correlation_id))
+            claim = mode in ("claim", "legacy-claim")
             if claim:
                 now_ms = int(time.time() * 1000)
                 claim_status, stored = repository.idempotency_begin(
