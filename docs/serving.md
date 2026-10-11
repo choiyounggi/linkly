@@ -174,6 +174,7 @@ linkly가 따르는 규범 문서는 없다.
 | # | 관측 조건 | HTTP | error `code` |
 |---|-----------|------|--------------|
 | M17 | 같은 키로 이미 실행 중(다른 요청이 아직 안 끝남) | 409 | `idempotency-in-progress` |
+| M22 | `Idempotency-Key` 헤더가 있고, 설정된 저장소 드라이버(`RepositoryDriver`)의 `supports_idempotency()`가 False — 클레임 메서드 3종(`idempotency_begin`/`idempotency_finish`/`idempotency_release`)을 구현하지 않음(현재 `lnpl-postgres`). 클레임도 워크플로 실행도 하지 않는다 | 501 | `idempotency-unsupported` |
 
 재생(replay)은 새 판정 행이 아니다 — 저장된 첫 실행의 상태코드·바디를
 그대로 돌려줄 뿐이다(200이었으면 200, 409 `conflict`였으면 409
@@ -199,10 +200,26 @@ linkly가 따르는 규범 문서는 없다.
 복구 수단은 `--idempotency-ttl`(기본 24h)뿐이다 — TTL이 지나면 그 키는
 새 미스로 취급된다. 이 창을 없는 척하지 않는다: 짧지만 실재한다.
 
-`--backend fake`에서는 요청마다 빈 저장소가 새로 시딩되므로 클레임을 남길
-곳이 없다 — 이 기능은 **비활성**이고, 서버 기동 시 stderr에 경고를 한 번
-낸다. `Idempotency-Key` 헤더를 보내도 조용히 무시되고 매 요청이 그대로
-실행된다(이 백엔드에서 결과가 요청 간에 남지 않는 것과 같은 이유).
+**백엔드별 규칙 (이슈 #228).** `Idempotency-Key`를 지킬 수 있는지는 저장소
+드라이버가 `RepositoryDriver.supports_idempotency()`로 선언한다
+(`docs/backends.md` §8 — 클레임 메서드 3종 `idempotency_begin`/
+`idempotency_finish`/`idempotency_release`를 모두 구현했을 때만 True).
+지킬 수 없는 키를 조용히 무시해 같은 요청을 두 번 실행하는 대신, 명시적으로
+실패한다:
+
+| 백엔드 | `Idempotency-Key`가 오면 | 기동 시 stderr |
+|--------|--------------------------|----------------|
+| `fake` (`--backend fake`) | 비활성 — 요청마다 빈 저장소가 새로 시딩되어 클레임을 남길 곳이 없으므로 헤더를 무시하고 매 요청을 그대로 실행한다 | `lnpl serve: Idempotency-Key support is disabled ...` 한 줄(D11) |
+| `sqlite:<path>` (`supports_idempotency()` True) | 위 계약 그대로 — 클레임·재생·M17 | 없음 |
+| 클레임 메서드 3종을 구현하지 않은 드라이버(`supports_idempotency()` False — 현재 `lnpl-postgres`, lnpl-postgres#8 전까지) | 거부 — 501 `idempotency-unsupported`(M22). 클레임도 워크플로 실행도 하지 않는다. 헤더 없는 요청은 그대로 실행된다 | `lnpl serve: repository driver <module.qualname> -- idempotency: unsupported ...` 한 줄(아래 운영 표면) |
+
+501은 RFC 9110 §15.6.2의 뜻 그대로다 — 서버가 이 요청을 이행하는 데 필요한
+기능을 지원하지 않는다. Idempotency-Key draft는 키를 저장할 곳이 없는 서버의
+응답을 규정하지 않는다. 501 본문의 `detail`은 드라이버를
+`<module>.<qualname>`으로 이름 짓고 운영자가 할 일(구현한 드라이버 설치·
+업그레이드, 또는 헤더 없이 재전송)을 적는다. 이벤트 소비 라우트
+(`POST /-/events/<slug>`)도 같은 규칙을 따른다 — 그 라우트는 CloudEvents
+`id`가 곧 키이므로, 이런 드라이버에서는 모든 요청이 E8(501)이다.
 
 ## `ETag` / `If-Match` (이슈 #113)
 
@@ -232,7 +249,8 @@ REST의 PUT/PATCH가 갖는 단일 대상 리소스가 없어서, 이전 GET의 
 | M20 | `If-Match`가 있고 첫 읽기의 조회 키를 이 요청만으로 미리 평가할 수 없음(참조가 바인딩·네트워크 결과를 가리키거나, 그 값이 이 요청에 없음) | 400 | `precondition-unsupported` |
 | M21 | `If-Match`가 있고 조회 키는 평가됐는데 그 키의 행이 없음 | 412 | `precondition-failed` |
 
-평가 순서: 인증(M3/M3a/M3b, `_respond` 전에 이미 끝남) → M18(형식) →
+평가 순서: 인증(M3/M3a/M3b, `_respond` 전에 이미 끝남) → M22(멱등성 미지원,
+`Idempotency-Key`가 있을 때만) → 멱등성 클레임(M17/재생) → M18(형식) →
 M20(조회 키 미평가) → M21(행 없음) → M19(버전 불일치) → 워크플로 실행.
 M21은 `If-Match` 없는 같은 요청이 받는 404(M8b)보다 앞선다.
 
@@ -307,6 +325,7 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 | E5 | 실행 완료 | 200 | — |
 | E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열), 또는 낙관적 버전 쓰기 충돌(`failure_kind == "write-conflict"`, 이슈 #201 — 실패 스텝이 `set`이라 효과가 `Assignment`여도 여기다) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
 | E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`(저자가 선언한 `fail <code>` — `failure_kind == "rejected"`, RFC-0056), create 충돌, `not-found` — 영속 백엔드 읽기 미스(이슈 #197)나 0행 `update`/`delete`(이슈 #215), `id` 없는 create `id-required`(RFC-0055)) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
+| E8 | 저장소 드라이버(`RepositoryDriver`)의 `supports_idempotency()`가 False — CloudEvents `id`가 곧 멱등성 키이므로 이 라우트의 모든 요청이 해당한다. 봉투 검사(E1-E3) 다음, E4보다 먼저 판정하며 클레임도 워크플로 실행도 하지 않는다 | 501 | `idempotency-unsupported` |
 
 **멱등성 (D6)** — CloudEvents `id`가 멱등성 키다. `lnpl_idempotency`(이슈
 #113)를 **그대로** 재사용한다 — 두 번째 저장소를 만들지 않는다. 200과
@@ -317,7 +336,11 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 취지를 정면으로 깬다). 그래서 503 다음 같은 `id`가 즉시 재전달되면
 "실행 중" 상태가 아직 안 지워졌으므로 E4(409)를 본다 — TTL이 지나야
 완전히 새로 시작한다. `fake` 백엔드(멱등성 저장소 없음)는 매번 독립적으로
-실행한다(D9/D11 기존 규약과 동일).
+실행한다(D9/D11 기존 규약과 동일). 클레임 메서드 3종을 구현하지 않은
+드라이버(`supports_idempotency()` False)에서는 봉투 검사 다음 E8(501
+`idempotency-unsupported`)로 거부하고 실행하지 않는다(이슈 #228). 레퍼런스
+릴레이 `lnpl relay`는 501을 예상 밖 상태로 보고 ack하지 않은 채 다음 drain에서
+다시 보낸다.
 
 **레퍼런스 릴레이 — `lnpl relay`.** `lnpl outbox drain`(발행)과 이 라우트
 (소비)를 잇는 최소 구현. `--target http(s)://...`는 브로커 의존 없이 두
@@ -424,7 +447,9 @@ liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
    (실패했다면 `ServeError`로 애초에 뜨지 못했으므로, 이 앱이 존재한다는
    사실 자체가 통과의 증거다).
 2. 영속 백엔드(`--backend sqlite:...`)가 설정돼 있으면 커넥션을 1회
-   획득·해제한다.
+   획득·해제한다. 같은 커넥션에서 드라이버의 `supports_idempotency()`도 읽어
+   200 본문의 `capabilities`에 싣는다(이슈 #228) — 검사 항목이 아니라
+   데이터다. False여도 200이다.
 3. `--jwt-secret-env`가 지정돼 있으면 그 환경변수가 **지금도** 설정돼
    있는지 — 기동 시 검증(`cli.cmd_serve`)과 별개로, 매 프로브마다 다시
    읽는다(프로세스가 떠 있는 동안 그 변수가 사라지는 드문 드리프트도
@@ -445,7 +470,7 @@ liveness가 재시작시키면 롤링 업데이트/드레이닝이 깨진다.
    200으로 돌아온다. 본문에는 검사 이름만 실린다.
 
 SIGTERM은 이 다섯보다 **먼저** 본다 — 받는 즉시 나머지 검사 없이 503이다.
-전부 통과하면 200 `{"status": "ok"}`; 하나라도 깨졌으면 503 +
+전부 통과하면 200 `{"status": "ok", "capabilities": {"idempotency": <bool>}}`; 하나라도 깨졌으면 503 +
 `application/problem+json`(`code: "not-ready"`)에 **깨진 검사 이름**을
 `checks`로 싣는다. 401/403(위 M3/M3a/M3b)과 반대 판단이다 — readyz는
 운영자용이지 공격면이 아니므로, 어느 검사가 깨졌는지 감추지 않는다.
@@ -457,6 +482,22 @@ SIGTERM은 이 다섯보다 **먼저** 본다 — 받는 즉시 나머지 검사
  "detail": "readiness check(s) failed: repository, jwt-secret-env",
  "checks": ["repository", "jwt-secret-env"]}
 ```
+
+**능력 노출과 기동 줄 (이슈 #228).** `capabilities.idempotency`는 저장소
+드라이버의 `supports_idempotency()`가 True일 때만 `true`다 — 영속 백엔드가
+없으면(`fake`) `false`. 능력이 없는 것은 기다리거나 재시작해도 생기지 않는
+정적 사실이라 readiness 실패가 아니다: 200은 그대로이고, 닫힌 목록 다섯은
+늘지 않으며(`capabilities`는 `checks` 이름이 아니다), 503 본문도 바뀌지
+않는다. 같은 사실을 기동 시에도 한 번 알린다 — `make_wsgi_app`(`lnpl serve`와
+`build_app()` 둘 다 거친다)이 저장소를 하나 열어 능력을 읽고 닫으며, 능력이
+없으면 stderr에 한 줄을 낸다:
+
+```text
+lnpl serve: repository driver <module.qualname> -- idempotency: unsupported (it does not implement idempotency_begin, idempotency_finish and idempotency_release); requests carrying Idempotency-Key are refused with 501 idempotency-unsupported
+```
+
+`fake`에는 이 줄이 없다(위 D11 경고가 이미 있다). gunicorn이 `--preload`
+없이 워커마다 `build_app()`을 부르면 워커마다 한 줄씩 찍힌다.
 
 **liveness와 readiness를 절대 섞지 않는다.** 재시작이 답인 실패(프로세스가
 망가짐)는 healthz로, 트래픽만 끊으면 되는 실패(백엔드/설정 드리프트)는

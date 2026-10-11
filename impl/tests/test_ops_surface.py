@@ -127,6 +127,9 @@ class NormalTest(unittest.TestCase):
         calls = []
         app = make_wsgi_app(_doc(OPEN_SRC),
                             repository_factory=_recording_factory(calls))
+        # issue #228: construction opens and closes one repository (the
+        # boot capability probe); count only what the request does.
+        calls.clear()
 
         status, _headers, body = call_wsgi(app, "GET", "/-/healthz")
 
@@ -140,12 +143,15 @@ class NormalTest(unittest.TestCase):
         status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
 
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
 
     def test_normal_readyz_is_200_with_a_healthy_backend(self):
         calls = []
         app = make_wsgi_app(_doc(OPEN_SRC),
                             repository_factory=_recording_factory(calls))
+        # issue #228: construction opens and closes one repository (the
+        # boot capability probe); count only what the request does.
+        calls.clear()
 
         status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
 
@@ -168,7 +174,7 @@ class NormalTest(unittest.TestCase):
         status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
 
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
 
     def test_normal_readyz_is_200_when_jwt_secret_env_is_actually_set(self):
         # The positive twin of the error-case unset test below — proves the
@@ -183,7 +189,7 @@ class NormalTest(unittest.TestCase):
         status, _headers, body = call_wsgi(app, "GET", "/-/readyz")
 
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
 
     # issue #187: the build_app-path twins of the readyz check 3 cases.
     # `build_app` used to drop `jwt_secret_env` before `make_wsgi_app`, so
@@ -197,7 +203,7 @@ class NormalTest(unittest.TestCase):
 
         self.assertEqual("LNPL_TEST_R9_SECRET", app.jwt_secret_env)
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
 
     def test_normal_readyz_stays_200_when_no_jwt_secret_env_is_configured_at_all(self):
         with mock.patch.dict(os.environ):
@@ -208,7 +214,7 @@ class NormalTest(unittest.TestCase):
 
         self.assertIsNone(app.jwt_secret_env)
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
 
 
 class ErrorTest(unittest.TestCase):
@@ -307,7 +313,7 @@ class ShutdownTest(unittest.TestCase):
         status, _headers, body = call_wsgi(server.get_app(), "GET", "/-/readyz")
 
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
 
     def test_error_sigterm_flips_readyz_to_503_with_the_check_named(self):
         server = self._serve(OPEN_SRC)
@@ -403,7 +409,7 @@ class ReadyzSecretProviderTest(unittest.TestCase):
         status, body, _err = self._probe(2 * self.FLOOR)
 
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
 
     def test_normal_rotation_visible_after_one_probe(self):
         self.source.rotate("jwt", DEMO_SECRET_K1)
@@ -439,7 +445,7 @@ class ReadyzSecretProviderTest(unittest.TestCase):
         status, body, _err = self._probe(self.FLOOR - 0.1)
 
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok"}, body)
+        self.assertEqual({"status": "ok", "capabilities": {"idempotency": False}}, body)
         self.assertEqual(1, self.source.get_calls)
 
     def test_error_failure_is_reported_until_the_floor_passes(self):
