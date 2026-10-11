@@ -21,6 +21,7 @@ from lnpl import drivers as drivers_module
 from lnpl.drivers import BACKENDS, DriverError, SqliteRepositoryDriver, open_repository
 
 from tests.driver_spi_fixture import DemoRepositoryDriver
+from tests.test_driver_contract import CAPABILITY_TCK_CASES, _run_one_tck_case
 
 GROUP = drivers_module.DRIVERS_ENTRY_POINT_GROUP
 
@@ -137,3 +138,55 @@ class BuiltinShadowingTest(unittest.TestCase):
             driver = open_repository("fake")
 
         self.assertIsNone(driver)
+
+
+class _DrainOnlyDemoDriver(DemoRepositoryDriver):
+    def drain_outbox(self, limit=None):
+        return []
+
+
+class _ClaimingDemoDriver(DemoRepositoryDriver):
+    """Claims idempotency support without implementing any of the three
+    methods — the TCK must catch it, not skip it."""
+
+    def supports_idempotency(self):
+        return True
+
+
+class DemoDriverCapabilityTest(unittest.TestCase):
+    """Issue #228/#229: the SPI demo driver implements none of the five
+    optional methods, so it declares neither capability and passes every
+    optional-method TCK case on the declared-unsupported path. It runs
+    one case at a time because the demo fails five unrelated TCK cases
+    (no predicate pushdown, no real transactions — analysis Spike S3)."""
+
+    def test_the_demo_driver_declares_neither_capability(self):
+        driver = DemoRepositoryDriver()
+
+        self.assertIs(driver.supports_idempotency(), False)
+        self.assertIs(driver.supports_outbox_drain(), False)
+
+    def test_the_demo_driver_passes_every_case_as_declared_unsupported(self):
+        for case in CAPABILITY_TCK_CASES:
+            with self.subTest(case=case):
+                result = _run_one_tck_case(lambda: DemoRepositoryDriver(),
+                                           case)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(len(result.skipped), 0)
+                self.assertEqual(len(result.failures) + len(result.errors), 0,
+                                 (result.failures, result.errors))
+
+    def test_half_an_outbox_pair_reads_as_unsupported(self):
+        driver = _DrainOnlyDemoDriver()
+
+        self.assertIs(driver.supports_outbox_drain(), False)
+        self.assertIs(driver.supports_idempotency(), False)
+
+    def test_claiming_idempotency_without_the_methods_fails_the_tck(self):
+        result = _run_one_tck_case(lambda: _ClaimingDemoDriver(),
+                                   CAPABILITY_TCK_CASES[0])
+
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.skipped), 0)
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("AttributeError", result.errors[0][1])

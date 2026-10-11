@@ -17,7 +17,9 @@ import os
 import tempfile
 import unittest
 
-from lnpl.drivers import DriverError, SqliteRepositoryDriver
+from lnpl.drivers import (IDEMPOTENCY_METHODS, OUTBOX_DRAIN_METHODS,
+                          DriverError, RepositoryDriver,
+                          SqliteRepositoryDriver)
 from lnpl.interp import (MASK, Clock, FakeCache, FakeRepository,
                         Interpreter, RunError)
 from lnpl.lower import lower
@@ -25,6 +27,7 @@ from lnpl.parser import parse
 from lnpl.repo_policy import default_rows
 from lnpl.testing import RepositoryDriverTCK
 
+from tests.driver_spi_fixture import DemoRepositoryDriver
 from tests.fixtures import GUARDED, SECRET_ACCOUNT, VALUE_INVENTORY
 
 READ_ONLY = """capability postgres
@@ -902,6 +905,255 @@ class DefaultPathTest(ContractTestCase):
         self.assertEqual(positional,
                          ["self", "document", "clock", "repo_rows",
                           "correlation_id"])
+
+
+class _ExternalLikeDriver(RepositoryDriver):
+    """R3: an external driver written against the five methods alone —
+    it overrides neither capability predicate."""
+
+    def idempotency_begin(self, workflow_id, key, now_ms, ttl_ms):
+        return ("started", None)
+
+    def idempotency_finish(self, workflow_id, key, http_status, body):
+        return None
+
+    def idempotency_release(self, workflow_id, key):
+        return None
+
+    def drain_outbox(self, limit=None):
+        return []
+
+    def ack_outbox(self, seqs):
+        return None
+
+
+class _DrainAckOnlyDriver(RepositoryDriver):
+    def drain_outbox(self, limit=None):
+        return []
+
+    def ack_outbox(self, seqs):
+        return None
+
+
+class _TwoOfThreeIdempotencyDriver(RepositoryDriver):
+    def idempotency_begin(self, workflow_id, key, now_ms, ttl_ms):
+        return ("started", None)
+
+    def idempotency_finish(self, workflow_id, key, http_status, body):
+        return None
+
+
+class _DrainWithoutAckDriver(RepositoryDriver):
+    def drain_outbox(self, limit=None):
+        return []
+
+
+class _SqliteWithoutRelease(SqliteRepositoryDriver):
+    """Boundary: a test double withdrawing one inherited method by setting
+    it to None — the predicate counts callables, not names."""
+
+    idempotency_release = None
+
+
+class DriverCapabilityPredicateTest(unittest.TestCase):
+    """Issue #228/#229, design D1/D8: the two predicates read the method
+    set the instance really has — no override needed, a partial set is
+    not support."""
+
+    def _sqlite(self, driver_class):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        driver = driver_class(os.path.join(box.name, "capability.db"))
+        self.addCleanup(driver.close)
+        return driver
+
+    def test_the_sqlite_driver_reports_both_capabilities(self):
+        driver = self._sqlite(SqliteRepositoryDriver)
+
+        self.assertIs(driver.supports_idempotency(), True)
+        self.assertIs(driver.supports_outbox_drain(), True)
+
+    def test_an_external_driver_with_all_five_methods_is_capable_without_overriding(self):
+        driver = _ExternalLikeDriver()
+
+        self.assertNotIn("supports_idempotency", vars(_ExternalLikeDriver))
+        self.assertNotIn("supports_outbox_drain", vars(_ExternalLikeDriver))
+        self.assertIs(driver.supports_idempotency(), True)
+        self.assertIs(driver.supports_outbox_drain(), True)
+
+    def test_the_drain_ack_pair_alone_reports_outbox_drain_only(self):
+        driver = _DrainAckOnlyDriver()
+
+        self.assertIs(driver.supports_outbox_drain(), True)
+        self.assertIs(driver.supports_idempotency(), False)
+
+    def test_the_base_class_reports_neither_and_defines_none_of_the_five(self):
+        driver = RepositoryDriver()
+
+        self.assertEqual(IDEMPOTENCY_METHODS, ("idempotency_begin",
+                                               "idempotency_finish",
+                                               "idempotency_release"))
+        self.assertEqual(OUTBOX_DRAIN_METHODS, ("drain_outbox", "ack_outbox"))
+        self.assertIs(driver.supports_idempotency(), False)
+        self.assertIs(driver.supports_outbox_drain(), False)
+        for name in IDEMPOTENCY_METHODS + OUTBOX_DRAIN_METHODS:
+            self.assertFalse(hasattr(driver, name), name)
+
+    def test_two_of_the_three_idempotency_methods_is_not_support(self):
+        self.assertIs(_TwoOfThreeIdempotencyDriver().supports_idempotency(),
+                      False)
+
+    def test_drain_without_ack_is_not_outbox_drain_support(self):
+        self.assertIs(_DrainWithoutAckDriver().supports_outbox_drain(), False)
+
+    def test_an_inherited_method_set_to_none_withdraws_only_its_own_set(self):
+        driver = self._sqlite(_SqliteWithoutRelease)
+
+        self.assertIs(driver.supports_idempotency(), False)
+        self.assertIs(driver.supports_outbox_drain(), True)
+
+
+# issue #228/#229: the six optional-method TCK cases, in the order they
+# are defined in `lnpl.testing.RepositoryDriverTCK`. test_driver_spi.py
+# imports this tuple for the demo driver's run.
+CAPABILITY_TCK_CASES = (
+    "test_an_open_idempotency_claim_answers_in_progress_to_a_second_claim",
+    "test_a_finished_idempotency_claim_replays_its_stored_result",
+    "test_a_released_idempotency_claim_can_be_claimed_afresh",
+    "test_drain_outbox_lists_every_undelivered_emission_in_seq_order",
+    "test_an_acked_emission_is_never_drained_again",
+    "test_re_acking_a_delivered_seq_is_an_idempotent_success",
+)
+
+
+class _ClaimAlwaysStartsDriver(SqliteRepositoryDriver):
+    """Negative control: a claim that never sees an open claim."""
+
+    def idempotency_begin(self, workflow_id, key, now_ms, ttl_ms):
+        return ("started", None)
+
+
+class _FinishForgetsDriver(SqliteRepositoryDriver):
+    """Negative control: finish records nothing, so nothing replays."""
+
+    def idempotency_finish(self, workflow_id, key, http_status, body):
+        return None
+
+
+class _ReleaseKeepsClaimDriver(SqliteRepositoryDriver):
+    """Negative control: release leaves the claim in-progress."""
+
+    def idempotency_release(self, workflow_id, key):
+        return None
+
+
+class _DrainReturnsNothingDriver(SqliteRepositoryDriver):
+    """Negative control: drain hides undelivered rows."""
+
+    def drain_outbox(self, limit=None):
+        return []
+
+
+class _AckIgnoredDriver(SqliteRepositoryDriver):
+    """Negative control: ack marks nothing delivered."""
+
+    def ack_outbox(self, seqs):
+        return None
+
+
+class _ReAckRaisesDriver(SqliteRepositoryDriver):
+    """Negative control: re-acking a delivered seq raises instead of
+    succeeding silently."""
+
+    def ack_outbox(self, seqs):
+        undelivered = {row["seq"] for row in self.drain_outbox()}
+        if any(seq not in undelivered for seq in seqs):
+            raise DriverError("outbox ack: seq already delivered")
+        super().ack_outbox(seqs)
+
+
+class _ClaimsDrainWithoutAckDriver(SqliteRepositoryDriver):
+    """Negative control for the True branch: claims the drain/ack set
+    while `ack_outbox` is gone."""
+
+    ack_outbox = None
+
+    def supports_outbox_drain(self):
+        return True
+
+
+class _PartialIdempotencyDriver(DemoRepositoryDriver):
+    """Negative control for the False branch: two of the three
+    idempotency methods, so the default predicate reports False while a
+    method of the set is present."""
+
+    def idempotency_begin(self, workflow_id, key, now_ms, ttl_ms):
+        return ("started", None)
+
+    def idempotency_finish(self, workflow_id, key, http_status, body):
+        return None
+
+
+class _PartialOutboxDriver(DemoRepositoryDriver):
+    """Negative control for the False branch: drain without ack."""
+
+    def drain_outbox(self, limit=None):
+        return []
+
+
+class CapabilityTCKDiscriminatesTest(unittest.TestCase):
+    """`harness-reverse-controls`: each optional-method TCK case passes the
+    real sqlite driver without skipping and fails a driver built to break
+    exactly that case; every control asserts `testsRun == 1` and
+    `skipped == 0`, so neither a vacuous pass nor a skip can satisfy it."""
+
+    SQLITE_CONTROLS = (
+        (_ClaimAlwaysStartsDriver, CAPABILITY_TCK_CASES[0]),
+        (_FinishForgetsDriver, CAPABILITY_TCK_CASES[1]),
+        (_ReleaseKeepsClaimDriver, CAPABILITY_TCK_CASES[2]),
+        (_DrainReturnsNothingDriver, CAPABILITY_TCK_CASES[3]),
+        (_AckIgnoredDriver, CAPABILITY_TCK_CASES[4]),
+        (_ReAckRaisesDriver, CAPABILITY_TCK_CASES[5]),
+        (_ClaimsDrainWithoutAckDriver, CAPABILITY_TCK_CASES[4]),
+    )
+
+    DEMO_CONTROLS = (
+        (_PartialIdempotencyDriver, CAPABILITY_TCK_CASES[0]),
+        (_PartialOutboxDriver, CAPABILITY_TCK_CASES[3]),
+    )
+
+    def _store_path(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        return os.path.join(box.name, "capability-tck.db")
+
+    def test_every_capability_case_passes_the_sqlite_driver_without_skipping(self):
+        for case in CAPABILITY_TCK_CASES:
+            with self.subTest(case=case):
+                path = self._store_path()
+                result = _run_one_tck_case(
+                    lambda: SqliteRepositoryDriver(path), case)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(len(result.skipped), 0)
+                self.assertEqual(len(result.failures) + len(result.errors), 0,
+                                 (result.failures, result.errors))
+
+    def test_each_sqlite_negative_control_fails_its_case(self):
+        for driver_class, case in self.SQLITE_CONTROLS:
+            with self.subTest(control=driver_class.__name__, case=case):
+                path = self._store_path()
+                result = _run_one_tck_case(lambda: driver_class(path), case)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(len(result.skipped), 0)
+                self.assertEqual(len(result.failures) + len(result.errors), 1)
+
+    def test_a_partial_method_set_fails_the_declared_unsupported_branch(self):
+        for driver_class, case in self.DEMO_CONTROLS:
+            with self.subTest(control=driver_class.__name__, case=case):
+                result = _run_one_tck_case(lambda: driver_class(), case)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(len(result.skipped), 0)
+                self.assertEqual(len(result.failures), 1)
 
 
 if __name__ == "__main__":

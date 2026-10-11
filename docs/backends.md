@@ -261,6 +261,10 @@ CLI 계약(`plugins/lnpl/skills/lnpl-authoring/cli-surface.md`에 상세):
   거부한다 — 나머지가 조용히 acked되어 "일부만 성공했다"를 호출자가 메시지
   만으로 알 수 없게 되는 일은 없다.
 
+`drain_outbox`/`ack_outbox`는 `RepositoryDriver`의 **선택** 메서드다. 외부 드라이버가
+이 둘을 갖췄는지는 `supports_outbox_drain()`이 알리며, 기능별 대응은 §8
+「선택 메서드와 능력 술어」 표에 있다.
+
 **외부 릴레이가 소유하는 것.** 이 구현은 drain으로 읽고 ack로 지우는 것까지만
 한다 — 실제로 카프카·SQS 등에 퍼블리시하는 폴링 퍼블리셔는 cron·systemd
 타이머·k8s `CronJob` 같은 프로세스 밖 스케줄러가 소유하며, 그 루프는
@@ -459,6 +463,32 @@ if문이 하나도 없다.
 보존). 이 모듈의 "ONE ERROR TYPE OUT" 규칙이 entry-points 경로에도 그대로
 적용된다는 뜻이다.
 
+### 선택 메서드와 능력 술어 (이슈 #228/#229)
+
+`RepositoryDriver`의 필수 메서드만 구현해도 `lnpl run`은 돈다. 그러나 serve와 CLI의
+일부 기능은 **선택 메서드** 묶음을 더 요구하고, 드라이버가 그 묶음을 갖췄는지는 기본
+클래스의 두 **능력 술어**가 알린다. 기본 클래스는 다섯 선택 메서드를 하나도 정의하지
+않는다. 술어의 기본 구현은 묶음의 메서드가 이 드라이버 인스턴스에서 전부 호출 가능한지를
+직접 확인하므로, 메서드를 구현한 외부 드라이버는 술어를 오버라이드하지 않아도 True로
+보고된다. 묶음 중 하나라도 빠지면 False다 — 반쪽 구현은 지원이 아니다.
+
+| 기능 | 필요한 선택 메서드 | 알리는 술어 | 술어가 False일 때 |
+|---|---|---|---|
+| `Idempotency-Key` 헤더 — 워크플로 요청 경로와 `POST /-/events/<slug>` 소비 경로 | `idempotency_begin` / `idempotency_finish` / `idempotency_release` | `supports_idempotency()` | serve가 요청을 실행하지 않고 501 `idempotency-unsupported`(problem+json)로 거부한다 (이슈 #228) |
+| `lnpl outbox drain` / `lnpl outbox ack` | `drain_outbox` / `ack_outbox` | `supports_outbox_drain()` | CLI가 한 줄 오류와 rc 2로 끝낸다 (이슈 #229) |
+| `lnpl relay` | `drain_outbox` / `ack_outbox` | `supports_outbox_drain()` | CLI가 한 줄 오류와 rc 2로 끝낸다 (이슈 #229) |
+| SSE 구독 `GET /<svc>/events/<slug>` | `read_outbox` | 없음 — `read_outbox`는 필수 기본 메서드다 | 해당 없음 |
+
+술어는 오버라이드하지 않는다. TCK가 술어의 답과 실제로 있는 메서드를 양쪽으로 맞춰
+보므로, 메서드 없이 True를 내거나 메서드를 둔 채 False를 내는 드라이버는 TCK에서
+실패한다(아래 「TCK로 검증하기」).
+
+현재 드라이버(2026-10-11 기준): 내장 `sqlite`는 두 술어 모두 True다.
+[`lnpl-postgres`](https://github.com/choiyounggi/lnpl-postgres)는 다섯 선택 메서드가
+없어 둘 다 False이며, 구현은 lnpl-postgres#8의 몫이다. `fake`는 저장소 드라이버를 두지
+않으므로 술어를 묻지 않고 기존 동작을 그대로 유지한다 — 멱등성 클레임은 하지 않고,
+`lnpl outbox`/`lnpl relay`는 기존대로 rc 2로 거부한다.
+
 ### TCK로 검증하기
 
 외부 드라이버는 `lnpl.testing.RepositoryDriverTCK`를 상속해 자기 CI에서 돌린다:
@@ -495,6 +525,16 @@ class MyPostgresDriverTCKTest(RepositoryDriverTCK, unittest.TestCase):
 `DriverError`로 거부되는지를 단언한다. **`rollback`을 no-op으로 답하던
 드라이버는 이 TCK를 더 이상 통과하지 못한다.** `SqliteRepositoryDriver`가 이
 TCK로 검증되는 예는 `impl/tests/test_driver_contract.py::SqliteDriverTCKTest`다.
+
+**선택 메서드(이슈 #228/#229) — skip이 아니라 declared-unsupported.** TCK는 멱등성
+3케이스(열린 클레임에 다시 클레임하면 `in-progress`, `idempotency_finish` 뒤 클레임은
+저장된 결과를 재생, `idempotency_release` 뒤 클레임은 새로 `started`)와 drain/ack
+3케이스(미전달 행을 `seq` 오름차순으로 나열, ack한 행은 다시 drain되지 않음, 같은 `seq`
+재-ack는 멱등 성공)를 담는다. 각 케이스는 먼저 해당 술어를 묻는다. True면 동작을
+단언하고, False면 술어가 정말 `bool` False이고 그 묶음의 메서드가 하나도 없음을 단언한
+뒤 통과한다. 어느 쪽도 `skipTest`가 아니므로, 메서드 없이 True를 내거나 묶음의 일부만
+구현한 드라이버는 스킵 뒤에 숨지 못하고 실패한다. 다섯 메서드가 모두 없는
+드라이버(2026-10-11의 `lnpl-postgres`)는 여섯 케이스를 declared-unsupported로 통과한다.
 
 ## 9. SPI: 외부 토큰 프로바이더 등록 (이슈 #119b)
 
