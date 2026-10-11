@@ -22,9 +22,14 @@ import io
 import json
 import os
 import tempfile
+import types
 import unittest
+from importlib import metadata as importlib_metadata
+from unittest import mock
 
 from lnpl import cli
+from lnpl import drivers as drivers_module
+from tests.driver_spi_fixture import DemoRepositoryDriver
 
 EMIT_SRC = """entity Order
     field
@@ -37,6 +42,51 @@ workflow PlaceOrder
     create order
     emit orderPlaced
 """
+
+# issue #229: the one line every outbox command prints when its --backend
+# driver lacks drain_outbox/ack_outbox (supports_outbox_drain() is False).
+NO_DRAIN_CONTRACT = ("error: backend %s does not implement the outbox drain "
+                     "contract (drain_outbox/ack_outbox) — see "
+                     "docs/backends.md §3\n")
+
+DEMO_DRIVER = importlib_metadata.EntryPoint(
+    name="demo", value="tests.driver_spi_fixture:make_demo_driver",
+    group=drivers_module.DRIVERS_ENTRY_POINT_GROUP)
+
+
+def _drivers_registered(*entry_points):
+    """Patch `lnpl.drivers` discovery to exactly `entry_points` (the
+    `test_driver_spi.py` idiom)."""
+    return mock.patch.object(drivers_module.importlib_metadata,
+                             "entry_points",
+                             lambda **_kw: list(entry_points))
+
+
+def _inline_entry_point(name, driver):
+    """An `lnpl.drivers` entry point whose factory returns `driver`, so the
+    test can inspect the very instance the CLI opened."""
+    return types.SimpleNamespace(
+        name=name, value="inline",
+        group=drivers_module.DRIVERS_ENTRY_POINT_GROUP,
+        load=lambda: (lambda _arg: driver))
+
+
+class _DrainOnlyDriver(DemoRepositoryDriver):
+    """Half of the pair: `drain_outbox` without `ack_outbox`, so
+    `supports_outbox_drain()` is False (issue #229, boundary)."""
+
+    def __init__(self, arg=None):
+        super().__init__(arg)
+        self.calls = []
+        self.closed = False
+
+    def drain_outbox(self, limit=None):
+        self.calls.append(limit)
+        return [{"seq": 1, "emission_id": "e1", "event": "x",
+                 "payload": {}, "created_at": 0}]
+
+    def close(self):
+        self.closed = True
 
 
 class OutboxCliTestCase(unittest.TestCase):
@@ -216,6 +266,72 @@ class OutboxBackendGuardTest(OutboxCliTestCase):
 
         self.assertNotEqual(0, rc)
         self.assertIn("fake", err)
+
+
+class UnsupportedDriverGuardTest(OutboxCliTestCase):
+    """Issue #229: a real driver without the drain/ack pair is refused
+    with one stderr line and rc 2 before anything is drained or acked."""
+
+    def test_drain_against_a_driver_without_the_contract_exits_2_with_one_line(self):
+        with _drivers_registered(DEMO_DRIVER):
+            rc, out, err = self.run_cli(
+                ["outbox", "drain", "--backend", "demo:x"])
+
+        self.assertEqual(2, rc)
+        self.assertEqual(NO_DRAIN_CONTRACT % "demo", err)
+        self.assertEqual("", out)
+        self.assertNotIn("Traceback", err)
+
+    def test_ack_against_a_driver_without_the_contract_exits_2_with_one_line(self):
+        with _drivers_registered(DEMO_DRIVER):
+            rc, out, err = self.run_cli(
+                ["outbox", "ack", "--backend", "demo:x", "1"])
+
+        self.assertEqual(2, rc)
+        self.assertEqual(NO_DRAIN_CONTRACT % "demo", err)
+        self.assertEqual("", out)
+        self.assertNotIn("Traceback", err)
+
+    def test_a_driver_with_drain_but_no_ack_is_refused_before_draining(self):
+        driver = _DrainOnlyDriver("x")
+        with _drivers_registered(_inline_entry_point("half", driver)):
+            rc, out, err = self.run_cli(
+                ["outbox", "drain", "--backend", "half:x"])
+
+        self.assertEqual(2, rc)
+        self.assertEqual(NO_DRAIN_CONTRACT % "half", err)
+        self.assertEqual("", out)
+        self.assertEqual([], driver.calls)
+        self.assertTrue(driver.closed)
+
+    def test_fake_backend_keeps_its_own_refusal(self):
+        for argv in (["outbox", "drain", "--backend", "fake"],
+                     ["outbox", "ack", "--backend", "fake", "1"]):
+            with self.subTest(argv=argv):
+                rc, _out, err = self.run_cli(argv)
+
+                self.assertEqual(2, rc)
+                self.assertIn("persistent --backend", err)
+                self.assertNotIn("does not implement", err)
+
+    def test_a_supporting_driver_is_not_refused(self):
+        self.emit_one()
+
+        rc, out, err = self.run_cli(
+            ["outbox", "drain", "--backend", "sqlite:" + self.db])
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual("", err)
+        self.assertEqual(1, len(out.splitlines()))
+
+    def test_an_unknown_seq_on_a_supporting_driver_maps_to_rc_1(self):
+        self.emit_one()
+
+        rc, _out, err = self.run_cli(
+            ["outbox", "ack", "--backend", "sqlite:" + self.db, "999999"])
+
+        self.assertEqual(1, rc)
+        self.assertIn("999999", err)
 
 
 if __name__ == "__main__":
