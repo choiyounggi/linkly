@@ -781,6 +781,10 @@ RFC_ROUTES = {
              "엔티티든 Password·refine … of Password로 선언한 이름이 기본 "
              "본문에서 빠지는 이유와 그 판정 규칙, 그런 필드가 없으면 본문이 "
              "바이트 동일한 이유", ()),
+    "0064": ("update·delete가 0행에 영향을 주면 왜 not-found(serve 404, 소비 "
+             "422)로 실패하는지 — fake·sqlite·모드 B가 같은 답을 내는 방법, "
+             "기본 시드가 update·delete로 시작하는 엔티티를 왜 채우지 않는지, "
+             "멱등 delete 표기가 왜 없는지", ()),
 }
 
 TITLE_RE = re.compile(r"^# RFC-(\d{4}): (.+)$")

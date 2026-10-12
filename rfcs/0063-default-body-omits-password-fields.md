@@ -63,11 +63,11 @@ Password 값을 상대에게 보내는 길은 없다. `send customer.secret`은 
 `input.<field>`의 optional 여부를 그 이름을 선언한 모든 엔티티로 판정한다(RFC-0053).
 한 엔티티에서 `Text`, 다른 엔티티에서 `Password`인 같은 이름도 뺀다(보수적인 쪽).
 
-컴파일 시점의 `send input.<field>` 거부와의 관계: lower.py는 필드를 평평한
-`declared_fields` dict로 해석한다(lower.py:2548에서 만들고 lower.py:3566-3572에서
-읽는다). dict이므로 같은 이름이면 **마지막에 선언한 엔티티가 이긴다** — 그 거부는
-합집합이 아니다. 이 RFC의 런타임 규칙은 어느 선언 순서에서도 그 거부보다 엄격하거나
-같다.
+컴파일 시점의 `send input.<field>` 거부와의 관계: 그 거부도 같은 합집합으로 판정한다 —
+그 이름을 선언한 엔티티 중 하나라도 Password 계열이면 컴파일 거부다(issue #219,
+RFC-0049 §3 규칙 3, RFC-0057 §3 규칙 4). 이전에는 평평한 `declared_fields` dict(같은
+이름이면 마지막에 선언한 엔티티가 이긴다)로 판정해 선언 순서에 따라 결과가 달랐다. 이제
+런타임 본문 필터와 컴파일 거부가 어느 선언 순서에서도 같은 이름 집합을 본다.
 
 ### 2. 본문 필터
 
@@ -131,8 +131,8 @@ RFC-0049가 plain `emit`(마스킹된 입력 전체)에 같은 선택을 했고,
 - **기본 본문의 Password 누출** (D13) — RFC-0063이 닫았다. `send` 없는 호출의 본문은
   Password 계열 입력 필드를 뺀다.
 - **경로 인자의 Password 값** — `call PaymentGateway with input.secret`처럼 `with`가
-  Password 계열 입력 필드를 가리키면 그 값이 요청 경로에 치환된다. 이 RFC와 RFC-0063
-  모두의 범위 밖이다 — 별도 이슈로 다룬다.
+  Password 계열 참조를 가리키면 컴파일 거부한다(issue #218, RFC-0057 §3 규칙 4). 값이
+  요청 경로에 치환되는 일은 없다.
 - 중첩 본문, 필드별 이름 바꾸기, 조건부 필드, 헤더·쿼리 문자열 매핑.
 
 ## Examples
@@ -170,7 +170,6 @@ HTTP 서버로 실행한다.
    impl/lnpl/wsgi.py` → 4건). 두 번째 이후 엔티티에만 선언된 Password 필드는 그
    채널들에 원문으로 남는다. 그 채널들을 `_input_masked_names()`로 옮기는 일은 별도
    이슈다.
-2. **`send`/`emit ... with`의 같은 이름 공백.** Password 필드를 먼저, 같은 이름의
-   `Text` 필드를 나중에 선언하면 `send input.secret`이 컴파일된다(lower.py:2548,
-   마지막 선언이 이긴다). 별도 이슈다.
-3. **경로 인자.** §8의 `with input.<Password 필드>` 경로 치환. 별도 이슈다.
+2. **`send`/`emit ... with`의 같은 이름 공백.** 해결됨(issue #219): 그 거부는 이제
+   그 이름을 선언한 모든 엔티티를 본다(§1).
+3. **경로 인자.** 해결됨(issue #218): `with`의 Password 계열 참조는 컴파일 거부다(§8).

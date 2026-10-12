@@ -167,6 +167,10 @@ class FakeRepository:
                 conflict.failure_kind = "conflict"
                 raise conflict
             table[key] = {"id": key}
+        if operation == "update":
+            # issue #215: the true count, like `delete` (#183) and the sqlite
+            # driver -- never an upsert.
+            return {"affected": 1 if key in table else 0}
         if operation == "delete":
             existed = table.pop(key, None) is not None
             return {"affected": 1 if existed else 0}
@@ -2524,7 +2528,12 @@ class Interpreter:
                 # D7: invalidated after commit, not here inside the open
                 # transaction.
                 self._read_through_invalidations.append(key)
-            child.attrs["found"] = row is not None
+            # issue #215 / RFC-0064: a write that touched no row answers
+            # {"affected": 0}; it found nothing, the same as a read miss.
+            wrote_nothing = (effect["operation"] in ("update", "delete")
+                             and isinstance(row, dict)
+                             and row.get("affected") == 0)
+            child.attrs["found"] = row is not None and not wrote_nothing
             if effect.get("lookup"):
                 # D6: the ref text only — never the key or value it resolved
                 # to, so there is nothing here for masking to miss.
@@ -2565,6 +2574,15 @@ class Interpreter:
                 # issue #197: typed, so `serve` maps it by kind (404), never
                 # by this wording.
                 not_found = RunError("repository read found no row for %s" % effect["entity"])
+                not_found.failure_kind = "not-found"
+                raise not_found
+            if wrote_nothing:
+                self.clock.advance(1)
+                child.end_ms = self.clock.now
+                # issue #215 / RFC-0064: typed like the #197 read miss, so
+                # `serve` maps it by kind (404; consume path 422).
+                not_found = RunError("repository %s found no row for %s"
+                                     % (effect["operation"], effect["entity"]))
                 not_found.failure_kind = "not-found"
                 raise not_found
             if effect["operation"] == "create":

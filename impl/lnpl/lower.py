@@ -2793,6 +2793,13 @@ def _check_scoped_conditions(emitted, registry, workflow_name, base_of=None,
                                 base_of or {}, derived_assigned,
                                 _guard_key(owner.get(child["id"])),
                                 child.get("line"), "call/request send")
+                        # issue #218: `with` path arguments, same
+                        # Password-family rule (the value would sit in the
+                        # request URL path).
+                        for ref in child.get("path_args") or []:
+                            _refuse_password_ref(ref, scope, workflow_name,
+                                                 "call/request with",
+                                                 "an outbound request path")
                         continue
                     if child["kind"] != "Assignment":
                         continue
@@ -3152,6 +3159,65 @@ def _check_lookup(lookup_ref, scope, workflow_name, base_of):
             % (workflow_name, lookup_ref, declared))
 
 
+def _password_family_declarations(ref, scope):
+    """issues #218/#219: the Password-family declarations a reference can
+    read, as a sorted list of `(owner, declared_type)`; empty when none.
+    `input.<field>` and a bare `<field>` (a payload field at run time) are
+    judged over EVERY entity that declares the name -- deny by default,
+    the same union RFC-0063's default-body filter and RFC-0053's presence
+    rule use -- so declaration order cannot hide a Password field. A
+    `<binding>.<field>` is judged by that row's own entity (owner None).
+    Never raises: an undeclared or unknown reference is not
+    Password-family here, and whatever other rule applies to it is left
+    to its own check."""
+    from .condition import PAYLOAD_NAMESPACE
+    binding, dot, field = ref.partition(".")
+    if not dot or binding == PAYLOAD_NAMESPACE:
+        name = field if dot else ref
+        found = []
+        for ent in scope.registry.values():
+            for f in ent["fields"]:
+                declared = f.get("type")
+                if f["name"] == name and \
+                        scope.base_of.get(declared, declared) == "Password":
+                    found.append((_qualified_name(ent["decl"].namespace,
+                                                  ent["name"]), declared))
+        return sorted(found)
+    if binding == CALLER_NAMESPACE or binding in scope.network_bindings:
+        return []
+    entity = scope.create_bindings.get(binding) or scope.by_binding.get(binding)
+    if entity is None:
+        return []
+    for f in entity["fields"]:
+        declared = f.get("type")
+        if f["name"] == field and \
+                scope.base_of.get(declared, declared) == "Password":
+            return [(None, declared)]
+    return []
+
+
+def _refuse_password_ref(ref, scope, workflow_name, verb_label, sink):
+    """issues #218/#219: refuse a Password-family reference in an outbound
+    channel. `verb_label` names the clause ("emit with", "call/request
+    send", "call/request with"); `sink` names where the value would go
+    ("an outbound payload", "an outbound request path"). For a
+    `<binding>.<field>` the message is byte-identical to the pre-#219 one."""
+    declarations = _password_family_declarations(ref, scope)
+    if not declarations:
+        return
+    declared = ", ".join(
+        declared_type if owner is None
+        else "%s (entity %s)" % (declared_type, owner)
+        for owner, declared_type in declarations)
+    raise LowerError(
+        "workflow %s: %s %s has declared type %s, whose base is "
+        "Password -- %s must not surface a Password field in "
+        "%s (issue #43's masking chokepoint: a masked field's value "
+        "must never leave through an unmasked one)"
+        % (workflow_name, verb_label, ref, declared,
+           verb_label.split()[0], sink))
+
+
 def _check_payload_map(payload_map, scope, workflow_name, base_of,
                        derived_assigned, guard_key, line, verb_label):
     """issue #178/#200, R3/R11: the reference rule shared by `emit ... with`
@@ -3180,6 +3246,9 @@ def _check_payload_map(payload_map, scope, workflow_name, base_of,
     the caller's forward walk) holds every such assignment seen so far,
     keyed by `(binding, field)` -> the set of guard-scope keys it was seen
     in; `guard_key`/`line` are this reader's own scope and source line.
+
+    issues #218/#219: the Password-family test is _refuse_password_ref's,
+    which judges input.<field> over every declaring entity.
     """
     verb_word = verb_label.split()[0]
     clause_word = verb_label.split()[-1]
@@ -3213,16 +3282,7 @@ def _check_payload_map(payload_map, scope, workflow_name, base_of,
                 "scope this `%s` runs in"
                 % (workflow_name, text, field_name, binding, field_name,
                    verb_word, where_str, clause_word, verb_word))
-        declared = field.get("type")
-        base = base_of.get(declared, declared)
-        if base == "Password":
-            raise LowerError(
-                "workflow %s: %s has declared type %s, whose base is "
-                "Password -- %s must not surface a Password field in "
-                "an outbound payload (issue #43's masking "
-                "chokepoint: a masked field's value must never leave "
-                "through an unmasked one)"
-                % (workflow_name, text, declared, verb_word))
+        _refuse_password_ref(ref, scope, workflow_name, verb_label, "an outbound payload")
 
 
 def _check_literal_zero_divisor(value, where):

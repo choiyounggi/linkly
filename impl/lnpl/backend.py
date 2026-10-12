@@ -1200,6 +1200,10 @@ def _has_cache_budget(document, workflow_id):
 # patch (`backend.READ_OPS = ()`) to prove `differential.verify` catches mode
 # B losing track of how a read fails.
 READ_OPS = ("read",)
+# issue #215 / RFC-0064: a bare `update`/`delete` on an entity neither seeded
+# nor created earlier affects 0 rows, and mode A fails that step with
+# `not-found` after charging the same 1 ms a read miss does.
+_WRITE_MISS_OPS = ("update", "delete")
 
 _STEP_COST_MS = 5        # interp `Clock.step_cost_ms`, advanced once per step
 _READ_MISS_COST_MS = 1   # interp `_run_effect` advances 1ms before raising
@@ -1261,8 +1265,9 @@ def _failure_attempts(nodes, op, fail_at, steps_before, retry, timeout_ms):
         whole step re-runs, so one non-idempotent effect disqualifies all of them.
         That is what makes a create conflict a single attempt at any budget;
       * the deadline is absolute, so the clock matters: each preceding step costs
-        `_STEP_COST_MS`, and a failing read costs `_READ_MISS_COST_MS` per attempt
-        (`Cache.set` and a create conflict raise without advancing).
+        `_STEP_COST_MS`, and a failing read, update or delete costs
+        `_READ_MISS_COST_MS` per attempt (`Cache.set` and a create conflict raise
+        without advancing).
 
     `steps_before` counts every op ahead of this one, which assumes each of them
     ran. That is exact when none is guarded, and part of the same guarded-effect
@@ -1283,7 +1288,8 @@ def _failure_attempts(nodes, op, fail_at, steps_before, retry, timeout_ms):
     failing = nodes[op["effects"][fail_at]["node_id"]]
     per_attempt = (_READ_MISS_COST_MS
                    if op["effects"][fail_at]["kind"] == "RepositoryCall"
-                   and failing.get("operation") in READ_OPS else 0)
+                   and (failing.get("operation") in READ_OPS
+                        or failing.get("operation") in _WRITE_MISS_OPS) else 0)
 
     clock = _STEP_COST_MS * steps_before
     attempts = 1
@@ -1527,18 +1533,24 @@ def _lnpl_ops(document, workflow_id, seeded=None, payload=None):
                 # makes routine, not exceptional.
                 if node["entity"] not in seeded_now and node["entity"] not in created:
                     fail_at = index
-            elif kind == "RepositoryCall" and operation == "delete":
-                # issue #183: an unconditional delete really removes the
-                # row (FakeRepository.execute / SqliteRepositoryDriver.
-                # _touch), so neither the seed nor an earlier
-                # unconditional create still backs this entity
-                # afterward -- a later unconditional `read` must now
-                # statically fail the same way mode A's Fake does, and a
-                # later unconditional `create` must insert rather than
-                # conflict, the same way a real DELETE followed by
-                # INSERT does.
-                seeded_now.discard(node["entity"])
-                created.discard(node["entity"])
+            elif kind == "RepositoryCall" and operation in _WRITE_MISS_OPS:
+                if (node["entity"] not in seeded_now
+                        and node["entity"] not in created):
+                    # issue #215 / RFC-0064: nothing backs this entity, so
+                    # mode A's write affects 0 rows and fails `not-found`.
+                    fail_at = index
+                elif operation == "delete":
+                    # issue #183: an unconditional delete really removes the
+                    # row (FakeRepository.execute / SqliteRepositoryDriver.
+                    # _touch), so neither the seed nor an earlier
+                    # unconditional create still backs this entity
+                    # afterward -- a later unconditional `read` must now
+                    # statically fail the same way mode A's Fake does, and a
+                    # later unconditional `create` must insert rather than
+                    # conflict, the same way a real DELETE followed by
+                    # INSERT does.
+                    seeded_now.discard(node["entity"])
+                    created.discard(node["entity"])
             elif kind == "RepositoryCall" and operation == "create":
                 # RFC-0055 §6: mode A refuses an id-less create (id-required)
                 # before the write; a fill-source create never reaches here.

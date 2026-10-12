@@ -74,5 +74,6 @@
 | RFC-0061 이벤트 발행 SPI — `lnpl.publishers`, `EventPublisher` 계약, 레퍼런스 릴레이 스킴 디스패치 | 브로커로 이벤트를 보낼 공식 SPI가 필요하다 — `lnpl.publishers` entry-points 그룹과 `EventPublisher` 계약이 무엇을 받는지, `lnpl relay --target`이 스킴으로 어떻게 드라이버를 고르는지, `http(s)://`가 왜 바이트 동일인지, TCK가 발행-전-ack 드라이버를 어떻게 잡는지 | `rfcs/0061-event-publisher-spi.md` |
 | RFC-0062 읽기 동사의 `cached` 절 — read-through | 같은 행을 반복해 읽는 부하를 캐시가 흡수하게 하고 싶다(`cached`) — hit/miss가 무엇을 하는지, TTL이 어디서 오는지, 쓰기·롤백 뒤 캐시가 어떻게 비워지는지, 모드 B는 왜 거부하는지 | `rfcs/0062-cached-read-through-clause.md` |
 | RFC-0063 send 없는 call/request의 기본 본문은 Password 계열 입력 필드를 뺀다 | send 없는 call/request가 입력의 어떤 필드를 빼는지 — 어느 엔티티든 Password·refine … of Password로 선언한 이름이 기본 본문에서 빠지는 이유와 그 판정 규칙, 그런 필드가 없으면 본문이 바이트 동일한 이유 | `rfcs/0063-default-body-omits-password-fields.md` |
+| RFC-0064 0행에 영향을 준 update·delete는 not-found로 실패한다 | update·delete가 0행에 영향을 주면 왜 not-found(serve 404, 소비 422)로 실패하는지 — fake·sqlite·모드 B가 같은 답을 내는 방법, 기본 시드가 update·delete로 시작하는 엔티티를 왜 채우지 않는지, 멱등 delete 표기가 왜 없는지 | `rfcs/0064-write-miss-not-found.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

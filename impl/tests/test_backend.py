@@ -1996,6 +1996,22 @@ GUARDED_CONFLICT = SAME_ENTITY.replace(
 GUARDED_MISS = READ_THEN_CREATE.replace(
     "    find product\n", "    when stock > 0\n    find product\n")
 
+# issue #215 / RFC-0064: a write that touches no row fails `not-found`, so a
+# guarded update/delete is one of the calls mode B cannot reproduce when the
+# guard is taken. `order` is never read, so no seed holds it.
+GUARDED_UNSEEDED_UPDATE = READ_THEN_CREATE.replace(
+    "    create order\n", "    when stock > 0\n    update order\n")
+GUARDED_UNSEEDED_DELETE = READ_THEN_CREATE.replace(
+    "    create order\n", "    when stock > 0\n    delete order\n")
+# The read side backs `product` under the default seed, not under the empty one.
+GUARDED_BACKED_UPDATE = READ_THEN_CREATE.replace(
+    "    create order\n", "    when stock > 0\n    update product\n")
+# An unconditional delete removes the seeded row (issue #183), so the guarded
+# update after it affects 0 rows even under the default seed.
+GUARDED_UPDATE_AFTER_DELETE = READ_THEN_CREATE.replace(
+    "    create order\n",
+    "    delete product\n    when stock > 0\n    update product\n")
+
 
 def calls_with_guards(document, workflow_id):
     """`(guarded, step name, entity, operation)` per RepositoryCall, in declared
@@ -2036,9 +2052,11 @@ def guarded_calls_that_can_fail(document, workflow_id, seeded=None):
     Consequence, not shape. A guard only meets the limitation if the call under it
     could actually fail, and "could fail" is `_lnpl_ops`' own conflict/miss rule
     applied to the ops that scan skips: a `create` fails iff its entity is already
-    present (seeded, or created by an earlier call), a read fails iff it is not.
-    Operations that are neither cannot fail, exactly as `_lnpl_ops` never sets
-    `fail_at` for them.
+    present (seeded, or created by an earlier call), a read fails iff it is not,
+    and an update or delete (`backend._WRITE_MISS_OPS`, issue #215) fails iff it
+    is not either; a delete also removes the entity from `present` (issue #183).
+    Any other operation cannot fail, exactly as `_lnpl_ops` never sets `fail_at`
+    for it.
 
     The inputs are the shared derivation — `seeded_entities` for what the seed
     writes, `calls_with_guards` for the declared order — and `seeded` mirrors
@@ -2055,6 +2073,10 @@ def guarded_calls_that_can_fail(document, workflow_id, seeded=None):
             can_fail = entity in present
             if not can_fail:
                 present.add(entity)
+        elif operation in backend._WRITE_MISS_OPS:
+            can_fail = entity not in present
+            if not can_fail and operation == "delete":
+                present.discard(entity)
         else:
             continue
         if guarded and can_fail:
@@ -2161,6 +2183,37 @@ class TestGuardedRepositoryLimitationIsDocumented(unittest.TestCase):
             guarded_calls_that_can_fail(document, "wf.checkout",
                                         seeded=frozenset()),
             [("find product", "entity.product", "read")])
+
+    def test_a_guarded_unseeded_update_or_delete_is_reported(self):
+        """The write-miss direction (issue #215): nothing backs `order`, so the
+        guarded write would affect 0 rows and mode A would fail it `not-found`."""
+        for source, operation in ((GUARDED_UNSEEDED_UPDATE, "update"),
+                                  (GUARDED_UNSEEDED_DELETE, "delete")):
+            document = checkout_doc(source)
+            for seeded in (None, frozenset()):
+                with self.subTest(operation=operation, seeded=seeded):
+                    self.assertEqual(
+                        guarded_calls_that_can_fail(document, "wf.checkout",
+                                                    seeded=seeded),
+                        [("%s order" % operation, "entity.order", operation)])
+
+    def test_a_guarded_write_is_reported_only_under_the_seed_that_misses_it(self):
+        """One document, two seeds, two verdicts: the read backs `product` under
+        the default seed, so the guarded update can succeed; the empty seed
+        `--no-row` produces leaves nothing to update."""
+        document = checkout_doc(GUARDED_BACKED_UPDATE)
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"), [])
+        self.assertEqual(
+            guarded_calls_that_can_fail(document, "wf.checkout",
+                                        seeded=frozenset()),
+            [("update product", "entity.product", "update")])
+
+    def test_an_earlier_delete_unbacks_a_later_guarded_update(self):
+        """The #183 interaction: the unconditional delete removes the seeded row,
+        so the guarded update that follows it can fail under the default seed."""
+        document = checkout_doc(GUARDED_UPDATE_AFTER_DELETE)
+        self.assertEqual(guarded_calls_that_can_fail(document, "wf.checkout"),
+                         [("update product", "entity.product", "update")])
 
     def test_documents_with_nothing_to_report_are_empty_not_absent(self):
         """Boundaries: a guardless workflow, a workflow with no repository call at

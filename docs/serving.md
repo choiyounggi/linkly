@@ -71,7 +71,7 @@ curl -s http://127.0.0.1:8080/shorten-service/shorten \
 | M6 | 실행 실패 ∧ `failure_reason`이 `deadline`으로 시작 | 504 | `deadline-exceeded` |
 | M7 | 실행 실패 ∧ 실패 스텝의 효과에 `Validation` 포함 | 400 | `validation-failed` |
 | M8a | 실행 실패 ∧ 저장소 create가 기존 키와 충돌(`failure_kind == "conflict"`, 이슈 #113) | 409 | `conflict` |
-| M8b | 실행 실패 ∧ 영속 백엔드에서 읽기 동사가 행을 못 찾음(`failure_kind == "not-found"`, 이슈 #197) | 404 | `not-found` |
+| M8b | 실행 실패 ∧ 영속 백엔드에서 읽기 동사가 행을 못 찾음(이슈 #197), 또는 어느 백엔드에서든 `update`/`delete`가 0행에 영향(이슈 #215, RFC-0064) — `failure_kind == "not-found"` | 404 | `not-found` |
 | M8c | 실행 실패 ∧ 낙관적 버전 쓰기 충돌(`failure_kind == "write-conflict"`, 이슈 #92/#201) — 다시 읽고 재시도하면 풀릴 수 있다 | 409 | `write-conflict` |
 | M8d | 실행 실패 ∧ `create`의 payload에 `id`가 없고 대상 엔티티의 `id`가 `derived generated`도 아님(`failure_kind == "id-required"`, RFC-0055) — 쓰기 전에 거부 | 400 | `id-required` |
 | M8e | 실행 실패 ∧ `fail <code>`로 종결(저자가 선언한 업무 거절, `failure_kind == "rejected"`, 이슈 #206/RFC-0056) | 422 | 저자가 선언한 코드(예: `out-of-stock`) |
@@ -306,7 +306,7 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 | E4 | 같은 `id`로 이미 실행 중(#113과 같은 충돌 신호) | 409 | `idempotency-in-progress` |
 | E5 | 실행 완료 | 200 | — |
 | E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열), 또는 낙관적 버전 쓰기 충돌(`failure_kind == "write-conflict"`, 이슈 #201 — 실패 스텝이 `set`이라 효과가 `Assignment`여도 여기다) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
-| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`(저자가 선언한 `fail <code>` — `failure_kind == "rejected"`, RFC-0056), create 충돌, 영속 백엔드 읽기 미스 `not-found`(이슈 #197), `id` 없는 create `id-required`(RFC-0055)) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
+| E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`(저자가 선언한 `fail <code>` — `failure_kind == "rejected"`, RFC-0056), create 충돌, `not-found` — 영속 백엔드 읽기 미스(이슈 #197)나 0행 `update`/`delete`(이슈 #215), `id` 없는 create `id-required`(RFC-0055)) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
 
 **멱등성 (D6)** — CloudEvents `id`가 멱등성 키다. `lnpl_idempotency`(이슈
 #113)를 **그대로** 재사용한다 — 두 번째 저장소를 만들지 않는다. 200과
