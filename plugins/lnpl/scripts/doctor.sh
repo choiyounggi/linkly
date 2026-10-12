@@ -80,7 +80,7 @@ if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
   if [ -n "$MCP_DIGEST" ] && [ -n "$CLI_DIGEST" ] && [ "$MCP_DIGEST" != "$CLI_DIGEST" ]; then
     echo ""
     echo "어휘 불일치: CLI digest ${CLI_DIGEST}, 마지막 MCP 기동 digest ${MCP_DIGEST} (${STATE_FILE})."
-    echo "MCP 서버가 다른 체크아웃을 보고 있을 수 있다 — LNPL_IMPL을 확인하라."
+    echo "MCP 서버가 다른 체크아웃을 보고 있을 수 있다 — LNPL_IMPL_PATH를 확인하라."
     PROBLEMS=1
   fi
 fi
