@@ -51,7 +51,9 @@ The server needs the `lnpl` package. It resolves it in this order:
 
 It never derives a path from the working directory, `CLAUDE_PROJECT_DIR`, or
 the file you have open — any of those let a project plant its own `impl/lnpl`
-and have it run inside this server process.
+and have it run inside this server process. For the same reason the server
+runs as `python3 -E`, which ignores an inherited `PYTHONPATH` (for example one
+set by a project's direnv or venv), so step 2 finds only an installed package.
 
 If neither resolves, the server still starts: the handshake succeeds, and
 every tool call returns a structured error explaining how to install `lnpl`

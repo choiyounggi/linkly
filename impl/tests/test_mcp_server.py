@@ -432,7 +432,6 @@ class ProtocolErrorTest(unittest.TestCase):
                       "깨진 줄 하나가 이후 요청을 삼켰다")
 
 
-LAUNCHER = os.path.join(PLUGIN, "server.py")
 INITIALIZE = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                          "params": {}}) + "\n"
 # The launcher records its resolution in a state file (issue #205). Every test
@@ -447,7 +446,15 @@ TOOLS_CALL = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                                    "arguments": {"text": "x"}}}) + "\n"
 
 
-def run_launcher(env, cwd, stdin_text=INITIALIZE, launcher=LAUNCHER):
+def shipped_argv():
+    """`.mcp.json`이 실제로 띄우는 argv — 인터프리터 플래그까지 배포본 그대로."""
+    with open(os.path.join(PLUGIN, ".mcp.json"), encoding="utf-8") as fh:
+        server = json.load(fh)["mcpServers"]["lnpl"]
+    return [server["command"]] + [
+        a.replace("${CLAUDE_PLUGIN_ROOT}", PLUGIN) for a in server["args"]]
+
+
+def run_launcher(env, cwd, stdin_text=INITIALIZE):
     """런처를 실제 프로세스로 띄우고 `stdin_text`를 넣는다.
 
     `serve()`를 직접 부르면 런처가 하는 유일한 일 — 패키지를 **찾는 것** —
@@ -456,7 +463,7 @@ def run_launcher(env, cwd, stdin_text=INITIALIZE, launcher=LAUNCHER):
     """
     base = {"PATH": "/usr/bin:/bin", "LNPL_MCP_STATE": LAUNCHER_STATE}
     base.update(env)
-    return subprocess.run(["python3", launcher], input=stdin_text,
+    return subprocess.run(shipped_argv(), input=stdin_text,
                           capture_output=True, text=True, env=base, cwd=cwd)
 
 
@@ -544,6 +551,20 @@ class LauncherResolutionTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertFalse(os.path.exists(marker),
                          "CLAUDE_PROJECT_DIR로 가리킨 impl/lnpl이 임포트됐다")
+
+    def test_a_planted_lnpl_on_an_inherited_pythonpath_is_not_imported(self):
+        # security (adversarial review of #225): the server inherits the
+        # client's environment, so a direnv/venv PYTHONPATH pointing into the
+        # project would let `import lnpl` pick up planted code. `-E` in
+        # .mcp.json makes the interpreter ignore PYTHON* variables.
+        tmp = tempfile.mkdtemp(dir=os.path.join(REPO, ".claude", "tmp"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        marker = os.path.join(tmp, "pwned.marker")
+        self._planted_impl_lnpl(marker)
+        proc = run_launcher({"PYTHONPATH": os.path.join(tmp, "impl")}, cwd=tmp)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(os.path.exists(marker),
+                         "PYTHONPATH로 물려받은 경로의 lnpl이 임포트됐다")
 
     def test_lnpl_impl_path_wins_over_a_planted_cwd_package(self):
         # 명시가 추론(혹은 투입)을 이긴다 — cwd에 심어진 패키지가 있어도
@@ -656,7 +677,8 @@ class PluginPackagingTest(unittest.TestCase):
         self.assertIn("mcpServers", cfg)
         server = cfg["mcpServers"]["lnpl"]
         self.assertEqual(server["command"], "python3")
-        self.assertEqual(server["args"], ["${CLAUDE_PLUGIN_ROOT}/server.py"])
+        # -E: ignore PYTHONPATH and other PYTHON* variables the client passes down.
+        self.assertEqual(server["args"], ["-E", "${CLAUDE_PLUGIN_ROOT}/server.py"])
         # 절대 경로를 박으면 설치된 위치에서 깨진다.
         self.assertTrue(os.path.isfile(os.path.join(PLUGIN, "server.py")))
 
