@@ -256,7 +256,7 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
 
 | 플래그 | 뜻 |
 |--------|-----|
-| `--backend` | 필수. 드레인할 영속 백엔드(`sqlite:<path>`). `fake`는 outbox가 없어 거부(rc 2) |
+| `--backend` | 필수. 드레인할 영속 백엔드 — `sqlite:<path>`, 또는 `drain_outbox`/`ack_outbox`를 둘 다 구현한 등록 드라이버(`<scheme>:<arg>`, 아래 참고). 그 밖의 드라이버와 `fake`(outbox가 없음)는 거부(rc 2) |
 | `--target` | 필수. `http(s)://<base-url>`이면 소비 인스턴스의 base URL — 봉투는 `<--target>/-/events/<slug>`로 POST된다(바이트 동일). 그 외 스킴(예: `kafka://…`)이면 등록된 `lnpl.publishers` 드라이버가 발행한다 — 미등록 스킴은 rc!=0 + 스킴/등록 목록을 담은 에러(크리덴셜은 절대 로그에 남지 않는다) |
 | `--once` | 한 번 드레인·POST하고 종료(rc 0) — 테스트나 cron이 미는 모양. 기본은 무한 반복(폴링 간격 1초) |
 | (위치 인자) `source` | 컴파일만 한다(재실행 아님) — emission의 이벤트 id를 이벤트의 선언된 이름(슬러그/`type`)으로 되돌리는 데만 쓴다 |
