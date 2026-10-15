@@ -176,6 +176,14 @@ class PublishRejected(DriverError):
 # The contracts
 # --------------------------------------------------------------------------
 
+# issue #228/#229: the optional method sets `RepositoryDriver`'s two
+# capability predicates look for. Neither set has a base-class definition
+# (blackboard ruling) — a driver offers a set by defining every method in it.
+IDEMPOTENCY_METHODS = ("idempotency_begin", "idempotency_finish",
+                       "idempotency_release")
+OUTBOX_DRAIN_METHODS = ("drain_outbox", "ack_outbox")
+
+
 class RepositoryDriver:
     """The `postgres` capability's adapter contract.
 
@@ -195,6 +203,13 @@ class RepositoryDriver:
     repository driver, `delivery`) from the closed axis table in
     `capabilities.py`. Absent by default: no report, no diagnostic
     (`docs/backends.md` §8).
+
+    `supports_idempotency()` / `supports_outbox_drain()` (issue #228/#229)
+    — methods, not attributes: each reports whether this driver implements
+    a whole optional method set (`IDEMPOTENCY_METHODS` /
+    `OUTBOX_DRAIN_METHODS`). The base class defines none of those five
+    methods; the predicates' default reads the instance, so an
+    implementation needs no override (`docs/backends.md` §8).
     """
 
     def seed(self, rows):
@@ -315,6 +330,44 @@ class RepositoryDriver:
         same asymmetry `record_emission`'s docstring states for the Fake).
         """
         raise NotImplementedError
+
+    def supports_idempotency(self):
+        """True when this driver implements every idempotency-claim method (issue #228).
+
+        The set is `IDEMPOTENCY_METHODS`: `idempotency_begin`,
+        `idempotency_finish`, `idempotency_release` (signatures and return
+        shapes: `SqliteRepositoryDriver`, the reference implementation).
+        `lnpl serve` needs all three to honour an `Idempotency-Key` header.
+
+        Default: introspection — True only when every method of the set is
+        callable on this instance, so an external driver that implements
+        the three is reported capable without overriding this predicate,
+        and a driver missing any one of them is not (half a set is no
+        support). Do not override it: `testing.RepositoryDriverTCK` checks
+        the answer against the methods actually present, in both
+        directions. `RepositoryDriver` itself defines none of the three — a
+        base-class stub would make this default report True for every
+        driver.
+        """
+        return all(callable(getattr(self, name, None))
+                   for name in IDEMPOTENCY_METHODS)
+
+    def supports_outbox_drain(self):
+        """True when this driver implements both outbox drain/ack methods (issue #229).
+
+        The set is `OUTBOX_DRAIN_METHODS`: `drain_outbox` and `ack_outbox`
+        (issue #102 contract: `SqliteRepositoryDriver`'s docstrings).
+        `lnpl outbox drain` / `lnpl outbox ack` and `lnpl relay` need both.
+        `read_outbox` (the SSE tail read) is NOT in the set — it is a
+        required method of this base class.
+
+        Default: introspection, the same rule as `supports_idempotency` —
+        True only when both are callable on this instance. Do not override
+        it (`testing.RepositoryDriverTCK` cross-checks it); `RepositoryDriver`
+        itself defines neither method.
+        """
+        return all(callable(getattr(self, name, None))
+                   for name in OUTBOX_DRAIN_METHODS)
 
     def close(self):
         """Release resources. Safe to call more than once."""

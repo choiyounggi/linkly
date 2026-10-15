@@ -901,6 +901,12 @@ def cmd_outbox_drain(args):
               "(e.g. sqlite:./store.db) — `fake` has no outbox to drain",
               file=sys.stderr)
         return 2
+    if not repository.supports_outbox_drain():
+        print("error: backend %s does not implement the outbox drain "
+              "contract (drain_outbox/ack_outbox) — see docs/backends.md §3"
+              % args.backend.split(":", 1)[0], file=sys.stderr)
+        repository.close()
+        return 2
     try:
         for emission in repository.drain_outbox(limit=args.limit):
             sys.stdout.write(json.dumps(emission, ensure_ascii=False) + "\n")
@@ -929,6 +935,12 @@ def cmd_outbox_ack(args):
         print("error: outbox ack needs a persistent --backend "
               "(e.g. sqlite:./store.db) — `fake` has no outbox to ack",
               file=sys.stderr)
+        return 2
+    if not repository.supports_outbox_drain():
+        print("error: backend %s does not implement the outbox drain "
+              "contract (drain_outbox/ack_outbox) — see docs/backends.md §3"
+              % args.backend.split(":", 1)[0], file=sys.stderr)
+        repository.close()
         return 2
     try:
         repository.ack_outbox(args.seq)
@@ -1090,6 +1102,12 @@ def cmd_relay(args):
         print("error: relay needs a persistent --backend "
               "(e.g. sqlite:./store.db) — `fake` has no outbox to drain",
               file=sys.stderr)
+        return 2
+    if not repository.supports_outbox_drain():
+        print("error: backend %s does not implement the outbox drain "
+              "contract (drain_outbox/ack_outbox) — see docs/backends.md §3"
+              % args.backend.split(":", 1)[0], file=sys.stderr)
+        repository.close()
         return 2
     try:
         publisher = open_publisher(args.target)

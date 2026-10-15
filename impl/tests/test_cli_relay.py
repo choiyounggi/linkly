@@ -19,6 +19,7 @@ import json
 import os
 import tempfile
 import threading
+import types
 import unittest
 from importlib import metadata as importlib_metadata
 from unittest import mock
@@ -29,6 +30,7 @@ from lnpl import drivers as drivers_module
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.wsgi import make_wsgi_app
+from tests.driver_spi_fixture import DemoRepositoryDriver
 
 PUBLISH_SRC = """entity Order
     field
@@ -257,6 +259,51 @@ DEMO_PUBLISHER = importlib_metadata.EntryPoint(
     name="demo", value="tests.publisher_spi_fixture:make_demo_publisher",
     group=drivers_module.PUBLISHERS_ENTRY_POINT_GROUP)
 
+# issue #229: the one line every outbox command prints when its --backend
+# driver lacks drain_outbox/ack_outbox (supports_outbox_drain() is False).
+NO_DRAIN_CONTRACT = ("error: backend %s does not implement the outbox drain "
+                     "contract (drain_outbox/ack_outbox) — see "
+                     "docs/backends.md §3\n")
+
+DEMO_DRIVER = importlib_metadata.EntryPoint(
+    name="demo", value="tests.driver_spi_fixture:make_demo_driver",
+    group=drivers_module.DRIVERS_ENTRY_POINT_GROUP)
+
+
+def _drivers_registered(*entry_points):
+    """Patch `lnpl.drivers` discovery to exactly `entry_points` (the
+    `test_driver_spi.py` idiom)."""
+    return mock.patch.object(drivers_module.importlib_metadata,
+                             "entry_points",
+                             lambda **_kw: list(entry_points))
+
+
+def _inline_entry_point(name, driver):
+    """An `lnpl.drivers` entry point whose factory returns `driver`, so the
+    test can inspect the very instance the CLI opened."""
+    return types.SimpleNamespace(
+        name=name, value="inline",
+        group=drivers_module.DRIVERS_ENTRY_POINT_GROUP,
+        load=lambda: (lambda _arg: driver))
+
+
+class _DrainOnlyDriver(DemoRepositoryDriver):
+    """Half of the pair: `drain_outbox` without `ack_outbox`, so
+    `supports_outbox_drain()` is False (issue #229, boundary)."""
+
+    def __init__(self, arg=None):
+        super().__init__(arg)
+        self.calls = []
+        self.closed = False
+
+    def drain_outbox(self, limit=None):
+        self.calls.append(limit)
+        return [{"seq": 1, "emission_id": "e1", "event": "x",
+                 "payload": {}, "created_at": 0}]
+
+    def close(self):
+        self.closed = True
+
 
 class RegisteredPublisherSchemeTest(RelayCliTestCase):
     """R7/R9: a registered scheme publishes through the matched
@@ -353,6 +400,35 @@ class UnknownPublisherSchemeTest(RelayCliTestCase):
         self.assertIn("failed to load", err)
         self.assertNotIn("s3cr3t", err)
         self.assertEqual(1, len(self.drain()))
+
+
+class UnsupportedDriverRelayTest(RelayCliTestCase):
+    """Issue #229: relay refuses a driver without the drain/ack pair
+    before opening the publisher and before the first drain."""
+
+    def test_relay_against_a_driver_without_the_contract_exits_2_with_one_line(self):
+        with _drivers_registered(DEMO_DRIVER):
+            rc, out, err = self.run_cli(
+                ["relay", self.publish_source, "--backend", "demo:x",
+                 "--target", "http://127.0.0.1:1", "--once"])
+
+        self.assertEqual(2, rc)
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(NO_DRAIN_CONTRACT % "demo", err)
+        self.assertEqual("", out)
+
+    def test_relay_refuses_a_drain_only_driver_before_any_drain(self):
+        driver = _DrainOnlyDriver("x")
+        with _drivers_registered(_inline_entry_point("half", driver)):
+            rc, out, err = self.run_cli(
+                ["relay", self.publish_source, "--backend", "half:x",
+                 "--target", "http://127.0.0.1:1", "--once"])
+
+        self.assertEqual(2, rc)
+        self.assertEqual(NO_DRAIN_CONTRACT % "half", err)
+        self.assertEqual("", out)
+        self.assertEqual([], driver.calls)
+        self.assertTrue(driver.closed)
 
 
 if __name__ == "__main__":

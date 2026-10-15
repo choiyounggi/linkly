@@ -10,6 +10,26 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 ## [Unreleased]
 
 ### Fixed
+- `lnpl serve` / `build_app()` on a repository driver without the
+  idempotency claim methods (today `lnpl-postgres`) ignored an
+  `Idempotency-Key` header without warning, so a retried request ran its
+  workflow again. On such a driver a workflow request carrying the header
+  (M22) and every `POST /-/events/<slug>` delivery, whose CloudEvents `id`
+  is its key (E8), are now refused with 501 `idempotency-unsupported`
+  (problem+json) and nothing runs; workflow requests without the header
+  run as before. `lnpl serve` prints one boot line to stderr,
+  `lnpl serve: repository driver <module.qualname> -- idempotency:
+  unsupported ...`, and the `GET /-/readyz` 200 body now carries
+  `"capabilities": {"idempotency": <bool>}` (information only, never a
+  503). Requests on `--backend fake` are not refused (issue #228).
+- `lnpl outbox drain`, `lnpl outbox ack` and `lnpl relay` crashed with an
+  `AttributeError` traceback on a persistent backend whose driver lacks
+  `drain_outbox`/`ack_outbox` (today `lnpl-postgres`). They now print one
+  stderr line, `error: backend <scheme> does not implement the
+  outbox drain contract (drain_outbox/ack_outbox) — see docs/backends.md
+  §3`, close the driver and exit with rc 2 before any drain, ack or
+  publish call; `--backend fake` keeps its existing rc 2 refusal
+  (issue #229).
 - `capability http`'s `retry`/`breaker`/`path` clauses were parsed and
   compiled but silently dropped before reaching `HttpNetworkDriver` — both
   `lnpl run`/`lnpl serve` (`cli.py:_open_endpoints`) and
@@ -143,6 +163,19 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   (issue #226).
 
 ### Added
+- `RepositoryDriver.supports_idempotency()` and
+  `RepositoryDriver.supports_outbox_drain()` capability predicates
+  (`lnpl.drivers`). The first is True only when `idempotency_begin`,
+  `idempotency_finish` and `idempotency_release` are all callable on the
+  driver, the second only when `drain_outbox` and `ack_outbox` both are,
+  so an external driver that implements a set is reported capable without
+  overriding anything and half a set counts as none. `lnpl serve` and the
+  outbox CLI commands now decide by these predicates (see Fixed).
+  `RepositoryDriverTCK` gains six cases for the two optional sets: a
+  driver reporting True must pass the claim/replay/release and drain/ack
+  behaviour checks, a driver reporting False must define none of the
+  set's methods, and neither branch skips. `docs/backends.md` gains the
+  optional-method capability table (issues #228, #229).
 - `scripts/load_probe.py` (stdlib open-loop load generator) and
   `docs/postgres-load-ceiling.md` (measured sustained-load ceiling and
   root cause for the postgres backend) — issue #180.

@@ -57,6 +57,16 @@ carries an `observed_version` attribute (`SqliteRepositoryDriver`'s
 skips the conflict test for a driver that does not offer it, the same way a
 JDBC TCK's optional-feature tests skip against a driver that reports the
 feature unsupported.
+
+The optional method sets (issue #228/#229) — `idempotency_begin`/
+`idempotency_finish`/`idempotency_release` and `drain_outbox`/`ack_outbox`
+— are deliberately NOT handled that way. Each of their cases first asks the
+driver's capability predicate (`supports_idempotency()` /
+`supports_outbox_drain()`): True runs the behaviour assertions, False
+asserts the predicate is a real bool and that no method of the set exists
+on the driver, then passes. Neither branch skips, so a driver that claims a
+set it lacks, or implements half a set, fails instead of hiding behind a
+skip.
 """
 
 import base64
@@ -64,7 +74,8 @@ import json
 import os
 
 from lnpl.cli import _relay_drain_once_via_publisher
-from lnpl.drivers import (ConflictError, DriverError, TokenError,
+from lnpl.drivers import (IDEMPOTENCY_METHODS, OUTBOX_DRAIN_METHODS,
+                          ConflictError, DriverError, TokenError,
                           WriteConflictError)
 from lnpl.generators import GeneratorError, run_generator
 
@@ -495,6 +506,126 @@ class RepositoryDriverTCK:
         with self.assertRaises(DriverError) as caught:
             self.driver.persist("widget", "w-x2", row)
         self.assertIn("conflict", str(caught.exception))
+
+    # -- optional method sets (issue #228/#229) -----------------------------
+    #
+    # Declared-unsupported, never skipped (contrast
+    # `_skip_unless_predicate_supported` above). Each case asks the
+    # capability predicate first: True -> the behaviour must hold, so a
+    # driver claiming a set it lacks errors here; False -> the predicate
+    # must be a real bool and NO method of that set may be callable on the
+    # driver, and the case passes having asserted exactly that.
+
+    _TCK_NOW_MS = 1000
+    _TCK_TTL_MS = 86400000
+
+    def _assert_declares_none_of(self, predicate_name, method_names):
+        for name in method_names:
+            self.assertFalse(
+                callable(getattr(self.driver, name, None)),
+                "%s() reports False but the driver implements %s — "
+                "implement all of %s, or none"
+                % (predicate_name, name, ", ".join(method_names)))
+
+    def _declares_idempotency(self):
+        supported = self.driver.supports_idempotency()
+        self.assertIsInstance(supported, bool)
+        if not supported:
+            self._assert_declares_none_of("supports_idempotency",
+                                          IDEMPOTENCY_METHODS)
+        return supported
+
+    def _declares_outbox_drain(self):
+        supported = self.driver.supports_outbox_drain()
+        self.assertIsInstance(supported, bool)
+        if not supported:
+            self._assert_declares_none_of("supports_outbox_drain",
+                                          OUTBOX_DRAIN_METHODS)
+        return supported
+
+    def _claim(self, key):
+        return self.driver.idempotency_begin(
+            "wf.tck", key, self._TCK_NOW_MS, self._TCK_TTL_MS)
+
+    def _record_tck_emission(self, n):
+        self.driver.record_emission({
+            "emission_id": "tck.emit#%d" % n,
+            "event": "entity.event.tck",
+            "payload": {"x": n},
+        })
+
+    def test_an_open_idempotency_claim_answers_in_progress_to_a_second_claim(self):
+        if not self._declares_idempotency():
+            return
+
+        self.assertEqual(self._claim("k1"), ("started", None))
+        self.assertEqual(self._claim("k1"), ("in-progress", None))
+
+    def test_a_finished_idempotency_claim_replays_its_stored_result(self):
+        if not self._declares_idempotency():
+            return
+        self.assertEqual(self._claim("k2"), ("started", None))
+
+        self.driver.idempotency_finish("wf.tck", "k2", 201, {"id": "x"})
+
+        status, stored = self._claim("k2")
+        self.assertEqual(status, "done")
+        self.assertEqual(tuple(stored), (201, {"id": "x"}))
+
+    def test_a_released_idempotency_claim_can_be_claimed_afresh(self):
+        if not self._declares_idempotency():
+            return
+        self.assertEqual(self._claim("k3"), ("started", None))
+
+        self.driver.idempotency_release("wf.tck", "k3")
+
+        self.assertEqual(self._claim("k3"), ("started", None))
+
+    def test_drain_outbox_lists_every_undelivered_emission_in_seq_order(self):
+        if not self._declares_outbox_drain():
+            return
+        self._record_tck_emission(1)
+        self._record_tck_emission(2)
+
+        rows = self.driver.drain_outbox()
+
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(set(row), {"seq", "emission_id", "event",
+                                        "payload", "created_at"})
+        self.assertEqual([row["emission_id"] for row in rows],
+                         ["tck.emit#1", "tck.emit#2"])
+        self.assertLess(rows[0]["seq"], rows[1]["seq"])
+        self.assertEqual([row["payload"] for row in rows],
+                         [{"x": 1}, {"x": 2}])
+        self.assertEqual([row["event"] for row in rows],
+                         ["entity.event.tck", "entity.event.tck"])
+
+    def test_an_acked_emission_is_never_drained_again(self):
+        if not self._declares_outbox_drain():
+            return
+        self._record_tck_emission(1)
+        self._record_tck_emission(2)
+        first, second = self.driver.drain_outbox()
+
+        self.driver.ack_outbox([first["seq"]])
+
+        self.assertEqual([row["emission_id"]
+                          for row in self.driver.drain_outbox()],
+                         ["tck.emit#2"])
+        self.driver.ack_outbox([second["seq"]])
+        self.assertEqual(self.driver.drain_outbox(), [])
+
+    def test_re_acking_a_delivered_seq_is_an_idempotent_success(self):
+        if not self._declares_outbox_drain():
+            return
+        self._record_tck_emission(1)
+        (row,) = self.driver.drain_outbox()
+        self.driver.ack_outbox([row["seq"]])
+
+        self.driver.ack_outbox([row["seq"]])
+
+        self.assertEqual(self.driver.drain_outbox(), [])
 
 
 class CacheDriverTCK:
