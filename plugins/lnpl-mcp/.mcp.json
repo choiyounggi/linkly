@@ -1,8 +1,11 @@
 {
-  "lnpl": {
-    "command": "python3",
-    "args": [
-      "${CLAUDE_PLUGIN_ROOT}/server.py"
-    ]
+  "mcpServers": {
+    "lnpl": {
+      "command": "python3",
+      "args": [
+        "-E",
+        "${CLAUDE_PLUGIN_ROOT}/server.py"
+      ]
+    }
   }
 }

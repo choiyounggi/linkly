@@ -36,7 +36,7 @@ if [ -z "$LNPL_MODE" ]; then
   emit "lnpl 플러그인: 컴파일러를 찾지 못했다 ($(lnpl_resolution_trace) 순으로 시도).
 이 세션에서 \`.lnpl\` 쓰기 진단은 동작하지 않는다 — 사전에 없는 동사가 조용한
 no-op으로 통과한다는 뜻이다. \`lnpl-doctor\` 스킬로 진단하거나, 레포 체크아웃에서
-\`.venv/bin/pip install .\` 를 하거나, LNPL_IMPL/LNPL_BIN 을 설정하라."
+\`.venv/bin/pip install .\` 를 하거나, LNPL_IMPL_PATH/LNPL_BIN 을 설정하라."
 fi
 
 CLI_VERSION=$(run_lnpl --version 2>/dev/null | awk '{print $NF}')

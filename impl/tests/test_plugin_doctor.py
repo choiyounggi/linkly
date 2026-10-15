@@ -102,7 +102,7 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("어휘 불일치", proc.stdout)
         self.assertIn(stale, proc.stdout)
-        self.assertIn("LNPL_IMPL", proc.stdout)
+        self.assertIn("LNPL_IMPL_PATH", proc.stdout)
 
     def test_stays_quiet_when_the_mcp_digest_matches(self):
         from lnpl import provenance

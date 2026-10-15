@@ -179,10 +179,16 @@ class TestStagedIsReachable(unittest.TestCase):
             return fh.read()
 
     def test_the_skill_routing_link_resolves_to_this_file(self):
-        link = "../../../../examples/staged.lnpl"
+        # The plugin's SKILL.md links to the vendored copy under
+        # plugins/lnpl/examples/ (not the repo-root examples/ this file's
+        # own fixture reads) — an installed plugin ships only its own tree,
+        # so a link reaching outside it would be dead. The two are kept
+        # byte-identical by impl/tests/test_plugin_lnpl_examples.py.
+        link = "../../examples/staged.lnpl"
         self.assertIn("(%s)" % link, self._read("SKILL.md"))
+        vendored = os.path.join(REPO, "plugins", "lnpl", "examples", "staged.lnpl")
         self.assertEqual(os.path.realpath(os.path.join(self.SKILL_DIR, link)),
-                         os.path.realpath(STAGED_LNPL))
+                         os.path.realpath(vendored))
 
     def test_the_patterns_page_names_this_file_and_its_rfc(self):
         text = self._read("references", "patterns.md")
