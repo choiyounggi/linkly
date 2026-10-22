@@ -9,6 +9,8 @@
 import os
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,6 +37,70 @@ def _image_job_text():
     start = text.index("\n  image:\n")
     end = text.index("\n  publish-pypi:\n")
     return text[start:end]
+
+
+def _job_text(text, job):
+    """`job`'s own text: from its two-space `<job>:` key line to the next
+    two-space job key, or to end of file when it is the last job (issue
+    #245). Two-space comment lines never match the job-key pattern.
+    """
+    start = text.index("\n  %s:\n" % job)
+    nxt = re.search(r"\n  [A-Za-z0-9_-]+:\n", text[start + 1:])
+    if nxt is None:
+        return text[start:]
+    return text[start:start + 1 + nxt.start()]
+
+
+def _publish_wiring_problems(job_text):
+    """Every way `job_text` differs from the enabled publish-pypi wiring
+    (issue #245), as fixed strings in a fixed order. Exact four-space
+    indents: a key moved under a step (eight spaces) does not count.
+    """
+    problems = []
+    if "\n    if:" in job_text:
+        problems.append("job-level if present")
+    if "\n    environment: pypi\n" not in job_text:
+        problems.append("environment is not pypi")
+    if "\n    needs: [build, release]\n" not in job_text:
+        problems.append("needs is not [build, release]")
+    if re.search(r"\n    permissions:\n      id-token: write[^\n]*\n    [a-z]", job_text) is None:
+        problems.append("permissions is not exactly id-token: write")
+    if re.search(r"uses: pypa/gh-action-pypi-publish@[0-9a-f]{40} # v\d+\.\d+\.\d+$",
+                 job_text, re.M) is None:
+        problems.append("publish action is not SHA-pinned")
+    if "skip-existing" in job_text:
+        problems.append("skip-existing is set")
+    return problems
+
+
+def _tag_guard_script():
+    """The `gates` job's tag/version guard step script, dedented the way
+    `_computed_tags` dedents the image job's script (issue #245).
+    """
+    job_text = _job_text(_read(), "gates")
+    marker = ("      - name: Tag matches the pyproject version (issue #245)\n"
+              "        run: |\n")
+    start = job_text.index(marker) + len(marker)
+    end = job_text.index("\n\n      - ", start)
+    return "\n".join(line[10:] for line in job_text[start:end].split("\n")) + "\n"
+
+
+def _run_tag_guard(tag, version):
+    """Run the guard step under `bash -e` (the runner's command for a step
+    without `shell:`) next to a synthetic pyproject.toml; return (rc, stdout).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "lnpl"\nversion = "%s"\n' % version)
+        with open(os.path.join(tmp, "step.sh"), "w", encoding="utf-8") as fh:
+            fh.write(_tag_guard_script())
+        proc = subprocess.run(
+            ["bash", "-e", "step.sh"], cwd=tmp,
+            env={"PATH": os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"],
+                 "GITHUB_REF_NAME": tag},
+            capture_output=True, text=True,
+        )
+    return proc.returncode, proc.stdout
 
 
 def _computed_tags(tag, owner):
@@ -144,11 +210,6 @@ class ImageJobWiringTest(unittest.TestCase):
         self.assertNotIn("id-token:", _image_job_text())
         self.assertNotIn("attestations:", _image_job_text())
 
-    def test_publish_pypi_still_disabled(self):
-        text = _read()
-        start = text.index("\n  publish-pypi:\n")
-        self.assertIn("if: false", text[start:])
-
     def test_dockerfile_path_and_digest_pin_referenced(self):
         self.assertIn("docker/Dockerfile", _image_job_text())
         dockerfile_text = _read_dockerfile()
@@ -169,6 +230,117 @@ class ImageJobWiringTest(unittest.TestCase):
         job_text = _image_job_text()
         self.assertIn("sbom: true", job_text)
         self.assertIn("provenance: true", job_text)
+
+
+PIN_LINE = ("uses: pypa/gh-action-pypi-publish@"
+            "7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3")
+
+
+def _publish_job():
+    return _job_text(_read(), "publish-pypi")
+
+
+class PublishPypiWiringTest(unittest.TestCase):
+    """issue #245: publish-pypi is enabled behind `environment: pypi`,
+    runs only after build and release, holds only `id-token: write`, and
+    uses a SHA-pinned publish action without `skip-existing`.
+    """
+
+    def _mutant(self, old, new):
+        job = _publish_job()
+        self.assertIn(old, job)
+        return job.replace(old, new, 1)
+
+    def test_real_publish_job_has_no_wiring_problems(self):
+        self.assertEqual(_publish_wiring_problems(_publish_job()), [])
+
+    def test_publish_step_is_pinned_to_the_v1_14_3_commit(self):
+        job = _publish_job()
+        self.assertIn(PIN_LINE, job)
+        self.assertNotIn("@release/v1", job)
+
+    def test_dist_is_downloaded_before_publishing_under_the_enabled_name(self):
+        job = _publish_job()
+        self.assertLess(job.index("uses: actions/download-artifact@"),
+                        job.index("uses: pypa/gh-action-pypi-publish@"))
+        self.assertIn("\n    name: Publish to PyPI (Trusted Publishing)\n", job)
+
+    def test_reintroduced_if_false_is_reported(self):
+        mutant = self._mutant("  publish-pypi:\n", "  publish-pypi:\n    if: false\n")
+        self.assertEqual(_publish_wiring_problems(mutant), ["job-level if present"])
+
+    def test_missing_environment_is_reported(self):
+        mutant = self._mutant("    environment: pypi\n", "")
+        self.assertEqual(_publish_wiring_problems(mutant), ["environment is not pypi"])
+
+    def test_environment_moved_under_a_step_is_reported(self):
+        mutant = self._mutant("    environment: pypi\n", "")
+        self.assertIn(PIN_LINE + "\n", mutant)
+        mutant = mutant.replace(PIN_LINE + "\n", PIN_LINE + "\n        environment: pypi\n")
+        self.assertEqual(_publish_wiring_problems(mutant), ["environment is not pypi"])
+
+    def test_needs_without_release_is_reported(self):
+        mutant = self._mutant("needs: [build, release]", "needs: build")
+        self.assertEqual(_publish_wiring_problems(mutant), ["needs is not [build, release]"])
+
+    def test_extra_permission_and_floating_ref_are_reported(self):
+        mutant = self._mutant(
+            "      id-token: write  # required for PyPI Trusted Publishing (OIDC)\n",
+            "      id-token: write  # required for PyPI Trusted Publishing (OIDC)\n"
+            "      contents: write\n")
+        self.assertIn(PIN_LINE, mutant)
+        mutant = mutant.replace(PIN_LINE, "uses: pypa/gh-action-pypi-publish@release/v1")
+        self.assertEqual(_publish_wiring_problems(mutant),
+                         ["permissions is not exactly id-token: write",
+                          "publish action is not SHA-pinned"])
+
+    def test_skip_existing_is_reported(self):
+        mutant = self._mutant(PIN_LINE + "\n",
+                              PIN_LINE + "\n        with:\n          skip-existing: true\n")
+        self.assertEqual(_publish_wiring_problems(mutant), ["skip-existing is set"])
+
+    def test_last_job_slice_runs_to_end_of_file_and_stops_at_a_following_job(self):
+        text = _read()
+        job = _job_text(text, "publish-pypi")
+        self.assertEqual(job, text[text.index("\n  publish-pypi:\n"):])
+        self.assertEqual(_job_text(job + "\n  later:\n    runs-on: x\n", "publish-pypi"), job)
+
+    def test_empty_job_body_reports_the_four_missing_keys(self):
+        self.assertEqual(_publish_wiring_problems("\n  publish-pypi:\n"),
+                         ["environment is not pypi",
+                          "needs is not [build, release]",
+                          "permissions is not exactly id-token: write",
+                          "publish action is not SHA-pinned"])
+
+
+class TagVersionGuardTest(unittest.TestCase):
+    """issue #245: `gates` fails when the pushed tag (minus a leading `v`)
+    differs from pyproject.toml's [project] version, so build, release and
+    publish-pypi never run for a mismatched tag.
+    """
+
+    def test_matching_tag_passes(self):
+        rc, out = _run_tag_guard("v0.9.0", "0.9.0")
+        self.assertEqual(rc, 0)
+        self.assertIn("tag v0.9.0 matches pyproject.toml version 0.9.0", out)
+
+    def test_tag_on_a_later_dev_commit_fails(self):
+        rc, out = _run_tag_guard("v0.9.0", "0.9.1.dev0")
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::tag v0.9.0 does not match pyproject.toml version 0.9.1.dev0", out)
+
+    def test_pre_release_suffix_is_not_trimmed(self):
+        rc, out = _run_tag_guard("v0.9.0-rc1", "0.9.0")
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::tag v0.9.0-rc1 does not match pyproject.toml version 0.9.0", out)
+
+    def test_empty_tag_fails(self):
+        rc, out = _run_tag_guard("", "0.9.0")
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::tag  does not match pyproject.toml version 0.9.0", out)
+        script = _tag_guard_script()
+        self.assertIn("GITHUB_REF_NAME", script)
+        self.assertNotIn("${{", script)
 
 
 if __name__ == "__main__":

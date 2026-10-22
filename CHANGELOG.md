@@ -9,184 +9,8 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
-### Fixed
-- `lnpl serve` / `build_app()` on a repository driver without the
-  idempotency claim methods (today `lnpl-postgres`) ignored an
-  `Idempotency-Key` header without warning, so a retried request ran its
-  workflow again. On such a driver a workflow request carrying the header
-  (M22) and every `POST /-/events/<slug>` delivery, whose CloudEvents `id`
-  is its key (E8), are now refused with 501 `idempotency-unsupported`
-  (problem+json) and nothing runs; workflow requests without the header
-  run as before. `lnpl serve` prints one boot line to stderr,
-  `lnpl serve: repository driver <module.qualname> -- idempotency:
-  unsupported ...`, and the `GET /-/readyz` 200 body now carries
-  `"capabilities": {"idempotency": <bool>}` (information only, never a
-  503). Requests on `--backend fake` are not refused (issue #228).
-- `lnpl outbox drain`, `lnpl outbox ack` and `lnpl relay` crashed with an
-  `AttributeError` traceback on a persistent backend whose driver lacks
-  `drain_outbox`/`ack_outbox` (today `lnpl-postgres`). They now print one
-  stderr line, `error: backend <scheme> does not implement the
-  outbox drain contract (drain_outbox/ack_outbox) — see docs/backends.md
-  §3`, close the driver and exit with rc 2 before any drain, ack or
-  publish call; `--backend fake` keeps its existing rc 2 refusal
-  (issue #229).
-- `capability http`'s `retry`/`breaker`/`path` clauses were parsed and
-  compiled but silently dropped before reaching `HttpNetworkDriver` — both
-  `lnpl run`/`lnpl serve` (`cli.py:_open_endpoints`) and
-  `build_app()`/`make_wsgi_app` (`wsgi.py:_resolve_network`) projected a
-  declared capability down to `{"method", "auth"}` before handing it to
-  the driver. A declared `retry` never retried; a declared `path` made
-  any `call ... with <ref>` fail with `"has path arguments but no path
-  declared"` (issue #176).
-- OpenAPI generation crashed (`KeyError`) on any workflow using `create
-  <Entity> as <alias>` together with `respond <alias>...` —
-  `_response_schema`'s `by_binding` map only ever held entities' own
-  default binding names, never an `as`-declared alias, so the RFC-0030
-  golden example itself could not compile to an OpenAPI document, and
-  `lnpl serve` (which calls the same generator at startup) could not bind
-  either. `_response_schema` now also resolves a `respond` reference
-  against the workflow's own `create ... as` result bindings, and raises a
-  clear `OpenApiError` instead of a bare `KeyError` for any reference
-  resolving to neither (issue #173).
-- `lnpl migrate`가 다개체(multi-entity) 모듈에서 `create`가 쓴 행을 조용히
-  건너뛰고 rc 0으로 "완료"를 보고하던 문제를 고쳤다 — `id` 필드를 선언하지
-  않은 entity의 행은 `create`가 자기 자신의 저장 키를 `id` 값으로 쓰는데,
-  migrate가 그 값으로 저장 키를 다시 계산하면 이중으로 접두되어 재조회가
-  실패했다. 이제 그 경우를 행 자신의 `id`로 재조회해 복구하고, 그래도
-  확인할 수 없는 행이나 후보가 있었는데 하나도 못 쓴 실행은 rc 2로
-  시끄럽게 실패한다 (issue #179).
-- In-workflow write-state self-conflicts (issue #174): the default seed
-  rule now excludes an entity whose first repository operation is
-  `create` (previously seeded if it was ever read anywhere in the
-  workflow, even after being created first); `persist()` now advances the
-  bound row's optimistic-lock version after a successful write, so a
-  second `set` on the same binding in one run no longer raises a phantom
-  write conflict.
-- `respond` naming a binding that a guard skipped, or a field the bound row
-  does not carry, crashed with a raw `KeyError` (CLI rc 1; `lnpl serve`
-  answered 500 with no `failed_step`). Such a reference is now omitted from
-  the response; an absent field raises one `respond-field-missing` warning
-  per reference, and when every reference is omitted the response is `{}`.
-  A new compile warning `guard-scoped-binding-escape` flags a `respond` or
-  `send` reference to a binding that only exists inside a guard. Existing
-  programs that crashed now answer; none that succeeded change (issue #198).
-- `If-Match` ignored a `by <ref>` lookup key: the precondition was checked
-  against the payload `id`, so a stale ETag on a row read by another key got
-  200 instead of 412. It now evaluates the row the workflow's first read
-  addresses; a `by` ref that cannot be resolved from the request answers 400
-  `precondition-unsupported` without running the workflow, and an absent
-  addressed row answers 412. Workflows without `by` behave as before
-  (issue #199).
-- The default `Money` sample was `{"amount": "0", ...}`, which fails the
-  type's own codec (USD has two decimals), so the default `spec`/`run`
-  payload failed unconditionally. The sample is now
-  `{"amount": "1.00", "currency": "USD"}`; any golden or fixture that
-  pinned the old sample must be regenerated (issue #203).
-- A `derived` field assigned with `set`/`format` earlier in the same guard
-  scope was still rejected by `emit ... with <binding>.<field>`, with an
-  error text that contradicted RFC-0049. It is now accepted when the
-  assignment precedes the `emit` in the same scope, and otherwise rejected
-  naming the missing assignment and the `emit` line; RFC-0049 was corrected
-  in place (issue #204).
-- Optimistic-lock write conflicts left the server as `500 workflow-failed`,
-  indistinguishable from a server fault. They now fail with
-  `failure_kind` `write-conflict` and answer `409 write-conflict`
-  (problem+json, with `failed_step`); the event-consume path answers 503
-  with `Retry-After` and releases the claim. Clients that retried on 500
-  should retry on 409 (issue #201).
-- Fixed a self-conflict in the SQLite driver where calling `update` on a
-  bound row and then `set`ting the same row again failed with `"write
-  conflict"` (issue #182).
-- Fixed `FakeRepository`'s `delete`, which unconditionally returned
-  `affected: 1` without removing the row — it now actually deletes the
-  row and returns `affected: 0` for a missing row. A workflow that reads
-  the same row after `delete` now gets the same result on Fake and
-  SQLite (issue #183).
-- Fixed `lnpl diff` (`differential.verify()`) and `lnpl build` reporting
-  different RFCs as the first rejection reason for a workflow that
-  combines two or more of a Money guard, a lookup key (`by <ref>`), and
-  a numeric-shape predicate (`is-numeric`/`is-not-numeric`) —
-  `differential.verify()`'s check order is now unified with
-  `backend.build()`/`backend.emit_mlir()`'s Money (RFC-0051) → lookup
-  key (RFC-0052) → numeric predicate (RFC-0050) order. Two combinations
-  change: for a Money + numeric-predicate program, `diff`'s first report
-  moves from RFC-0050 to RFC-0051; for a lookup-key + numeric-predicate
-  program, from RFC-0050 to RFC-0052. Both still reject with rc 4 — only
-  the reason changes (issue #185).
-- Fixed `lnpl build`-ing a workflow that uses a numeric-shape predicate
-  (`is-numeric`/`is-not-numeric`) in an environment without MLIR/LLVM
-  tools reporting a tool-missing error (`"mlir-opt not found ..."`)
-  before the RFC-0050 rejection — `build()` now rejects the numeric
-  predicate early, in the same place as the Money/lookup-key rejection
-  (#181), right before `verify_lnpl_module()` (the tool lookup). This
-  early check sees the ops stream truncated by `_lnpl_ops`'s
-  seed/payload, so a guard step that comes after an unseeded read and
-  still succeeds today (`seeded=frozenset()`) still succeeds — only the
-  case where the rejection used to come after the tool error changes
-  (issue #186).
-- `build_app()` (the gunicorn operations path) now accepts four
-  operational options that previously existed only for `lnpl serve`:
-  `LNPL_METRICS`, `LNPL_CAPTURE_ON_FAILURE`, `LNPL_TRUST_INCOMING_TRACE`
-  (boolean — `1`/`true`/`yes`/`on`, `0`/`false`/`no`/`off`), and
-  `LNPL_RATE_LIMIT` (a finite number greater than 0). An argument of the
-  same name (e.g. `metrics=`) is also accepted, and an explicit argument
-  wins over the environment variable. An empty string means unset, and
-  an invalid value fails startup with a `WsgiConfigError` naming the
-  variable. readyz check ③ (`jwt-secret-env`) now also runs on the
-  `build_app()` path — it used to be skipped even when
-  `LNPL_JWT_SECRET_ENV` was given. `lnpl serve --rate-limit nan`/`inf`
-  is now rejected with the same wording as `0` (rc 2).
-  `impl/tests/test_build_app_serve_parity.py` enforces that every
-  `serve` option has a `build_app()` counterpart (issue #187).
-- The gunicorn `build_app()` path now accepts
-  `--cache`/`--network`/`--token-provider`/`--jwt-issuer`/`--config`/`--profile`
-  under the same rules as `lnpl serve` — the
-  `LNPL_CACHE`/`LNPL_NETWORK`/`LNPL_TOKEN_PROVIDER`/`LNPL_JWT_ISSUER`/`LNPL_CONFIG`/`LNPL_PROFILE`
-  environment variables, or an argument of the same name. The
-  startup-failure message for an unknown `LNPL_BACKEND` value no longer
-  includes the value (issue #187).
-- A service whose `security` block declared `role <r>` without `jwt`
-  compiled, and `lnpl serve` then answered 200 to a request with no
-  Authorization header, because route authentication keys on `jwt` alone
-  and the role check was never reached. Such a service is now rejected at
-  compile time with a `LowerError` whose message leads with
-  `role-requires-jwt`: `lnpl compile` exits 2, `build_app()` refuses to
-  start, and the MCP compile response is `isError`. `jwt` together with
-  `role` still answers 401/403 as before. Compatibility: a document that
-  declared `role` without `jwt` compiled before and no longer compiles;
-  add `jwt` to that service's `security` block (issue #213).
-- `lnpl serve` listened with socketserver's default backlog of 5, so a
-  burst of more than about 6 connections arriving while the accept loop
-  was busy had its extra SYNs dropped, and those clients waited 1 s or
-  more to retry. The backlog is now 128 (the kernel still caps it at
-  `somaxconn`). Production serving through gunicorn is unaffected
-  (issue #226).
-- `lnpl relay` drained the outbox outside any transaction, so on a driver
-  whose `drain_outbox` locks rows with `SELECT ... FOR UPDATE SKIP LOCKED`
-  (today `lnpl-postgres`) the locks ended with the statement and two
-  relays could publish the same row. Each relay batch (drain, publish or
-  POST, ack) now runs inside one driver transaction: `begin()` before the
-  drain, `commit()` after the batch, `rollback()` when an ack failure, an
-  unexpected publisher error or an interrupt escapes it; a row whose
-  publish fails stays un-acked and the batch still commits. A second relay
-  skips rows the first one holds until its commit (exactly-once per batch
-  on row-locking drivers; end-to-end delivery stays at-least-once).
-  Behaviour on sqlite is unchanged (issue #257).
-- `lnpl serve` / `build_app()`: an `Idempotency-Key` header longer than
-  255 bytes reached the repository driver, and on `lnpl-postgres` (whose
-  `lnpl_idempotency (workflow_id, key)` btree index cannot hold a key of
-  about 4000 characters) the request failed with an unhandled 500. Such a
-  request is now refused with 400 `idempotency-key-too-long`
-  (problem+json, M23) before any driver is opened, on every backend; keys
-  of up to 255 bytes, an empty key and requests without the header behave
-  as before. Separately, when the workflow behind `POST /-/events/<slug>`
-  raised an exception `run_workflow` does not catch, the claim on the
-  CloudEvents `id` was released while the workflow transaction was still
-  open, so the Postgres driver had to wait for a second pool connection
-  and sqlite committed the failed run's partial writes together with the
-  release. The open transaction is now rolled back first, so the key is
-  free at once and no partial write survives; if that rollback itself
-  fails, the claim is kept until its TTL instead (issue #258).
+## [0.9.0] — 2026-10-22
+"The operations-hardening release."
 
 ### Added
 - `RepositoryDriver.supports_idempotency()` and
@@ -391,6 +215,18 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   (issue #252).
 
 ### Changed
+- A service whose `security` block declared `role <r>` without `jwt`
+  compiled, and `lnpl serve` then answered 200 to a request with no
+  Authorization header, because route authentication keys on `jwt` alone
+  and the role check was never reached. Such a service is now rejected at
+  compile time with a `LowerError` whose message leads with
+  `role-requires-jwt`: `lnpl compile` exits 2, `build_app()` refuses to
+  start, and the MCP compile response is `isError`. `jwt` together with
+  `role` still answers 401/403 as before. Compatibility: a document that
+  declared `role` without `jwt` compiled before and no longer compiles;
+  add `jwt` to that service's `security` block (issue #213).
+  Contract: docs/compatibility.md §5 CLI 표면 — `lnpl compile` now rejects
+  (exit 2) a document it accepted before.
 - `update`/`delete` (bare or `by <ref>`) that affects no row now fails its
   step with `failure_kind` `not-found` instead of completing: `lnpl serve`
   answers `404 not-found` with `failed_step` (consume path: 422
@@ -402,6 +238,9 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   entity is `update`/`delete` now fails on the default `fake` seed too.
   Delete fails by default; no idempotent-delete notation is offered
   (issue #215, RFC-0064).
+  Contract: RFC-0064 owns this language rule (docs/compatibility.md,
+  "이 문서가 다루지 않는 것"); none of the doc's five contracts lists it — it shows as
+  `lnpl serve` answering 404 where the request completed before.
 - Persistent backends (sqlite, postgres) are no longer seeded from the
   request payload, so a read of a missing row no longer stores a phantom
   row. The step now fails with `failure_kind` `not-found` and `lnpl serve`
@@ -411,6 +250,10 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   a program that relied on a read miss succeeding on a persistent backend
   now gets 404 and must create the row first (issue #197, RFC-0052 §4
   corrected in place).
+  Contract: RFC-0052 owns this language rule (docs/compatibility.md,
+  "이 문서가 다루지 않는 것"); none of the doc's five contracts lists it — on sqlite
+  and postgres it shows as `lnpl serve` answering 404 where it stored a
+  phantom row and succeeded before.
 - `derived generated` (a per-run UUIDv4 id) and `derived clock` (the run's
   start instant) mark entity fields the server fills at `create`/`insert`;
   `spec` pins them with `given run.id` / `given run.clock`. A `create` or
@@ -421,6 +264,10 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   collide on one key from the second run; it now fails on the first, so add
   `derived generated` to the id or send an id. Mode B refuses the markers
   (issue #209, RFC-0055).
+  Contract: RFC-0055 owns this language rule (docs/compatibility.md,
+  "이 문서가 다루지 않는 것"); none of the doc's five contracts lists it — it shows as
+  `lnpl serve` answering 400 `id-required` to an id-less `create`/`insert`
+  that ran before.
 - Two structural changes to flow control, with one parse-time and one
   runtime consequence. (a) A control keyword (`when`, `until`, `repeat`,
   `pipeline`, `parallel`) indented inside an open `pipeline` body is now a
@@ -438,6 +285,10 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   reading an assigned field used to be a compile error and is now accepted
   in mode A, so a program that dodged the error by reordering still works;
   a mode-B build of a workflow that uses either form is now refused.
+  Contract: docs/compatibility.md §5 CLI 표면 — `lnpl compile` now rejects a
+  document that indented a control keyword inside an open `pipeline` body
+  and compiled before; the language rules belong to RFC-0058 and RFC-0060
+  (docs/compatibility.md, "이 문서가 다루지 않는 것").
 - Formalized the position that rate limiting is a single linkly
   process's own defense, which loosens by N × K across instances and
   workers — a global or per-client limit is the gateway's job. Added a
@@ -456,6 +307,10 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   sends a byte-identical body. Mode B is unchanged (it builds no call
   body). This replaces the earlier note that a call without `send` is
   byte-identical to before (issue #200, RFC-0057).
+  Contract: RFC-0063 owns this language rule (docs/compatibility.md,
+  "이 문서가 다루지 않는 것"); none of the doc's five contracts lists it — in mode A
+  it shows as the outbound body of a `call`/`request` without `send` no
+  longer carrying Password-family keys.
 - Compatibility (issues #218, #219; RFC-0049, RFC-0057 and RFC-0063
   amended): the compile-time Password-family refusal now judges an
   `input.<field>` (or bare) reference over every entity that declares
@@ -468,6 +323,10 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   the request URL path. A document that compiled only through one of
   these gaps now fails with `LowerError`; references to fields no entity
   declares Password-family compile exactly as before, with an unchanged IR.
+  Contract: docs/compatibility.md §5 CLI 표면 — `lnpl compile` now rejects a
+  document that compiled only through these gaps; the language rules belong
+  to RFC-0049, RFC-0057 and RFC-0063 (docs/compatibility.md,
+  "이 문서가 다루지 않는 것").
 - RFC-0049 through RFC-0064, whose implementations and tests are
   already in this release, move from `Draft` to `Accepted` (RFC-0007
   §2.1), and `scripts/rfc_lint.py` now fails when `CHANGELOG.md` cites
@@ -490,6 +349,175 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   unread. Required pull-request approvals stay off: with one collaborator
   and `enforce_admins`, no pull request could ever be approved
   (issue #244).
+
+### Fixed
+- `lnpl serve` / `build_app()` on a repository driver without the
+  idempotency claim methods (today `lnpl-postgres`) ignored an
+  `Idempotency-Key` header without warning, so a retried request ran its
+  workflow again. On such a driver a workflow request carrying the header
+  (M22) and every `POST /-/events/<slug>` delivery, whose CloudEvents `id`
+  is its key (E8), are now refused with 501 `idempotency-unsupported`
+  (problem+json) and nothing runs; workflow requests without the header
+  run as before. `lnpl serve` prints one boot line to stderr,
+  `lnpl serve: repository driver <module.qualname> -- idempotency:
+  unsupported ...`, and the `GET /-/readyz` 200 body now carries
+  `"capabilities": {"idempotency": <bool>}` (information only, never a
+  503). Requests on `--backend fake` are not refused (issue #228).
+- `lnpl outbox drain`, `lnpl outbox ack` and `lnpl relay` crashed with an
+  `AttributeError` traceback on a persistent backend whose driver lacks
+  `drain_outbox`/`ack_outbox` (today `lnpl-postgres`). They now print one
+  stderr line, `error: backend <scheme> does not implement the
+  outbox drain contract (drain_outbox/ack_outbox) — see docs/backends.md
+  §3`, close the driver and exit with rc 2 before any drain, ack or
+  publish call; `--backend fake` keeps its existing rc 2 refusal
+  (issue #229).
+- `capability http`'s `retry`/`breaker`/`path` clauses were parsed and
+  compiled but silently dropped before reaching `HttpNetworkDriver` — both
+  `lnpl run`/`lnpl serve` (`cli.py:_open_endpoints`) and
+  `build_app()`/`make_wsgi_app` (`wsgi.py:_resolve_network`) projected a
+  declared capability down to `{"method", "auth"}` before handing it to
+  the driver. A declared `retry` never retried; a declared `path` made
+  any `call ... with <ref>` fail with `"has path arguments but no path
+  declared"` (issue #176).
+- OpenAPI generation crashed (`KeyError`) on any workflow using `create
+  <Entity> as <alias>` together with `respond <alias>...` —
+  `_response_schema`'s `by_binding` map only ever held entities' own
+  default binding names, never an `as`-declared alias, so the RFC-0030
+  golden example itself could not compile to an OpenAPI document, and
+  `lnpl serve` (which calls the same generator at startup) could not bind
+  either. `_response_schema` now also resolves a `respond` reference
+  against the workflow's own `create ... as` result bindings, and raises a
+  clear `OpenApiError` instead of a bare `KeyError` for any reference
+  resolving to neither (issue #173).
+- `lnpl migrate`가 다개체(multi-entity) 모듈에서 `create`가 쓴 행을 조용히
+  건너뛰고 rc 0으로 "완료"를 보고하던 문제를 고쳤다 — `id` 필드를 선언하지
+  않은 entity의 행은 `create`가 자기 자신의 저장 키를 `id` 값으로 쓰는데,
+  migrate가 그 값으로 저장 키를 다시 계산하면 이중으로 접두되어 재조회가
+  실패했다. 이제 그 경우를 행 자신의 `id`로 재조회해 복구하고, 그래도
+  확인할 수 없는 행이나 후보가 있었는데 하나도 못 쓴 실행은 rc 2로
+  시끄럽게 실패한다 (issue #179).
+- In-workflow write-state self-conflicts (issue #174): the default seed
+  rule now excludes an entity whose first repository operation is
+  `create` (previously seeded if it was ever read anywhere in the
+  workflow, even after being created first); `persist()` now advances the
+  bound row's optimistic-lock version after a successful write, so a
+  second `set` on the same binding in one run no longer raises a phantom
+  write conflict.
+- `respond` naming a binding that a guard skipped, or a field the bound row
+  does not carry, crashed with a raw `KeyError` (CLI rc 1; `lnpl serve`
+  answered 500 with no `failed_step`). Such a reference is now omitted from
+  the response; an absent field raises one `respond-field-missing` warning
+  per reference, and when every reference is omitted the response is `{}`.
+  A new compile warning `guard-scoped-binding-escape` flags a `respond` or
+  `send` reference to a binding that only exists inside a guard. Existing
+  programs that crashed now answer; none that succeeded change (issue #198).
+- `If-Match` ignored a `by <ref>` lookup key: the precondition was checked
+  against the payload `id`, so a stale ETag on a row read by another key got
+  200 instead of 412. It now evaluates the row the workflow's first read
+  addresses; a `by` ref that cannot be resolved from the request answers 400
+  `precondition-unsupported` without running the workflow, and an absent
+  addressed row answers 412. Workflows without `by` behave as before
+  (issue #199).
+- The default `Money` sample was `{"amount": "0", ...}`, which fails the
+  type's own codec (USD has two decimals), so the default `spec`/`run`
+  payload failed unconditionally. The sample is now
+  `{"amount": "1.00", "currency": "USD"}`; any golden or fixture that
+  pinned the old sample must be regenerated (issue #203).
+- A `derived` field assigned with `set`/`format` earlier in the same guard
+  scope was still rejected by `emit ... with <binding>.<field>`, with an
+  error text that contradicted RFC-0049. It is now accepted when the
+  assignment precedes the `emit` in the same scope, and otherwise rejected
+  naming the missing assignment and the `emit` line; RFC-0049 was corrected
+  in place (issue #204).
+- Optimistic-lock write conflicts left the server as `500 workflow-failed`,
+  indistinguishable from a server fault. They now fail with
+  `failure_kind` `write-conflict` and answer `409 write-conflict`
+  (problem+json, with `failed_step`); the event-consume path answers 503
+  with `Retry-After` and releases the claim. Clients that retried on 500
+  should retry on 409 (issue #201).
+- Fixed a self-conflict in the SQLite driver where calling `update` on a
+  bound row and then `set`ting the same row again failed with `"write
+  conflict"` (issue #182).
+- Fixed `FakeRepository`'s `delete`, which unconditionally returned
+  `affected: 1` without removing the row — it now actually deletes the
+  row and returns `affected: 0` for a missing row. A workflow that reads
+  the same row after `delete` now gets the same result on Fake and
+  SQLite (issue #183).
+- Fixed `lnpl diff` (`differential.verify()`) and `lnpl build` reporting
+  different RFCs as the first rejection reason for a workflow that
+  combines two or more of a Money guard, a lookup key (`by <ref>`), and
+  a numeric-shape predicate (`is-numeric`/`is-not-numeric`) —
+  `differential.verify()`'s check order is now unified with
+  `backend.build()`/`backend.emit_mlir()`'s Money (RFC-0051) → lookup
+  key (RFC-0052) → numeric predicate (RFC-0050) order. Two combinations
+  change: for a Money + numeric-predicate program, `diff`'s first report
+  moves from RFC-0050 to RFC-0051; for a lookup-key + numeric-predicate
+  program, from RFC-0050 to RFC-0052. Both still reject with rc 4 — only
+  the reason changes (issue #185).
+- Fixed `lnpl build`-ing a workflow that uses a numeric-shape predicate
+  (`is-numeric`/`is-not-numeric`) in an environment without MLIR/LLVM
+  tools reporting a tool-missing error (`"mlir-opt not found ..."`)
+  before the RFC-0050 rejection — `build()` now rejects the numeric
+  predicate early, in the same place as the Money/lookup-key rejection
+  (#181), right before `verify_lnpl_module()` (the tool lookup). This
+  early check sees the ops stream truncated by `_lnpl_ops`'s
+  seed/payload, so a guard step that comes after an unseeded read and
+  still succeeds today (`seeded=frozenset()`) still succeeds — only the
+  case where the rejection used to come after the tool error changes
+  (issue #186).
+- `build_app()` (the gunicorn operations path) now accepts four
+  operational options that previously existed only for `lnpl serve`:
+  `LNPL_METRICS`, `LNPL_CAPTURE_ON_FAILURE`, `LNPL_TRUST_INCOMING_TRACE`
+  (boolean — `1`/`true`/`yes`/`on`, `0`/`false`/`no`/`off`), and
+  `LNPL_RATE_LIMIT` (a finite number greater than 0). An argument of the
+  same name (e.g. `metrics=`) is also accepted, and an explicit argument
+  wins over the environment variable. An empty string means unset, and
+  an invalid value fails startup with a `WsgiConfigError` naming the
+  variable. readyz check ③ (`jwt-secret-env`) now also runs on the
+  `build_app()` path — it used to be skipped even when
+  `LNPL_JWT_SECRET_ENV` was given. `lnpl serve --rate-limit nan`/`inf`
+  is now rejected with the same wording as `0` (rc 2).
+  `impl/tests/test_build_app_serve_parity.py` enforces that every
+  `serve` option has a `build_app()` counterpart (issue #187).
+- The gunicorn `build_app()` path now accepts
+  `--cache`/`--network`/`--token-provider`/`--jwt-issuer`/`--config`/`--profile`
+  under the same rules as `lnpl serve` — the
+  `LNPL_CACHE`/`LNPL_NETWORK`/`LNPL_TOKEN_PROVIDER`/`LNPL_JWT_ISSUER`/`LNPL_CONFIG`/`LNPL_PROFILE`
+  environment variables, or an argument of the same name. The
+  startup-failure message for an unknown `LNPL_BACKEND` value no longer
+  includes the value (issue #187).
+- `lnpl serve` listened with socketserver's default backlog of 5, so a
+  burst of more than about 6 connections arriving while the accept loop
+  was busy had its extra SYNs dropped, and those clients waited 1 s or
+  more to retry. The backlog is now 128 (the kernel still caps it at
+  `somaxconn`). Production serving through gunicorn is unaffected
+  (issue #226).
+- `lnpl relay` drained the outbox outside any transaction, so on a driver
+  whose `drain_outbox` locks rows with `SELECT ... FOR UPDATE SKIP LOCKED`
+  (today `lnpl-postgres`) the locks ended with the statement and two
+  relays could publish the same row. Each relay batch (drain, publish or
+  POST, ack) now runs inside one driver transaction: `begin()` before the
+  drain, `commit()` after the batch, `rollback()` when an ack failure, an
+  unexpected publisher error or an interrupt escapes it; a row whose
+  publish fails stays un-acked and the batch still commits. A second relay
+  skips rows the first one holds until its commit (exactly-once per batch
+  on row-locking drivers; end-to-end delivery stays at-least-once).
+  Behaviour on sqlite is unchanged (issue #257).
+- `lnpl serve` / `build_app()`: an `Idempotency-Key` header longer than
+  255 bytes reached the repository driver, and on `lnpl-postgres` (whose
+  `lnpl_idempotency (workflow_id, key)` btree index cannot hold a key of
+  about 4000 characters) the request failed with an unhandled 500. Such a
+  request is now refused with 400 `idempotency-key-too-long`
+  (problem+json, M23) before any driver is opened, on every backend; keys
+  of up to 255 bytes, an empty key and requests without the header behave
+  as before. Separately, when the workflow behind `POST /-/events/<slug>`
+  raised an exception `run_workflow` does not catch, the claim on the
+  CloudEvents `id` was released while the workflow transaction was still
+  open, so the Postgres driver had to wait for a second pool connection
+  and sqlite committed the failed run's partial writes together with the
+  release. The open transaction is now rolled back first, so the key is
+  free at once and no partial write survives; if that rollback itself
+  fails, the claim is kept until its TTL instead (issue #258).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
@@ -776,7 +804,8 @@ when its condition became true (fixed in #5, after this tag). RFC-0008 G8's
 condition-field plumbing was only correct for exactly two condition fields
 (fixed in #4, after this tag).
 
-[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/choiyounggi/linkly/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.9.0
 [0.8.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.8.0
 [0.7.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.7.0
 [0.6.0]: https://github.com/choiyounggi/linkly/releases/tag/v0.6.0

@@ -23,7 +23,7 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | `golden-approval` | AI | `_ai-gate.yml`(t4) | advisory | 골든 시나리오 변경의 타당성 |
 | `test-quality` | AI | `_ai-gate.yml`(t5) | blocking + required (2026-10-22 승격 — 승격 기준 예외, 아래 "advisory → blocking 승격 절차") | 자기 코드를 자기가 평가하는 테스트(구현/평가 미분리), 가짜 통과 |
 | `prose-factcheck` | AI | `_ai-gate.yml`(t5) | advisory | PR 산문(설명·주석)이 실제 diff와 어긋나는 주장 |
-| 컨테이너 이미지 배선(`test_release_workflow.py`의 `image` 잡 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 비활성 유지 회귀 |
+| 릴리스 워크플로 배선(`test_release_workflow.py`의 `image`·`publish-pypi` 잡과 태그·버전 가드 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 배선 회귀(`environment: pypi`, `id-token: write` 단독 권한, `needs: [build, release]`, `if: false` 부활, `skip-existing` 추가, 액션 SHA 핀), `gates`의 태그·`pyproject.toml` 버전 불일치 미검출 |
 | 요청당 결정적 카운터(`test_perf_counters.py`) | 결정론 | `ci.yml` — 테스트 스위트(matrix) 잡 안의 한 모듈 | blocking(`gate` 잡 경유) | 요청 1건당 DB 연결 생성·닫힘 수, 저장소 문장 수, 드라이버 생성 수의 회귀(예: 요청마다 연결을 하나 더 여는 변경) |
 | 주간 부하 리포트(`load-weekly.yml`) | 결정론 | `load-weekly.yml` — `schedule`(월요일 07:00 UTC) + `workflow_dispatch` | report-only(비-required) | 절대 처리량·지연 추이(gunicorn sync 워커 2개, fake·sqlite 백엔드, 50/100/200/400 rps). 판정으로 쓰지 않는다 |
 
