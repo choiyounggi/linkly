@@ -66,6 +66,13 @@ MAX_BODY_BYTES = 1 << 20
 # promises (24h) and needs a new key anyway.
 DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000
 
+# issue #258 (M23): the longest `Idempotency-Key` accepted, in header bytes
+# (PEP 3333 hands each raw header byte over as one character, so `len()` of
+# the environ value is the byte count). Postgres's btree index on
+# `lnpl_idempotency (workflow_id, key)` cannot hold a key of a few thousand
+# bytes; 255 is Stripe's bound (user decision U7, ruling R-t258-3).
+MAX_IDEMPOTENCY_KEY_LENGTH = 255
+
 # issue #99, D3: the cursor page-size ceiling. `limit` outside [1, MAX_LIMIT]
 # is a 400 (`limit-invalid`), not a silent clamp — a client that asked for
 # 1,000,000 rows gets a refusal that names the ceiling, not a page it never
@@ -866,6 +873,7 @@ _TITLES = {
     "conflict": "the request conflicts with the current state of the target resource",
     "write-conflict": "a concurrent write changed the row since it was read -- retry is safe",
     "idempotency-in-progress": "a request with this Idempotency-Key is already running",
+    "idempotency-key-too-long": "the Idempotency-Key header value is too long",
     "idempotency-unsupported": "this server's repository driver cannot honour an idempotency key",
     "precondition-failed": "the If-Match version no longer matches the stored row",
     "precondition-invalid": "the If-Match header value is not a recognized ETag",
@@ -1592,6 +1600,15 @@ class LnplWsgiApp:
         # takes the exact pre-#113 path through `_run`/`_respond` (D9
         # regression: byte-identical when no key is sent).
         idempotency_key = environ.get("HTTP_IDEMPOTENCY_KEY")
+        # issue #258, M23: refuse an over-long key before `_run` opens a
+        # driver -- the key is never claimed and nothing runs.
+        if (idempotency_key is not None
+                and len(idempotency_key) > MAX_IDEMPOTENCY_KEY_LENGTH):
+            return _json_response(
+                start_response, 400,
+                problem(400, "idempotency-key-too-long",
+                       "Idempotency-Key is %d bytes long; the maximum is %d bytes"
+                       % (len(idempotency_key), MAX_IDEMPOTENCY_KEY_LENGTH)))
         # issue #113, D13: absent by default -- current behavior unchanged
         # when no client sends it.
         if_match = environ.get("HTTP_IF_MATCH")
@@ -2247,7 +2264,25 @@ class LnplWsgiApp:
                 # branch below for why leaving the claim merely unfinished
                 # is itself a bug (`idempotency_release`'s own docstring).
                 if claim:
-                    repository.idempotency_release(workflow_id, event_key)
+                    # issue #258: close the run's still-open transaction
+                    # first, so the release runs on the driver's own
+                    # connection and cannot commit this run's partial
+                    # writes. A no-op when `run_workflow` already rolled
+                    # back (a re-raised RunError). If the rollback itself
+                    # fails the claim is KEPT (in-progress until its TTL):
+                    # releasing would commit the partial writes.
+                    rolled_back = True
+                    try:
+                        repository.rollback()
+                    except Exception:
+                        rolled_back = False
+                        print("serve: rollback failed after an internal error "
+                              "consuming event; the claim is kept until its "
+                              "TTL (correlation_id=%s)" % correlation_id,
+                              file=sys.stderr)
+                        traceback.print_exc(file=sys.stderr)
+                    if rolled_back:
+                        repository.idempotency_release(workflow_id, event_key)
                 return _json_response(
                     start_response, 503,
                     problem(503, "event-retry-later", "internal server error",

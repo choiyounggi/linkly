@@ -160,6 +160,18 @@ class RequestPathRefusalTest(_Base):
         # the helper is not consulted without the header
         self.assertEqual(before, len(PREDICATE_CALLS))
 
+    def test_error_an_over_long_key_is_400_before_the_501_check(self):
+        """Issue #258: M23 (key length) is decided in `_do_post`, before
+        `_run` opens a driver, so it precedes M22 (501)."""
+        opened_before = len(OPENED)
+        predicate_before = len(PREDICATE_CALLS)
+        status, _headers, body = _post_payment(self.app, key="k" * 256)
+        self.assertEqual(400, status)
+        self.assertEqual("idempotency-key-too-long", body["code"])
+        self.assertEqual(opened_before, len(OPENED))
+        self.assertEqual(predicate_before, len(PREDICATE_CALLS))
+        self.assert_nothing_ran()
+
 
 class ConsumePathRefusalTest(_Base):
 
