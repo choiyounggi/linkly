@@ -5,6 +5,11 @@
 - Status: **Accepted** (RFC-0015, 2026-08-06)
 - Updates: RFC-0001 §Appendix A/A.4 Node catalogue(`Assignment` 1종 추가), RFC-0002 §Full grammar(`Condition`/`Value`/`AssignStep`), RFC-0008 §Reference-level Specification/1. Full Grammar
 - Updated-by: RFC-0025 (§1), RFC-0028 (§1, §4)
+- Updated-by: RFC-0050 (§1)
+- Updated-by: RFC-0051 (§Reference-level Specification/3. 정적 거부)
+- Updated-by: RFC-0053 (§Reference-level Specification/3. 정적 거부)
+- Updated-by: RFC-0054 (§Reference-level Specification/3. 정적 거부)
+- Updated-by: RFC-0060 (§Reference-level Specification/3. 정적 거부, §Open Questions)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 가드 조건의 문법은 RFC-0002
 §Full grammar에 있었으나 RFC-0008 §1이 그 절을 이미 갱신했으므로 **효력 있는 계약은
@@ -108,6 +113,8 @@ Money·DateTime 같은 비정수 필드는 비교할 수 없다(평가기 없음
 
 ### 1. Full Grammar (RFC-0002 §Full grammar / RFC-0008 §1 갱신)
 
+> 갱신됨: RFC-0050
+
 ```
 Guard        ::= ('when' | 'until') Condition
 Condition    ::= Presence | Comparison ('and' Comparison)*
@@ -192,6 +199,11 @@ Comparison ::= Reference Comparator (Integer | Duration)
 `verbs.md`와 `docs/ENFORCEMENT-MATRIX.md` §A가 그 테이블에서 나온다.
 
 ### 3. 정적 거부 (컴파일 에러, rc=2)
+
+> 갱신됨: RFC-0051
+> 갱신됨: RFC-0053
+> 갱신됨: RFC-0054
+> 갱신됨: RFC-0060
 
 문법이 받되 문서를 보면 거부되는 형태들이다. 전부 `lower`에서 판정한다 — 문서만으로
 결정 가능한 것을 런타임까지 미루면 t2 F-4처럼 인터프리터 내부의 원시 예외가 조작자에게
@@ -361,6 +373,8 @@ RFC-0008 §Alternatives가 세운 순서를 따른다 — 표현력이 높아질
 등가를 실측으로 세웠다(양방향 가드 + 씨앗 발산 + 컨트롤 페어).
 
 ## Open Questions
+
+> 갱신됨: RFC-0060
 
 1. **할당 후 가드의 해제 경로.** §3의 마지막 거부는 모드 B가 조건 필드를 진입 시점에
    고정 받기 때문이다. 방출기가 갱신된 값을 SSA로 이어 흘리면(scf.if의 결과값,

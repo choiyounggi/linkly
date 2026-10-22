@@ -4,6 +4,10 @@
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 - Updated-by: RFC-0011 (§부록 A.6.3, §부록 A.7), RFC-0028 (§노드 카탈로그/Guard)
+- Updated-by: RFC-0053 (§Reference-level Specification/노드 카탈로그/Entity)
+- Updated-by: RFC-0054 (§노드 카탈로그/Guard)
+- Updated-by: RFC-0056 (§Reference-level Specification/노드 카탈로그)
+- Updated-by: RFC-0060 (§노드 카탈로그/Guard)
 
 ## Motivation
 
@@ -87,6 +91,11 @@ rule을 내장해 검증·OpenAPI·프런트엔드 검증 코드 자동 생성�
    해소되어야 한다. 기계 검증(스키마·스크립트)은 직렬화 태스크가 규정한다.
 
 ### 노드 카탈로그
+
+> 갱신됨: RFC-0053 (`Entity` 행)
+> 갱신됨: RFC-0054 (`Guard` 행)
+> 갱신됨: RFC-0056 (Effect 표 `Rejection` 행 신설, Behavior 표 `WorkflowStep` 행)
+> 갱신됨: RFC-0060 (`Guard` 행)
 
 21개 kind — 아래 4표가 전부이며 행의 추가·삭제는 이 RFC의 개정 사항이다.
 공통 필드(kind/id/meta/children)는 각 행에서 생략한다. 필드 값의 문자 표기

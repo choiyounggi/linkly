@@ -7,6 +7,11 @@
 - Updated-by: RFC-0009 (§Open Questions)
 - Updated-by: RFC-0012 (§Full grammar)
 - Updated-by: RFC-0019 (§Block structure)
+- Updated-by: RFC-0049 (§Full grammar)
+- Updated-by: RFC-0052 (§Full grammar)
+- Updated-by: RFC-0058 (§Block structure)
+- Updated-by: RFC-0060 (§Full grammar, §Block structure)
+- Updated-by: RFC-0062 (§Full grammar)
 
 ## Motivation
 
@@ -231,6 +236,8 @@ facet 이름 6종(`pattern` `minLength` `maxLength` `min` `max` `enum`)은
 ### Block structure (D5 개정판)
 
 > 갱신됨: RFC-0019
+> 갱신됨: RFC-0058
+> 갱신됨: RFC-0060
 
 1. **키워드 구획** — 블록 경계는 키워드가 정한다. 최상위 선언 키워드는 이전
    블록 전체를 자동 종결한다. 절 키워드는 소속 선언의 하위 구획을 열고, 다음
@@ -310,6 +317,10 @@ workflow 본문의 각 라인은 step이거나 제어 구조다:
 ### Full grammar (W3C-style EBNF)
 
 > 갱신됨: RFC-0008
+> 갱신됨: RFC-0049
+> 갱신됨: RFC-0052
+> 갱신됨: RFC-0060
+> 갱신됨: RFC-0062
 
 ```
 /* ---- 구조 ---- */

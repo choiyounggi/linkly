@@ -7,6 +7,8 @@
   RFC-0015 §4, RFC-0001 §노드 카탈로그/Guard,
   RFC-0014 §Reference-level Specification/2. Guard Runtime Semantics,
   RFC-0027 §Reference-level Specification/6. 관측
+- Updated-by: RFC-0050 (§Reference-level Specification/1. Full Grammar, §Reference-level Specification/4. Guard Runtime Semantics (2.4), §Reference-level Specification/6. Mode B)
+- Updated-by: RFC-0051 (§Reference-level Specification/6. Mode B)
 
 RFC-0007 §2.2 규칙 5(연쇄 갱신)에 따라 대상 RFC와 **직전 갱신 RFC를 모두** 지목한다.
 
@@ -137,6 +139,8 @@ workflow Approve
 ## Reference-level Specification
 
 ### 1. Full Grammar — RFC-0015 §1 갱신 (치환 후 최종 텍스트)
+
+> 갱신됨: RFC-0050
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0015 §1의 `ArithOp`·`Guard` 생산 규칙에
 대한 **치환 후 최종 텍스트**다. 이 절의 다른 생산 규칙(`Condition`/`Presence`/
@@ -276,6 +280,8 @@ guard alternative matched: alt=0 condition="input.channel == 1"
 
 #### 2.4 스킵 레코드 (갱신)
 
+> 갱신됨: RFC-0050
+
 실행 결과는 **스킵 매니페스트**를 가진다. 피가드 항목을 실행하지 않은 가드마다
 레코드가 하나씩, 가드를 만난 순서대로 들어간다.
 
@@ -325,6 +331,9 @@ guard_condition_text(condition: str, alternatives: Sequence[str] | None) -> str
 않는다는 §Motivation의 결정을 코드 층위에서 지킨다.
 
 ### 6. Mode B — MLIR 표현식 lowering (신설, 표현식 부분만)
+
+> 갱신됨: RFC-0050
+> 갱신됨: RFC-0051
 
 이 절은 `impl/lnpl/backend.py`의 **표현식 lowering**(S4/S5, `arith`/`scf`
 방출)만을 규정한다 — clang 호출부·`tool()`·툴체인 경로(S7)는 이 RFC의 범위
