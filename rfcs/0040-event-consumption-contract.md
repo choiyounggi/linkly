@@ -10,11 +10,14 @@
   배타적이지 않다(§Reference-level Specification/1). `docs/serving.md`의
   M1-M19 상태코드 매핑도 고치지 않는다 — `/-/events/<slug>`는 그 표에
   없던 새 라우트이고 자기 자신의 3갈래 매핑(E1-E7)을 새로 낸다.
+- Updated-by: RFC-0061 (§Motivation, §Reference-level Specification/7. 오류 분류 — 3갈래 (D7), §Reference-level Specification/8. 레퍼런스 릴레이 — `lnpl relay` (D8), §Reference-level Specification/9. 문서 — `subscribe` vs `consume by` (D9), §Alternatives)
 
 번호가 0040인 이유: 0039까지 점유됐다(RFC-0039, `note` 동사 — 이 RFC와 같은
 직렬 체인에서 앞서 병합됨). RFC-0007 §3은 번호 재사용을 금지한다.
 
 ## Motivation
+
+> 갱신됨: RFC-0061
 
 발행 쪽(`emit`/`publish` → `EventEmit` → `lnpl_outbox`, 이슈 #102)은 완성됐고
 RFC-0032가 그 트랜잭션 경계를 확정했다. `event ... subscribe`(이슈 #103)도
@@ -264,6 +267,8 @@ DELETE 한 문장)를 503 판정 직후 호출해 클레임을 그 자리에서 
 
 ### 7. 오류 분류 — 3갈래 (D7)
 
+> 갱신됨: RFC-0061
+
 `map_consume_result(result)`가 `run_workflow`의 결과를 분류한다 —
 일반 워크플로 POST 라우트의 M6-M9 사다리(`map_result`)와 **다른** 함수다:
 그 사다리는 "이 호출자가 뭘 잘못했나"를 답하고, 이 함수는 "이 봉투를 다시
@@ -289,6 +294,8 @@ effect를 갖지만(생성 충돌도 결국 그 effect다), D7이 명시적으�
 방치도 아니다).
 
 ### 8. 레퍼런스 릴레이 — `lnpl relay` (D8)
+
+> 갱신됨: RFC-0061
 
 ```
 lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
@@ -317,6 +324,8 @@ lnpl relay <source...> --backend sqlite:<path> --target <base-url> [--once]
 드라이버 SPI(#75/#132)와 같은 판단.
 
 ### 9. 문서 — `subscribe` vs `consume by` (D9)
+
+> 갱신됨: RFC-0061
 
 `docs/serving.md`에 대조표 + E1-E7 매핑표 신설(§Guide-level Explanation의
 표 형태와 동일). `docs/backends.md §5`에 소비 측 대칭 경계 1문단 — 발행
@@ -378,6 +387,8 @@ POST /-/events/order-placed
 `Retry-After: 1`(`event-retry-later`).
 
 ## Alternatives
+
+> 갱신됨: RFC-0061
 
 | # | 검토한 대안 | 기각 사유 |
 |---|------------|----------|

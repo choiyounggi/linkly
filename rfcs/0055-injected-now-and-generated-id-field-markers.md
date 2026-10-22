@@ -2,13 +2,15 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0055, 2026-10-22)
 - Updates: RFC-0030 §Reference-level Specification/4. payload 시드
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. RFC-0030 §4는 이번이 첫
 갱신이다 — RFC-0030 머리에 `Updated-by:`가 없고, 다른 RFC의 Updates 목록에도 그 절이
 없다. 그래서 대상 RFC 하나만 지목한다. 이 RFC는 Draft이므로 RFC-0030에
 `Updated-by:` 포인터를 달지 않는다(Accepted가 되는 시점의 일이다).
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다.
 
 이 RFC는 RFC-0016 Open Question 6("주입식 `now`의 승격")에 답한다. 그 절의 텍스트를
 바꾸지 않으므로 RFC-0016에 대한 Updates가 아니다 — RFC-0029·RFC-0030이 앞선 열린

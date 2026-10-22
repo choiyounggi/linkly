@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0059, 2026-10-22)
 - Updates: RFC-0025 §Reference-level Specification/5 (RFC-0048 §Reference-level
   Specification/4가 이미 갱신한 절 — 그 개정은 RowSet 바인딩 규칙을 그대로 두고
   다섯 번째 이름공간만 더했다. 이 개정은 RowSet 바인딩 항목의 "집계(§2)로만
@@ -13,6 +13,8 @@ RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연
 규칙은 RFC-0025 §5에 있다 — RFC-0027 §4, RFC-0030 §2, RFC-0048 §4는 G12.2를 다시
 쓰면서 "RowSet 바인딩의 규칙은 RFC-0025 §5 그대로"라고 적었다. Draft이므로 대상
 RFC에 `Updated-by:` 포인터를 달지 않는다(Accepted가 되는 시점의 일이다).
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다.
 
 `respond` 자체를 규정한 RFC는 없다 — 이슈 #96에서 RFC 절차 없이 들어왔고, 구현의
 주석은 "issue #96, D1/D3/D6"만 인용한다. 그래서 지목할 `respond` RFC 절이 없으며, 이

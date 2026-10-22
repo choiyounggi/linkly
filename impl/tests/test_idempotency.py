@@ -10,6 +10,7 @@ neither step is vulnerable to `run_workflow`'s unconditional rollback-on-
 failure leaving the key stuck at `in-progress` forever.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -17,12 +18,14 @@ import tempfile
 import time
 import unittest
 
+from lnpl import wsgi
 from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.wsgi import make_wsgi_app
 
 from tests.fixtures import VALUE_PAYMENT
+from tests.test_ops_surface import JWT_PATH, JWT_SRC
 from tests.test_wsgi_contract import call_wsgi
 
 PAYMENT_PATH = "/payment-service/approve"
@@ -178,7 +181,7 @@ class IdempotencyHttpTest(unittest.TestCase):
         # that idempotency plays no part when no key is sent).
         self.assertEqual(409, s2)
 
-    # -- boundary: empty-string / very long keys are decided and tested ---
+    # -- boundary: empty-string keys and the 255-byte bound are decided and tested ---
 
     def test_an_empty_string_key_is_a_valid_literal_key(self):
         """Decided (not a special case): `Idempotency-Key: ` with an empty
@@ -193,15 +196,94 @@ class IdempotencyHttpTest(unittest.TestCase):
         self.assertEqual(200, s2)
         self.assertEqual(b1, b2)
 
-    def test_a_very_long_key_is_accepted(self):
-        payload = {"id": "p-6", "amount": 500}
-        long_key = "k" * 4096
 
-        s1, _, b1 = self._post(payload, key=long_key)
-        s2, _, b2 = self._post(payload, key=long_key)
+class IdempotencyKeyBoundTest(unittest.TestCase):
+    """Issue #258 (M23): an `Idempotency-Key` longer than 255 bytes is a 400
+    `idempotency-key-too-long` before any repository driver is opened.
+    `make_wsgi_app` itself opens one driver at construction (the #228 boot
+    probe), so "no driver opened" is counted across the request only."""
 
-        self.assertEqual(200, s1)
-        self.assertEqual(b1, b2)
+    def setUp(self):
+        box = tempfile.TemporaryDirectory()
+        self.addCleanup(box.cleanup)
+        self.path = os.path.join(box.name, "store.db")
+        self.calls = []
+        self.opened = []
+        path, calls, opened = self.path, self.calls, self.opened
+
+        def factory():
+            opened.append(1)
+            return _CountingSqliteDriver(path, calls)
+
+        self.app = make_wsgi_app(compile_source(VALUE_PAYMENT),
+                                 repository_factory=factory)
+        self.opened_at_boot = len(self.opened)
+
+    def _post(self, payload, key):
+        return call_wsgi(self.app, "POST", PAYMENT_PATH,
+                         body=json.dumps(payload).encode("utf-8"),
+                         headers={"Idempotency-Key": key})
+
+    def assert_refused_before_any_driver(self, status, headers, body, length):
+        self.assertEqual(400, status)
+        self.assertEqual("application/problem+json", headers["Content-Type"])
+        self.assertEqual("idempotency-key-too-long", body["code"])
+        self.assertEqual(400, body["status"])
+        self.assertEqual(wsgi._TITLES["idempotency-key-too-long"], body["title"])
+        self.assertEqual(
+            "Idempotency-Key is %d bytes long; the maximum is 255 bytes" % length,
+            body["detail"])
+        self.assertNotIn("correlation_id", body)
+        self.assertEqual(self.opened_at_boot, len(self.opened))
+        self.assertEqual([], self.calls)
+
+    def test_error_a_256_byte_key_is_400_before_any_driver_is_opened(self):
+        status, headers, body = self._post({"id": "p-256", "amount": 500}, "a" * 256)
+        self.assert_refused_before_any_driver(status, headers, body, 256)
+
+    def test_error_the_4096_byte_key_that_used_to_be_accepted_is_now_400(self):
+        status, headers, body = self._post({"id": "p-6", "amount": 500}, "k" * 4096)
+        self.assert_refused_before_any_driver(status, headers, body, 4096)
+
+    def test_boundary_a_255_byte_key_is_claimed_and_replayed(self):
+        payload = {"id": "p-255", "amount": 500}
+
+        first_status, _, first_body = self._post(payload, "b" * 255)
+        creates_after_first = sum(1 for c in self.calls if c[1] == "create")
+        second_status, _, second_body = self._post(payload, "b" * 255)
+
+        self.assertEqual(200, first_status)
+        self.assertEqual(200, second_status)
+        self.assertEqual(first_body, second_body)
+        self.assertEqual(1, creates_after_first)
+        self.assertEqual(creates_after_first,
+                         sum(1 for c in self.calls if c[1] == "create"))
+
+    def test_boundary_a_multibyte_key_is_counted_in_header_bytes(self):
+        # PEP 3333: a WSGI server hands each raw header byte over as one
+        # Latin-1 character, so 128 "é" sent as UTF-8 arrive as 256.
+        key = "é".encode("utf-8").decode("latin-1") * 128
+        self.assertEqual(256, len(key))
+        status, headers, body = self._post({"id": "p-mb", "amount": 500}, key)
+        self.assert_refused_before_any_driver(status, headers, body, 256)
+
+    def test_boundary_the_fake_backend_refuses_the_same_256_byte_key(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            app = make_wsgi_app(compile_source(VALUE_PAYMENT))
+        status, _, body = call_wsgi(
+            app, "POST", PAYMENT_PATH,
+            body=json.dumps({"id": "p-fake", "amount": 500}).encode("utf-8"),
+            headers={"Idempotency-Key": "a" * 256})
+        self.assertEqual(400, status)
+        self.assertEqual("idempotency-key-too-long", body["code"])
+
+    def test_error_authentication_still_runs_before_the_bound(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            app = make_wsgi_app(compile_source(JWT_SRC))
+        status, _, body = call_wsgi(app, "POST", JWT_PATH, body=b"{}",
+                                    headers={"Idempotency-Key": "a" * 256})
+        self.assertEqual(401, status)
+        self.assertEqual("auth-missing", body["code"])
 
 
 class IdempotencyFakeBackendTest(unittest.TestCase):

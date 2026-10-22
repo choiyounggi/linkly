@@ -2,8 +2,9 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0057, 2026-10-22)
 - Updates: RFC-0027 §Reference-level Specification/2 (`as` 결과 바인딩 문법)
+- Updated-by: RFC-0063 (§Guide-level Explanation, §Reference-level Specification/4. 런타임 본문 구성, §Reference-level Specification/5. 호환성, §Reference-level Specification/8. 이 RFC에 없는 것)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. RFC-0027 머리의 `Updated-by:`는
 §1(RFC-0037)만 가리킨다 — §2는 이번이 첫 갱신이다. 그 절의 "trailing 토큰 판정표"는
@@ -11,6 +12,8 @@ issue #109가 `with <ref>...`(경로 치환)를 RFC 없이 더한 뒤로 실제 
 (표에는 `()`와 `("as", name)` 두 행뿐이다). 아래 §1이 `send`·`with`·`as` 셋을 함께 담은
 그 표의 치환 후 최종 텍스트다(RFC-0007 §2.2 규칙 4, 자기완결). 이 RFC는 Draft이므로
 RFC-0027에 `Updated-by:` 포인터를 달지 않는다(Accepted가 되는 시점의 일이다).
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다.
 
 ## Motivation
 
@@ -41,6 +44,8 @@ workflow PlaceOrder
 with`, `payloadMap`)로 이미 풀었다 — 이 RFC는 그 규칙을 아웃바운드 호출로 옮긴다.
 
 ## Guide-level Explanation
+
+> 갱신됨: RFC-0063 (`send`가 없는 호출의 본문을 말하는 문단)
 
 ```
 call <Target> [send <ref>...] [with <ref>...] [as <name>]
@@ -183,6 +188,8 @@ generated`/`derived clock`)는 `create`가 언제나 채우므로 그대로 쓸 
 
 ### 4. 런타임 본문 구성 (D8, D9)
 
+> 갱신됨: RFC-0063
+
 `interp.py`의 `Interpreter._assemble_mapped_payload(payload_map, payload, bindings)`가
 RFC-0049 §4의 조립을 그대로 한다: 각 참조를 `resolve_reference`로 해석하고, 참조 종류에
 맞는 엔티티 뷰로 필드 단위 `mask_payload`를 통과시키고, 값이 없는 optional 필드는
@@ -193,6 +200,8 @@ RFC-0049 §4의 조립을 그대로 한다: 각 참조를 `resolve_reference`로
 타지 않는다. `NetworkDriver` 계약(RFC-0027 §1, RFC-0037)은 바뀌지 않는다.
 
 ### 5. 호환성 (D9, D10)
+
+> 갱신됨: RFC-0063
 
 호환성 파괴 없음. `send`가 없는 모든 기존 소스는 같은 IR(`bodyMap` 키 없음), 같은
 골든, 같은 본문 바이트를 낸다. 이전에 `call X send ...`는 trailing 단어 거부로 컴파일
@@ -223,6 +232,8 @@ kind와 target만 구조적으로 내고 노드의 다른 필드를 읽지 않�
 send` ``처럼 그린다.
 
 ### 8. 이 RFC에 없는 것
+
+> 갱신됨: RFC-0063
 
 - **spec의 보낸 본문 단언** (`expect called <Target> body ...`, D11) — 더하지 않는다.
   RFC-0049도 발행된 payload 단언을 더하지 않았다. 실제 HTTP 기록 서버 테스트가 보낸

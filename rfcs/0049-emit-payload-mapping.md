@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0049, 2026-10-22)
 - Updates: RFC-0002 §Full grammar (`StepLine` 프로덕션 — `docs/CONSISTENCY-CHECK.md`
   발견 F5, 2026-09-28 기록)
 

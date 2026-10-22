@@ -431,5 +431,232 @@ class UnsupportedDriverRelayTest(RelayCliTestCase):
         self.assertTrue(driver.closed)
 
 
+class _RecordingSqliteDriver(drivers_module.SqliteRepositoryDriver):
+    """Issue #257: a real sqlite driver that records, in one `calls` list,
+    every transaction/outbox call the relay makes -- the
+    `RelayBatchTransactionTest.record_publishes` wrapper appends "publish"
+    to the same list -- plus the seqs it drained and acked. `ack_error` /
+    `commit_error` (str) make `ack_outbox` / `commit` raise DriverError."""
+
+    def __init__(self, path, ack_error=None, commit_error=None):
+        super().__init__(path)
+        self.calls = []
+        self.drained = []
+        self.acked = []
+        self.ack_error = ack_error
+        self.commit_error = commit_error
+
+    def begin(self):
+        self.calls.append("begin")
+        return super().begin()
+
+    def drain_outbox(self, limit=None):
+        self.calls.append("drain_outbox")
+        rows = super().drain_outbox(limit=limit)
+        self.drained.extend(row["seq"] for row in rows)
+        return rows
+
+    def ack_outbox(self, seqs):
+        self.calls.append("ack_outbox")
+        if self.ack_error is not None:
+            raise drivers_module.DriverError(self.ack_error)
+        result = super().ack_outbox(seqs)
+        self.acked.extend(seqs)
+        return result
+
+    def commit(self):
+        self.calls.append("commit")
+        super().commit()
+        if self.commit_error is not None:
+            raise drivers_module.DriverError(self.commit_error)
+
+    def rollback(self):
+        self.calls.append("rollback")
+        return super().rollback()
+
+
+class _BeginRecordingDrainOnlyDriver(_DrainOnlyDriver):
+    """`_DrainOnlyDriver` that also records `begin` -- proves the issue
+    #229 guard still returns before any transaction is opened."""
+
+    def begin(self):
+        self.calls.append("begin")
+
+
+class RelayBatchTransactionTest(RelayCliTestCase):
+    """Issue #257: each relay batch (drain -> publish/POST -> ack) runs
+    inside one driver transaction: begin before the drain, commit after
+    the batch, rollback when an exception escapes it. One `calls` list
+    per driver pins the order; "publish" is appended once per publish
+    ATTEMPT, success or failure."""
+
+    SECOND_ORDER_ID = "00000000-0000-4000-8000-000000000002"
+
+    def setUp(self):
+        super().setUp()
+        self.real_open_publisher = cli.open_publisher
+        self.addCleanup(setattr, cli, "open_publisher",
+                        self.real_open_publisher)
+
+    def record_publishes(self, driver, fail_ids=(), interrupt_ids=()):
+        """Replace `cli.open_publisher` (the l.343-353 idiom) with an opener
+        around the REAL one saved in setUp, so a second call never wraps
+        the first wrapper."""
+        real = self.real_open_publisher
+
+        def opener(target):
+            publisher = real(target)
+            publisher.fail_ids.update(fail_ids)
+            inner = publisher.publish
+
+            def publish(envelope):
+                driver.calls.append("publish")
+                if envelope["id"] in interrupt_ids:
+                    raise KeyboardInterrupt
+                return inner(envelope)
+
+            publisher.publish = publish
+            return publisher
+
+        cli.open_publisher = opener
+
+    def relay(self, driver, target="demo://broker/topic"):
+        with _drivers_registered(_inline_entry_point("rec", driver),
+                                 DEMO_PUBLISHER):
+            return self.run_cli(
+                ["relay", self.publish_source, "--backend", "rec:x",
+                 "--target", target, "--once"])
+
+    def test_a_publisher_batch_runs_inside_one_transaction(self):
+        self.emit_one()
+        driver = _RecordingSqliteDriver(self.db)
+        self.record_publishes(driver)
+
+        rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 1", out)
+        self.assertEqual(["begin", "drain_outbox", "publish", "ack_outbox",
+                          "commit"], driver.calls)
+
+    def test_an_http_batch_runs_inside_one_transaction(self):
+        self.emit_one()
+        base_url = self.start_consumer(CONSUME_SRC)
+        driver = _RecordingSqliteDriver(self.db)
+
+        rc, out, err = self.relay(driver, target=base_url)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 1", out)
+        self.assertEqual(["begin", "drain_outbox", "ack_outbox", "commit"],
+                         driver.calls)
+
+    def test_two_drainers_in_turn_receive_disjoint_batches(self):
+        self.emit_one()
+        self.emit_one(order_id=self.SECOND_ORDER_ID)
+        first = _RecordingSqliteDriver(self.db)
+        self.record_publishes(first, fail_ids={"outbox-2"})
+        rc_first, out_first, err_first = self.relay(first)
+        second = _RecordingSqliteDriver(self.db)
+        self.record_publishes(second)
+
+        rc_second, out_second, err_second = self.relay(second)
+
+        self.assertEqual(0, rc_first, err_first)
+        self.assertEqual(0, rc_second, err_second)
+        self.assertEqual([1, 2], first.drained)
+        self.assertEqual([1], first.acked)
+        self.assertEqual([2], second.drained)
+        self.assertEqual([2], second.acked)
+        self.assertTrue(set(first.acked).isdisjoint(second.drained))
+        self.assertEqual(["begin", "drain_outbox", "publish", "publish",
+                          "ack_outbox", "commit"], first.calls)
+        self.assertEqual(["begin", "drain_outbox", "publish", "ack_outbox",
+                          "commit"], second.calls)
+        self.assertEqual([], self.drain())
+
+    def test_a_failed_publish_leaves_the_row_and_still_commits(self):
+        self.emit_one()
+        driver = _RecordingSqliteDriver(self.db)
+        self.record_publishes(driver, fail_ids={"outbox-1"})
+
+        rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 0", out)
+        self.assertIn("left un-acked", err)
+        self.assertEqual(["begin", "drain_outbox", "publish", "commit"],
+                         driver.calls)
+        self.assertEqual(1, len(self.drain()))   # back in the queue
+
+    def test_an_ack_failure_rolls_back_and_exits_1(self):
+        self.emit_one()
+        driver = _RecordingSqliteDriver(
+            self.db, ack_error="outbox ack: unknown seq(s): 1")
+        self.record_publishes(driver)
+
+        rc, _out, err = self.relay(driver)
+
+        self.assertEqual(1, rc)
+        self.assertIn("error: outbox ack: unknown seq(s): 1", err)
+        self.assertEqual(["begin", "drain_outbox", "publish", "ack_outbox",
+                          "rollback"], driver.calls)
+        driver.begin()   # the boundary was closed: no nested-begin error
+        self.assertEqual("begin", driver.calls[-1])
+        self.assertEqual(1, len(self.drain()))
+
+    def test_an_interrupt_during_publish_rolls_back_and_the_row_stays(self):
+        self.emit_one()
+        driver = _RecordingSqliteDriver(self.db)
+        self.record_publishes(driver, interrupt_ids={"outbox-1"})
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.relay(driver)
+
+        self.assertEqual(["begin", "drain_outbox", "publish", "rollback"],
+                         driver.calls)
+        self.assertEqual(1, len(self.drain()))
+
+    def test_a_commit_failure_exits_1_without_a_rollback(self):
+        self.emit_one()
+        driver = _RecordingSqliteDriver(
+            self.db,
+            commit_error="cannot commit transaction: simulated commit failure")
+        self.record_publishes(driver)
+
+        rc, _out, err = self.relay(driver)
+
+        self.assertEqual(1, rc)
+        self.assertIn("error: cannot commit transaction: simulated commit "
+                      "failure", err)
+        self.assertEqual(["begin", "drain_outbox", "publish", "ack_outbox",
+                          "commit"], driver.calls)
+        # sqlite's ack_outbox committed on its own, so the row stays
+        # delivered (docs/backends.md §3: no redelivery on sqlite).
+        self.assertEqual([], self.drain())
+
+    def test_an_empty_outbox_commits_an_empty_batch(self):
+        driver = _RecordingSqliteDriver(self.db)
+        self.record_publishes(driver)
+
+        rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 0", out)
+        self.assertEqual(["begin", "drain_outbox", "commit"], driver.calls)
+
+    def test_a_driver_without_the_contract_never_opens_a_transaction(self):
+        driver = _BeginRecordingDrainOnlyDriver("x")
+        with _drivers_registered(_inline_entry_point("half", driver)):
+            rc, out, err = self.run_cli(
+                ["relay", self.publish_source, "--backend", "half:x",
+                 "--target", "http://127.0.0.1:1", "--once"])
+
+        self.assertEqual(2, rc)
+        self.assertEqual(NO_DRAIN_CONTRACT % "half", err)
+        self.assertEqual([], driver.calls)
+        self.assertTrue(driver.closed)
+
+
 if __name__ == "__main__":
     unittest.main()

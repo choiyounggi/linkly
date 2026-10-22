@@ -21,6 +21,8 @@ through) -> 503 + `Retry-After: 1`; anything else (Validation rejection,
 business/guard RunError, conflict) -> 422, permanent.
 """
 
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -439,6 +441,21 @@ class TestIdempotency(unittest.TestCase):
         self.assertEqual(422, second_status)
         self.assertEqual(first_body, second_body)
 
+    def test_boundary_the_consume_route_ignores_the_key_length_bound(self):
+        """Issue #258 bounds the `Idempotency-Key` header of workflow POSTs
+        only (ruling R-t258-1): this route keys on the CloudEvents `id`
+        and never reads that header."""
+        app = self._counting_app()
+        envelope = _envelope(event_id="e" * 300, event_type="OrderCreated",
+                             data={"id": "ord-long-id", "amount": 1})
+        status, _headers, body = call_wsgi(
+            app, "POST", EVENTS_PATH_CREATE,
+            body=json.dumps(envelope).encode("utf-8"),
+            headers={"Idempotency-Key": "a" * 256})
+        self.assertEqual(200, status)
+        self.assertEqual("completed", body["status"])
+        self.assertIn("create", self.calls)
+
     def test_a_new_id_executes_independently(self):
         app = self._counting_app()
         status1, _h, _b1 = _post(app, EVENTS_PATH_VALIDATE, _envelope(
@@ -566,6 +583,124 @@ class TestIdempotency(unittest.TestCase):
         self.assertEqual(200, second_status)
         self.assertEqual("completed", second_body["status"])
         self.assertEqual(2, len(attempts))
+
+    def test_an_exception_escape_after_a_write_rolls_it_back_before_releasing(self):
+        """Issue #258: the create reaches the store, THEN the run escapes.
+        Releasing on the still-open transaction would commit that row, so
+        the redelivery would hit a create conflict (422). Rolling back
+        first lets the redelivery run cleanly (200)."""
+        path = self.path
+        attempts = []
+
+        class _WritesThenExplodesOnce(SqliteRepositoryDriver):
+            def __init__(self):
+                super().__init__(path)
+
+            def execute(self, entity_id, operation, key):
+                result = super().execute(entity_id, operation, key)
+                if operation == "create":
+                    attempts.append(1)
+                    if len(attempts) == 1:
+                        raise RuntimeError("boom after the write")
+                return result
+
+        app = make_wsgi_app(_doc(SRC), repository_factory=_WritesThenExplodesOnce)
+        envelope = _envelope(event_id="evt-partial-1", event_type="OrderCreated",
+                             data={"id": "ord-partial-1", "amount": 1})
+
+        first_status, first_headers, first_body = _post(app, EVENTS_PATH_CREATE, envelope)
+        second_status, _h2, second_body = _post(app, EVENTS_PATH_CREATE, envelope)
+
+        self.assertEqual(503, first_status)
+        self.assertEqual("event-retry-later", first_body["code"])
+        self.assertEqual("1", first_headers.get("Retry-After"))
+        self.assertEqual(200, second_status)
+        self.assertEqual("completed", second_body["status"])
+        self.assertEqual(2, len(attempts))
+
+    def test_the_escape_path_rolls_back_before_it_releases(self):
+        """Issue #258: the release must run on a closed transaction."""
+        path = self.path
+        events = []
+
+        class _RecordsOrder(SqliteRepositoryDriver):
+            def __init__(self):
+                super().__init__(path)
+
+            def execute(self, entity_id, operation, key):
+                if operation == "create":
+                    raise RuntimeError("boom")
+                return super().execute(entity_id, operation, key)
+
+            def rollback(self):
+                events.append("rollback")
+                return super().rollback()
+
+            def idempotency_release(self, workflow_id, key):
+                events.append(("release", self._in_transaction))
+                return super().idempotency_release(workflow_id, key)
+
+        app = make_wsgi_app(_doc(SRC), repository_factory=_RecordsOrder)
+        del events[:]
+        status, _headers, body = _post(
+            app, EVENTS_PATH_CREATE,
+            _envelope(event_id="evt-order-1", event_type="OrderCreated",
+                      data={"id": "ord-order-1", "amount": 1}))
+
+        self.assertEqual(503, status)
+        self.assertEqual("event-retry-later", body["code"])
+        self.assertEqual(["rollback", ("release", False)], events)
+
+    def test_a_failing_rollback_keeps_the_claim_and_commits_nothing(self):
+        """Issue #258: if rollback() itself fails, releasing would commit the
+        run's partial write on sqlite, so the claim is kept (409 until the
+        TTL) and the partial row never reaches the store."""
+        path = self.path
+        attempts = []
+        releases = []
+
+        class _RollbackFails(SqliteRepositoryDriver):
+            def __init__(self):
+                super().__init__(path)
+
+            def execute(self, entity_id, operation, key):
+                result = super().execute(entity_id, operation, key)
+                if operation == "create":
+                    attempts.append(1)
+                    if len(attempts) == 1:
+                        raise RuntimeError("boom after the write")
+                return result
+
+            def rollback(self):
+                raise RuntimeError("rollback boom")
+
+            def idempotency_release(self, workflow_id, key):
+                releases.append(key)
+                return super().idempotency_release(workflow_id, key)
+
+        app = make_wsgi_app(_doc(SRC), repository_factory=_RollbackFails)
+        envelope = _envelope(event_id="evt-rollback-fails-1",
+                             event_type="OrderCreated",
+                             data={"id": "ord-rollback-fails-1", "amount": 1})
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            first_status, first_headers, first_body = _post(
+                app, EVENTS_PATH_CREATE, envelope)
+        second_status, _h2, second_body = _post(app, EVENTS_PATH_CREATE, envelope)
+
+        self.assertEqual(503, first_status)
+        self.assertEqual("event-retry-later", first_body["code"])
+        self.assertEqual("1", first_headers.get("Retry-After"))
+        self.assertIn("rollback failed", err.getvalue())
+        self.assertIn("correlation_id=req-", err.getvalue())
+        self.assertEqual([], releases)
+        self.assertEqual(409, second_status)
+        self.assertEqual("idempotency-in-progress", second_body["code"])
+        checker = SqliteRepositoryDriver(path)
+        self.addCleanup(checker.close)
+        self.assertIsNone(checker.execute(
+            "entity.order", "read", "entity.order#ord-rollback-fails-1"))
 
     def test_a_genuinely_concurrent_in_progress_claim_still_gets_409(self):
         """The release fix must not blur the OTHER meaning `in-progress`

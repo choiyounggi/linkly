@@ -2,13 +2,13 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0051, 2026-10-22)
 - Updates: RFC-0016 §Reference-level Specification/3. 피연산자의 차원 규칙,
   RFC-0038 §Reference-level Specification/3. 등가 비교의 타입 규칙,
   RFC-0015 §Reference-level Specification/3. 정적 거부,
   RFC-0044 §Reference-level Specification/5. 순서·산술의 통화 규칙,
   RFC-0016 §Reference-level Specification/5. mode A/B 등가,
-  RFC-0028 §Reference-level Specification/6. Mode B
+  RFC-0028 §Reference-level Specification/6. Mode B (+RFC-0050)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라 이미
 갱신된 절은 대상과 **직전 갱신 RFC를 모두** 지목한다.
@@ -46,6 +46,8 @@ RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연
 이 RFC는 Draft다. RFC-0007 §2.2 규칙 6에 따라 Updates RFC는 Accepted가 되는 순간
 효력이 생기므로, 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터 줄은 **승격 시점에**
 단다(RFC-0049·RFC-0050 선례와 같다).
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다. 같은 날 승격된 Draft끼리의 순서는 번호 순(작은 번호가 먼저)으로 정했고, `Updates:` 괄호의 직전 갱신은 그 순서를 따른다.
 
 번호가 0051인 이유: 0050까지 점유됐다(RFC-0050, 숫자 형태 가드 술어). RFC-0007
 §3은 번호 재사용을 금지한다.

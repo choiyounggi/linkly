@@ -2,13 +2,15 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0063, 2026-10-22)
 - Updates: RFC-0057 §Guide-level Explanation (`send`가 없는 호출의 본문을 말하는 문단), RFC-0057 §Reference-level Specification/4. 런타임 본문 구성, RFC-0057 §Reference-level Specification/5. 호환성, RFC-0057 §Reference-level Specification/8. 이 RFC에 없는 것
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 아래 §Reference-level
 Specification의 5~8이 지목한 네 절의 치환 후 최종 텍스트다(규칙 4, 자기완결). 이
 RFC와 RFC-0057은 둘 다 Draft이므로 RFC-0057에 `Updated-by:` 포인터를 달지 않는다
 (Accepted가 되는 시점의 일이다).
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다.
 
 ## Motivation
 

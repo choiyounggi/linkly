@@ -171,10 +171,23 @@ regardless of whether it succeeds or fails"). 진짜 재시도를 원하는
 표준이 되지 못했다 — Stripe·여러 결제 API가 정착시킨 업계 관행일 뿐,
 linkly가 따르는 규범 문서는 없다.
 
+**키 길이 상한 — 255바이트 (이슈 #258).** 키는 `(workflow_id, key)` 인덱스에
+그대로 들어간다. Postgres의 btree 인덱스는 항목 하나의 크기에 한도가 있어서,
+압축되지 않는 약 4000자 키에서 `idempotency_begin`이 `DriverError`로 실패해
+처리되지 않은 500이 났다(sqlite는 길이 제한이 없어 백엔드마다 결과가 달랐다).
+그래서 255바이트를 넘는 값은 백엔드와 무관하게 저장소 드라이버를 열기 전에 400
+`idempotency-key-too-long`(M23)으로 거부한다 — 키를 클레임하지도 워크플로를
+실행하지도 않는다. 길이는 헤더의 원시 바이트 수다(PEP 3333 — WSGI는 헤더
+바이트 하나를 문자 하나로 넘긴다). ASCII 키(UUID 등)는 255자와 같고, UTF-8
+비ASCII 문자는 2~4바이트로 센다. 255는 Stripe의 상한과 같다("Idempotency keys
+are up to 255 characters long"); 헤더 draft는 길이를 정하지 않는다. 빈 값은
+여전히 유효한 키다.
+
 | # | 관측 조건 | HTTP | error `code` |
 |---|-----------|------|--------------|
 | M17 | 같은 키로 이미 실행 중(다른 요청이 아직 안 끝남) | 409 | `idempotency-in-progress` |
 | M22 | `Idempotency-Key` 헤더가 있고, 설정된 저장소 드라이버(`RepositoryDriver`)의 `supports_idempotency()`가 False — 클레임 메서드 3종(`idempotency_begin`/`idempotency_finish`/`idempotency_release`)을 구현하지 않음(현재 `lnpl-postgres`). 클레임도 워크플로 실행도 하지 않는다 | 501 | `idempotency-unsupported` |
+| M23 | `Idempotency-Key` 헤더 값이 255바이트를 넘음 — 저장소 드라이버를 열기 전에 거부하므로 클레임도 워크플로 실행도 하지 않는다. `fake`를 포함한 모든 백엔드에서 같다 | 400 | `idempotency-key-too-long` |
 
 재생(replay)은 새 판정 행이 아니다 — 저장된 첫 실행의 상태코드·바디를
 그대로 돌려줄 뿐이다(200이었으면 200, 409 `conflict`였으면 409
@@ -209,7 +222,7 @@ linkly가 따르는 규범 문서는 없다.
 
 | 백엔드 | `Idempotency-Key`가 오면 | 기동 시 stderr |
 |--------|--------------------------|----------------|
-| `fake` (`--backend fake`) | 비활성 — 요청마다 빈 저장소가 새로 시딩되어 클레임을 남길 곳이 없으므로 헤더를 무시하고 매 요청을 그대로 실행한다 | `lnpl serve: Idempotency-Key support is disabled ...` 한 줄(D11) |
+| `fake` (`--backend fake`) | 비활성 — 요청마다 빈 저장소가 새로 시딩되어 클레임을 남길 곳이 없으므로 헤더를 무시하고 매 요청을 그대로 실행한다. 단 255바이트를 넘는 값은 M23(400)으로 거부한다 | `lnpl serve: Idempotency-Key support is disabled ...` 한 줄(D11) |
 | `sqlite:<path>` (`supports_idempotency()` True) | 위 계약 그대로 — 클레임·재생·M17 | 없음 |
 | 클레임 메서드 3종을 구현하지 않은 드라이버(`supports_idempotency()` False — 현재 `lnpl-postgres`, lnpl-postgres#8 전까지) | 거부 — 501 `idempotency-unsupported`(M22). 클레임도 워크플로 실행도 하지 않는다. 헤더 없는 요청은 그대로 실행된다 | `lnpl serve: repository driver <module.qualname> -- idempotency: unsupported ...` 한 줄(아래 운영 표면) |
 
@@ -249,7 +262,8 @@ REST의 PUT/PATCH가 갖는 단일 대상 리소스가 없어서, 이전 GET의 
 | M20 | `If-Match`가 있고 첫 읽기의 조회 키를 이 요청만으로 미리 평가할 수 없음(참조가 바인딩·네트워크 결과를 가리키거나, 그 값이 이 요청에 없음) | 400 | `precondition-unsupported` |
 | M21 | `If-Match`가 있고 조회 키는 평가됐는데 그 키의 행이 없음 | 412 | `precondition-failed` |
 
-평가 순서: 인증(M3/M3a/M3b, `_respond` 전에 이미 끝남) → M22(멱등성 미지원,
+평가 순서: 인증(M3/M3a/M3b, `_respond` 전에 이미 끝남) → M23(키 길이,
+M4/M5 다음이며 드라이버를 열기 전) → M22(멱등성 미지원,
 `Idempotency-Key`가 있을 때만) → 멱등성 클레임(M17/재생) → M18(형식) →
 M20(조회 키 미평가) → M21(행 없음) → M19(버전 불일치) → 워크플로 실행.
 M21은 `If-Match` 없는 같은 요청이 받는 404(M8b)보다 앞선다.
@@ -333,9 +347,15 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 재전달되면 워크플로를 다시 돌리지 않고 첫 응답을 재생한다. 503은
 **의도적으로 확정하지 않는다** — 확정하면 #113이 그 키에 대해 503을
 영원히 재생하게 되어, 릴레이가 재시도해도 절대 새로 실행되지 않는다(D7의
-취지를 정면으로 깬다). 그래서 503 다음 같은 `id`가 즉시 재전달되면
-"실행 중" 상태가 아직 안 지워졌으므로 E4(409)를 본다 — TTL이 지나야
-완전히 새로 시작한다. `fake` 백엔드(멱등성 저장소 없음)는 매번 독립적으로
+취지를 정면으로 깬다). 그 대신 503이면(정상 분기든, `run_workflow`가 잡지
+못한 예외가 빠져나온 경로든) `idempotency_release`로 클레임을 지우므로, 같은
+`id`의 다음 재전달은 곧바로 새로 실행된다(D6 r2). 예외 경로에서는 워크플로
+트랜잭션이 아직 열려 있을 수 있어 먼저 `rollback()`으로 닫고 나서
+해제한다(이슈 #258) — 그래야 해제가 드라이버 자신의 연결에서 돌고, 실패한
+실행의 부분 쓰기가 해제와 함께 커밋되지 않는다. 그 `rollback()`마저 실패하면
+클레임을 해제하지 않는다 — 부분 쓰기를 커밋하는 것보다 낫기 때문에, 그 `id`는
+TTL이 끝날 때까지 E4(409)를 받는다.
+`fake` 백엔드(멱등성 저장소 없음)는 매번 독립적으로
 실행한다(D9/D11 기존 규약과 동일). 클레임 메서드 3종을 구현하지 않은
 드라이버(`supports_idempotency()` False)에서는 봉투 검사 다음 E8(501
 `idempotency-unsupported`)로 거부하고 실행하지 않는다(이슈 #228). 레퍼런스

@@ -5,6 +5,10 @@
 - Status: **Accepted** (RFC-0016, 2026-08-06)
 - Updates: RFC-0001 §Appendix A/A.4 Node catalogue(`Event.source`에 스케줄 분기 1종 추가), RFC-0002 §Full grammar(`EventSource`·`Duration` 생산규칙), RFC-0008 §Reference-level Specification/1. Full Grammar(`Condition` 피연산자의 타입 규칙)
 - Updated-by: RFC-0038 (§Reference-level Specification/3)
+- Updated-by: RFC-0051 (§Reference-level Specification/3. 피연산자의 차원 규칙, §Reference-level Specification/5. mode A/B 등가)
+- Updated-by: RFC-0052 (§Reference-level Specification/5. mode A/B 등가)
+- Updated-by: RFC-0053 (§Reference-level Specification/3. 피연산자의 차원 규칙)
+- Updated-by: RFC-0054 (§Reference-level Specification/3. 피연산자의 차원 규칙)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 가드 조건의 피연산자 타입 규칙은
 RFC-0015 §Reference-level Specification이 "Integer 한정"으로 세웠고 이 문서가 그것을
@@ -128,6 +132,10 @@ OpenAPI `format: date-time`이다. **정수는 평가 채널 안에만 존재한
 
 ### 3. 피연산자의 차원 규칙
 
+> 갱신됨: RFC-0051
+> 갱신됨: RFC-0053
+> 갱신됨: RFC-0054
+
 RFC-0015의 "Integer 한정"을 **차원 규칙**이 대체한다.
 
 - `instant` — 선언 타입이 `DateTime`이거나 base가 `DateTime`인 refinement
@@ -186,6 +194,9 @@ RFC-0015도 이 형태를 거부했으나 사유가 "DateTime은 평가기가 �
 정의하지 않았음을 명시한다** — 언어가 미리 정하면 실행기가 못 지킬 약속이 된다.
 
 ### 5. mode A/B 등가
+
+> 갱신됨: RFC-0051
+> 갱신됨: RFC-0052
 
 | 관측 클래스 | 판정 |
 |---|---|

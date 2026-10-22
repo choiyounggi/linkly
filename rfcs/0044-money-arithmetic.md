@@ -3,6 +3,7 @@
 ## Status
 
 - Status: **Accepted** (RFC-0044, 2026-08-30)
+- Updated-by: RFC-0051 (§Reference-level Specification/5. 순서·산술의 통화 규칙)
 
 이 RFC는 기존 Accepted RFC의 어떤 절도 Supersede·Update하지 않는다 — 독립 신규
 RFC다. Money(RFC-0001 §Semantic Type 시스템)는 지금까지 "평가기가 없다"는 사유로
@@ -238,6 +239,8 @@ RFC-0045의 `avg` AggFunc 하나뿐이다)가 그 경계를 어떻게 실패시�
 
 ### 5. 순서·산술의 통화 규칙 — 같은 통화만, 그 밖은 RunError
 
+> 갱신됨: RFC-0051
+
 Money 값 두 개를 **순서 비교**(`<`/`<=`/`>`/`>=`)하거나 **더하는** 평가기는
 양쪽의 통화 코드가 같을 때만 정의된다. RowSet의 각 행은 저장소 데이터이므로,
 두 행의 `currency`가 같은지는 **런타임에만** 안다 — Money 필드는 통화를 타입
@@ -319,6 +322,8 @@ stored Payment amount 100.50XYZ   # XYZ는 활성 ISO 4217 표에 없음 — exp
 | 6 | **`avg`의 반올림도 절삭으로 통일**(Integer `/`와 대칭) | 금융 집계의 실무 관행과 어긋난다(§Reference-level Specification/4의 Modern Treasury·IEEE 754 인용) — 절삭은 체계적으로 값을 낮춰 평균이 편향된다. half-to-even은 동점을 짝수로 나눠 그 편향을 없앤다 |
 
 ## Open Questions
+
+> 갱신됨: RFC-0051 (1번 항목)
 
 1. **Money를 가드·`set` 산술로 여는 것.** §Alternatives 1이 이월한 것 그대로.
    요구가 생기면 RFC-0016 §3의 차원 표를 갱신하는 후속 RFC가 필요하다 — 등가·

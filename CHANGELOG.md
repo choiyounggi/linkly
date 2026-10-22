@@ -161,6 +161,32 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   more to retry. The backlog is now 128 (the kernel still caps it at
   `somaxconn`). Production serving through gunicorn is unaffected
   (issue #226).
+- `lnpl relay` drained the outbox outside any transaction, so on a driver
+  whose `drain_outbox` locks rows with `SELECT ... FOR UPDATE SKIP LOCKED`
+  (today `lnpl-postgres`) the locks ended with the statement and two
+  relays could publish the same row. Each relay batch (drain, publish or
+  POST, ack) now runs inside one driver transaction: `begin()` before the
+  drain, `commit()` after the batch, `rollback()` when an ack failure, an
+  unexpected publisher error or an interrupt escapes it; a row whose
+  publish fails stays un-acked and the batch still commits. A second relay
+  skips rows the first one holds until its commit (exactly-once per batch
+  on row-locking drivers; end-to-end delivery stays at-least-once).
+  Behaviour on sqlite is unchanged (issue #257).
+- `lnpl serve` / `build_app()`: an `Idempotency-Key` header longer than
+  255 bytes reached the repository driver, and on `lnpl-postgres` (whose
+  `lnpl_idempotency (workflow_id, key)` btree index cannot hold a key of
+  about 4000 characters) the request failed with an unhandled 500. Such a
+  request is now refused with 400 `idempotency-key-too-long`
+  (problem+json, M23) before any driver is opened, on every backend; keys
+  of up to 255 bytes, an empty key and requests without the header behave
+  as before. Separately, when the workflow behind `POST /-/events/<slug>`
+  raised an exception `run_workflow` does not catch, the claim on the
+  CloudEvents `id` was released while the workflow transaction was still
+  open, so the Postgres driver had to wait for a second pool connection
+  and sqlite committed the failed run's partial writes together with the
+  release. The open transaction is now rolled back first, so the key is
+  free at once and no partial write survives; if that rollback itself
+  fails, the claim is kept until its TTL instead (issue #258).
 
 ### Added
 - `RepositoryDriver.supports_idempotency()` and
@@ -353,6 +379,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   The generated OpenAPI workflow `"400"` description now also names
   `id-required` (issue #209); the six `examples/*.openapi.json` goldens
   are regenerated (issue #216).
+- AI gates can run on a second, vendor-neutral runner: the reusable
+  `.github/workflows/_ai-gate.yml` takes a `runner` input (`claude-code`
+  by default, unchanged; or `generic-http`), and
+  `scripts/ai_gate_http_runner.py` sends the gate prompt and the PR diff
+  to any OpenAI-compatible `/chat/completions` endpoint and writes the
+  same verdict JSON that `scripts/ai_gate_verdict.py` checks. Each AI
+  gate gets an advisory `<gate>-generic-http` job that runs only when the
+  repo variable `AI_GATE_HTTP_BASE_URL` is set and skips like the
+  Anthropic gates when the `AI_GATE_HTTP_API_KEY` secret is missing
+  (issue #252).
 
 ### Changed
 - `update`/`delete` (bare or `by <ref>`) that affects no row now fails its
@@ -432,6 +468,11 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   the request URL path. A document that compiled only through one of
   these gaps now fails with `LowerError`; references to fields no entity
   declares Password-family compile exactly as before, with an unchanged IR.
+- RFC-0049 through RFC-0064, whose implementations and tests are
+  already in this release, move from `Draft` to `Accepted` (RFC-0007
+  §2.1), and `scripts/rfc_lint.py` now fails when `CHANGELOG.md` cites
+  an RFC whose status is not `Accepted` or `Superseded`, or a number
+  with no document under `rfcs/` (issue #249).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0

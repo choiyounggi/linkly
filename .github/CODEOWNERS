@@ -1,0 +1,8 @@
+# Code owners for linkly. Syntax and precedence:
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# The catch-all rule comes first because a later matching rule takes precedence.
+
+* @choiyounggi
+impl/lnpl/ @choiyounggi
+rfcs/ @choiyounggi
+.github/ @choiyounggi

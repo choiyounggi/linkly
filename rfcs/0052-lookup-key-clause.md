@@ -2,12 +2,12 @@
 
 ## Status
 
-- Status: Draft
-- Updates: RFC-0002 §Full grammar,
+- Status: **Accepted** (RFC-0052, 2026-10-22)
+- Updates: RFC-0002 §Full grammar (+RFC-0049),
   RFC-0012 §Reference-level Specification/G12.2,
   RFC-0012 §Reference-level Specification/G12.5,
   RFC-0012 §Reference-level Specification/G12.6,
-  RFC-0016 §Reference-level Specification/5. mode A/B 등가
+  RFC-0016 §Reference-level Specification/5. mode A/B 등가 (+RFC-0051)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라 이미
 갱신된 절은 대상과 **직전 갱신 RFC를 모두** 지목한다.
@@ -36,6 +36,8 @@ RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연
 
 Draft이므로(RFC-0007 §2.2 규칙 6: 개정은 Accepted 시점에 효력이 발생한다) 대상 RFC들에
 `Updated-by:` 줄이나 절 머리 포인터를 아직 달지 않는다.
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다. 같은 날 승격된 Draft끼리의 순서는 번호 순(작은 번호가 먼저)으로 정했고, `Updates:` 괄호의 직전 갱신은 그 순서를 따른다.
 
 ## Motivation
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0061, 2026-10-22)
 - Updates: RFC-0040 §Motivation, RFC-0040 §Reference-level Specification/7. 오류 분류 — 3갈래 (D7), RFC-0040 §Reference-level Specification/8. 레퍼런스 릴레이 — `lnpl relay` (D8), RFC-0040 §Reference-level Specification/9. 문서 — `subscribe` vs `consume by` (D9), RFC-0040 §Alternatives
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 4에 따라 각 절의 **치환 후

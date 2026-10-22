@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0062, 2026-10-22)
 - Updates: RFC-0002 §Full grammar (+RFC-0012, RFC-0052, RFC-0060),
   RFC-0003 §Reference-level Specification/Execution Model (+RFC-0032, RFC-0056)
 
@@ -19,6 +19,8 @@ RFC-0052·RFC-0060은 아직 Draft다 — 먼저 Accepted되는 쪽이 직전 �
 
 Draft이므로(RFC-0007 §2.2 규칙 6: 개정은 Accepted 시점에 효력이 발생한다) 대상 RFC들에
 `Updated-by:` 줄이나 절 머리 포인터를 아직 달지 않는다.
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다. 같은 날 승격된 Draft끼리의 순서는 번호 순(작은 번호가 먼저)으로 정했고, `Updates:` 괄호의 직전 갱신은 그 순서를 따른다.
 
 지목하지 **않는** 것:
 
