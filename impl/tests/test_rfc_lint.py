@@ -7,9 +7,13 @@
 검사하는 것은 린터가 **옳게 판정하는가**다. 도구가 틀리면 그것을 믿고 내린
 판단이 전부 틀어지므로, 규칙마다 통과 케이스와 위반 케이스를 함께 둔다.
 """
+import contextlib
 import importlib.util
+import io
 import os
+import tempfile
 import unittest
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LINT_PATH = os.path.join(REPO, "scripts", "rfc_lint.py")
@@ -183,6 +187,140 @@ class SectionScanBoundaryTest(unittest.TestCase):
 
     def test_strips_the_heading_marker(self):
         self.assertEqual(rfc_lint.sections("## Motivation\n"), ["Motivation"])
+
+
+class ChangelogCitationTest(unittest.TestCase):
+    """CHANGELOG.md가 인용한 RFC는 Accepted 또는 Superseded여야 한다(issue #249)."""
+
+    def test_an_accepted_citation_is_clean(self):
+        self.assertEqual(rfc_lint.check_changelog_citations(
+            "- Fixed (issue #215, RFC-0064).\n", {"0064": "Accepted"}), [])
+
+    def test_a_superseded_citation_is_clean(self):
+        self.assertEqual(rfc_lint.check_changelog_citations(
+            "RFC-0000", {"0000": "Superseded"}), [])
+
+    def test_flags_a_draft_citation(self):
+        problems = rfc_lint.check_changelog_citations(
+            "(issue #215, RFC-0064)", {"0064": "Draft"})
+        self.assertEqual(clauses(problems), ["§2.1"])
+        self.assertIn("RFC-0064", problems[0][1])
+        self.assertIn("Draft", problems[0][1])
+
+    def test_flags_a_review_citation(self):
+        problems = rfc_lint.check_changelog_citations(
+            "RFC-0064", {"0064": "Review"})
+        self.assertEqual(clauses(problems), ["§2.1"])
+        self.assertIn("Review", problems[0][1])
+
+    def test_flags_a_citation_whose_document_has_no_status(self):
+        problems = rfc_lint.check_changelog_citations("RFC-0064", {"0064": None})
+        self.assertEqual(clauses(problems), ["§2.1"])
+        self.assertIn("(없음)", problems[0][1])
+
+    def test_text_without_a_citation_is_clean(self):
+        self.assertEqual(rfc_lint.check_changelog_citations(
+            "- Fixed a typo.\n", {"0008": "Accepted"}), [])
+
+    def test_empty_text_is_clean(self):
+        self.assertEqual(rfc_lint.check_changelog_citations("", {}), [])
+
+    def test_flags_a_dangling_citation(self):
+        problems = rfc_lint.check_changelog_citations(
+            "see RFC-0099", {"0008": "Accepted"})
+        self.assertEqual(clauses(problems), ["§3"])
+        self.assertIn("0099", problems[0][1])
+
+    def test_a_repeated_citation_is_reported_once(self):
+        problems = rfc_lint.check_changelog_citations(
+            "RFC-0049 ... RFC-0049", {"0049": "Draft"})
+        self.assertEqual(len(problems), 1)
+
+    def test_findings_follow_number_order(self):
+        problems = rfc_lint.check_changelog_citations(
+            "RFC-0050 then RFC-0049", {"0049": "Draft", "0050": "Draft"})
+        self.assertEqual(len(problems), 2)
+        self.assertIn("RFC-0049", problems[0][1])
+        self.assertIn("RFC-0050", problems[1][1])
+
+    def test_a_five_digit_token_is_not_a_citation(self):
+        self.assertEqual(rfc_lint.check_changelog_citations("RFC-00490", {}), [])
+
+    def test_the_second_number_of_a_slash_pair_is_checked(self):
+        # CHANGELOG.md의 `The RFC-0044/0045 designs` 꼴 — 둘째 번호가 숨으면 안 된다.
+        problems = rfc_lint.check_changelog_citations(
+            "The RFC-0044/0045 designs", {"0044": "Accepted", "0045": "Draft"})
+        self.assertEqual(clauses(problems), ["§2.1"])
+        self.assertIn("RFC-0045", problems[0][1])
+
+    def test_a_missing_changelog_file_is_its_own_finding(self):
+        missing = os.path.join(REPO, "rfcs", "NO-SUCH-CHANGELOG.md")
+        problems = rfc_lint.check_changelog_file(missing, {"0008": "Accepted"})
+        self.assertEqual(clauses(problems), ["§2.1"])
+        self.assertIn("없다", problems[0][1])
+
+
+class StatusCollectionTest(unittest.TestCase):
+    def test_maps_a_well_formed_name_to_its_status(self):
+        self.assertEqual(
+            rfc_lint.collect_statuses(
+                [("0008-guard-conditions.md", good_body(status="Draft"))]),
+            {"0008": "Draft"})
+
+    def test_skips_a_malformed_name(self):
+        # 형식 밖 파일명은 check_document가 §3으로 보고한다 — 여기서는 건너뛸 뿐이다.
+        self.assertEqual(
+            rfc_lint.collect_statuses(
+                [("notes.md", good_body()), ("0008-guard-conditions.md", good_body())]),
+            {"0008": "Accepted"})
+
+
+TMP_PARENT = os.path.join(REPO, ".claude", "tmp")
+
+
+class MainWiringTest(unittest.TestCase):
+    """main()이 인용 검사를 실제로 부르는가 — 합성 rfcs/와 CHANGELOG.md로 돌린다."""
+
+    def run_main(self, files, changelog):
+        os.makedirs(TMP_PARENT, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP_PARENT) as root:
+            rfcs = os.path.join(root, "rfcs")
+            os.makedirs(rfcs)
+            for name, text in files.items():
+                with open(os.path.join(rfcs, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            log = os.path.join(root, "CHANGELOG.md")
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write(changelog)
+            out = io.StringIO()
+            with mock.patch.object(rfc_lint, "RFC_DIR", rfcs), \
+                    mock.patch.object(rfc_lint, "CHANGELOG_PATH", log), \
+                    contextlib.redirect_stdout(out):
+                rc = rfc_lint.main([])
+        return rc, out.getvalue()
+
+    def test_main_fails_on_a_draft_citation(self):
+        rc, out = self.run_main(
+            {"0008-guard-conditions.md": good_body(status="Draft")},
+            "- Changed (issue #1, RFC-0008).\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("RFC-0008", out)
+        self.assertIn("Draft", out)
+
+    def test_main_passes_on_an_accepted_citation(self):
+        rc, out = self.run_main(
+            {"0008-guard-conditions.md": good_body()},
+            "- Changed (issue #1, RFC-0008).\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("문제 없음.", out)
+
+    def test_main_reports_a_malformed_rfc_filename_as_a_finding(self):
+        rc, out = self.run_main(
+            {"0008-guard-conditions.md": good_body(), "notes.md": "메모\n"},
+            "- Changed (issue #1, RFC-0008).\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("notes.md", out)
+        self.assertIn("§3", out)
 
 
 if __name__ == "__main__":

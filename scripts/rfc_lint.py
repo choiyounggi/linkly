@@ -10,6 +10,9 @@
   §2.1 수명주기  Status가 있고 어휘(Draft/Review/Accepted/Superseded) 안에 있음
   §7 템플릿      설계 RFC의 섹션이 고정 7개와 **이름·순서까지** 일치
                  (§7은 추가·삭제·개명을 명시적으로 금지한다)
+  §2.1 출하 기록 CHANGELOG.md(Unreleased와 모든 릴리스 절)가 `RFC-NNNN`
+                 (빗금 꼴 `RFC-NNNN/NNNN` 포함)으로 인용한 RFC는 rfcs/에 문서가
+                 있고 Accepted 또는 Superseded여야 함 (issue #249)
 
 검사하지 않는 것: 내용의 정합성, Supersedes/Updates가 가리키는 대상의 존재
 여부(§2.2는 연쇄 갱신까지 요구해서 기계적 판정이 모호하다), 골든 시나리오 사용.
@@ -39,6 +42,12 @@ REQUIRED_SECTIONS = ("Status", "Motivation", "Guide-level Explanation",
 # RFC-0007 §1의 "프로세스 RFC 면제" — 프로세스 자체를 규정하는 문서는 §7 템플릿과
 # §6 골든 시나리오 규칙을 적용받지 않는다. 기계적으로 판정할 수 없어 명시한다.
 PROCESS_RFCS = ("0000", "0007")
+
+# CHANGELOG 인용 검사(issue #249): 출하 기록에 오른 RFC는 계약(Accepted)이어야 한다.
+CHANGELOG_PATH = os.path.join(REPO, "CHANGELOG.md")
+SHIPPED_STATUSES = ("Accepted", "Superseded")
+# `RFC-0044/0045`처럼 빗금으로 이은 꼴도 인용이다 — 둘째 번호가 숨지 않게 꼬리까지 잡는다.
+CITATION_RE = re.compile(r"RFC-(\d{4})((?:/\d{4})*)(?!\d)")
 
 
 def sections(text):
@@ -146,6 +155,55 @@ def check_numbering(filenames):
     return problems
 
 
+def cited_numbers(text):
+    """CHANGELOG 본문이 인용한 RFC 번호 집합. `RFC-0044/0045`는 두 번호를 다 센다.
+
+    `RFC-` 접두가 없는 맨 번호(예: `0000–0008`)는 인용으로 보지 않는다.
+    """
+    numbers = set()
+    for head, tail in CITATION_RE.findall(text):
+        numbers.add(head)
+        numbers.update(n for n in tail.split("/") if n)
+    return numbers
+
+
+def collect_statuses(named_texts):
+    """(파일명, 본문) 쌍에서 {번호: Status}. 형식 밖 파일명은 건너뛴다 —
+    그 문서는 check_document가 이미 §3으로 보고한다."""
+    statuses = {}
+    for name, text in named_texts:
+        m = FILENAME_RE.match(name)
+        if m:
+            statuses[m.group(1)] = status_of(text)
+    return statuses
+
+
+def check_changelog_citations(text, statuses):
+    """CHANGELOG가 인용한 RFC의 문제 목록. 각 항목은 (조항, 메시지).
+
+    같은 번호를 여러 번 인용해도 한 번만, 번호 순으로 보고한다.
+    """
+    problems = []
+    for number in sorted(cited_numbers(text)):
+        if number not in statuses:
+            problems.append(("§3", "CHANGELOG가 인용한 RFC-%s의 문서가 rfcs/에 없다"
+                             % number))
+        elif statuses[number] not in SHIPPED_STATUSES:
+            problems.append(("§2.1", "CHANGELOG가 RFC-%s를 인용하는데 Status가 %s다 — "
+                             "출하 기록에 오른 RFC는 Accepted 또는 Superseded여야 한다"
+                             % (number, statuses[number] or "(없음)")))
+    return problems
+
+
+def check_changelog_file(path, statuses):
+    """CHANGELOG 파일의 인용 검사. 파일이 없으면 그것 자체를 보고한다."""
+    if not os.path.isfile(path):
+        return [("§2.1", "%s가 없다 — CHANGELOG 인용 검사를 할 수 없다"
+                 % os.path.basename(path))]
+    with open(path, encoding="utf-8") as fh:
+        return check_changelog_citations(fh.read(), statuses)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     quiet = "--quiet" in argv
@@ -154,12 +212,17 @@ def main(argv=None):
     findings = [("(전체)", clause, msg)
                 for clause, msg in check_numbering(names)]
     tally = {}
+    named = []
     for name in names:
         with open(os.path.join(RFC_DIR, name), encoding="utf-8") as fh:
             text = fh.read()
+        named.append((name, text))
         tally[status_of(text) or "(없음)"] = tally.get(status_of(text) or "(없음)", 0) + 1
         findings.extend((name, clause, msg)
                         for clause, msg in check_document(name, text))
+    findings.extend(("CHANGELOG.md", clause, msg)
+                    for clause, msg in check_changelog_file(
+                        CHANGELOG_PATH, collect_statuses(named)))
 
     if not quiet:
         print("RFC lint — %d개 문서" % len(names))

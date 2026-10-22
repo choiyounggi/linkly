@@ -458,6 +458,11 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   the request URL path. A document that compiled only through one of
   these gaps now fails with `LowerError`; references to fields no entity
   declares Password-family compile exactly as before, with an unchanged IR.
+- RFC-0049 through RFC-0064, whose implementations and tests are
+  already in this release, move from `Draft` to `Accepted` (RFC-0007
+  §2.1), and `scripts/rfc_lint.py` now fails when `CHANGELOG.md` cites
+  an RFC whose status is not `Accepted` or `Superseded`, or a number
+  with no document under `rfcs/` (issue #249).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
