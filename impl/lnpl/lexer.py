@@ -125,7 +125,7 @@ RESERVED_PROBLEM_CODES = (
     "cloudevents-invalid", "conflict", "cursor-invalid",
     "deadline-exceeded", "event-rejected", "event-retry-later",
     "forbidden", "id-required", "idempotency-in-progress",
-    "idempotency-unsupported", "limit-invalid",
+    "idempotency-key-too-long", "idempotency-unsupported", "limit-invalid",
     "method-not-allowed", "not-found", "not-ready", "precondition-failed",
     "precondition-invalid", "precondition-unsupported", "rate-limited",
     "read-failed", "shutting-down", "validation-failed",

@@ -172,6 +172,21 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   skips rows the first one holds until its commit (exactly-once per batch
   on row-locking drivers; end-to-end delivery stays at-least-once).
   Behaviour on sqlite is unchanged (issue #257).
+- `lnpl serve` / `build_app()`: an `Idempotency-Key` header longer than
+  255 bytes reached the repository driver, and on `lnpl-postgres` (whose
+  `lnpl_idempotency (workflow_id, key)` btree index cannot hold a key of
+  about 4000 characters) the request failed with an unhandled 500. Such a
+  request is now refused with 400 `idempotency-key-too-long`
+  (problem+json, M23) before any driver is opened, on every backend; keys
+  of up to 255 bytes, an empty key and requests without the header behave
+  as before. Separately, when the workflow behind `POST /-/events/<slug>`
+  raised an exception `run_workflow` does not catch, the claim on the
+  CloudEvents `id` was released while the workflow transaction was still
+  open, so the Postgres driver had to wait for a second pool connection
+  and sqlite committed the failed run's partial writes together with the
+  release. The open transaction is now rolled back first, so the key is
+  free at once and no partial write survives; if that rollback itself
+  fails, the claim is kept until its TTL instead (issue #258).
 
 ### Added
 - `RepositoryDriver.supports_idempotency()` and
