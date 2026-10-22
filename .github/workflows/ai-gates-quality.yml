@@ -38,9 +38,13 @@ jobs:
     with:
       gate_name: test-quality
       prompt_file: .github/ai-gates/test-quality.md
-      # D6: advisory로 시작한다. 승격은 docs/CI-GATES.md의 절차(약 50 PR,
-      # 수용률 80% 이상)를 거쳐 이 한 줄을 true로 뒤집는 일이다.
-      blocking: false
+      # D6: 2026-10-22 승격(issue #244). 승격 기준(약 50 PR, 수용률 80%)을
+      # 채우기 전의 예외다 — 근거와 실측은 docs/CI-GATES.md "advisory → blocking
+      # 승격 절차". 이 잡 키와 재사용 잡 id(gate)가 required check
+      # `test-quality / gate`를 이룬다 — 이 잡 이름을 바꾸거나, 이 잡에 if:를
+      # 달거나, pull_request: 아래에 types/branches/paths를 넣으면 보호 브랜치가
+      # 영영 보고되지 않는 체크를 기다린다.
+      blocking: true
       # D5: D4가 성립시켜 준다 — 어떤 PR에서도 읽은 파일이 실리므로
       # 공허한 통과 보호를 끌 이유가 없다.
       expect_nonempty: true

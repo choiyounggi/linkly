@@ -473,6 +473,23 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   §2.1), and `scripts/rfc_lint.py` now fails when `CHANGELOG.md` cites
   an RFC whose status is not `Accepted` or `Superseded`, or a number
   with no document under `rfcs/` (issue #249).
+- `scripts/setup_branch_protection.sh` now also requires conversation
+  resolution and the `test-quality / gate` check, lists
+  `modeb-linux (test_repo_state under real mode B)` (already required on
+  `main`) by default (`--include-modeb` is kept and does nothing), and
+  writes `required_linear_history`, `block_creations`, `lock_branch` and
+  `allow_fork_syncing` out as `false`, their defaults. `--check` now reads
+  the live protection with one GET and prints an `ok:` or `drift:` line
+  per check and setting. The `test-quality` AI gate is now blocking; the
+  other AI gates stay advisory. The reusable AI-gate job no longer sets a
+  `name:`, so every AI gate check is now called `<gate> / gate`: GitHub
+  reports a job skipped by its own `if:` under the unevaluated name
+  expression, which would have left a required check waiting forever on
+  labelled or fork pull requests. A pull request whose diff only deletes
+  files, or is empty, now fails a blocking AI gate instead of passing it
+  unread. Required pull-request approvals stay off: with one collaborator
+  and `enforce_admins`, no pull request could ever be approved
+  (issue #244).
 
 ## [0.8.0] — 2026-09-02
 "The Money-contract release." The RFC-0044/0045 designs accepted in 0.7.0
