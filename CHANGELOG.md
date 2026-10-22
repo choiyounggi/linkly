@@ -161,6 +161,17 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   more to retry. The backlog is now 128 (the kernel still caps it at
   `somaxconn`). Production serving through gunicorn is unaffected
   (issue #226).
+- `lnpl relay` drained the outbox outside any transaction, so on a driver
+  whose `drain_outbox` locks rows with `SELECT ... FOR UPDATE SKIP LOCKED`
+  (today `lnpl-postgres`) the locks ended with the statement and two
+  relays could publish the same row. Each relay batch (drain, publish or
+  POST, ack) now runs inside one driver transaction: `begin()` before the
+  drain, `commit()` after the batch, `rollback()` when an ack failure, an
+  unexpected publisher error or an interrupt escapes it; a row whose
+  publish fails stays un-acked and the batch still commits. A second relay
+  skips rows the first one holds until its commit (exactly-once per batch
+  on row-locking drivers; end-to-end delivery stays at-least-once).
+  Behaviour on sqlite is unchanged (issue #257).
 
 ### Added
 - `RepositoryDriver.supports_idempotency()` and

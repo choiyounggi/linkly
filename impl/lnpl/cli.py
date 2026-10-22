@@ -1076,6 +1076,32 @@ def _relay_drain_once_via_publisher(repository, event_names, source, publisher):
     return len(acked)
 
 
+def _relay_batch(repository, drain_once, *args):
+    """Run one relay batch -- `drain_once(repository, *args)`, i.e. drain ->
+    publish/POST -> ack -- inside one driver transaction (issue #257), and
+    return its acked count.
+
+    On a driver whose `drain_outbox` takes row locks inside `begin()`
+    (lnpl-postgres: SELECT ... FOR UPDATE SKIP LOCKED) the drained rows stay
+    locked until `commit()`, so a second relay's drain skips them. A row
+    whose publish failed was simply never acked, so the batch still
+    commits; only an exception escaping the batch (an ack failure, an
+    unexpected publisher error, KeyboardInterrupt) rolls back. Exactly one
+    of commit/rollback closes every begin, and the commit happens before
+    the caller prints the `--once` summary or sleeps, so no transaction is
+    held across a poll pause. On sqlite this changes nothing observable: no
+    row locks, and `ack_outbox` commits on its own (docs/backends.md §3).
+    """
+    repository.begin()
+    try:
+        acked = drain_once(repository, *args)
+    except BaseException:
+        repository.rollback()
+        raise
+    repository.commit()
+    return acked
+
+
 def cmd_relay(args):
     """`lnpl relay <source...> --backend sqlite:... --target <base-url>
     [--once]` (issue #118, D8) -- the reference relay: drains this
@@ -1118,16 +1144,16 @@ def cmd_relay(args):
     try:
         if publisher is None:
             while True:
-                acked = _relay_drain_once(repository, event_names,
-                                          module_name, args.target)
+                acked = _relay_batch(repository, _relay_drain_once,
+                                     event_names, module_name, args.target)
                 if args.once:
                     print("relay: acked %d emission(s)" % acked)
                     return 0
                 time.sleep(RELAY_POLL_INTERVAL_S)
         else:
             while True:
-                acked = _relay_drain_once_via_publisher(
-                    repository, event_names, module_name, publisher)
+                acked = _relay_batch(repository, _relay_drain_once_via_publisher,
+                                     event_names, module_name, publisher)
                 if args.once:
                     print("relay: acked %d emission(s)" % acked)
                     return 0
