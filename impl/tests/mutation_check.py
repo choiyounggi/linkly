@@ -486,7 +486,9 @@ TREE_CONTENTS = ("impl", "examples", "qa", "schemas", "scripts", "kb", "rfcs", "
                  "CHANGELOG.md", ".github", "benchmarks",
                  # issue #190: test_release_workflow.py reads docker/Dockerfile
                  # for the digest-pin assertion.
-                 "docker")
+                 "docker",
+                 # issue #242: test_governance_files.py reads these root files.
+                 "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md")
 
 
 def make_tree(dest):
