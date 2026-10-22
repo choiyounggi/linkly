@@ -62,3 +62,40 @@ jobs:
     secrets:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
       claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  # generic-http는 두 번째 러너다(issue #252, 조정 판정 R-t252-1). 위 잡과 같은
+  # 게이트를 OpenAI 호환 엔드포인트로 한 번 더 돌린다. 리포지토리 변수
+  # `AI_GATE_HTTP_BASE_URL`이 등록돼야만 돌고, 그 전에는 Skipped 체크로 보인다.
+  # D7과 같이 `secrets: inherit` 없이 HTTP 키 하나만 넘긴다. 동시성 그룹은
+  # `_ai-gate.yml`이 러너 접미사로 따로 잡는다. 등록 절차는 `docs/CI-GATES.md`.
+  test-quality-generic-http:
+    if: vars.AI_GATE_HTTP_BASE_URL != ''
+    uses: ./.github/workflows/_ai-gate.yml
+    with:
+      gate_name: test-quality
+      prompt_file: .github/ai-gates/test-quality.md
+      blocking: false
+      expect_nonempty: true
+      paths_note: "impl/tests/** 의 변경분"
+      runner: generic-http
+      http_base_url: ${{ vars.AI_GATE_HTTP_BASE_URL }}
+      http_model: ${{ vars.AI_GATE_HTTP_MODEL }}
+      http_api_style: ${{ vars.AI_GATE_HTTP_API_STYLE }}
+    secrets:
+      ai_gate_http_api_key: ${{ secrets.AI_GATE_HTTP_API_KEY }}
+
+  prose-factcheck-generic-http:
+    if: vars.AI_GATE_HTTP_BASE_URL != ''
+    uses: ./.github/workflows/_ai-gate.yml
+    with:
+      gate_name: prose-factcheck
+      prompt_file: .github/ai-gates/prose-factcheck.md
+      blocking: false
+      expect_nonempty: true
+      paths_note: "PR 산문과 diff 전체"
+      runner: generic-http
+      http_base_url: ${{ vars.AI_GATE_HTTP_BASE_URL }}
+      http_model: ${{ vars.AI_GATE_HTTP_MODEL }}
+      http_api_style: ${{ vars.AI_GATE_HTTP_API_STYLE }}
+    secrets:
+      ai_gate_http_api_key: ${{ secrets.AI_GATE_HTTP_API_KEY }}

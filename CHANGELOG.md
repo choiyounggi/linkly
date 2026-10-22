@@ -353,6 +353,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   The generated OpenAPI workflow `"400"` description now also names
   `id-required` (issue #209); the six `examples/*.openapi.json` goldens
   are regenerated (issue #216).
+- AI gates can run on a second, vendor-neutral runner: the reusable
+  `.github/workflows/_ai-gate.yml` takes a `runner` input (`claude-code`
+  by default, unchanged; or `generic-http`), and
+  `scripts/ai_gate_http_runner.py` sends the gate prompt and the PR diff
+  to any OpenAI-compatible `/chat/completions` endpoint and writes the
+  same verdict JSON that `scripts/ai_gate_verdict.py` checks. Each AI
+  gate gets an advisory `<gate>-generic-http` job that runs only when the
+  repo variable `AI_GATE_HTTP_BASE_URL` is set and skips like the
+  Anthropic gates when the `AI_GATE_HTTP_API_KEY` secret is missing
+  (issue #252).
 
 ### Changed
 - `update`/`delete` (bare or `by <ref>`) that affects no row now fails its
