@@ -5,6 +5,9 @@
 - Status: **Accepted** (RFC-0038, 2026-08-27)
 - Updates: RFC-0016 §Reference-level Specification/3. 피연산자의 차원 규칙,
   RFC-0025 §Reference-level Specification/1. `VERB_LEXICON`과 표면 문법
+- Updated-by: RFC-0051 (§Reference-level Specification/3. 등가 비교의 타입 규칙)
+- Updated-by: RFC-0053 (§Reference-level Specification/3. 등가 비교의 타입 규칙)
+- Updated-by: RFC-0054 (§Reference-level Specification/3. 등가 비교의 타입 규칙)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. RFC-0025 §1은 "이 RFC가
 문법에 더하는 것은 집계 표현식뿐이다"라고 `list`의 표면 문법을 확정 지었는데,
@@ -161,6 +164,10 @@ value_to_string`) — `Assignment.expression`이 이미 쓰는 것과 같은 왕
 없는 문서와 있는 문서를 모두 검증한다).
 
 ### 3. 등가 비교의 타입 규칙 — RFC-0016 §3 갱신 (치환 후 최종 텍스트) (D2)
+
+> 갱신됨: RFC-0051
+> 갱신됨: RFC-0053
+> 갱신됨: RFC-0054
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0016 §Reference-level Specification/3
 "피연산자의 차원 규칙"의 치환 후 최종 텍스트다. 원문 전체(차원 정의, 산술 표,

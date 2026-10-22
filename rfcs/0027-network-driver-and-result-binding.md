@@ -8,6 +8,7 @@
   §Reference-level Specification/Execution Model (`NetworkCall` 행), RFC-0014
   §Reference-level Specification/2.4 스킵 레코드 (마스킹 범위)
 - Updated-by: RFC-0037 (§Reference-level Specification/1 — `NetworkDriver` 계약)
+- Updated-by: RFC-0057 (§Reference-level Specification/2)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라
 RFC-0012 §G12.2를 이미 갱신한 RFC-0025 §5도 함께 지목한다 — G12.2의 효력 있는
@@ -212,6 +213,8 @@ def open_network(spec):
 `serve.py`에도 노출하지 않는다 — §Alternatives 1이 이월을 기록한다.
 
 ### 2. `as` 결과 바인딩 문법 (D2)
+
+> 갱신됨: RFC-0057
 
 **문법은 바뀌지 않는다.** `StepLine ::= Verb Word? Word? Word? EOL`(RFC-0002
 §Full grammar, RFC-0025 §1이 이미 확인했듯 이 RFC도 손대지 않는다)은 verb

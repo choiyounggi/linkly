@@ -10,6 +10,8 @@
 - Updated-by: RFC-0029 (§Execution Model)
 - Updated-by: RFC-0032 (§Execution Model/§Policy Enforcement/§Examples)
 - Updated-by: RFC-0041 (§Execution Model/§Policy Enforcement)
+- Updated-by: RFC-0056 (§Reference-level Specification/Execution Model)
+- Updated-by: RFC-0062 (§Reference-level Specification/Execution Model)
 
 ## Motivation
 
@@ -70,6 +72,9 @@ workflow의 단계, policy·security·performance 제약. 스레드를 만들거
 메모리 배치 선택)은 계약 대상이 아니며, 배치 선택 알고리즘은 RFC-0004 소유다.
 
 ### Execution Model
+
+> 갱신됨: RFC-0056 (Effect 표 `Rejection` 행 신설)
+> 갱신됨: RFC-0062
 
 **Actor.** `service` 인스턴스 하나 = actor 하나다. actor는 직렬 메일박스를
 가진다: 인스턴스로 들어오는 workflow 실행 요청은 메일박스에 적재되고 한 번에

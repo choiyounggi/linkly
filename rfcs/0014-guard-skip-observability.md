@@ -5,6 +5,9 @@
 - Status: **Accepted** (RFC-0014, 2026-08-06)
 - Updates: RFC-0008 §Reference-level Specification/2. Guard Runtime Semantics
 - Updated-by: RFC-0027 (§Reference-level Specification/2.4 스킵 레코드), RFC-0028 (§Reference-level Specification/2), RFC-0046 (§Examples)
+- Updated-by: RFC-0050 (§Reference-level Specification/2.4 스킵 레코드)
+- Updated-by: RFC-0056 (§Open Questions/1)
+- Updated-by: RFC-0060 (§Reference-level Specification/2.1 `when` 모드, §Reference-level Specification/2.4 스킵 레코드)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 가드의 실행 의미론은
 RFC-0003 §Guard에 있었으나 RFC-0008 §2가 그 절을 이미 갱신했으므로, **효력 있는
@@ -88,6 +91,8 @@ _UNTIL_ROUND_CAP = 16
 
 #### 2.1 `when` 모드
 
+> 갱신됨: RFC-0060
+
 조건을 **1회 평가**한다. 참이면 피가드 항목을 실행하고, 거짓이면 건너뛴다.
 건너뛴 사실은 trace에 기록되며, **아울러 §2.4의 스킵 레코드 하나를 남긴다.**
 
@@ -120,6 +125,9 @@ _UNTIL_ROUND_CAP = 16
 | `until` | 두 경계로 유계 | 조건 성립 또는 `timeout`/`_UNTIL_ROUND_CAP` 도달 시 중단 |
 
 #### 2.4 스킵 레코드 (신설)
+
+> 갱신됨: RFC-0050
+> 갱신됨: RFC-0060
 
 실행 결과는 **스킵 매니페스트**를 가진다. 피가드 항목을 실행하지 않은 가드마다
 레코드가 하나씩, 가드를 만난 순서대로 들어간다.
@@ -247,6 +255,8 @@ workflow W
 해결한 문제(같은 사실을 두 가지 방식으로 표현하는 것)를 한 단계 위에서 재생산한다.
 
 ## Open Questions
+
+> 갱신됨: RFC-0056 (1번 항목)
 
 1. **"거부" 판정의 소유자.** 이 개정은 스킵을 관측 가능하게 만들 뿐, 어떤 스킵이
    비즈니스적 거부인지는 여전히 호출자가 판정한다. 가드를 정책 게이트로 선언하는

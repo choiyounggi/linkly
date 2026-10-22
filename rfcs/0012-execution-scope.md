@@ -8,6 +8,7 @@
 - Updated-by: RFC-0027 (§G12.2)
 - Updated-by: RFC-0030 (§G12.2), RFC-0030 (§G12.5)
 - Updated-by: RFC-0048 (§G12.2)
+- Updated-by: RFC-0052 (§Reference-level Specification/G12.2, §Reference-level Specification/G12.5, §Reference-level Specification/G12.6)
 
 RFC-0007 §2.2 규칙 5(연쇄 갱신)에 따라 대상 RFC와 **직전 갱신 RFC를 모두** 지목한다.
 `Condition` 생산 규칙은 RFC-0002 본문에 있고 RFC-0008이 이미 그 절을 갱신했으므로, 두 문서를
@@ -116,6 +117,8 @@ RFC-0008이 갱신한 `when`/`until`/`repeat`의 **반복·종료 의미는 그�
 
 #### G12.2 무엇이 바인딩되는가
 
+> 갱신됨: RFC-0052
+
 이 실행에서 `operation`이 `read` 또는 `query`인 `RepositoryCall`이 **성공적으로 완료된**
 Entity마다 바인딩이 하나 생긴다.
 
@@ -159,6 +162,8 @@ payload로 해석되지 않는다. 분리는 우선순위 서열이 아니라 **
 
 #### G12.5 컴파일 시점 거부
 
+> 갱신됨: RFC-0052
+
 한정 참조는 **문서를 읽을 수 있는 시점**(lowering)에 검사되며, 아래 셋 중 하나라도 어긋나면
 컴파일이 실패한다. 셋 다 런타임까지 살아 나가지 않는다.
 
@@ -173,6 +178,8 @@ payload로 해석되지 않는다. 분리는 우선순위 서열이 아니라 **
 한정 참조까지 넓힌 것이다.
 
 #### G12.6 모드 B
+
+> 갱신됨: RFC-0052
 
 RFC-0004 §Execution modes의 네 관측 대상(실행 순서·정책 결과·관측 신호·마스킹)에서 두 모드가
 일치해야 한다는 계약은 그대로다. 조건 필드 값은 모드 B에서도 **같은 스코프 규칙으로** 유도된다.

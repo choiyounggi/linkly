@@ -5,6 +5,7 @@
 - Status: **Accepted** (RFC-0025, 2026-08-18)
 - Updates: RFC-0012 §G12.2, RFC-0012 §G12.4, RFC-0012 §G12.5, RFC-0015 §1
 - Updated-by: RFC-0038 (§Reference-level Specification/1)
+- Updated-by: RFC-0059 (§Reference-level Specification/5)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. G12.2가 정의하는 실행 스코프
 바인딩 규칙에 RowSet 바인딩을 더하고, G12.5가 정의하는 한정 참조의 컴파일 시점
@@ -197,6 +198,7 @@ RFC-0023 §3의 "가드 아래 있는 것은 이미 조건부" 판정과 같은 
 ### 5. 실행 스코프 — RFC-0012 §G12.2 갱신 (치환 후 최종 텍스트) (D2)
 
 > 갱신됨: RFC-0048
+> 갱신됨: RFC-0059
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0012 §G12.2의 **치환 후 최종 텍스트**다.
 RFC-0012의 다른 절(G12.1, G12.3, G12.4, G12.6, G12.7)은 이 RFC가 지목하지 않으며
