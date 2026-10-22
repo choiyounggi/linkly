@@ -41,6 +41,34 @@ on:
         required: false
         type: string
         default: ""
+      runner:
+        description: >-
+          게이트를 실행할 러너. `claude-code`(기본, Claude Code 액션) 또는
+          `generic-http`(OpenAI 호환 엔드포인트, scripts/ai_gate_http_runner.py).
+          그 밖의 값은 잡을 실패시킨다.
+        required: false
+        type: string
+        default: claude-code
+      http_base_url:
+        description: >-
+          `/chat/completions` 앞까지의 접두(예: https://api.openai.com/v1).
+          generic-http에서만 쓴다.
+        required: false
+        type: string
+        default: ""
+      http_model:
+        description: "모델 id. generic-http에서만 쓴다."
+        required: false
+        type: string
+        default: ""
+      http_api_style:
+        description: >-
+          비우거나 `classic`이면 `max_tokens`와 `temperature: 0`을 보낸다.
+          `reasoning`이면 `max_completion_tokens`를 보내고 temperature를 보내지
+          않는다(OpenAI o-series·gpt-5). generic-http에서만 쓴다.
+        required: false
+        type: string
+        default: ""
     secrets:
       anthropic_api_key:
         required: false
@@ -50,13 +78,19 @@ on:
           `anthropic_api_key`의 대안이며 둘 중 하나만 있으면 된다.
           둘 다 있으면 액션이 알아서 고르므로 여기서는 둘 다 넘긴다.
         required: false
+      ai_gate_http_api_key:
+        description: >-
+          generic-http 러너의 bearer 키(호출부의 `AI_GATE_HTTP_API_KEY`).
+          claude-code 러너는 이 값을 보지 않는다.
+        required: false
 
 permissions:
   contents: read
   pull-requests: write
 
+# claude-code의 그룹 이름은 그대로 두고, generic-http 형제 잡은 접미사로 자기 그룹을 가져 서로 취소하지 않는다.
 concurrency:
-  group: ai-gate-${{ inputs.gate_name }}-${{ github.event.pull_request.number }}
+  group: ai-gate-${{ inputs.gate_name }}-${{ github.event.pull_request.number }}${{ inputs.runner != 'claude-code' && format('-{0}', inputs.runner) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -81,32 +115,57 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic_api_key }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.claude_code_oauth_token }}
+          RUNNER: ${{ inputs.runner }}
+          AI_GATE_HTTP_API_KEY: ${{ secrets.ai_gate_http_api_key }}
         run: |
-          # 자격증명은 둘 중 하나면 된다. 액션(action.yml 기준)이 두 입력을
-          # 각각 ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN 환경변수로 넘기고
-          # OAuth 토큰은 API 키의 대안으로 명시돼 있다. 그러므로 여기서
-          # 하나만 검사하면, 다른 하나로 등록한 레포에서 게이트가 조용히
-          # 건너뛰어진다.
-          if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "SKIPPED: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is configured"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            # 값은 절대 찍지 않는다. 길이와 "공백/줄바꿈이 섞였는지"만 찍는다 —
-            # 붙여넣기 사고(잘림, 개행 혼입)는 존재 확인을 통과하지만 인증에서
-            # 거부되고, 액션이 진짜 오류를 가리므로 그 둘을 구별할 방법이 달리
-            # 없다. 길이 하나로는 토큰을 복원할 수 없다.
-            if [ -n "$ANTHROPIC_API_KEY" ]; then
-              CRED="$ANTHROPIC_API_KEY"; echo "auth: anthropic_api_key"
-            else
-              CRED="$CLAUDE_CODE_OAUTH_TOKEN"; echo "auth: claude_code_oauth_token"
-            fi
-            printf 'credential length: %s\n' "${#CRED}"
-            case "$CRED" in
-              *[[:space:]]*) echo "::warning::자격증명에 공백 또는 줄바꿈이 섞여 있다 — 붙여넣기 사고일 가능성이 높다" ;;
-              *) echo "credential shape: no embedded whitespace" ;;
-            esac
-          fi
+          case "$RUNNER" in
+            claude-code)
+              # 자격증명은 둘 중 하나면 된다. 액션(action.yml 기준)이 두 입력을
+              # 각각 ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN 환경변수로 넘기고
+              # OAuth 토큰은 API 키의 대안으로 명시돼 있다. 그러므로 여기서
+              # 하나만 검사하면, 다른 하나로 등록한 레포에서 게이트가 조용히
+              # 건너뛰어진다.
+              if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                echo "SKIPPED: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is configured"
+              else
+                echo "skip=false" >> "$GITHUB_OUTPUT"
+                # 값은 절대 찍지 않는다. 길이와 "공백/줄바꿈이 섞였는지"만 찍는다 —
+                # 붙여넣기 사고(잘림, 개행 혼입)는 존재 확인을 통과하지만 인증에서
+                # 거부되고, 액션이 진짜 오류를 가리므로 그 둘을 구별할 방법이 달리
+                # 없다. 길이 하나로는 토큰을 복원할 수 없다.
+                if [ -n "$ANTHROPIC_API_KEY" ]; then
+                  CRED="$ANTHROPIC_API_KEY"; echo "auth: anthropic_api_key"
+                else
+                  CRED="$CLAUDE_CODE_OAUTH_TOKEN"; echo "auth: claude_code_oauth_token"
+                fi
+                printf 'credential length: %s\n' "${#CRED}"
+                case "$CRED" in
+                  *[[:space:]]*) echo "::warning::자격증명에 공백 또는 줄바꿈이 섞여 있다 — 붙여넣기 사고일 가능성이 높다" ;;
+                  *) echo "credential shape: no embedded whitespace" ;;
+                esac
+              fi
+              ;;
+            generic-http)
+              # generic-http는 키 하나만 본다. Anthropic 자격증명은 이 갈래와 무관하다.
+              if [ -z "$AI_GATE_HTTP_API_KEY" ]; then
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                echo "SKIPPED: AI_GATE_HTTP_API_KEY is not configured"
+              else
+                echo "skip=false" >> "$GITHUB_OUTPUT"
+                echo "auth: ai_gate_http_api_key"
+                printf 'credential length: %s\n' "${#AI_GATE_HTTP_API_KEY}"
+                case "$AI_GATE_HTTP_API_KEY" in
+                  *[[:space:]]*) echo "::warning::자격증명에 공백 또는 줄바꿈이 섞여 있다 — 붙여넣기 사고일 가능성이 높다" ;;
+                  *) echo "credential shape: no embedded whitespace" ;;
+                esac
+              fi
+              ;;
+            *)
+              echo "::error::unknown runner: $RUNNER"
+              exit 1
+              ;;
+          esac
 
       # 시크릿이 없으면 아래 스텝이 전부 건너뛰어지는데, 그것만으로는 잡이
       # `success`로 끝난다 — 그리고 초록불은 "AI가 보고 문제없었다"와
@@ -125,12 +184,13 @@ jobs:
         env:
           BLOCKING: ${{ inputs.blocking }}
           GATE_NAME: ${{ inputs.gate_name }}
+          MISSING_SECRET: ${{ inputs.runner == 'generic-http' && 'AI_GATE_HTTP_API_KEY' || 'ANTHROPIC_API_KEY' }}
         run: |
           if [ "$BLOCKING" = "true" ]; then
-            echo "::error::[$GATE_NAME] ANTHROPIC_API_KEY가 없어 게이트를 실행하지 못했다 — blocking 게이트이므로 잡을 실패시킨다. docs/CI-GATES.md의 시크릿 등록 절차를 보라."
+            echo "::error::[$GATE_NAME] ${MISSING_SECRET}가 없어 게이트를 실행하지 못했다 — blocking 게이트이므로 잡을 실패시킨다. docs/CI-GATES.md의 시크릿 등록 절차를 보라."
             exit 1
           fi
-          echo "::warning::[$GATE_NAME] ANTHROPIC_API_KEY가 없어 이 게이트는 실행되지 않았다. 이 잡의 초록불은 '검토했고 문제없음'이 아니라 '검토하지 않음'을 뜻한다 — advisory이므로 머지는 막지 않는다."
+          echo "::warning::[$GATE_NAME] ${MISSING_SECRET}가 없어 이 게이트는 실행되지 않았다. 이 잡의 초록불은 '검토했고 문제없음'이 아니라 '검토하지 않음'을 뜻한다 — advisory이므로 머지는 막지 않는다."
 
       - name: 변경 파일 목록
         id: changed_files
@@ -194,7 +254,7 @@ jobs:
       # 없으므로 인자 분리에 걸리지 않는다.
       - name: 스키마 인라인화
         id: schema
-        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
+        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0' && inputs.runner == 'claude-code'
         run: |
           # `del(.title)`: 그 값("AI gate verdict")이 이 스키마에서 공백을
           # 담은 유일한 자리다. 액션의 인자 분리기가 따옴표를 어떻게 다루는지
@@ -220,7 +280,7 @@ jobs:
 
       - name: Claude Code 게이트 실행
         id: claude
-        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
+        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0' && inputs.runner == 'claude-code'
         # continue-on-error: true — Anthropic API 5xx/rate-limit 같은 일시
         # 장애로 이 스텝이 non-zero로 끝나도 잡을 바로 죽이지 않는다. 그 대신
         # "판정" 스텝이 steps.claude.outcome을 직접 읽어 "게이트가 실행되지
@@ -277,6 +337,44 @@ jobs:
         if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
         run: python3 -m pip install --upgrade pip && pip install .
 
+      # generic-http는 두 번째 러너다(issue #252). 위에서 준비한 3.13에서
+      # scripts/ai_gate_http_runner.py를 돌린다. 프롬프트와 diff는 체크아웃 밖의
+      # `$RUNNER_TEMP` 파일로 넘기고, 키는 `env:`로만 넘긴다. 이 잡에는 같은
+      # 레포의 PR만 닿으므로(포크 차단), PR 쪽 스크립트 사본을 키와 함께 돌려도
+      # 이 워크플로가 이미 가진 것 이상의 노출은 없다.
+      - name: generic-http 입력 준비
+        id: http_inputs
+        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0' && inputs.runner == 'generic-http'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PROMPT_TEXT: ${{ steps.build_prompt.outputs.text }}
+        run: |
+          MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+          printf '%s\n' "$PROMPT_TEXT" > "$RUNNER_TEMP/ai-gate-prompt.txt"
+          git diff --diff-filter=d "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/ai-gate.diff"
+          printf 'prompt: %s bytes, diff: %s bytes\n' "$(wc -c < "$RUNNER_TEMP/ai-gate-prompt.txt")" "$(wc -c < "$RUNNER_TEMP/ai-gate.diff")"
+
+      - name: generic-http 게이트 실행
+        id: http_runner
+        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0' && inputs.runner == 'generic-http'
+        # claude 스텝과 같은 이유다 — `판정`이 steps.http_runner.outcome을 읽는다.
+        continue-on-error: true
+        env:
+          AI_GATE_HTTP_API_KEY: ${{ secrets.ai_gate_http_api_key }}
+          BASE_URL: ${{ inputs.http_base_url }}
+          MODEL: ${{ inputs.http_model }}
+          API_STYLE: ${{ inputs.http_api_style }}
+          GATE_NAME: ${{ inputs.gate_name }}
+        run: |
+          python3 scripts/ai_gate_http_runner.py \
+            --base-url "$BASE_URL" --model "$MODEL" --gate "$GATE_NAME" \
+            --api-style "${API_STYLE:-classic}" \
+            --schema schemas/ai-gate-verdict.schema.json \
+            --prompt-file "$RUNNER_TEMP/ai-gate-prompt.txt" \
+            --diff-file "$RUNNER_TEMP/ai-gate.diff" \
+            --out "$RUNNER_TEMP/ai-gate-verdict.json"
+
       - name: 판정
         id: verdict
         if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
@@ -285,18 +383,27 @@ jobs:
           EXPECT_NONEMPTY: ${{ inputs.expect_nonempty }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
           STRUCTURED_OUTPUT: ${{ steps.claude.outputs.structured_output }}
+          RUNNER: ${{ inputs.runner }}
+          HTTP_OUTCOME: ${{ steps.http_runner.outcome }}
+          HTTP_VERDICT_FILE: ${{ runner.temp }}/ai-gate-verdict.json
         run: |
+          if [ "$RUNNER" = "generic-http" ]; then
+            RUN_STEP=generic-http; RUN_OUTCOME="$HTTP_OUTCOME"
+            OUTPUT_TEXT="$(cat "$HTTP_VERDICT_FILE" 2>/dev/null || true)"
+          else
+            RUN_STEP=claude; RUN_OUTCOME="$CLAUDE_OUTCOME"; OUTPUT_TEXT="$STRUCTURED_OUTPUT"
+          fi
           # F3: claude 스텝이 실패했거나(continue-on-error로 잡혀 잡은 죽지
           # 않았지만 outcome은 failure) 구조화 출력이 비었으면, 판정 스크립트를
           # 아예 부르지 않는다 — 빈 입력을 넘기면 exit 2(형식 오류)가 되어
           # "게이트 정의 결함"과 "게이트가 실행 자체를 못함"이 뒤섞인다. 대신
           # code=unavailable을 실어 "판정 반영"이 별도로 판단하게 한다.
-          if [ "$CLAUDE_OUTCOME" != "success" ] || [ -z "$STRUCTURED_OUTPUT" ]; then
-            echo "게이트를 실행하지 못했다(claude 스텝 outcome=$CLAUDE_OUTCOME, structured_output 길이=${#STRUCTURED_OUTPUT})"
+          if [ "$RUN_OUTCOME" != "success" ] || [ -z "$OUTPUT_TEXT" ]; then
+            echo "게이트를 실행하지 못했다($RUN_STEP 스텝 outcome=$RUN_OUTCOME, structured_output 길이=${#OUTPUT_TEXT})"
             echo "code=unavailable" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          printf '%s' "$STRUCTURED_OUTPUT" > structured_output.json
+          printf '%s' "$OUTPUT_TEXT" > structured_output.json
           ARGS=(--schema schemas/ai-gate-verdict.schema.json
                 --input structured_output.json
                 --gate "$GATE_NAME")
@@ -320,14 +427,16 @@ jobs:
         env:
           VERDICT_CODE: ${{ steps.verdict.outputs.code }}
           BLOCKING: ${{ inputs.blocking }}
+          RUNNER_LABEL: ${{ inputs.runner == 'generic-http' && 'generic-http 러너' || 'Claude Code 액션' }}
+          PROVIDER_LABEL: ${{ inputs.runner == 'generic-http' && '모델 엔드포인트' || 'Anthropic API' }}
         run: |
           case "$VERDICT_CODE" in
             unavailable)
               if [ "$BLOCKING" = "true" ]; then
-                echo "::error::게이트를 실행하지 못했다(Claude Code 액션 실패 또는 빈 출력) — blocking 게이트이므로 잡을 실패시킨다. 원인이 Anthropic API 5xx/rate-limit 같은 일시 장애라면 재실행(re-run)하라."
+                echo "::error::게이트를 실행하지 못했다($RUNNER_LABEL 실패 또는 빈 출력) — blocking 게이트이므로 잡을 실패시킨다. 원인이 $PROVIDER_LABEL 5xx/rate-limit 같은 일시 장애라면 재실행(re-run)하라."
                 exit 1
               fi
-              echo "::warning::게이트를 실행하지 못했다(Claude Code 액션 실패 또는 빈 출력) — advisory이므로 잡은 초록불로 남는다. 원인이 일시 장애라면 재실행으로 충분하다."
+              echo "::warning::게이트를 실행하지 못했다($RUNNER_LABEL 실패 또는 빈 출력) — advisory이므로 잡은 초록불로 남는다. 원인이 일시 장애라면 재실행으로 충분하다."
               ;;
             0)
               echo "게이트 통과(exit 0)"

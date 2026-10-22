@@ -57,6 +57,13 @@ exit 2(형식 오류)가 되어 "게이트 정의 결함"과 "게이트가 실�
 때문이다. 원인이 일시적이면 **PR을 다시 열 필요 없이 워크플로만 재실행(re-run)하면
 된다** — diff나 게이트 정의를 고칠 문제가 아니다.
 
+`_ai-gate.yml`은 `runner` 입력으로 실행기를 고른다: `claude-code`(기본, 위의 기존
+경로)와 `generic-http`(OpenAI 호환 `/chat/completions` 엔드포인트,
+`scripts/ai_gate_http_runner.py`). 두 러너는 같은 판정 파일을 쓰고,
+`scripts/ai_gate_verdict.py`가 같은 스키마·같은 exit code로 그 파일을 검사한다.
+generic-http의 실패(비-2xx 응답, 잘린 출력, 비었거나 JSON이 아닌 content)는 Claude Code
+액션의 실패와 같은 **게이트 실행 실패**(`unavailable`) 갈래로 떨어진다.
+
 ## advisory → blocking 승격 절차
 
 AI 게이트 4종은 전부 **advisory**로 시작한다(`_ai-gate.yml`의 `blocking` 입력
@@ -143,6 +150,41 @@ required status check에 등록한 뒤 시크릿이 만료·회전·개명되면
 `_ai-gate.yml`의 "Claude Code 게이트 실행" 스텝에 남긴 주석대로 `anthropic_api_key`
 줄을 지우고 `anthropic_federation_rule_id`/`anthropic_organization_id` 두 줄로
 바꾸고, 잡의 `permissions`에 `id-token: write`를 추가한다.
+
+### generic-http 러너(OpenAI 호환 엔드포인트) 등록
+
+`rfc-conformance-generic-http`, `golden-approval-generic-http`, `test-quality-generic-http`,
+`prose-factcheck-generic-http` 네 잡이 같은 PR에서 claude-code 잡 옆에 advisory로 돌되,
+리포지토리 변수 `AI_GATE_HTTP_BASE_URL`이 등록돼 있을 때만 돈다. 그 전에는 `Skipped`
+체크로 보이고, 기존 네 잡은 이전과 똑같이 동작한다.
+
+```
+gh secret set AI_GATE_HTTP_API_KEY
+gh variable set AI_GATE_HTTP_BASE_URL --body "https://api.example.com/v1"
+gh variable set AI_GATE_HTTP_MODEL --body "<model-id>"
+gh variable set AI_GATE_HTTP_API_STYLE --body "classic"   # 선택
+```
+
+- `AI_GATE_HTTP_BASE_URL`은 `/chat/completions` 앞까지의 접두이고 `/v1`을 포함한다.
+  러너가 `/chat/completions`를 직접 붙인다.
+- `AI_GATE_HTTP_API_STYLE`:
+  - 비우거나 `classic`이면 `max_tokens`(16384)와 `temperature: 0`을 보낸다. OpenAI
+    gpt-4o·gpt-4.1 모델과 자체 호스팅 vLLM·llama.cpp·Ollama 서버에 맞는다.
+  - `reasoning`이면 `max_completion_tokens`(32768)를 보내고 temperature를 보내지 않는다.
+    OpenAI o-series·gpt-5 모델용이다 — 이 모델들은 `max_tokens`와 기본값이 아닌
+    temperature를 HTTP 400으로 거부한다.
+- 변수는 있는데 시크릿이 없으면, Anthropic 경우와 같은 `시크릿 부재 처리` 규칙으로
+  skip한다(advisory: `::warning::`을 남기고 초록, blocking: 빨강).
+- 크기 예산: diff는 200000바이트에서 잘리고 `[diff truncated at 200000 bytes]` 줄이 눈에
+  보이게 붙는다. 대상 모델의 컨텍스트 창은 128k 토큰 이상이어야 한다. 창이 더 작으면
+  `error: http 400`으로 실패하고 `unavailable`로 보인다.
+- 키 노출:
+  - 평문 `http://` base URL은 키를 암호화 없이 보낸다. 엔드포인트가 신뢰된 사설망에
+    있지 않다면 `https://`를 쓴다. 리다이렉트는 따라가지 않으므로(3xx는 이름 붙은
+    실패다) 키가 다른 호스트로 넘어가지 않는다.
+  - 잡은 PR 쪽의 `scripts/ai_gate_http_runner.py` 사본을 키와 함께 돌린다. 이것은 새
+    노출을 만들지 않는다: 포크 PR은 이 잡에 닿지 않고(포크 차단), 같은 레포에 쓸 수
+    있는 사람은 이미 워크플로 자체를 고칠 수 있다.
 
 ## required status check 후보
 
