@@ -78,10 +78,10 @@ rfcs/0040-event-consumption-contract.md "6. 멱등성 (D6)").
   반환되면 ack, `PublishRejected`(영구 거부)면 ack + dead-letter 경고,
   그 외 `DriverError`면 ack하지 않고 다음 드레인이 재시도한다(근거:
   docs/backends.md "등록").
-- RFC-0061(Status: Draft)은 이 분류를 발행 쪽의 대칭 표로 다시 적는다 —
+- RFC-0061(Status: Accepted)은 이 분류를 발행 쪽의 대칭 표로 다시 적는다 —
   소비 쪽 3갈래(RFC-0040 §7)와 짝을 맞춘 설명이고, 세 번째 갈래는
   발명하지 않는다(근거: rfcs/0061-event-publisher-spi.md "4. 오류 분류
-  대칭 — 발행 쪽 (D5)", Status: Draft).
+  대칭 — 발행 쪽 (D5)", Status: Accepted).
 
 ## 집행 등급
 
@@ -100,7 +100,7 @@ rfcs/0040-event-consumption-contract.md "6. 멱등성 (D6)").
   relay` (D8)").
 - 구현됨 — `lnpl.publishers` 발행자 SPI와 발행 결과 분류(성공→ack,
   `PublishRejected`→ack+dead-letter, 그 외 `DriverError`→재시도)(근거:
-  docs/backends.md "등록"). RFC-0061(Status: Draft) §4는 같은 분류를
+  docs/backends.md "등록"). RFC-0061(Status: Accepted) §4는 같은 분류를
   대칭 표로 다시 적으며 세 번째 갈래는 발명하지 않는다고 밝힌다(근거:
   rfcs/0061-event-publisher-spi.md "4. 오류 분류 대칭 — 발행 쪽 (D5)",
-  Status: Draft).
+  Status: Accepted).

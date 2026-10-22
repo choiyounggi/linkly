@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0050, 2026-10-22)
 - Updates: RFC-0015 §1, RFC-0028 §Reference-level Specification/1. Full Grammar,
   RFC-0014 §Reference-level Specification/2.4 스킵 레코드,
   RFC-0028 §Reference-level Specification/4. Guard Runtime Semantics (2.4),
@@ -25,6 +25,8 @@ RFC-0007 §2.2 규칙 5(연쇄 갱신)에 따라 대상 RFC와 **직전 갱신 R
 이 RFC는 Draft다. RFC-0007 §2.2 규칙 6에 따라 Updates RFC는 Accepted가 되는 순간
 효력이 생기므로, 대상 RFC(RFC-0014/RFC-0015/RFC-0028)의 `Updated-by:` 줄과 절 머리
 포인터 줄은 **승격 시점에** 단다(RFC-0049 선례와 같다).
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다.
 
 지목하지 **않는** 것:
 

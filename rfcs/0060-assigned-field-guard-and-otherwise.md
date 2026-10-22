@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0060, 2026-10-22)
 - Updates: RFC-0015 §Reference-level Specification/3. 정적 거부 (+RFC-0051 §2, RFC-0053 §7, RFC-0054 §7),
   RFC-0015 §Open Questions,
   RFC-0001 §노드 카탈로그/Guard (+RFC-0028, RFC-0054),
@@ -16,6 +16,8 @@ RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연
 RFC-0050·RFC-0051·RFC-0052·RFC-0053·RFC-0054·RFC-0058은 아직 Draft다 — 먼저 Accepted되는
 쪽이 직전 갱신이 되고, 나중 쪽이 승격할 때 그 사실을 `Updates:`에 반영한다(RFC-0051·RFC-0052
 선례). Draft이므로 대상 RFC에 `Updated-by:` 포인터를 달지 않는다.
+
+> 해소(2026-10-22, issue #249): 이 RFC는 Accepted로 승격됐다. 위 문장은 Draft 시점의 기록으로 남긴다. RFC-0007 §2.2 규칙 6에 따라 대상 RFC의 `Updated-by:` 줄과 절 머리 포인터는 같은 이슈의 변경으로 단다. 같은 날 승격된 Draft끼리의 순서는 번호 순(작은 번호가 먼저)으로 정했고, `Updates:` 괄호의 직전 갱신은 그 순서를 따른다.
 
 - **정적 거부(RFC-0015 §3).** 아래 §1의 최종 텍스트는 RFC-0054 §7의 표에서 "앞선 스텝이
   할당한 Reference를 뒤의 가드가 읽음" 행 **하나를 뺀** 것이다.

@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: Draft
+- Status: **Accepted** (RFC-0064, 2026-10-22)
 - Updates: 없음 — 기존 RFC의 어느 문장도 바꾸지 않는다. RFC-0012 §G12.2, RFC-0025, RFC-0030, RFC-0052 §3은 쓰기가 영향 행 수를 돌려주고 바인딩하지 않는다고만 말하며, 그 문장은 그대로 참이다.
 - References: issue #197(읽기 미스 `not-found`), issue #215, RFC-0032(트랜잭션 롤백), RFC-0040 §7 (E7, 소비 경로 거부), RFC-0052 §3(`by` 쓰기)
 
