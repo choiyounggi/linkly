@@ -21,11 +21,18 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | 산문 스니펫 컴파일(`check_doc_snippets.py`) | 결정론 | `ci.yml`(t2) | advisory → blocking 예정 | 문서에 박힌 `.lnpl` 스니펫이 실제로 컴파일되는지 |
 | `rfc-conformance` | AI | `_ai-gate.yml`(t4) | advisory | RFC가 말하는 것과 코드가 하는 것의 불일치 |
 | `golden-approval` | AI | `_ai-gate.yml`(t4) | advisory | 골든 시나리오 변경의 타당성 |
-| `test-quality` | AI | `_ai-gate.yml`(t5) | advisory | 자기 코드를 자기가 평가하는 테스트(구현/평가 미분리), 가짜 통과 |
+| `test-quality` | AI | `_ai-gate.yml`(t5) | blocking + required (2026-10-22 승격 — 승격 기준 예외, 아래 "advisory → blocking 승격 절차") | 자기 코드를 자기가 평가하는 테스트(구현/평가 미분리), 가짜 통과 |
 | `prose-factcheck` | AI | `_ai-gate.yml`(t5) | advisory | PR 산문(설명·주석)이 실제 diff와 어긋나는 주장 |
-| 컨테이너 이미지 배선(`test_release_workflow.py`의 `image` 잡 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 비활성 유지 회귀 |
+| 릴리스 워크플로 배선(`test_release_workflow.py`의 `image`·`publish-pypi` 잡과 태그·버전 가드 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 배선 회귀(`environment: pypi`, `id-token: write` 단독 권한, `needs: [build, release]`, `if: false` 부활, `skip-existing` 추가, 액션 SHA 핀), `gates`의 태그·`pyproject.toml` 버전 불일치 미검출 |
 | 요청당 결정적 카운터(`test_perf_counters.py`) | 결정론 | `ci.yml` — 테스트 스위트(matrix) 잡 안의 한 모듈 | blocking(`gate` 잡 경유) | 요청 1건당 DB 연결 생성·닫힘 수, 저장소 문장 수, 드라이버 생성 수의 회귀(예: 요청마다 연결을 하나 더 여는 변경) |
 | 주간 부하 리포트(`load-weekly.yml`) | 결정론 | `load-weekly.yml` — `schedule`(월요일 07:00 UTC) + `workflow_dispatch` | report-only(비-required) | 절대 처리량·지연 추이(gunicorn sync 워커 2개, fake·sqlite 백엔드, 50/100/200/400 rps). 판정으로 쓰지 않는다 |
+
+AI 게이트 4종의 체크 이름은 `rfc-conformance / gate`, `golden-approval / gate`,
+`test-quality / gate`, `prose-factcheck / gate`이다(generic-http 호출부는
+`<잡>-generic-http / gate`) — 재사용 잡에 `name:`이 없기 때문이고, 잡 수준 `if:`로
+skip된 잡은 `name:` 식을 평가하지 않은 채 보고된다(2026-10-22 공개 레포 4곳
+실측: facebook/rocksdb, qualcomm-linux/meta-qcom, shakfu/inferna,
+zeta-chain/node. GitHub 문서에는 없는 동작이다).
 
 AI 게이트 4종은 전부 이 문서가 만든 재사용 워크플로 `_ai-gate.yml`(`on:
 workflow_call`) 위에 얹힌다. 게이트별 워크플로는 `gate_name`·`prompt_file`만
@@ -88,6 +95,38 @@ AI 게이트 4종은 전부 **advisory**로 시작한다(`_ai-gate.yml`의 `bloc
   → blocking 단계적 승격이라는 조사된 정설을 적용한 것이다. 실제 50 PR을
   채운 뒤 이 문서의 표를 이 레포의 실측 수용률로 갱신한다.
 
+### test-quality 승격 — 기준 예외 (issue #244)
+
+`test-quality`(claude-code 호출부 잡 하나)는 2026-10-22에 위 기준을 채우기
+**전에** `blocking: true`로 올랐다. 기준(약 50 PR, 수용률 80%)은 충족되지
+않았다. 근거가 되는 실측(2026-10-22, main `315d410`):
+
+| 사실 | 측정 명령 |
+|------|-----------|
+| `ai-gates-quality.yml` 실행 33건, 브랜치 16개, 2026-08-31 이후 전부 `success` | `gh run list --repo choiyounggi/linkly --workflow ai-gates-quality.yml --limit 200 --json conclusion,headBranch,createdAt` |
+| 2026-10-01 이후 실행 20건의 `test-quality` 잡 20건이 모두 시크릿이 있는 상태로 돌아 `success` | 각 실행에 `gh run view <id> --repo choiyounggi/linkly --json jobs` — "시크릿 부재 처리" 스텝이 `skipped`, 잡이 `success` |
+| 같은 20건의 로그에 "게이트 통과(exit 0)"가 20건, `##[warning]`·`##[error]` 애노테이션이 0건 — 러너 실패 0건, `unavailable` 0건, blocker finding 0건, 머지를 막았을 판정 0건 | 각 실행에 `gh run view <id> --repo choiyounggi/linkly --log`, `test-quality` 잡의 줄(옛 이름 기준 접두사)만 센다 |
+| 최근 PR #221·#259의 코멘트 0건, 리뷰 0건 | `gh pr view <n> --repo choiyounggi/linkly --json comments,reviews` |
+
+수용률은 **잴 수 없다** — blocker finding이 0건이라 분모가 없고 sticky 코멘트도
+남지 않았다. 즉 이 승격은 "수용률 80%를 확인했다"가 아니라 "러너 실패 없이
+돌았고 오탐 신호도 없었다"에 기댄 예외다. 지금 승격하는 이유: #244에서 사용자가
+정했다 — 협업자가 1명이라 사람 리뷰를 요구할 수 없으므로(아래 "왜 required
+approvals를 걸지 않는가") AI 게이트 하나가 두 번째 리뷰어 자리를 대신한다.
+하나만 고른 이유는 네 게이트 중 `test-quality`가 모든 PR에서 돌고(`paths`
+필터 없음) 러너 실패 이력이 없기 때문이다. 나머지 셋은 advisory로 남는다.
+
+게이트가 판정하지 못하는 경우는 전부 잡 실패다(blocking일 때):
+
+1. 시크릿 부재 — "시크릿 부재 처리"가 `::error::` + 실패.
+2. 게이트 실행 실패 — "판정 반영"의 `unavailable` 갈래(Claude 스텝 실패 또는 빈 출력).
+3. 변경 파일 0건 — 삭제만 있는 PR이거나 빈 diff. "변경 파일 없음 처리"가 실패시킨다
+   (advisory이면 경고만). 삭제만 있는 PR은 아래 `skip-ai-gate` 라벨로 우회한다.
+4. 판정 스크립트 exit 2(형식 오류)·exit 3(공허한 통과) — `blocking`과 무관하게 항상 실패.
+
+탈출구는 `skip-ai-gate` 라벨이다(아래 절). 이 예외는 기준을 채운 뒤 이 절을
+실측 수용률로 갱신해 닫는다.
+
 ## `ANTHROPIC_API_KEY` 등록 절차와 OIDC 대안
 
 ### 자격증명은 셋 중 하나 — API 키 / OAuth 토큰 / OIDC 페더레이션
@@ -110,8 +149,8 @@ AI 게이트 4종은 전부 **advisory**로 시작한다(`_ai-gate.yml`의 `bloc
 
 ### API 키를 리포지토리 시크릿으로 등록
 
-이 레포는 지금 시크릿이 하나도 등록돼 있지 않다(`gh secret list` → 0건). 등록
-전까지 모든 AI 게이트는 `_ai-gate.yml`의 "시크릿 존재 확인" 스텝에서
+이 레포에는 `CLAUDE_CODE_OAUTH_TOKEN`이 등록돼 있다(`gh secret list`, 2026-10-22).
+시크릿이 없을 때 AI 게이트는 `_ai-gate.yml`의 "시크릿 존재 확인" 스텝에서
 `SKIPPED: ANTHROPIC_API_KEY not configured`를 찍고 실행되지 않는다.
 
 **그때 잡이 어떻게 끝나는지가 중요하다.** 시크릿이 없다고 잡을 조용히
@@ -122,8 +161,13 @@ AI 게이트 4종은 전부 **advisory**로 시작한다(`_ai-gate.yml`의 `bloc
 
 | `blocking` | 시크릿 없음 → |
 |---|---|
-| `false` (advisory, 현재 4종 전부) | `::warning::` 애노테이션을 남기고 잡은 초록. 애노테이션이 "이 초록은 검토하지 않았다는 뜻"이라고 화면에 적는다. 머지는 막지 않는다 |
-| `true` (승격 후) | `::error::` + 잡 실패 |
+| `false` (advisory — test-quality 외 3종) | `::warning::` 애노테이션을 남기고 잡은 초록. 애노테이션이 "이 초록은 검토하지 않았다는 뜻"이라고 화면에 적는다. 머지는 막지 않는다 |
+| `true` (blocking — 현재 test-quality) | `::error::` + 잡 실패 |
+
+게이트가 판정하지 못하는 다른 두 경우도 같은 결과가 된다: 러너 실패 또는 빈 출력
+("판정 반영"의 `unavailable` 갈래)과 변경 파일 0건("변경 파일 없음 처리" —
+삭제만 있는 PR이거나 빈 diff; 삭제만 있는 PR은 `skip-ai-gate` 라벨로 간다).
+advisory면 경고 + 초록, blocking이면 에러 + 실패다.
 
 두 번째 줄이 승격 절차의 구멍을 막는다. 게이트를 `blocking: true`로 올려
 required status check에 등록한 뒤 시크릿이 만료·회전·개명되면, 이 갈래가
@@ -188,15 +232,23 @@ gh variable set AI_GATE_HTTP_API_STYLE --body "classic"   # 선택
 
 ## required status check 후보
 
-`main`에는 지금 브랜치 보호가 걸려 있지 않다 — 즉 **어떤 게이트도 지금은
-머지를 막지 못한다.** 결정론 게이트가 실패해도, AI 게이트가 blocker를 내도
-PR은 머지될 수 있다. 브랜치 보호를 켜는 일 자체는 레포 소유자의 몫(범위
-밖)이지만, 켤 때 required status check로 등록할 후보는 다음과 같다 —
-GitHub이 실제로 만들어내는 체크런 이름 그대로다(`ci.yml`의 잡 `name:` 필드에서
-직접 확인, 추측 아님):
+`main`의 브랜치 보호는 2026-10-22 현재 이렇다(`gh api
+repos/choiyounggi/linkly/branches/main/protection`): required status check 5개
+(`gate (py3.11)`, `gate (py3.12)`, `gate (py3.13)`, `lint (ruff)`,
+`modeb-linux (test_repo_state under real mode B)`), `strict` 켜짐,
+`enforce_admins: true`, force push·삭제 차단, `required_pull_request_reviews` 없음,
+`required_conversation_resolution: false`, linear history·block creations·lock·fork
+syncing는 꺼짐. 즉 결정론 게이트가 실패하면 머지가 막히고, **AI 게이트는 아직 아무것도
+머지를 막지 않는다** — 아래 `test-quality / gate`가 보호에 들어가기 전까지는.
+required status check로 등록할 후보는 다음과 같다 — GitHub이 실제로 만들어내는
+체크런 이름 그대로다(`ci.yml`의 잡 `name:` 필드에서 직접 확인, 추측 아님. AI 게이트의
+이름은 `_ai-gate.yml`의 잡에 `name:`이 없어서 `<호출 잡> / gate`다):
 
 - `gate (py3.11)` / `gate (py3.12)` / `gate (py3.13)` — 테스트 매트릭스(`ci.yml`)
 - `lint (ruff)` — ruff 게이트(`ci.yml`)
+- `modeb-linux (test_repo_state under real mode B)` — 실제 mode B 게이트(`ci.yml`)
+- `test-quality / gate` — 승격된 AI 게이트 하나(`ai-gates-quality.yml`의 `test-quality`
+  호출 잡 + `_ai-gate.yml`의 잡 id `gate`)
 
 RFC lint, Plugin reference drift check, Version sync check, Doc snippet
 compile gate는 별도 체크런이 **아니다** — 전부 위 `gate` 잡 하나의 스텝으로
@@ -205,16 +257,28 @@ compile gate는 별도 체크런이 **아니다** — 전부 위 `gate` 잡 하�
 기재했었다 — 이 표는 그 정정판이다.
 
 `modeb-linux (test_repo_state under real mode B)`는 issue #161로 `ci.yml`에
-추가됐지만 의도적으로 이 후보 목록에서 제외한다 — GitHub 호스팅 러너에서
-실제로 green 실행을 관측하기 전까지는 required로 걸지 않는다
-(`scripts/setup_branch_protection.sh --include-modeb`로 나중에 추가할 수 있다).
+추가됐다. GitHub 호스팅 러너에서 green 실행이 관측됐고
+(`gh api repos/choiyounggi/linkly/commits/315d410/check-runs`, 2026-10-22: `success`)
+라이브 보호에도 이미 required로 걸려 있으므로 기본 목록에 들어 있다.
+`--include-modeb`는 옛 런북이 깨지지 않도록 남겨 뒀을 뿐 아무것도 바꾸지 않는다.
 
-`scripts/setup_branch_protection.sh`가 위 페이로드를 적용하는 스크립트로
-존재한다(멱등, `--check`는 읽기 전용). 하지만 이 스크립트는 CI나 어떤
-오케스트레이션 태스크로도 자동 실행되지 않는다 — 적용은 항상 사람/코디네이터의
-명시적 결정을 거친 수동 단계다.
+`scripts/setup_branch_protection.sh`가 원하는 페이로드를 가진 스크립트로
+존재한다(멱등). 페이로드는 위 라이브 설정에 `test-quality / gate`와
+`required_conversation_resolution: true`를 더한 것이고, `required_linear_history`,
+`block_creations`, `lock_branch`, `allow_fork_syncing`은 기본값(false)을 명시적으로
+적는다. `--check`는 읽기 전용이다: 페이로드를 출력하고, 라이브 main 보호 설정을 GET
+한 번으로 읽어 항목마다 `ok:`/`drift:` 줄과 `summary:` 줄을 낸다. 오늘 기대하는
+drift는 정확히 `drift: check "test-quality / gate" missing live`와
+`drift: required_conversation_resolution desired=true live=false`다. 이 스크립트는
+CI나 어떤 오케스트레이션 태스크로도 자동 실행되지 않는다 — 적용은 항상
+사람/코디네이터의 명시적 결정을 거친 수동 단계이며, `--check` 뒤에, 그리고
+이 변경을 실은 PR의 head에서 `test-quality / gate` 체크런이 실제로 관측된 뒤에만
+한다. 변경 전에 만들어진 브랜치의 PR은 옛 체크 이름을 보고하므로, 새 required
+check를 만족하려면 main을 머지해야 한다.
 
-AI 게이트 4종은 advisory인 동안은 required로 등록하지 않는다 — required
+AI 게이트 4종 중 `test-quality`만 `blocking: true`이고 위 목록에
+`test-quality / gate`로 올라 있다. 나머지 셋(`rfc-conformance`, `golden-approval`,
+`prose-factcheck`)은 advisory인 동안 required로 등록하지 않는다 — required
 status check는 정의상 실패 시 머지를 막으므로, 오탐률이 검증되지 않은 채로
 걸면 advisory 단계의 목적(수용률을 재는 동안 머지를 막지 않는 것)이 무너진다.
 위 승격 절차를 거쳐 `blocking: true`로 뒤집힌 게이트만 이 목록에 추가한다.
@@ -229,6 +293,20 @@ red/green)이고, 주간 `mutation-weekly` 잡은 SURVIVED 뮤테이션을 이�
 러너마다 달라 PR 판정에 쓸 수 없고, 이 잡은 `pull_request`로 깨어나지도
 않는다. 성능 회귀의 PR 차단은 `gate` 잡 안의 결정적 카운터 테스트가 맡는다
 (아래 "성능 회귀 — 결정적 카운터와 주간 부하 리포트" 절).
+
+### 왜 required approvals를 걸지 않는가
+
+협업자가 1명이고(`gh api repos/choiyounggi/linkly/collaborators --jq length` → 1,
+2026-10-22) `enforce_admins: true`이며, PR 작성자는 자기 PR을 승인할 수 없다
+([GitHub 문서](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-pull-request-reviews-before-merging)).
+그래서 `required_approving_review_count: 1`을 걸면 모든 머지가 막힌다 — 관리자도
+예외가 아니다. 대신 두 가지를 둔다: 대화 해결 필수(`required_conversation_resolution`)와
+`test-quality / gate` required check. 이것은 사람 리뷰를 대체하지 못한다 —
+OpenSSF Scorecard의 `Code-Review` 체크는 이 대안 아래에서 **충족되지 않는다**
+([Scorecard checks](https://github.com/ossf/scorecard/blob/main/docs/checks.md):
+"Review by bots, including bots powered by artificial intelligence / machine learning
+(AI/ML), do not count as code review"). Scorecard도 활동 참여자가 1명이면 리뷰를
+요구하는 것이 불가능하다고 적는다. 두 번째 협업자가 생기면 다시 본다.
 
 ## 뮤테이션 테스팅 2단계
 
@@ -285,11 +363,33 @@ fake·sqlite 백엔드를 50/100/200/400 rps로 잰 `scripts/load_probe.py`의 �
 
 ## `skip-ai-gate` 라벨
 
-PR에 `skip-ai-gate` 라벨이 붙어 있으면 `_ai-gate.yml`의 잡 자체가 그 이유를
-로그에 남기고 skip된다(전체 잡이 안 도는 것이지, 판정만 우회하는 것이 아니다).
+PR에 `skip-ai-gate` 라벨이 붙어 있으면 `_ai-gate.yml`의 잡 자체가 `if:`로 skip된다
+(전체 잡이 안 도는 것이지, 판정만 우회하는 것이 아니다). `if:`로 skip된 잡은 스텝을
+하나도 실행하지 않으므로 로그에 이유를 남기지 않는다 — 이유는 PR 본문에 적는다.
+
+이 라벨은 required check `test-quality / gate`의 **의도된 탈출구**다. 잡이 skip되면
+체크런 `test-quality / gate`는 `skipped`로 끝나고, GitHub은 `skipped`를 required status
+check를 만족한 것으로 센다("Required status checks must have a successful, skipped, or
+neutral status" —
+[About protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches),
+2026-10-22 확인). 재사용 잡에 `name:`이 없어서 skip돼도 같은 이름으로 보고된다는 점은
+GitHub 문서에 없고 공개 레포 4곳의 실측이다(위 로스터 아래 설명) — 보호를 적용한 뒤
+라벨을 붙인 PR 하나로 실제 이름을 확인한다.
+
+- **라벨은 실행을 시작시키지 않는다.** `pull_request`의 기본 activity type은
+  `opened`/`synchronize`/`reopened`다
+  ([문서](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)).
+  라벨을 붙인 뒤에 커밋을 하나 push하거나 PR을 닫았다 다시 열어야(reopen) 워크플로가
+  새로 돌아 `skipped`가 보고된다.
+- **삭제만 있는 PR**(변경 파일 0건)은 blocking 게이트가 판정할 수 없어 실패한다
+  ("변경 파일 없음 처리"). 이 라벨로 간다.
+- **라벨은 아직 레포에 없다.** 보호를 적용하기 전에 코디네이터가
+  `gh label create skip-ai-gate --repo choiyounggi/linkly`로 만든다.
+- **포크 PR**은 잡의 `if:`(`head.repo.full_name == github.repository`)에 걸려 skip된다.
+  같은 경로로 required check를 통과한다(AI 리뷰 없음) — 포크 PR은 사람이 읽고 머지한다.
 
 사용 기준: 급히 머지해야 하는데 AI 게이트가 (모델 문제·타임아웃·명백한 오탐 등으로)
-막고 있을 때만 쓴다. 결정론 게이트를 우회하는 용도가 아니다 — 이 라벨은
-`_ai-gate.yml`의 잡 조건에만 걸려 있고 `ci.yml`의 결정론 게이트에는 아무
-영향을 주지 않는다. 라벨을 붙인 PR은 리뷰어가 그 사유를 PR 설명이나 코멘트에
-남기는 것을 권장한다(기계적으로 강제하지는 않는다).
+막고 있을 때, 또는 삭제만 있는 PR일 때만 쓴다. 결정론 게이트를 우회하는 용도가
+아니다 — 이 라벨은 `_ai-gate.yml`의 잡 조건에만 걸려 있고 `ci.yml`의 결정론 게이트에는
+아무 영향을 주지 않는다. 라벨을 붙인 PR은 그 사유를 PR 본문에 적는다(기계적으로
+강제하지는 않는다).

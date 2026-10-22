@@ -48,6 +48,12 @@ UNAVAILABLE_BLOCKING = ("::error::게이트를 실행하지 못했다(Claude Cod
 UNAVAILABLE_ADVISORY = ("::warning::게이트를 실행하지 못했다(Claude Code 액션 실패 또는 빈 출력) "
                         "— advisory이므로 잡은 초록불로 남는다. 원인이 일시 장애라면 "
                         "재실행으로 충분하다.")
+EMPTY_BLOCKING = ("::error::[test-quality] 변경 파일 0건(삭제 3건) — 게이트가 판정할 수 없다. "
+                  "blocking 게이트이므로 잡을 실패시킨다. 삭제만 있는 PR은 skip-ai-gate "
+                  "라벨(사유를 PR 본문에)로 우회한다.")
+EMPTY_ADVISORY = ("::warning::[prose-factcheck] 변경 파일 0건(삭제 0건) — 이 게이트는 판정하지 "
+                  "않았다. 이 잡의 초록불은 '검토하지 않음'을 뜻한다 — advisory이므로 머지는 "
+                  "막지 않는다.")
 
 
 def _read(path):
@@ -97,7 +103,7 @@ def _env_lines(marker):
 # 러너가 직접 넣어 주는 환경변수 — 스텝 env에 선언하지 않는다.
 RUNNER_PROVIDED = {"GITHUB_OUTPUT", "RUNNER_TEMP"}
 
-# 이 태스크가 바꾸거나 새로 만든 스텝의 env 블록 전체(issue #252). claude-code 쪽
+# 이 태스크가 바꾸거나 새로 만든 스텝의 env 블록 전체(issue #252). claude-code 쪽 (issue #244: 변경 파일 없음 처리)
 # 줄은 b1cd523의 `_ai-gate.yml`과 같은 것이다.
 STEP_ENV = {
     "id: check_secret": [
@@ -111,6 +117,11 @@ STEP_ENV = {
         "          GATE_NAME: ${{ inputs.gate_name }}",
         "          MISSING_SECRET: ${{ inputs.runner == 'generic-http' && "
         "'AI_GATE_HTTP_API_KEY' || 'ANTHROPIC_API_KEY' }}",
+    ],
+    "name: 변경 파일 없음 처리": [
+        "          BLOCKING: ${{ inputs.blocking }}",
+        "          GATE_NAME: ${{ inputs.gate_name }}",
+        "          DELETED: ${{ steps.changed_files.outputs.deleted }}",
     ],
     "id: http_inputs": [
         "          BASE_SHA: ${{ github.event.pull_request.base.sha }}",
@@ -540,10 +551,87 @@ class HttpInputsTest(unittest.TestCase):
         self.assertNotIn("b2", diff)
 
 
+def _bash_major():
+    out = subprocess.run(["bash", "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True)
+    return int(out.stdout.strip() or 0)
+
+
+class EmptyChangeSetTest(unittest.TestCase):
+    """#244 R12: 변경 파일 0건(삭제만 / 빈 diff)은 판정 불가 — blocking이면 실패, advisory면 경고."""
+
+    def run_empty(self, **env):
+        return _exec(_run_block("name: 변경 파일 없음 처리"), env)
+
+    def test_blocking_gate_fails_on_zero_changed_files(self):
+        proc, _ = self.run_empty(BLOCKING="true", GATE_NAME="test-quality", DELETED="3")
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, EMPTY_BLOCKING + "\n")
+
+    def test_advisory_gate_warns_on_zero_changed_files(self):
+        proc, _ = self.run_empty(BLOCKING="false", GATE_NAME="prose-factcheck", DELETED="0")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, EMPTY_ADVISORY + "\n")
+
+    def _file_list_output(self, edit_b):
+        if _bash_major() < 4:
+            self.skipTest("PATH bash is older than 4; the step uses mapfile (the runner has bash 5)")
+        git_env = {"PATH": os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_CONFIG_GLOBAL": os.devnull}
+        with _scratch() as box:
+            repo = os.path.join(box, "repo")
+            os.makedirs(repo)
+
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=t244", "-c",
+                                       "user.email=t244@example.invalid", *args], cwd=repo,
+                                      env=git_env, capture_output=True, text=True,
+                                      check=True).stdout.strip()
+
+            git("init", "-q")
+            for name in ("a.txt", "b.txt", "c.txt"):
+                with open(os.path.join(repo, name), "w") as fh:
+                    fh.write(name + "\n")
+            git("add", "a.txt", "b.txt", "c.txt")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            git("rm", "-q", "a.txt")
+            if edit_b:
+                with open(os.path.join(repo, "b.txt"), "w") as fh:
+                    fh.write("changed\n")
+                git("add", "b.txt")
+            else:
+                git("rm", "-q", "b.txt")
+            git("commit", "-q", "-m", "head")
+            head = git("rev-parse", "HEAD")
+            proc, out = _exec(_run_block("id: changed_files"),
+                              dict(git_env, BASE_SHA=base, HEAD_SHA=head, PATHS_NOTE="t244"),
+                              cwd=repo)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            return out.splitlines()
+
+    def test_deletion_only_diff_counts_zero_and_reports_deletions(self):
+        lines = self._file_list_output(edit_b=False)
+        self.assertIn("count=0", lines)
+        self.assertIn("deleted=2", lines)
+
+    def test_mixed_diff_counts_edits_and_deletions(self):
+        lines = self._file_list_output(edit_b=True)
+        self.assertIn("count=1", lines)
+        self.assertIn("deleted=1", lines)
+
+    def test_empty_change_step_is_wired_after_the_file_list(self):
+        self.assertIn("        if: steps.check_secret.outputs.skip != 'true' && "
+                      "steps.changed_files.outputs.count == '0'\n",
+                      _step_text("name: 변경 파일 없음 처리"))
+        text = _read(REUSABLE)
+        self.assertLess(text.index("id: changed_files"), text.index("name: 변경 파일 없음 처리"))
+        self.assertLess(text.index("name: 변경 파일 없음 처리"), text.index("id: build_prompt"))
+
+
 class WiringTest(unittest.TestCase):
 
     def test_every_gated_step_still_checks_the_secret(self):
-        self.assertEqual(_read(REUSABLE).count("steps.check_secret.outputs.skip != 'true'"), 10)
+        self.assertEqual(_read(REUSABLE).count("steps.check_secret.outputs.skip != 'true'"), 11)
 
     def test_claude_only_steps_are_gated_on_the_claude_runner(self):
         for marker in ("id: claude", "id: schema"):
@@ -641,6 +729,17 @@ class WiringTest(unittest.TestCase):
             "uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10"), 1)
 
 
+class CalledJobNameTest(unittest.TestCase):
+    """#244: 재사용 잡 `gate`에는 `name:`이 없다 — 체크 이름은 `<호출 잡> / gate`."""
+
+    def test_called_job_has_no_name(self):
+        text = _read(REUSABLE)
+        self.assertEqual(text.count("\n  gate:\n"), 1)
+        self.assertEqual(re.search(r"^jobs:\n  ([a-z][a-z0-9_-]*):$", text, re.M).group(1), "gate")
+        job = text[text.index("\n  gate:\n") + 1:]
+        self.assertEqual(re.findall(r"^    name:.*$", job, re.M), [])
+
+
 def _job_text(path, job):
     """호출부 `path`의 잡 `job` 하나(다음 최상위 잡 키 직전까지)."""
     text = _read(path)
@@ -650,6 +749,82 @@ def _job_text(path, job):
     start = text.index(anchor) + 1
     nxt = re.compile(r"^  [a-z][a-z0-9-]*:$", re.MULTILINE).search(text, start + len(anchor))
     return text[start:nxt.start()] if nxt else text[start:]
+
+
+def _blocking(path, job):
+    """호출부 `path`의 잡 `job`이 넘기는 `blocking:` 값 하나."""
+    values = re.findall(r"^      blocking: (true|false)$", _job_text(path, job), re.M)
+    if len(values) != 1:
+        raise AssertionError("%s/%s has %d blocking lines" % (path, job, len(values)))
+    return values[0]
+
+
+class PromotedGateTest(unittest.TestCase):
+    """#244: test-quality(claude-code) 하나만 blocking이고, 그 값이 판정 불가 갈래 셋을 모두 실패로 만든다."""
+
+    def test_only_the_test_quality_claude_job_is_blocking(self):
+        for jobs in (CallerWiringTest.OLD_JOBS, CallerWiringTest.NEW_JOBS):
+            for path, names in jobs.items():
+                for job in names:
+                    with self.subTest(job=job):
+                        expected = "true" if (path, job) == (CALLERS[1], "test-quality") else "false"
+                        self.assertEqual(_blocking(path, job), expected)
+        total = 0
+        for name in sorted(os.listdir(WORKFLOWS)):
+            if name.endswith(".yml"):
+                total += len(re.findall(r"^ +blocking: true$", _read(os.path.join(WORKFLOWS, name)), re.M))
+        self.assertEqual(total, 1)
+
+    def test_promoted_gate_fails_closed_without_credentials(self):
+        proc, _ = _exec(_run_block("name: 시크릿 부재 처리"),
+                        dict(GATE_NAME="test-quality", MISSING_SECRET="ANTHROPIC_API_KEY",
+                             BLOCKING=_blocking(CALLERS[1], "test-quality")))
+        self.assertEqual(proc.returncode, 1)
+        self.assertTrue(proc.stdout.startswith(
+            "::error::[test-quality] ANTHROPIC_API_KEY가 없어 게이트를 실행하지 못했다"), proc.stdout)
+
+    def test_promoted_gate_fails_closed_when_unavailable(self):
+        proc, _ = _exec(_run_block("name: 판정 반영"),
+                        dict(VERDICT_CODE="unavailable", BLOCKING=_blocking(CALLERS[1], "test-quality"),
+                             RUNNER_LABEL="Claude Code 액션", PROVIDER_LABEL="Anthropic API"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, UNAVAILABLE_BLOCKING + "\n")
+
+    def test_promoted_gate_fails_closed_on_zero_changed_files(self):
+        proc, _ = _exec(_run_block("name: 변경 파일 없음 처리"),
+                        dict(GATE_NAME="test-quality", DELETED="3",
+                             BLOCKING=_blocking(CALLERS[1], "test-quality")))
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, EMPTY_BLOCKING + "\n")
+
+    def test_advisory_sibling_still_passes_without_credentials(self):
+        proc, _ = _exec(_run_block("name: 시크릿 부재 처리"),
+                        dict(GATE_NAME="prose-factcheck", MISSING_SECRET="ANTHROPIC_API_KEY",
+                             BLOCKING=_blocking(CALLERS[1], "prose-factcheck")))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(proc.stdout.startswith("::warning::"), proc.stdout)
+
+
+class PromotedContextLiteralTest(unittest.TestCase):
+    """#244: required check `test-quality / gate`를 영원히 대기시킬 수 있는 변경을 막는다."""
+
+    def test_trigger_and_jobs_cannot_strand_the_required_check(self):
+        caller = _read(CALLERS[1])
+        lines = caller.split("\n")
+        i = lines.index("on:")
+        self.assertEqual(lines[i + 1], "  pull_request:")
+        nxt = next(line for line in lines[i + 2:] if line.strip())
+        self.assertLessEqual(len(nxt) - len(nxt.lstrip(" ")), 2, nxt)
+        self.assertEqual(re.findall(r"^ +paths(?:-ignore)?:", caller, re.M), [])
+        self.assertEqual(caller.count("\n  test-quality:\n"), 1)
+        job = _job_text(CALLERS[1], "test-quality")
+        self.assertIn("      gate_name: test-quality\n", job)
+        self.assertEqual(re.findall(r"^    if:.*$", job, re.M), [])
+        reusable = _read(REUSABLE)
+        self.assertEqual(re.findall(r"^  ([a-z][a-z0-9_-]*):$",
+                                    reusable[reusable.index("\njobs:\n"):], re.M), ["gate"])
+        self.assertEqual(re.findall(r"^    name:.*$",
+                                    reusable[reusable.index("\n  gate:\n"):], re.M), [])
 
 
 class CallerWiringTest(unittest.TestCase):

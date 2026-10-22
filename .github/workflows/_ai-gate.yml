@@ -3,7 +3,8 @@ name: AI gate (reusable)
 # t4·t5의 게이트별 워크플로가 `uses: ./.github/workflows/_ai-gate.yml`로 이것을
 # 부른다(프롬프트 파일 경로만 넘긴다). 이 워크플로는 게이트 자체(프롬프트·판정
 # 임계)를 만들지 않는다 — 판정 배관만 만든다: 포크 차단, SHA 핀, 시크릿 부재/
-# 변경 파일 0건의 명시적 skip, exit code로만 판정(scripts/ai_gate_verdict.py).
+# 변경 파일 0건의 명시적 처리(blocking이면 실패, advisory면 경고 — #244), exit
+# code로만 판정(scripts/ai_gate_verdict.py).
 # 산문은 exit code를 정하지 못한다.
 
 on:
@@ -95,7 +96,12 @@ concurrency:
 
 jobs:
   gate:
-    name: ${{ inputs.gate_name }}
+    # #244: 이 잡에는 name:을 두지 않는다. 잡 수준 if:로 skip된 재사용 잡은
+    # name: 식을 평가하지 않은 채 보고된다(2026-10-22 실측: facebook/rocksdb,
+    # qualcomm-linux/meta-qcom, shakfu/inferna). 그러면 skip될 때만 체크 이름이
+    # 달라져, skip-ai-gate 라벨·포크 PR에서 required check가 영원히 대기한다.
+    # 이름이 없으면 돌든 skip되든 "<호출 잡> / gate"로 보고된다 — required
+    # check 이름은 test-quality / gate (docs/CI-GATES.md).
     runs-on: ubuntu-latest
     # D6: 이 레포는 PUBLIC이다. 포크 PR은 시크릿 없이 돈다 — 시크릿을 포크 PR
     # 컨텍스트로 끌어오는 위험한 트리거는 이 워크플로에서 절대 쓰지 않는다
@@ -209,12 +215,30 @@ jobs:
             printf '%s\n' "${FILES[@]}"
           fi
           echo "count=${#FILES[@]}" >> "$GITHUB_OUTPUT"
+          mapfile -t DELETED_FILES < <(git diff --diff-filter=D --name-only "$MERGE_BASE" "$HEAD_SHA")
+          echo "deleted=${#DELETED_FILES[@]}" >> "$GITHUB_OUTPUT"
           DELIM="AI_GATE_FILES_$(openssl rand -hex 20)"
           {
             echo "list<<$DELIM"
             printf '%s\n' "${FILES[@]}"
             echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
+
+      # #244: 위 목록은 --diff-filter=d라 삭제된 파일이 빠진다. 변경 파일 0건(삭제만 있는
+      # PR, 빈 diff)이면 아래 판정 스텝이 전부 건너뛰어 잡이 판정 없이 초록이 된다 —
+      # 시크릿 부재와 같은 의미론으로 다룬다: blocking이면 실패, advisory면 경고.
+      - name: 변경 파일 없음 처리
+        if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count == '0'
+        env:
+          BLOCKING: ${{ inputs.blocking }}
+          GATE_NAME: ${{ inputs.gate_name }}
+          DELETED: ${{ steps.changed_files.outputs.deleted }}
+        run: |
+          if [ "$BLOCKING" = "true" ]; then
+            echo "::error::[$GATE_NAME] 변경 파일 0건(삭제 ${DELETED}건) — 게이트가 판정할 수 없다. blocking 게이트이므로 잡을 실패시킨다. 삭제만 있는 PR은 skip-ai-gate 라벨(사유를 PR 본문에)로 우회한다."
+            exit 1
+          fi
+          echo "::warning::[$GATE_NAME] 변경 파일 0건(삭제 ${DELETED}건) — 이 게이트는 판정하지 않았다. 이 잡의 초록불은 '검토하지 않음'을 뜻한다 — advisory이므로 머지는 막지 않는다."
 
       - name: 프롬프트 조립
         id: build_prompt
