@@ -151,7 +151,8 @@ approvals를 걸지 않는가") AI 게이트 하나가 두 번째 리뷰어 자�
 
 이 레포에는 `CLAUDE_CODE_OAUTH_TOKEN`이 등록돼 있다(`gh secret list`, 2026-10-22).
 시크릿이 없을 때 AI 게이트는 `_ai-gate.yml`의 "시크릿 존재 확인" 스텝에서
-`SKIPPED: ANTHROPIC_API_KEY not configured`를 찍고 실행되지 않는다.
+`SKIPPED: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN is configured`를 찍고
+실행되지 않는다.
 
 **그때 잡이 어떻게 끝나는지가 중요하다.** 시크릿이 없다고 잡을 조용히
 `success`로 끝내면, 초록불이 "AI가 보고 문제없었다"와 "AI가 아예 돌지
@@ -232,14 +233,14 @@ gh variable set AI_GATE_HTTP_API_STYLE --body "classic"   # 선택
 
 ## required status check 후보
 
-`main`의 브랜치 보호는 2026-10-22 현재 이렇다(`gh api
-repos/choiyounggi/linkly/branches/main/protection`): required status check 5개
+`main`의 브랜치 보호는 2026-10-23 현재 이렇다(`gh api
+repos/choiyounggi/linkly/branches/main/protection`): required status check 6개
 (`gate (py3.11)`, `gate (py3.12)`, `gate (py3.13)`, `lint (ruff)`,
-`modeb-linux (test_repo_state under real mode B)`), `strict` 켜짐,
+`modeb-linux (test_repo_state under real mode B)`, `test-quality / gate`), `strict` 켜짐,
 `enforce_admins: true`, force push·삭제 차단, `required_pull_request_reviews` 없음,
-`required_conversation_resolution: false`, linear history·block creations·lock·fork
-syncing는 꺼짐. 즉 결정론 게이트가 실패하면 머지가 막히고, **AI 게이트는 아직 아무것도
-머지를 막지 않는다** — 아래 `test-quality / gate`가 보호에 들어가기 전까지는.
+`required_conversation_resolution: true`, linear history·block creations·lock·fork
+syncing는 꺼짐. 즉 결정론 게이트와 AI 게이트 `test-quality`가 실패하면 머지가 막히고,
+풀리지 않은 리뷰 대화가 남아 있어도 막힌다. 나머지 AI 게이트 셋은 머지를 막지 않는다.
 required status check로 등록할 후보는 다음과 같다 — GitHub이 실제로 만들어내는
 체크런 이름 그대로다(`ci.yml`의 잡 `name:` 필드에서 직접 확인, 추측 아님. AI 게이트의
 이름은 `_ai-gate.yml`의 잡에 `name:`이 없어서 `<호출 잡> / gate`다):
@@ -267,9 +268,8 @@ compile gate는 별도 체크런이 **아니다** — 전부 위 `gate` 잡 하�
 `required_conversation_resolution: true`를 더한 것이고, `required_linear_history`,
 `block_creations`, `lock_branch`, `allow_fork_syncing`은 기본값(false)을 명시적으로
 적는다. `--check`는 읽기 전용이다: 페이로드를 출력하고, 라이브 main 보호 설정을 GET
-한 번으로 읽어 항목마다 `ok:`/`drift:` 줄과 `summary:` 줄을 낸다. 오늘 기대하는
-drift는 정확히 `drift: check "test-quality / gate" missing live`와
-`drift: required_conversation_resolution desired=true live=false`다. 이 스크립트는
+한 번으로 읽어 항목마다 `ok:`/`drift:` 줄과 `summary:` 줄을 낸다. 2026-10-23 적용
+뒤로 기대하는 결과는 `summary: 0 drift, 17 ok`다. 이 스크립트는
 CI나 어떤 오케스트레이션 태스크로도 자동 실행되지 않는다 — 적용은 항상
 사람/코디네이터의 명시적 결정을 거친 수동 단계이며, `--check` 뒤에, 그리고
 이 변경을 실은 PR의 head에서 `test-quality / gate` 체크런이 실제로 관측된 뒤에만
