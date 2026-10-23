@@ -2,7 +2,7 @@
 
 # 타입과 Refinement
 
-> lnpl 0.9.0 기준.
+> lnpl 0.9.1.dev0 기준.
 
 ## 의미 타입
 
