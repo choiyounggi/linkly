@@ -8,6 +8,7 @@
 """
 
 import argparse
+import inspect
 import json
 import os
 import sys
@@ -957,6 +958,13 @@ def cmd_outbox_ack(args):
 # `--once`, and this is a reference implementation, not a tunable daemon.
 RELAY_POLL_INTERVAL_S = 1.0
 
+# issue #262: the most outbox rows one relay batch drains (one driver
+# transaction each), so concurrent relays on a row-locking driver
+# (lnpl-postgres: SELECT ... FOR UPDATE SKIP LOCKED) share a large
+# backlog instead of the first one locking all of it. No flag, for the
+# same reason as RELAY_POLL_INTERVAL_S above.
+RELAY_BATCH_LIMIT = 100
+
 
 def _relay_post(url, envelope):
     """POST `envelope` (a CloudEvents structured-mode JSON body) to `url` ->
@@ -1076,10 +1084,51 @@ def _relay_drain_once_via_publisher(repository, event_names, source, publisher):
     return len(acked)
 
 
-def _relay_batch(repository, drain_once, *args):
-    """Run one relay batch -- `drain_once(repository, *args)`, i.e. drain ->
-    publish/POST -> ack -- inside one driver transaction (issue #257), and
-    return its acked count.
+def _drain_accepts_limit(repository):
+    """True when `repository.drain_outbox` declares a `limit` parameter that
+    can be passed by keyword (issue #262). Decided from the signature, never
+    by calling the driver and catching TypeError; a callable with no
+    inspectable signature counts as "no limit" (the pre-#262 call)."""
+    try:
+        parameters = inspect.signature(repository.drain_outbox).parameters
+    except (TypeError, ValueError):
+        return False
+    limit = parameters.get("limit")
+    return limit is not None and limit.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY)
+
+
+class _BoundedOutbox:
+    """The outbox view one relay batch drains (issue #262): `drain_outbox()`
+    passes `limit` to the driver when the driver accepts one, and records
+    how many rows came back in `drained` for the batch loop's stop rule.
+    `_relay_drain_once` / `_relay_drain_once_via_publisher` receive this in
+    place of the driver and call only `drain_outbox()` and `ack_outbox()`,
+    so their signatures (and the TCK's `DRAIN_ONCE`) stay unchanged."""
+
+    def __init__(self, repository, limit):
+        self._repository = repository
+        self._limit = limit          # int, or None: driver takes no `limit`
+        self.drained = 0
+
+    def drain_outbox(self):
+        if self._limit is None:
+            rows = list(self._repository.drain_outbox())
+        else:
+            rows = list(self._repository.drain_outbox(limit=self._limit))
+        self.drained = len(rows)
+        return rows
+
+    def ack_outbox(self, seqs):
+        return self._repository.ack_outbox(seqs)
+
+
+def _relay_batch(repository, outbox, drain_once, *args):
+    """Run one relay batch -- `drain_once(outbox, *args)`, i.e. drain
+    (through the `_BoundedOutbox` view) -> publish/POST -> ack -- inside one
+    driver transaction on `repository` (issue #257), and return its acked
+    count.
 
     On a driver whose `drain_outbox` takes row locks inside `begin()`
     (lnpl-postgres: SELECT ... FOR UPDATE SKIP LOCKED) the drained rows stay
@@ -1094,12 +1143,29 @@ def _relay_batch(repository, drain_once, *args):
     """
     repository.begin()
     try:
-        acked = drain_once(repository, *args)
+        acked = drain_once(outbox, *args)
     except BaseException:
         repository.rollback()
         raise
     repository.commit()
     return acked
+
+
+def _relay_pass(repository, limit, drain_once, *args):
+    """Run relay batches back to back until the outbox is drained for now,
+    and return the total acked (issue #262). After each batch, drain again
+    only when that batch came back full (`limit` rows) AND acked at least
+    one row: a short batch means the backlog is exhausted, and a full batch
+    with no ack means its rows all failed -- draining again would only
+    return them again. A driver without `limit` (`limit is None`) gets
+    exactly one batch per pass."""
+    total = 0
+    while True:
+        outbox = _BoundedOutbox(repository, limit)
+        acked = _relay_batch(repository, outbox, drain_once, *args)
+        total += acked
+        if limit is None or outbox.drained < limit or acked == 0:
+            return total
 
 
 def cmd_relay(args):
@@ -1141,19 +1207,21 @@ def cmd_relay(args):
         print("error: %s" % exc, file=sys.stderr)
         repository.close()
         return 2
+    limit = RELAY_BATCH_LIMIT if _drain_accepts_limit(repository) else None
     try:
         if publisher is None:
             while True:
-                acked = _relay_batch(repository, _relay_drain_once,
-                                     event_names, module_name, args.target)
+                acked = _relay_pass(repository, limit, _relay_drain_once,
+                                    event_names, module_name, args.target)
                 if args.once:
                     print("relay: acked %d emission(s)" % acked)
                     return 0
                 time.sleep(RELAY_POLL_INTERVAL_S)
         else:
             while True:
-                acked = _relay_batch(repository, _relay_drain_once_via_publisher,
-                                     event_names, module_name, publisher)
+                acked = _relay_pass(repository, limit,
+                                    _relay_drain_once_via_publisher,
+                                    event_names, module_name, publisher)
                 if args.once:
                     print("relay: acked %d emission(s)" % acked)
                     return 0
@@ -2182,10 +2250,15 @@ def _build_parser(subparsers_out=None):
                          "http://localhost:8081 — envelopes POST to "
                          "<BASE-URL>/-/events/<slug>")
     rl.add_argument("--once", action="store_true",
-                    help="drain and POST exactly once, then exit (rc 0) — "
-                         "the shape a test or a cron entry drives. Default: "
-                         "loop forever, polling the outbox every %gs"
-                         % RELAY_POLL_INTERVAL_S)
+                    help="drain the outbox in batches of at most %d rows, "
+                         "each in its own driver transaction, repeating "
+                         "while a batch comes back full and acks at least "
+                         "one row, then exit (rc 0) — the shape a test or a "
+                         "cron entry drives. A driver whose drain_outbox "
+                         "takes no `limit` gets one unbounded batch (issue "
+                         "#262). Default: loop forever, pausing %gs after "
+                         "each such pass"
+                         % (RELAY_BATCH_LIMIT, RELAY_POLL_INTERVAL_S))
     rl.set_defaults(func=cmd_relay)
 
     db = sub.add_parser("db",
