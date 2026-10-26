@@ -4,7 +4,7 @@
 
 - Status: **Accepted** (RFC-0062, 2026-10-22)
 - Updates: RFC-0002 §Full grammar (+RFC-0012, RFC-0052, RFC-0060),
-  RFC-0003 §Reference-level Specification/Execution Model (+RFC-0032, RFC-0056)
+  RFC-0003 §Reference-level Specification/Execution Model (+RFC-0032, RFC-0041, RFC-0056)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라 이미
 갱신된 절은 대상과 **직전 갱신 RFC를 모두** 지목한다. 괄호 안이 직전 갱신이다. 그중

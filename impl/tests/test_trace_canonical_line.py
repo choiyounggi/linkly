@@ -11,7 +11,6 @@ import io
 import json
 import unittest
 
-from lnpl.drivers import DriverError
 from lnpl.interp import FakeRepository, Interpreter
 from lnpl.lower import lower
 from lnpl.parser import parse

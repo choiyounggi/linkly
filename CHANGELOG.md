@@ -9,6 +9,37 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Changed
+- **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a
+  CloudEvents `id` longer than 255 bytes (UTF-8) with 400
+  `cloudevents-id-too-long` (problem+json, E9) before any repository
+  driver is opened. Such ids were accepted before; on `lnpl-postgres` an
+  `id` of about 4000 characters failed with an unhandled 500. An `id`
+  that is not valid UTF-8 (an unpaired surrogate escape such as `\ud800`)
+  is now refused with 400 `cloudevents-invalid`; before, the `fake`
+  backend accepted it and the bundled sqlite driver failed with an
+  unhandled 500 (issue #261).
+- `lnpl openapi`: the generated `Idempotency-Key` header parameter
+  declares `maxLength: 255`, and the workflow POST `400` description
+  lists `idempotency-key-too-long` (issue #261).
+- `lnpl relay` now drains the outbox in batches of at most 100 rows, each
+  in its own driver transaction. Before, one batch drained the whole
+  undelivered backlog, so on a row-locking driver (`lnpl-postgres`:
+  `SELECT ... FOR UPDATE SKIP LOCKED`) the first relay locked every row
+  while it published them one by one and a second relay got nothing. A
+  batch that comes back full and acks at least one row is followed at
+  once by the next batch; `--once` exits after the first short or no-ack
+  batch, and the polling loop pauses only between such passes. A driver
+  whose `drain_outbox` takes no `limit` keeps the old single unbounded
+  batch (issue #262).
+
+### Fixed
+- `lnpl serve` / `build_app()`: a `DriverError` raised by
+  `idempotency_release` on the event-consume 503 paths no longer escapes
+  as a raw 500; the response stays 503 `event-retry-later` with
+  `Retry-After: 1`, the claim is kept until its TTL, and stderr logs the
+  release failure under the same `correlation_id` (issue #261).
+
 ## [0.9.0] — 2026-10-22
 "The operations-hardening release."
 

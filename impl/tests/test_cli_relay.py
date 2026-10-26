@@ -133,6 +133,11 @@ class RelayCliTestCase(unittest.TestCase):
              "--payload", payload])
         self.assertEqual(0, rc, err)
 
+    def emit_n(self, n):
+        """Emit `n` outbox rows (seq 1..n on a fresh store), distinct ids."""
+        for i in range(1, n + 1):
+            self.emit_one(order_id="00000000-0000-4000-8000-%012d" % i)
+
     def drain(self):
         rc, out, err = self.run_cli(
             ["outbox", "drain", "--backend", "sqlite:" + self.db])
@@ -265,6 +270,10 @@ NO_DRAIN_CONTRACT = ("error: backend %s does not implement the outbox drain "
                      "contract (drain_outbox/ack_outbox) — see "
                      "docs/backends.md §3\n")
 
+# The repo root (impl/tests/ -> impl/ -> root), for the doc agreement tests.
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
 DEMO_DRIVER = importlib_metadata.EntryPoint(
     name="demo", value="tests.driver_spi_fixture:make_demo_driver",
     group=drivers_module.DRIVERS_ENTRY_POINT_GROUP)
@@ -285,6 +294,15 @@ def _inline_entry_point(name, driver):
         name=name, value="inline",
         group=drivers_module.DRIVERS_ENTRY_POINT_GROUP,
         load=lambda: (lambda _arg: driver))
+
+
+def _factory_entry_point(name, factory):
+    """An `lnpl.drivers` entry point whose factory calls `factory()` on
+    EVERY `--backend` open, so two relays get two driver instances."""
+    return types.SimpleNamespace(
+        name=name, value="inline",
+        group=drivers_module.DRIVERS_ENTRY_POINT_GROUP,
+        load=lambda: (lambda _arg: factory()))
 
 
 class _DrainOnlyDriver(DemoRepositoryDriver):
@@ -436,22 +454,33 @@ class _RecordingSqliteDriver(drivers_module.SqliteRepositoryDriver):
     every transaction/outbox call the relay makes -- the
     `RelayBatchTransactionTest.record_publishes` wrapper appends "publish"
     to the same list -- plus the seqs it drained and acked. `ack_error` /
-    `commit_error` (str) make `ack_outbox` / `commit` raise DriverError."""
+    `commit_error` (str) make `ack_outbox` / `commit` raise DriverError.
+    `max_drains` is the test's own deadline (issue #262): a relay whose
+    batch loop never stops fails with AssertionError on the next drain
+    instead of hanging the suite; no correct run here needs more than 5."""
 
-    def __init__(self, path, ack_error=None, commit_error=None):
+    def __init__(self, path, ack_error=None, commit_error=None,
+                 max_drains=20):
         super().__init__(path)
+        self.max_drains = max_drains
         self.calls = []
         self.drained = []
         self.acked = []
         self.ack_error = ack_error
         self.commit_error = commit_error
+        self.limits = []
 
     def begin(self):
         self.calls.append("begin")
         return super().begin()
 
     def drain_outbox(self, limit=None):
+        self.limits.append(limit)
         self.calls.append("drain_outbox")
+        if len(self.limits) > self.max_drains:
+            raise AssertionError("relay drained %d times (max_drains=%d): "
+                                 "its batch loop did not stop"
+                                 % (len(self.limits), self.max_drains))
         rows = super().drain_outbox(limit=limit)
         self.drained.extend(row["seq"] for row in rows)
         return rows
@@ -475,12 +504,116 @@ class _RecordingSqliteDriver(drivers_module.SqliteRepositoryDriver):
         return super().rollback()
 
 
+class _NthAckFailsDriver(_RecordingSqliteDriver):
+    """Issue #262: `ack_outbox` raises DriverError on its `fail_on_ack`-th
+    call only (before touching sqlite), so earlier batches stay acked."""
+
+    def __init__(self, path, fail_on_ack):
+        super().__init__(path)
+        self.fail_on_ack = fail_on_ack
+        self.ack_count = 0
+
+    def ack_outbox(self, seqs):
+        self.ack_count += 1
+        if self.ack_count == self.fail_on_ack:
+            self.calls.append("ack_outbox")
+            raise drivers_module.DriverError(
+                "outbox ack: simulated failure on ack %d" % self.ack_count)
+        return super().ack_outbox(seqs)
+
+
+class _NoLimitRecordingSqliteDriver(_RecordingSqliteDriver):
+    """Issue #262 fallback: a recording driver whose `drain_outbox` takes
+    no `limit` (an out-of-tree driver written before the parameter)."""
+
+    def drain_outbox(self):
+        self.calls.append("drain_outbox")
+        rows = drivers_module.SqliteRepositoryDriver.drain_outbox(self)
+        self.drained.extend(row["seq"] for row in rows)
+        return rows
+
+
+class _TypeErrorDriver(_RecordingSqliteDriver):
+    """Issue #262: a TypeError raised INSIDE `drain_outbox` is a driver
+    bug, not a "no limit" signal -- the relay must not swallow it."""
+
+    def drain_outbox(self, limit=None):
+        self.calls.append("drain_outbox")
+        raise TypeError("boom inside driver")
+
+
 class _BeginRecordingDrainOnlyDriver(_DrainOnlyDriver):
     """`_DrainOnlyDriver` that also records `begin` -- proves the issue
     #229 guard still returns before any transaction is opened."""
 
     def begin(self):
         self.calls.append("begin")
+
+
+class _SkipLockedStore:
+    """One shared outbox for several `_SkipLockedDriver` instances, modelling
+    lnpl-postgres' `SELECT ... FOR UPDATE SKIP LOCKED` (issue #262)."""
+
+    def __init__(self, rows):
+        self.rows = [dict(r) for r in sorted(rows, key=lambda r: r["seq"])]
+        self.delivered = set()
+        self.locks = {}          # seq -> the driver instance holding it
+
+
+class _SkipLockedDriver(DemoRepositoryDriver):
+    """Rows drained inside begin() stay locked by this instance until
+    commit()/rollback(); another instance's drain skips them, never waits."""
+
+    def __init__(self, store):
+        super().__init__("skip-locked")
+        self.store = store
+        self.in_tx = False
+        self.drained = []
+        self.acked = []
+        self._tx_acked = []
+
+    def begin(self):
+        self.in_tx = True
+        self._tx_acked = []
+
+    def drain_outbox(self, limit=None):
+        free = [r for r in self.store.rows
+                if r["seq"] not in self.store.delivered
+                and self.store.locks.get(r["seq"], self) is self]
+        picked = free if limit is None else free[:limit]
+        if self.in_tx:
+            for r in picked:
+                self.store.locks[r["seq"]] = self
+        self.drained.extend(r["seq"] for r in picked)
+        return [dict(r) for r in picked]
+
+    def ack_outbox(self, seqs):
+        for seq in seqs:
+            self.store.delivered.add(seq)
+        self._tx_acked.extend(seqs)
+        self.acked.extend(seqs)
+
+    def commit(self):
+        self._release()
+
+    def rollback(self):
+        for seq in self._tx_acked:
+            self.store.delivered.discard(seq)
+            self.acked.remove(seq)
+        self._release()
+
+    def _release(self):
+        self.store.locks = {s: o for s, o in self.store.locks.items()
+                            if o is not self}
+        self.in_tx = False
+        self._tx_acked = []
+
+
+class _NoLimitSkipLockedDriver(_SkipLockedDriver):
+    """The fallback: `drain_outbox` takes no `limit`."""
+
+    def drain_outbox(self):
+        return super().drain_outbox()
 
 
 class RelayBatchTransactionTest(RelayCliTestCase):
@@ -656,6 +789,340 @@ class RelayBatchTransactionTest(RelayCliTestCase):
         self.assertEqual(NO_DRAIN_CONTRACT % "half", err)
         self.assertEqual([], driver.calls)
         self.assertTrue(driver.closed)
+
+
+class RelayBoundedBatchTest(RelayBatchTransactionTest):
+    """Issue #262: `lnpl relay` drains at most `RELAY_BATCH_LIMIT` rows per
+    batch (one transaction each) and drains again only after a full batch
+    that acked at least one row. `limited()` shrinks the bound to 2 so a
+    handful of rows spans several batches."""
+
+    def limited(self, n=2):
+        return mock.patch.object(cli, "RELAY_BATCH_LIMIT", n)
+
+    def test_a_limit_accepting_driver_is_drained_with_the_bound(self):
+        self.emit_n(1)
+        driver = _RecordingSqliteDriver(self.db)
+        self.record_publishes(driver)
+
+        rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertEqual([cli.RELAY_BATCH_LIMIT], driver.limits)
+
+    def test_once_drains_a_backlog_larger_than_one_batch(self):
+        with self.limited():
+            self.emit_n(5)
+            driver = _RecordingSqliteDriver(self.db)
+            self.record_publishes(driver)
+
+            rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 5", out)
+        self.assertEqual([2, 2, 2], driver.limits)
+        self.assertEqual([1, 2, 3, 4, 5], driver.drained)
+        self.assertEqual(["begin", "drain_outbox", "publish", "publish",
+                          "ack_outbox", "commit", "begin", "drain_outbox",
+                          "publish", "publish", "ack_outbox", "commit",
+                          "begin", "drain_outbox", "publish", "ack_outbox",
+                          "commit"],
+                         driver.calls)
+        self.assertEqual([], self.drain())
+
+    def test_an_http_once_drains_in_bounded_batches(self):
+        with self.limited():
+            self.emit_n(3)
+            base_url = self.start_consumer(CONSUME_SRC)
+            driver = _RecordingSqliteDriver(self.db)
+
+            rc, out, err = self.relay(driver, target=base_url)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 3", out)
+        self.assertEqual(["begin", "drain_outbox", "ack_outbox", "commit",
+                          "begin", "drain_outbox", "ack_outbox", "commit"],
+                         driver.calls)
+
+    def test_an_ack_failure_in_the_second_batch_keeps_the_first_batch(self):
+        with self.limited():
+            self.emit_n(3)
+            driver = _NthAckFailsDriver(self.db, fail_on_ack=2)
+            self.record_publishes(driver)
+
+            rc, out, err = self.relay(driver)
+
+        self.assertEqual(1, rc)
+        self.assertIn("error: outbox ack: simulated failure on ack 2", err)
+        self.assertNotIn("acked", out)
+        self.assertEqual(["begin", "drain_outbox", "publish", "publish",
+                          "ack_outbox", "commit", "begin", "drain_outbox",
+                          "publish", "ack_outbox", "rollback"],
+                         driver.calls)
+        self.assertEqual([3], [row["seq"] for row in self.drain()])
+
+    def test_a_full_batch_with_no_ack_ends_the_run(self):
+        with self.limited():
+            self.emit_n(2)
+            driver = _RecordingSqliteDriver(self.db)
+            self.record_publishes(driver, fail_ids={"outbox-1", "outbox-2"})
+
+            rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 0", out)
+        self.assertEqual(["begin", "drain_outbox", "publish", "publish",
+                          "commit"],
+                         driver.calls)
+        self.assertEqual(2, len(self.drain()))
+
+    def test_a_failing_head_row_is_retried_per_batch_and_the_run_ends(self):
+        with self.limited():
+            self.emit_n(5)
+            driver = _RecordingSqliteDriver(self.db)
+            self.record_publishes(driver, fail_ids={"outbox-1"})
+
+            rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 4", out)
+        self.assertEqual([1, 2, 1, 3, 1, 4, 1, 5, 1], driver.drained)
+        self.assertEqual(5, driver.calls.count("begin"))
+        self.assertEqual([1], [row["seq"] for row in self.drain()])
+
+    def test_exactly_one_full_batch_drains_once_more_then_stops(self):
+        with self.limited():
+            self.emit_n(2)
+            driver = _RecordingSqliteDriver(self.db)
+            self.record_publishes(driver)
+
+            rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 2", out)
+        self.assertEqual(["begin", "drain_outbox", "publish", "publish",
+                          "ack_outbox", "commit", "begin", "drain_outbox",
+                          "commit"],
+                         driver.calls)
+
+    def test_one_row_over_the_bound_takes_two_batches_and_no_third_drain(self):
+        with self.limited():
+            self.emit_n(3)
+            driver = _RecordingSqliteDriver(self.db)
+            self.record_publishes(driver)
+
+            rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 3", out)
+        self.assertEqual(2, driver.calls.count("drain_outbox"))
+        self.assertEqual([1, 2, 3], driver.drained)
+
+    def test_a_driver_without_limit_gets_one_unbounded_batch(self):
+        with self.limited():
+            self.emit_n(3)
+            driver = _NoLimitRecordingSqliteDriver(self.db)
+            self.record_publishes(driver)
+
+            rc, out, err = self.relay(driver)
+
+        self.assertEqual(0, rc, err)
+        self.assertIn("acked 3", out)
+        self.assertEqual(["begin", "drain_outbox", "publish", "publish",
+                          "publish", "ack_outbox", "commit"],
+                         driver.calls)
+        self.assertEqual([1, 2, 3], driver.drained)
+
+    def test_a_type_error_inside_the_driver_propagates(self):
+        self.emit_n(1)
+        driver = _TypeErrorDriver(self.db)
+        self.record_publishes(driver)
+
+        with self.assertRaises(TypeError) as ctx:
+            self.relay(driver)
+
+        self.assertEqual("boom inside driver", str(ctx.exception))
+        self.assertEqual(["begin", "drain_outbox", "rollback"], driver.calls)
+
+    def test_limit_support_is_read_from_the_signature(self):
+        driver = _RecordingSqliteDriver(self.db)
+        self.addCleanup(driver.close)
+
+        class KeywordOnly:
+            def drain_outbox(self, *, limit=None):
+                return []
+
+        class PositionalOnly:
+            def drain_outbox(self, limit=None, /):
+                return []
+
+        class NoLimit:
+            def drain_outbox(self):
+                return []
+
+        class KwargsOnly:
+            def drain_outbox(self, **kw):
+                return []
+
+        self.assertTrue(cli._drain_accepts_limit(driver))
+        self.assertTrue(cli._drain_accepts_limit(KeywordOnly()))
+        self.assertFalse(cli._drain_accepts_limit(PositionalOnly()))
+        self.assertFalse(cli._drain_accepts_limit(NoLimit()))
+        self.assertFalse(cli._drain_accepts_limit(KwargsOnly()))
+        with mock.patch.object(cli.inspect, "signature",
+                               side_effect=ValueError("no signature")):
+            self.assertFalse(cli._drain_accepts_limit(KeywordOnly()))
+
+    def test_loop_mode_drains_the_whole_backlog_before_sleeping(self):
+        with self.limited():
+            self.emit_n(5)
+            driver = _RecordingSqliteDriver(self.db)
+            self.record_publishes(driver)
+
+            interrupt = mock.patch.object(cli.time, "sleep",
+                                          side_effect=KeyboardInterrupt)
+            with _drivers_registered(_inline_entry_point("rec", driver),
+                                     DEMO_PUBLISHER), \
+                    interrupt as sleep, \
+                    self.assertRaises(KeyboardInterrupt):
+                self.run_cli(["relay", self.publish_source, "--backend",
+                              "rec:x", "--target", "demo://broker/topic"])
+
+        self.assertEqual([1, 2, 3, 4, 5], driver.acked)
+        self.assertEqual("commit", driver.calls[-1])
+        self.assertEqual(3, driver.calls.count("begin"))
+        self.assertEqual(1, sleep.call_count)
+        self.assertEqual([], self.drain())
+
+
+class ConcurrentRelayShareTest(RelayCliTestCase):
+    """Issue #262 (DoD 2): two relays over one row-locking outbox."""
+
+    ARGV_TAIL = ["--backend", "skl:x", "--target", "demo://broker/topic",
+                 "--once"]
+
+    def setUp(self):
+        super().setUp()
+        self.real_open_publisher = cli.open_publisher
+        self.addCleanup(setattr, cli, "open_publisher",
+                        self.real_open_publisher)
+
+    def seed_store(self, n):
+        self.emit_n(n)
+        seed = drivers_module.SqliteRepositoryDriver(self.db)
+        try:
+            rows = seed.drain_outbox()
+        finally:
+            seed.close()
+        return _SkipLockedStore(rows)
+
+    def run_two_relays(self, driver_cls, n=5):
+        """Relay A runs `--once`; inside A's FIRST publish, relay B runs a
+        complete `--once`. -> (store, [A, B] drivers,
+        {"A": (rc, out, err), "B": (rc, out, err)})."""
+        store = self.seed_store(n)
+        opened = []
+
+        def factory():
+            driver = driver_cls(store)
+            opened.append(driver)
+            return driver
+
+        argv = ["relay", self.publish_source] + self.ARGV_TAIL
+        results = {}
+        openers = []
+        real = self.real_open_publisher
+
+        def opener(target):
+            publisher = real(target)
+            who = "A" if not openers else "B"
+            openers.append(who)
+            inner = publisher.publish
+            count = [0]
+
+            def publish(envelope):
+                count[0] += 1
+                if who == "A" and count[0] == 1:
+                    results["B"] = self.run_cli(argv)
+                return inner(envelope)
+
+            publisher.publish = publish
+            return publisher
+
+        cli.open_publisher = opener
+        with _drivers_registered(_factory_entry_point("skl", factory),
+                                 DEMO_PUBLISHER), \
+                mock.patch.object(cli, "RELAY_BATCH_LIMIT", 2):
+            results["A"] = self.run_cli(argv)
+        return store, opened, results
+
+    def test_two_relays_split_a_large_backlog_into_disjoint_shares(self):
+        store, opened, results = self.run_two_relays(_SkipLockedDriver)
+
+        self.assertEqual(2, len(opened))
+        a, b = opened
+        self.assertEqual(0, results["A"][0], results["A"][2])
+        self.assertEqual(0, results["B"][0], results["B"][2])
+        # B first: before issue #262 B's share is the empty one.
+        self.assertEqual([3, 4, 5], b.acked)
+        self.assertEqual([1, 2], a.acked)
+        self.assertTrue(a.acked)
+        self.assertTrue(b.acked)
+        self.assertTrue(set(a.acked).isdisjoint(b.acked))
+        self.assertEqual({1, 2, 3, 4, 5}, set(a.acked) | set(b.acked))
+        self.assertEqual({1, 2, 3, 4, 5}, store.delivered)
+        self.assertEqual({}, store.locks)
+        self.assertIn("acked 2", results["A"][1])
+        self.assertIn("acked 3", results["B"][1])
+
+    def test_without_a_limit_the_first_relay_takes_the_whole_backlog(self):
+        store, opened, results = self.run_two_relays(_NoLimitSkipLockedDriver)
+
+        a, b = opened
+        self.assertEqual(0, results["A"][0], results["A"][2])
+        self.assertEqual(0, results["B"][0], results["B"][2])
+        self.assertEqual([], b.acked)
+        self.assertIn("acked 0", results["B"][1])
+        self.assertEqual([1, 2, 3, 4, 5], a.acked)
+        self.assertIn("acked 5", results["A"][1])
+        self.assertEqual({1, 2, 3, 4, 5}, store.delivered)
+
+
+class RelayBatchBoundDocTest(unittest.TestCase):
+    """Issue #262: every document that states the relay batch bound states
+    the value `cli.RELAY_BATCH_LIMIT` actually has."""
+
+    def read(self, *parts):
+        with open(os.path.join(REPO, *parts), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_once_help_states_the_batch_bound(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            cli.main(["relay", "--help"])
+
+        self.assertRegex(out.getvalue(),
+                         r"at\s+most\s+%d\s+rows" % cli.RELAY_BATCH_LIMIT)
+
+    def test_cli_surface_once_row_states_the_batch_bound(self):
+        text = self.read("plugins", "lnpl", "skills", "lnpl-authoring",
+                         "cli-surface.md")
+
+        rows = [line for line in text.splitlines()
+                if line.startswith("| `--once` |")]
+
+        self.assertEqual(1, len(rows))
+        self.assertIn("최대 %d행" % cli.RELAY_BATCH_LIMIT, rows[0])
+
+    def test_backends_doc_states_the_batch_bound(self):
+        text = self.read("docs", "backends.md")
+
+        lines = [line for line in text.splitlines()
+                 if "배치 크기 상한(issue #262)" in line]
+
+        self.assertNotIn("배치 크기에 상한이 없다", text)
+        self.assertEqual(1, len(lines))
+        self.assertIn("최대 %d행" % cli.RELAY_BATCH_LIMIT, lines[0])
 
 
 if __name__ == "__main__":

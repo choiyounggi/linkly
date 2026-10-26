@@ -14,10 +14,10 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | 게이트 | 결정론/AI | 트리거 | 현재 상태 | 무엇을 잡는가 |
 |--------|-----------|--------|-----------|----------------|
 | 테스트 스위트(matrix) | 결정론 | `ci.yml` — `pull_request`, `push: main` | blocking | `impl/tests/` 회귀 |
-| RFC lint(`rfc_lint.py`) | 결정론 | `ci.yml` | blocking | RFC-0007 §2.1·§3·§7(상태·번호·템플릿 섹션) |
+| RFC lint(`rfc_lint.py`) | 결정론 | `ci.yml` | blocking | RFC-0007 §3 번호·제목, §2.1 Status 어휘, §7 템플릿 섹션(이름·순서), §2.1 CHANGELOG 인용(인용한 RFC가 rfcs/에 있고 Accepted 또는 Superseded — issue #249), §2.2 `Updated-by:` 역링크(Accepted RFC의 `Updates:` 대상마다 — issue #263) |
 | 참조 drift(`gen_plugin_references.py --check`) | 결정론 | `ci.yml` | blocking | 플러그인 스킬 참조 문서가 컴파일러 상수에서 재생성한 것과 다름 |
 | 버전 동기(`check_version_sync.py`) | 결정론 | `ci.yml` | blocking | 루트 `pyproject.toml`과 플러그인 manifest 버전 드리프트 |
-| ruff | 결정론 | `ci.yml`(t1) | advisory → blocking 예정 | 파이썬 린트 위반 |
+| ruff | 결정론 | `ci.yml`(t1) | blocking + required | 파이썬 린트 위반(`impl/lnpl`, `scripts`, `impl/tests`) |
 | 산문 스니펫 컴파일(`check_doc_snippets.py`) | 결정론 | `ci.yml`(t2) | advisory → blocking 예정 | 문서에 박힌 `.lnpl` 스니펫이 실제로 컴파일되는지 |
 | `rfc-conformance` | AI | `_ai-gate.yml`(t4) | advisory | RFC가 말하는 것과 코드가 하는 것의 불일치 |
 | `golden-approval` | AI | `_ai-gate.yml`(t4) | advisory | 골든 시나리오 변경의 타당성 |
@@ -70,14 +70,23 @@ exit 2(형식 오류)가 되어 "게이트 정의 결함"과 "게이트가 실�
 `scripts/ai_gate_verdict.py`가 같은 스키마·같은 exit code로 그 파일을 검사한다.
 generic-http의 실패(비-2xx 응답, 잘린 출력, 비었거나 JSON이 아닌 content)는 Claude Code
 액션의 실패와 같은 **게이트 실행 실패**(`unavailable`) 갈래로 떨어진다.
+generic-http에서는 스키마를 어기거나 다른 gate 값을 단 JSON(판정 스크립트 exit 2)도 같은
+unavailable 갈래로 떨어진다 — response_format json_object는 JSON임만 보장하고 스키마 준수는
+보장하지 않기 때문이다. 이때 화면의 경고는 일반 실행 실패 문구("generic-http 러너 실패 또는 빈
+출력")로 보이고, 실제 원인(스키마 위반 줄)은 판정 스텝 로그에 있다. 모델의 형식 실수는 결정적일
+수 있어 재실행으로 사라지지 않는다. claude-code 러너에서는 exit 2가 여전히 blocking과 무관하게
+잡을 실패시킨다.
 
 ## advisory → blocking 승격 절차
 
 AI 게이트 4종은 전부 **advisory**로 시작한다(`_ai-gate.yml`의 `blocking` 입력
 기본값 `false`). advisory는 **exit 1(verdict=fail 또는 blocker finding)과
 게이트 실행 실패에만** 적용된다 — PR 코멘트로 결과는 남지만(또는 실행 실패
-로그만 남고) 머지를 막지 않는다. exit 2(형식 오류)·exit 3(공허한 통과)는
-`blocking` 값과 무관하게 **항상** 잡을 실패시킨다. "코드가 나쁨"(1)과
+로그만 남고) 머지를 막지 않는다. exit 3(공허한 통과)은 두 러너 모두에서,
+exit 2(형식 오류)는 claude-code 러너에서 `blocking` 값과 무관하게 **항상** 잡을
+실패시킨다. 알려진 예외는 generic-http 러너의 exit 2다 — 위에서 적은 대로
+`unavailable` 갈래로 떨어져 `blocking`이 false인 동안은 경고만 남기고, 실제
+원인(스키마 위반 줄)은 판정 스텝 로그에서 봐야 한다. "코드가 나쁨"(1)과
 "게이트 자체가 고장남"(2·3)을 advisory가 같이 삼키면, 고장난 게이트가 오탐
 0건의 가장 깨끗한 게이트로 보여 아래 승격 절차 자체를 속인다.
 
@@ -122,7 +131,7 @@ approvals를 걸지 않는가") AI 게이트 하나가 두 번째 리뷰어 자�
 2. 게이트 실행 실패 — "판정 반영"의 `unavailable` 갈래(Claude 스텝 실패 또는 빈 출력).
 3. 변경 파일 0건 — 삭제만 있는 PR이거나 빈 diff. "변경 파일 없음 처리"가 실패시킨다
    (advisory이면 경고만). 삭제만 있는 PR은 아래 `skip-ai-gate` 라벨로 우회한다.
-4. 판정 스크립트 exit 2(형식 오류)·exit 3(공허한 통과) — `blocking`과 무관하게 항상 실패.
+4. 판정 스크립트 exit 3(공허한 통과)은 `blocking`과 무관하게 항상 실패. exit 2(형식 오류)는 claude-code 러너에서 항상 실패, generic-http 러너에서는 2번의 `unavailable` 갈래.
 
 탈출구는 `skip-ai-gate` 라벨이다(아래 절). 이 예외는 기준을 채운 뒤 이 절을
 실측 수용률로 갱신해 닫는다.
@@ -220,9 +229,15 @@ gh variable set AI_GATE_HTTP_API_STYLE --body "classic"   # 선택
     temperature를 HTTP 400으로 거부한다.
 - 변수는 있는데 시크릿이 없으면, Anthropic 경우와 같은 `시크릿 부재 처리` 규칙으로
   skip한다(advisory: `::warning::`을 남기고 초록, blocking: 빨강).
+- PR 텍스트: 러너는 네 generic-http 게이트(rfc-conformance·golden-approval·test-quality·
+  prose-factcheck) 모두에 PR 제목·본문과 merge-base..head 커밋 메시지를 user 메시지 끝의
+  "--- PR text" 구획으로 함께 보낸다. 워크플로는 제목·본문을 GITHUB_EVENT_PATH 이벤트 파일에서
+  jq로 읽는다. 본문이 비면 (empty), 커밋이 없으면 (none)이 들어간다.
 - 크기 예산: diff는 200000바이트에서 잘리고 `[diff truncated at 200000 bytes]` 줄이 눈에
-  보이게 붙는다. 대상 모델의 컨텍스트 창은 128k 토큰 이상이어야 한다. 창이 더 작으면
-  `error: http 400`으로 실패하고 `unavailable`로 보인다.
+  보이게 붙는다. PR 텍스트는 65536바이트에서 잘리고 `[pr text truncated at 65536 bytes]` 줄이
+  붙는다. 두 상한은 128k 토큰 창을 기준으로 잡았지만, 바이트당 토큰 수는 모델과 언어마다
+  달라서 두 상한이 다 찬 요청은 128k 창도 넘을 수 있다. 창을 넘으면 `error: http 400`으로
+  실패하고 `unavailable`로 보인다.
 - 키 노출:
   - 평문 `http://` base URL은 키를 암호화 없이 보낸다. 엔드포인트가 신뢰된 사설망에
     있지 않다면 `https://`를 쓴다. 리다이렉트는 따라가지 않으므로(3xx는 이름 붙은

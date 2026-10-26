@@ -29,10 +29,10 @@ from lnpl.lower import LowerError, lower
 from lnpl.parser import ParseError, parse
 from lnpl.repo_policy import default_rows, row_key
 
+from tests.fixtures import ALT_GUARD_APPROVE, PRICE_INVENTORY
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
-
-from tests.fixtures import ALT_GUARD_APPROVE, PRICE_INVENTORY
 
 PRODUCT_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
 PAYMENT_ID = "9e3f1b7a-2b3c-4d5e-8f9a-0b1c2d3e4f5a"

@@ -7,7 +7,6 @@
 - Updated-by: RFC-0025 (§G12.2), RFC-0025 (§G12.4), RFC-0025 (§G12.5)
 - Updated-by: RFC-0027 (§G12.2)
 - Updated-by: RFC-0030 (§G12.2), RFC-0030 (§G12.5)
-- Updated-by: RFC-0048 (§G12.2)
 - Updated-by: RFC-0052 (§Reference-level Specification/G12.2, §Reference-level Specification/G12.5, §Reference-level Specification/G12.6)
 
 RFC-0007 §2.2 규칙 5(연쇄 갱신)에 따라 대상 RFC와 **직전 갱신 RFC를 모두** 지목한다.
@@ -117,6 +116,9 @@ RFC-0008이 갱신한 `when`/`until`/`repeat`의 **반복·종료 의미는 그�
 
 #### G12.2 무엇이 바인딩되는가
 
+> 갱신됨: RFC-0025
+> 갱신됨: RFC-0027
+> 갱신됨: RFC-0030
 > 갱신됨: RFC-0052
 
 이 실행에서 `operation`이 `read` 또는 `query`인 `RepositoryCall`이 **성공적으로 완료된**
@@ -162,6 +164,8 @@ payload로 해석되지 않는다. 분리는 우선순위 서열이 아니라 **
 
 #### G12.5 컴파일 시점 거부
 
+> 갱신됨: RFC-0025
+> 갱신됨: RFC-0030
 > 갱신됨: RFC-0052
 
 한정 참조는 **문서를 읽을 수 있는 시점**(lowering)에 검사되며, 아래 셋 중 하나라도 어긋나면

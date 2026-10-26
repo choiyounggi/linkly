@@ -4,7 +4,9 @@
 
 - Status: **Accepted** (RFC-0025, 2026-08-18)
 - Updates: RFC-0012 §G12.2, RFC-0012 §G12.4, RFC-0012 §G12.5, RFC-0015 §1
+- Updated-by: RFC-0028 (§Reference-level Specification/2. 집계 표현식 문법)
 - Updated-by: RFC-0038 (§Reference-level Specification/1)
+- Updated-by: RFC-0045 (§Reference-level Specification/2. 집계 표현식 문법, §Reference-level Specification/3. 정적 거부)
 - Updated-by: RFC-0059 (§Reference-level Specification/5)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. G12.2가 정의하는 실행 스코프
@@ -99,7 +101,7 @@ RFC-0015 §3과 같은 이유, 평가기가 없다). 그리고 `list` 없이 `su
 
 ### 1. `VERB_LEXICON`과 표면 문법 (D1)
 
-> 갱신됨: RFC-0048
+> 갱신됨: RFC-0038
 
 `impl/lnpl/lower.py`의 `VERB_LEXICON`에 18번째 항목을 더한다:
 
@@ -119,6 +121,9 @@ RFC-0015 §3과 같은 이유, 평가기가 없다). 그리고 `list` 없이 `su
 집계 표현식뿐이다(§2).
 
 ### 2. 집계 표현식 문법 — RFC-0015 §1 갱신 (치환 후 최종 텍스트) (D3)
+
+> 갱신됨: RFC-0028
+> 갱신됨: RFC-0045
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0015 §1의 `AssignStep` 생산 규칙에 대한
 **치환 후 최종 텍스트**다. 이 절의 다른 생산 규칙(`Condition`/`Value`/`Operand`/
@@ -156,7 +161,7 @@ phrase 라인의 토큰화(`Line.tokens = body.split()`)는 바뀌지 않는다.
 
 ### 3. 정적 거부 (컴파일 에러, rc=2) — RFC-0015 §3 확장과 같은 층위
 
-> 갱신됨: RFC-0048
+> 갱신됨: RFC-0045
 
 `lower`에서 판정한다(문서만으로 결정 가능한 것을 런타임까지 미루지 않는다는
 RFC-0015 §3의 원칙 그대로).
@@ -197,7 +202,6 @@ RFC-0023 §3의 "가드 아래 있는 것은 이미 조건부" 판정과 같은 
 
 ### 5. 실행 스코프 — RFC-0012 §G12.2 갱신 (치환 후 최종 텍스트) (D2)
 
-> 갱신됨: RFC-0048
 > 갱신됨: RFC-0059
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0012 §G12.2의 **치환 후 최종 텍스트**다.

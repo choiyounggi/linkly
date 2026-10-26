@@ -113,6 +113,8 @@ Money·DateTime 같은 비정수 필드는 비교할 수 없다(평가기 없음
 
 ### 1. Full Grammar (RFC-0002 §Full grammar / RFC-0008 §1 갱신)
 
+> 갱신됨: RFC-0025
+> 갱신됨: RFC-0028
 > 갱신됨: RFC-0050
 
 ```

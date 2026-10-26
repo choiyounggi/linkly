@@ -203,6 +203,20 @@ class ConsumePathRefusalTest(_Base):
         self.assertEqual("cloudevents-invalid", body["code"])
         self.assert_nothing_ran()
 
+    def test_error_an_over_long_cloudevents_id_is_400_before_the_501_check(self):
+        """Issue #261: the id bound runs before the route opens a driver,
+        so it precedes E8 (501), mirroring M23 before M22."""
+        opened_before = len(OPENED)
+        status, headers, body = _post(
+            self.app, EVENTS_PATH_CREATE,
+            _envelope(event_id="a" * 256, event_type="OrderCreated",
+                      data={"id": "ord-261", "amount": 1}))
+        self.assertEqual(400, status)
+        self.assertEqual("application/problem+json", headers["Content-Type"])
+        self.assertEqual("cloudevents-id-too-long", body["code"])
+        self.assertEqual(opened_before, len(OPENED))
+        self.assert_nothing_ran()
+
 
 class LegacyAndFakeBoundaryTest(_Base):
 

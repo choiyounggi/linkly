@@ -11,6 +11,7 @@ JSON 아님, 잘림, 빈 content …)마다 이름 붙은 `error: ...` 한 줄�
 쓰지 않는다. 빈 diff·빈 프롬프트·키 부재는 요청 전에 멈춘다. 키는 어떤 출력에도 남지 않는다.
 """
 import ast
+import importlib.util
 import json
 import os
 import subprocess
@@ -33,6 +34,11 @@ DIFF = (b"diff --git a/rfcs/0001-example.md b/rfcs/0001-example.md\n"
 VERDICT = {"gate": "rfc-conformance", "verdict": "pass",
            "examined": {"files": ["rfcs/0001-example.md"], "note": "synthetic fixture"},
            "findings": []}
+PR_SEP = "\n\n--- PR text (title, body, commit messages merge-base..head) ---\n\n"
+WITH_PR = "the gate instructions, the unified diff, and the PR text (title, body, commit messages)."
+WITHOUT_PR = "the gate instructions, and the unified diff."
+PR_TEXT = (b"PR title: Fix parser\n\nPR body:\nRemoves legacy_parse()\n\n"
+           b"Commit messages (merge-base..head):\nfirst change\n")
 
 
 def chat_body(content, finish_reason="stop", **message_extra):
@@ -91,17 +97,20 @@ class _RunnerTestCase(unittest.TestCase):
         host, port = server.server_address
         return "http://%s:%d/v1" % (host, port), handler.calls
 
-    def files(self, prompt=PROMPT, diff=DIFF):
+    def files(self, prompt=PROMPT, diff=DIFF, pr=None):
         base = os.path.join(REPO, ".claude", "tmp")
         os.makedirs(base, exist_ok=True)
         box = tempfile.TemporaryDirectory(prefix="lnpl-t252-", dir=base)
         self.addCleanup(box.cleanup)
         paths = {name: os.path.join(box.name, name)
-                 for name in ("prompt.txt", "gate.diff", "verdict.json")}
+                 for name in ("prompt.txt", "gate.diff", "verdict.json", "pr.txt")}
         with open(paths["prompt.txt"], "w", encoding="utf-8") as fh:
             fh.write(prompt)
         with open(paths["gate.diff"], "wb") as fh:
             fh.write(diff)
+        if pr is not None:
+            with open(paths["pr.txt"], "wb") as fh:
+                fh.write(pr)
         return paths
 
     def argv(self, base_url, paths, *extra, model="fake-model"):
@@ -383,6 +392,91 @@ class InputBoundaryTest(_RunnerTestCase):
         paths = self.files()
         self.assert_failed(self.run_runner(self.argv("", paths)), "error: --base-url is empty",
                            paths)
+
+
+class PrTextTest(_RunnerTestCase):
+    """issue #260 항목 2: `--pr-text-file`은 PR 제목·본문·커밋 메시지를 diff 뒤에 붙인다."""
+
+    def system_content(self, calls):
+        return calls[0]["body"]["messages"][0]["content"]
+
+    def test_pr_text_is_appended_after_the_diff(self):
+        url, calls = self.start([ok_reply()])
+        paths = self.files(pr=PR_TEXT)
+        proc = self.run_runner(self.argv(url, paths, "--pr-text-file", paths["pr.txt"]))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(calls), 1)
+        user = self.user_content(calls)
+        self.assertIn(PR_SEP, user)
+        self.assertLess(user.index("--- unified diff"), user.index(PR_SEP))
+        self.assertTrue(user.endswith(PR_SEP + PR_TEXT.decode("utf-8")), user[-300:])
+        system = self.system_content(calls)
+        self.assertIn(WITH_PR, system)
+        self.assertNotIn(WITHOUT_PR, system)
+
+    def test_without_the_flag_the_request_has_no_pr_section(self):
+        url, calls = self.start([ok_reply()])
+        paths = self.files()
+        proc = self.run_runner(self.argv(url, paths))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        user = self.user_content(calls)
+        self.assertNotIn("--- PR text", user)
+        self.assertTrue(user.endswith(DIFF.decode("utf-8")), user[-300:])
+        system = self.system_content(calls)
+        self.assertIn(WITHOUT_PR, system)
+        self.assertNotIn(WITH_PR, system)
+
+    def test_empty_pr_text_file_still_sends_the_request(self):
+        url, calls = self.start([ok_reply()])
+        paths = self.files(pr=b"")
+        proc = self.run_runner(self.argv(url, paths, "--pr-text-file", paths["pr.txt"]))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("error:", proc.stderr)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(self.user_content(calls).endswith(PR_SEP + "(empty)"))
+
+    def test_whitespace_only_pr_text_counts_as_empty(self):
+        url, calls = self.start([ok_reply()])
+        paths = self.files(pr=b" \n\t\n")
+        proc = self.run_runner(self.argv(url, paths, "--pr-text-file", paths["pr.txt"]))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(self.user_content(calls).endswith(PR_SEP + "(empty)"))
+
+    def test_missing_pr_text_file_is_a_named_error(self):
+        url, calls = self.start([ok_reply()])
+        paths = self.files()
+        proc = self.run_runner(self.argv(url, paths, "--pr-text-file", paths["pr.txt"]))
+        self.assert_failed(proc, "error: cannot read pr text: ", paths)
+        self.assertEqual(calls, [])
+
+    def test_pr_text_exactly_at_the_cap_is_not_truncated(self):
+        url, calls = self.start([ok_reply()])
+        paths = self.files(pr=b"y" * 65536)
+        proc = self.run_runner(self.argv(url, paths, "--pr-text-file", paths["pr.txt"]))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        user = self.user_content(calls)
+        self.assertNotIn("[pr text truncated", user)
+        self.assertTrue(user.endswith("y" * 65536))
+
+    def test_pr_text_one_byte_over_the_cap_is_truncated_with_a_marker(self):
+        url, calls = self.start([ok_reply()])
+        paths = self.files(pr=b"y" * 65537)
+        proc = self.run_runner(self.argv(url, paths, "--pr-text-file", paths["pr.txt"]))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        user = self.user_content(calls)
+        self.assertIn("[pr text truncated at 65536 bytes]", user)
+        self.assertNotIn("y" * 65537, user)
+        self.assertIn("y" * 65536, user)
+
+    def test_constants_match_the_contract(self):
+        spec = importlib.util.spec_from_file_location("ai_gate_http_runner", SCRIPT_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertIn(mod.SYSTEM_MATERIAL, mod.SYSTEM)
+        self.assertEqual(mod.SYSTEM_MATERIAL, WITHOUT_PR)
+        self.assertEqual(mod.SYSTEM_MATERIAL_WITH_PR, WITH_PR)
+        self.assertEqual(mod.PR_TEXT_SEPARATOR, PR_SEP)
+        self.assertEqual(mod.MAX_PR_TEXT_BYTES, 65536)
 
 
 class StdlibOnlyTest(unittest.TestCase):

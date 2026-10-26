@@ -27,6 +27,8 @@ on:
           이어진다(required status check 후보). false(기본)면 advisory —
           경고만 남기고 잡은 초록불로 넘어간다. exit 2·3(게이트 정의 자체의
           고장)은 이 입력과 무관하게 항상 잡을 실패시킨다.
+          예외: generic-http 러너의 exit 2(모델 출력의 스키마 위반·gate
+          불일치)는 "게이트 실행 실패"로 다룬다(docs/CI-GATES.md).
         required: false
         type: boolean
         default: false
@@ -362,7 +364,7 @@ jobs:
         run: python3 -m pip install --upgrade pip && pip install .
 
       # generic-http는 두 번째 러너다(issue #252). 위에서 준비한 3.13에서
-      # scripts/ai_gate_http_runner.py를 돌린다. 프롬프트와 diff는 체크아웃 밖의
+      # scripts/ai_gate_http_runner.py를 돌린다. 프롬프트·diff·PR 텍스트(issue #260)는 체크아웃 밖의
       # `$RUNNER_TEMP` 파일로 넘기고, 키는 `env:`로만 넘긴다. 이 잡에는 같은
       # 레포의 PR만 닿으므로(포크 차단), PR 쪽 스크립트 사본을 키와 함께 돌려도
       # 이 워크플로가 이미 가진 것 이상의 노출은 없다.
@@ -377,6 +379,11 @@ jobs:
           MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
           printf '%s\n' "$PROMPT_TEXT" > "$RUNNER_TEMP/ai-gate-prompt.txt"
           git diff --diff-filter=d "$MERGE_BASE" "$HEAD_SHA" > "$RUNNER_TEMP/ai-gate.diff"
+          COMMITS="$(git log --format=%B "$MERGE_BASE".."$HEAD_SHA")"
+          {
+            jq -r '"PR title: " + (.pull_request.title // ""), "", "PR body:", ((.pull_request.body // "") | if . == "" then "(empty)" else . end)' "$GITHUB_EVENT_PATH"
+            printf '%s\n' "" "Commit messages (merge-base..head):" "${COMMITS:-(none)}"
+          } > "$RUNNER_TEMP/ai-gate-pr.txt"
           printf 'prompt: %s bytes, diff: %s bytes\n' "$(wc -c < "$RUNNER_TEMP/ai-gate-prompt.txt")" "$(wc -c < "$RUNNER_TEMP/ai-gate.diff")"
 
       - name: generic-http 게이트 실행
@@ -397,6 +404,7 @@ jobs:
             --schema schemas/ai-gate-verdict.schema.json \
             --prompt-file "$RUNNER_TEMP/ai-gate-prompt.txt" \
             --diff-file "$RUNNER_TEMP/ai-gate.diff" \
+            --pr-text-file "$RUNNER_TEMP/ai-gate-pr.txt" \
             --out "$RUNNER_TEMP/ai-gate-verdict.json"
 
       - name: 판정
@@ -438,6 +446,10 @@ jobs:
           python3 scripts/ai_gate_verdict.py "${ARGS[@]}"
           code=$?
           set -e
+          if [ "$RUNNER" = "generic-http" ] && [ "$code" = "2" ]; then
+            echo "모델 출력이 판정 스키마를 어겼다(exit 2) — generic-http 러너에서는 게이트 실행 실패(code=unavailable)로 다룬다."
+            code=unavailable
+          fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
       - name: 판정 반영
@@ -447,6 +459,8 @@ jobs:
         # 실패시킨다. 그렇지 않으면 스키마 위반이나 공허한 통과로 고장난
         # 게이트가 advisory 기간 동안 가장 깨끗한 게이트로 보여, 그 고장 자체가
         # `docs/CI-GATES.md`의 승격 절차(수용률 80%)를 통과시켜 버린다.
+        # 예외: generic-http 러너의 exit 2는 `판정` 스텝이 code=unavailable로 바꿔
+        # 넘긴다 — 모델의 형식 비준수이지 게이트 정의의 고장이 아니다(issue #260).
         if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
         env:
           VERDICT_CODE: ${{ steps.verdict.outputs.code }}

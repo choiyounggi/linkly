@@ -639,7 +639,7 @@ class TestSkipDivergenceIsDetected(unittest.TestCase):
         a = _observation(["find product"], self.SKIP)
         b = _observation(["find product"], [])
         _ok, report = compare_observations(a, b)
-        line = next(l for l in report if "FAIL 1/4" in l)
+        line = next(report_line for report_line in report if "FAIL 1/4" in report_line)
         self.assertIn("create order", line,
                       "the report must name the skip that differs, not just "
                       "say the class failed")

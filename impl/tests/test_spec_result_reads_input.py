@@ -154,8 +154,8 @@ class TestBlocks(unittest.TestCase):
                                     ("result quantity == 1",)),))
         recs = records(src)
         self.assertEqual(len(recs), 1)
-        last = [i for i, l in enumerate(src.splitlines(), 1)
-                if l.strip() == "result quantity == 1"][-1]
+        last = [i for i, line in enumerate(src.splitlines(), 1)
+                if line.strip() == "result quantity == 1"][-1]
         self.assertEqual(recs[0].line, last)
 
 

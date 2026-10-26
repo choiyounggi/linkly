@@ -4,6 +4,7 @@
 
 - Status: **Accepted** (RFC-0014, 2026-08-06)
 - Updates: RFC-0008 §Reference-level Specification/2. Guard Runtime Semantics
+- Updated-by: RFC-0022 (§2.5·§2.6)
 - Updated-by: RFC-0027 (§Reference-level Specification/2.4 스킵 레코드), RFC-0028 (§Reference-level Specification/2), RFC-0046 (§Examples)
 - Updated-by: RFC-0050 (§Reference-level Specification/2.4 스킵 레코드)
 - Updated-by: RFC-0056 (§Open Questions/1)
@@ -91,6 +92,7 @@ _UNTIL_ROUND_CAP = 16
 
 #### 2.1 `when` 모드
 
+> 갱신됨: RFC-0028
 > 갱신됨: RFC-0060
 
 조건을 **1회 평가**한다. 참이면 피가드 항목을 실행하고, 거짓이면 건너뛴다.
@@ -126,6 +128,8 @@ _UNTIL_ROUND_CAP = 16
 
 #### 2.4 스킵 레코드 (신설)
 
+> 갱신됨: RFC-0027
+> 갱신됨: RFC-0028
 > 갱신됨: RFC-0050
 > 갱신됨: RFC-0060
 
@@ -151,6 +155,9 @@ RFC-0004의 요구가 shape을 결정한다.
 
 #### 2.5 진단과 종료 코드 (신설)
 
+> 갱신됨: RFC-0022
+> 갱신됨: RFC-0028
+
 스킵 레코드마다 진단 하나를 낸다: 코드 `guard-skipped-steps`, severity
 `warning`. 진단은 기존 진단 채널을 그대로 쓴다 — 새 레코드 타입·누산기·포매터를
 만들지 않는다.
@@ -160,6 +167,9 @@ RFC-0004의 요구가 shape을 결정한다.
 승격된다. 이는 기존 `--strict` 게이트의 재사용이며 새 종료 코드 규약이 아니다.
 
 #### 2.6 모드 A/B 동등성 (신설)
+
+> 갱신됨: RFC-0022
+> 갱신됨: RFC-0028
 
 두 모드는 스킵을 **같게** 관측해야 한다. 비교는 `guard`를 제외하고 스텝 단위로
 편 투영 위에서 이루어진다 — `{mode, condition, step, rounds}`. 모드 A는 레코드

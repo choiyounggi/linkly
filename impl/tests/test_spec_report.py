@@ -49,7 +49,7 @@ class TestFailureReasonLine(unittest.TestCase):
         doc, manifest = build(src)
         _passed, failed, lines = run_manifest(manifest, doc)
         self.assertGreater(failed, 0)
-        reason_lines = [l for l in lines if "reason: step=" in l]
+        reason_lines = [line for line in lines if "reason: step=" in line]
         self.assertEqual(len(reason_lines), 1, lines)
         self.assertIn("find account", reason_lines[0])
         self.assertIn("no row", reason_lines[0])
@@ -58,7 +58,7 @@ class TestFailureReasonLine(unittest.TestCase):
         doc, manifest = build()
         _passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 0, lines)
-        self.assertFalse([l for l in lines if "reason:" in l], lines)
+        self.assertFalse([line for line in lines if "reason:" in line], lines)
 
     def test_a_failing_expectation_on_a_completed_run_has_no_reason_line(self):
         # The run itself succeeded — there is no failed_step to report, and a
@@ -66,12 +66,12 @@ class TestFailureReasonLine(unittest.TestCase):
         doc, manifest = build(SRC.replace("steps 2", "steps 99"))
         _passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 1)
-        self.assertFalse([l for l in lines if "reason:" in l], lines)
+        self.assertFalse([line for line in lines if "reason:" in line], lines)
 
     def test_the_expectation_detail_still_carries_got_vs_want(self):
         doc, manifest = build(SRC.replace("steps 2", "steps 99"))
         _passed, _failed, lines = run_manifest(manifest, doc)
-        self.assertTrue(any("steps=2 want=99" in l for l in lines), lines)
+        self.assertTrue(any("steps=2 want=99" in line for line in lines), lines)
 
     def test_the_run_error_path_keeps_its_shape(self):
         # A RunError (not a failed run) already reported its reason; that
@@ -80,9 +80,9 @@ class TestFailureReasonLine(unittest.TestCase):
         manifest["cases"][0]["workflow"] = "wf.nonexistent"
         _passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 1)
-        self.assertTrue(any(l.startswith("FAIL") and "run error:" in l
-                            for l in lines), lines)
-        self.assertFalse([l for l in lines if "reason: step=" in l], lines)
+        self.assertTrue(any(line.startswith("FAIL") and "run error:" in line
+                            for line in lines), lines)
+        self.assertFalse([line for line in lines if "reason: step=" in line], lines)
 
 
 if __name__ == "__main__":

@@ -18,15 +18,15 @@ from lnpl.lexer import LexError, tokenize
 class TestLineIndent(unittest.TestCase):
     def test_indent_records_the_leading_space_count(self):
         lines = tokenize("workflow W\n    load user\n        deep step\n")
-        self.assertEqual([l.indent for l in lines], [0, 4, 8])
+        self.assertEqual([line.indent for line in lines], [0, 4, 8])
 
     def test_tokens_are_unchanged_by_indentation(self):
         """RFC-0002 §Block structure: the token stream stays layout-independent."""
         flat = tokenize("entity User\nfield\nid UUID\n")
         deep = tokenize("entity User\n        field\n                id UUID\n")
-        self.assertEqual([l.tokens for l in flat], [l.tokens for l in deep])
-        self.assertEqual([l.indent for l in flat], [0, 0, 0])
-        self.assertEqual([l.indent for l in deep], [0, 8, 16])
+        self.assertEqual([line.tokens for line in flat], [line.tokens for line in deep])
+        self.assertEqual([line.indent for line in flat], [0, 0, 0])
+        self.assertEqual([line.indent for line in deep], [0, 8, 16])
 
     def test_a_trailing_comment_does_not_change_the_indent(self):
         lines = tokenize("    load user   # why\n")

@@ -73,9 +73,9 @@ class TestCompileTimeEnforcementDiagnosticsCarryLine(unittest.TestCase):
     def test_both_render_as_line_n_in_the_compile_output(self):
         module = _compile_shorten()
         rendered = format_lines(module.diagnostics)
-        enforcement = [l for l in rendered
-                       if "declared-not-enforced" in l
-                       or "declared-measured-only" in l]
+        enforcement = [line for line in rendered
+                       if "declared-not-enforced" in line
+                       or "declared-measured-only" in line]
         self.assertEqual(len(enforcement), 2)
         for line in enforcement:
             self.assertIn("(line ", line)
@@ -97,7 +97,7 @@ class TestRuntimeAuthorizationDiagnosticCarriesLine(unittest.TestCase):
     def test_it_renders_as_line_n_in_the_run_output(self):
         interp, _result, _doc = _run_shorten()
         rendered = format_lines(interp.diagnostics)
-        auth_lines = [l for l in rendered if "authorization-not-verified" in l]
+        auth_lines = [line for line in rendered if "authorization-not-verified" in line]
         self.assertEqual(len(auth_lines), 1)
         self.assertIn("(line 53)", auth_lines[0])
 
@@ -147,7 +147,7 @@ class TestGuardSkippedStepsCarriesLine(unittest.TestCase):
         guard_node = next(n for n in doc["nodes"]
                           if n["id"] == "wf.checkout.guard.1")
         rendered = format_lines(interp.diagnostics)
-        skip_lines = [l for l in rendered if "guard-skipped-steps" in l]
+        skip_lines = [line for line in rendered if "guard-skipped-steps" in line]
         self.assertEqual(len(skip_lines), 1)
         self.assertIn("(line %d)" % guard_node["line"], skip_lines[0])
 
@@ -173,7 +173,7 @@ class TestGuardSkippedStepsCarriesLine(unittest.TestCase):
         self.assertEqual(len(by_code), 1)
         self.assertIsNone(by_code[0].line)
         rendered = format_lines(interp.diagnostics)
-        skip_lines = [l for l in rendered if "guard-skipped-steps" in l]
+        skip_lines = [line for line in rendered if "guard-skipped-steps" in line]
         self.assertEqual(len(skip_lines), 1)
         self.assertNotIn("(line", skip_lines[0])
 
@@ -199,7 +199,7 @@ class TestMissingLineFallsBackToTheOldFormat(unittest.TestCase):
         self.assertIsNone(d.line)
 
         rendered = format_lines(interp2.diagnostics)
-        auth_lines = [l for l in rendered if "authorization-not-verified" in l]
+        auth_lines = [line for line in rendered if "authorization-not-verified" in line]
         self.assertEqual(len(auth_lines), 1)
         self.assertNotIn("(line", auth_lines[0])
         self.assertIn("[wf.shorten.step.2.authz]", auth_lines[0])

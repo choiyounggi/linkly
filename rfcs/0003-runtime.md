@@ -73,6 +73,10 @@ workflow의 단계, policy·security·performance 제약. 스레드를 만들거
 
 ### Execution Model
 
+> 갱신됨: RFC-0027 (`NetworkCall` 행)
+> 갱신됨: RFC-0029 (Clock 계약 신설)
+> 갱신됨: RFC-0032 (Effect 표 `Transaction`·`EventEmit` 행)
+> 갱신됨: RFC-0041 (Concurrency 문단)
 > 갱신됨: RFC-0056 (Effect 표 `Rejection` 행 신설)
 > 갱신됨: RFC-0062
 

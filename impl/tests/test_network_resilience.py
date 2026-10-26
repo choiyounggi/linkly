@@ -8,11 +8,11 @@ makes each scenario clearest and fastest.
 """
 
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 from lnpl.drivers import DriverError, FakeNetworkDriver, HttpNetworkDriver
 
-from tests.test_network_driver import _ServerTestCase, _make_handler
+from tests.test_network_driver import _ServerTestCase
 
 
 class _FailNTimesHandler(BaseHTTPRequestHandler):

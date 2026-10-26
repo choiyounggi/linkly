@@ -86,14 +86,14 @@ class TestExecution(unittest.TestCase):
         doc, manifest = build(SRC.replace("steps 3", "steps 99"))
         _passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 1)
-        self.assertTrue(any("steps=3 want=99" in l for l in lines))
+        self.assertTrue(any("steps=3 want=99" in line for line in lines))
 
     def test_unsupported_expectation_fails_rather_than_passing_silently(self):
         doc, manifest = build(SRC.replace("            cache written",
                                           "            vibes good"))
         _passed, failed, lines = run_manifest(manifest, doc)
         self.assertEqual(failed, 1)
-        self.assertTrue(any("unsupported expectation" in l for l in lines))
+        self.assertTrue(any("unsupported expectation" in line for line in lines))
 
     def test_empty_repository_fixture_drives_a_failure_expectation(self):
         src = SRC.replace("            valid account", "            empty repository")
@@ -791,7 +791,7 @@ class TestNoOpStepFailsTheSpec(unittest.TestCase):
     def test_the_failure_names_the_offending_step(self):
         _passed, _failed, lines = run_shop_src(SHOP_WITH_NOOP, ["valid product"],
                                                ["effects complete"])
-        self.assertTrue(any("ponder existence" in l for l in lines),
+        self.assertTrue(any("ponder existence" in line for line in lines),
                         "the report must name the step that did nothing, or the "
                         "author cannot find it. Report: %s" % lines)
 
@@ -891,7 +891,7 @@ class TestNoteExcludedFromEffectsCount(unittest.TestCase):
         passed, failed, lines = run_shop_src(SHOP_WITH_NOTE, ["valid product"],
                                              ["effects complete"])
         self.assertEqual(failed, 1, lines)
-        self.assertTrue(any("note " in l for l in lines), lines)
+        self.assertTrue(any("note " in line for line in lines), lines)
 
 
 # issue #178: emit ... with maps the payload from a create-as binding and the

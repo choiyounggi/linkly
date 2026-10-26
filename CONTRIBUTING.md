@@ -87,7 +87,7 @@ Before you open a pull request:
 .venv/bin/python scripts/gen_plugin_references.py --check
 .venv/bin/python scripts/check_version_sync.py
 .venv/bin/python scripts/check_doc_snippets.py
-.venv/bin/ruff check impl/lnpl scripts
+.venv/bin/ruff check impl/lnpl scripts impl/tests
 ```
 
 ### What CI runs on your pull request

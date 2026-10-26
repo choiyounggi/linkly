@@ -122,7 +122,7 @@ EVENT_TRIGGERS = ("schedule",)
 # these two sets stay equal.
 RESERVED_PROBLEM_CODES = (
     "auth-invalid", "auth-missing", "body-too-large", "body-unreadable",
-    "cloudevents-invalid", "conflict", "cursor-invalid",
+    "cloudevents-id-too-long", "cloudevents-invalid", "conflict", "cursor-invalid",
     "deadline-exceeded", "event-rejected", "event-retry-later",
     "forbidden", "id-required", "idempotency-in-progress",
     "idempotency-key-too-long", "idempotency-unsupported", "limit-invalid",

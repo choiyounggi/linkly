@@ -151,7 +151,6 @@ class NormalTest(unittest.TestCase):
 
     def test_normal_resolve_schedule_triggers_picks_the_one_workflow(self):
         doc = _doc(OPEN_SRC)
-        nodes = {n["id"]: n for n in doc["nodes"]}
         event = next(n for n in doc["nodes"] if n["kind"] == "Event")
 
         triggers = resolve_schedule_triggers(doc)

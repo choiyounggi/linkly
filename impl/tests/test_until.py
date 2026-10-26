@@ -1,7 +1,6 @@
 """Test until loop boundaries (RFC-0003 §Guard, RFC-0008)."""
 
 import unittest
-from datetime import datetime
 
 from lnpl.parser import parse
 from lnpl.lower import lower
@@ -37,10 +36,7 @@ workflow CountUp
       target Increment()
 """
         doc = self._parse_and_lower(src)
-        interp = Interpreter(doc, clock=MockClock())
-
-        # Payload: counter stays at 0 (so condition never holds)
-        payload = {"counter": 0}
+        Interpreter(doc, clock=MockClock())
 
         # Run until loop; should stop at round 16
         guard_node = None
@@ -99,8 +95,7 @@ workflow LoopTest
       target Loop()
 """
         doc = self._parse_and_lower(src)
-        interp = Interpreter(doc)
-        payload = {}  # doneFlag not present, so condition never holds
+        Interpreter(doc)
 
         # Verify trace captures warning
         # (The actual execution is in _flatten_items; we verify via parsing)

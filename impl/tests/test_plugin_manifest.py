@@ -6,6 +6,7 @@
 """
 import json
 import os
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -17,11 +18,31 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 MARKET = os.path.join(REPO, ".claude-plugin", "marketplace.json")
 PLUGIN_DIR = os.path.join(REPO, "plugins", "lnpl")
 PLUGIN_JSON = os.path.join(PLUGIN_DIR, ".claude-plugin", "plugin.json")
+# issue #267: doctor.sh reads the MCP launcher's state file. This module
+# never lets it read the real ~/.claude/lnpl-plugin/mcp-last-start.json —
+# a stale one there turns the healthy-path doctor test red.
+NO_STATE = os.path.join(REPO, ".claude", "tmp", "manifest-doctor-state",
+                        "never-created.json")
 
 
 def load(path):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def doctor_env(**overrides):
+    env = dict(os.environ)
+    env["PATH"] = os.path.join(REPO, ".venv", "bin") + os.pathsep + env["PATH"]
+    env["PYTHONPATH"] = os.path.join(REPO, "impl")
+    env["CLAUDE_PLUGIN_ROOT"] = PLUGIN_DIR
+    env["LNPL_MCP_STATE"] = NO_STATE
+    env.update(overrides)
+    return env
+
+
+def run_doctor(env):
+    return subprocess.run(["bash", os.path.join(PLUGIN_DIR, "scripts", "doctor.sh")],
+                          capture_output=True, text=True, env=env)
 
 
 class MarketplaceTest(unittest.TestCase):
@@ -109,15 +130,48 @@ class PluginContentsTest(unittest.TestCase):
 
     def test_doctor_now_compares_versions_and_agrees(self):
         # Task 06까지는 plugin.json이 없어 비교를 건너뛰었다. 이제 실제로 비교한다.
-        env = dict(os.environ)
-        env["PATH"] = os.path.join(REPO, ".venv", "bin") + os.pathsep + env["PATH"]
-        env["PYTHONPATH"] = os.path.join(REPO, "impl")
-        env["CLAUDE_PLUGIN_ROOT"] = PLUGIN_DIR
-        proc = subprocess.run(["bash", os.path.join(PLUGIN_DIR, "scripts", "doctor.sh")],
-                              capture_output=True, text=True, env=env)
+        proc = run_doctor(doctor_env())
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn(lnpl.__version__, proc.stdout)
         self.assertNotIn("건너뜀", proc.stdout)
+
+
+class DoctorStateIsolationTest(unittest.TestCase):
+    """issue #267: a stale state file under HOME must not reach doctor.sh."""
+    STALE = "sha256:" + "0" * 64
+
+    def setUp(self):
+        scratch = os.path.join(REPO, ".claude", "tmp")
+        os.makedirs(scratch, exist_ok=True)
+        self.fake_home = tempfile.mkdtemp(prefix="manifest-home-", dir=scratch)
+        self.addCleanup(shutil.rmtree, self.fake_home, True)
+        state_dir = os.path.join(self.fake_home, ".claude", "lnpl-plugin")
+        os.makedirs(state_dir)
+        with open(os.path.join(state_dir, "mcp-last-start.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"vocabulary_digest": self.STALE}, fh)
+
+    def test_shielded_doctor_ignores_a_stale_home_state_file(self):
+        proc = run_doctor(doctor_env(HOME=self.fake_home))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("어휘 불일치", proc.stdout)
+        self.assertIn(lnpl.__version__, proc.stdout)
+        self.assertFalse(os.path.exists(NO_STATE))
+
+    def test_unshielded_doctor_reads_the_planted_state_file(self):
+        # control: proves the planted file is really read when unshielded
+        env = doctor_env(HOME=self.fake_home)
+        env.pop("LNPL_MCP_STATE", None)
+        proc = run_doctor(env)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("어휘 불일치", proc.stdout)
+        self.assertIn(self.STALE, proc.stdout)
+
+    def test_cleanup_removes_the_fake_home(self):
+        home = self.fake_home
+        self.assertTrue(os.path.isdir(home))
+        self.doCleanups()
+        self.assertFalse(os.path.exists(home))
 
 
 # Anthropic 플러그인 디렉터리가 plugin.json의 icon을 목록 아이콘으로 읽는다.

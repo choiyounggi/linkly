@@ -383,7 +383,7 @@ class GeneratorTest(unittest.TestCase):
             text = fh.read()
         self.assertIn("## `given no`의 스코프", text)
         section = text.split("## `given no`의 스코프", 1)[1].split("\n## ", 1)[0]
-        bullets = [l for l in section.splitlines() if l.startswith("- ")]
+        bullets = [line for line in section.splitlines() if line.startswith("- ")]
         self.assertEqual(len(bullets), 4, section)
         # Each question gets its own bullet, in order: what is removed, what
         # happens to the seeded row, how `stored` interacts, and whether

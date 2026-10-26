@@ -7,6 +7,7 @@
   최종 텍스트 위에 세 번째 바인딩 이름공간을 더한다), RFC-0003
   §Reference-level Specification/Execution Model (`NetworkCall` 행), RFC-0014
   §Reference-level Specification/2.4 스킵 레코드 (마스킹 범위)
+- Updated-by: RFC-0028 (§Reference-level Specification/6. 관측)
 - Updated-by: RFC-0037 (§Reference-level Specification/1 — `NetworkDriver` 계약)
 - Updated-by: RFC-0057 (§Reference-level Specification/2)
 
@@ -381,6 +382,8 @@ pool을 고갈시킨다"). 이 값은 이 RFC가 새로 정하는 상수이며, 
 바인드 파라미터가 되는 것과 같은 전례다.
 
 ### 6. 관측 — RFC-0014 §2.4 갱신 (마스킹 범위) (D3)
+
+> 갱신됨: RFC-0028
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0014 §2.4(스킵 레코드)의 마스킹
 규칙에 대한 갱신이다. §2.4 D3(이슈 #83)는 `evaluations`의 `ref`가 가리키는

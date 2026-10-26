@@ -387,7 +387,7 @@ class SpecToolTest(unittest.TestCase):
         case = body["cases"][0]
         self.assertEqual(case["status"], "fail")
         self.assertEqual(body["summary"]["failed"], 1)
-        fail_line = next(l for l in case["lines"] if l.startswith("FAIL"))
+        fail_line = next(line for line in case["lines"] if line.startswith("FAIL"))
         # 실측(got)과 기대(want)가 한 줄에 같이 있어야 한다 — 둘 중 하나만
         # 보고 고칠 수는 없다.
         self.assertIn("steps=2", fail_line)
@@ -426,7 +426,7 @@ class ProtocolErrorTest(unittest.TestCase):
             "\n"                       # 빈 줄은 건너뛴다
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'),
             stdout=out)
-        responses = [json.loads(l) for l in out.getvalue().splitlines() if l]
+        responses = [json.loads(line) for line in out.getvalue().splitlines() if line]
         self.assertEqual(responses[0]["error"]["code"], PARSE_ERROR)
         self.assertIn("tools", responses[1]["result"],
                       "깨진 줄 하나가 이후 요청을 삼켰다")
@@ -621,7 +621,7 @@ class LauncherResolutionTest(unittest.TestCase):
     def test_every_tool_call_returns_a_structured_error_when_lnpl_is_unavailable(self):
         proc = run_launcher({}, cwd="/", stdin_text=INITIALIZE + TOOLS_CALL)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        responses = [json.loads(line) for line in proc.stdout.splitlines() if line]
         self.assertEqual(len(responses), 2, proc.stdout)
         call_result = responses[1]["result"]
         self.assertTrue(call_result["isError"])
@@ -632,7 +632,7 @@ class LauncherResolutionTest(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}) + "\n"
         proc = run_launcher({}, cwd="/", stdin_text=stdin_text)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        responses = [json.loads(line) for line in proc.stdout.splitlines() if line]
         self.assertEqual(len(responses), 2, proc.stdout)
         names = {tool["name"] for tool in responses[1]["result"]["tools"]}
         self.assertEqual(names, {"lnpl_compile", "lnpl_kb_route", "lnpl_spec",
@@ -643,7 +643,7 @@ class LauncherResolutionTest(unittest.TestCase):
                      '{"jsonrpc":"2.0","method":"some/notification"}\n') + INITIALIZE
         proc = run_launcher({}, cwd="/", stdin_text=stdin_text)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        responses = [json.loads(line) for line in proc.stdout.splitlines() if line]
         # 알림 둘은 응답 없이 삼켜지고, 뒤이은 initialize 하나만 답장을 받는다.
         self.assertEqual(len(responses), 1, proc.stdout)
         self.assertEqual(responses[0]["result"]["serverInfo"]["version"],
@@ -656,7 +656,7 @@ class LauncherResolutionTest(unittest.TestCase):
         stdin_text = "42\nnull\n[1,2]\n" + INITIALIZE
         proc = run_launcher({}, cwd="/", stdin_text=stdin_text)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        responses = [json.loads(l) for l in proc.stdout.splitlines() if l]
+        responses = [json.loads(line) for line in proc.stdout.splitlines() if line]
         self.assertEqual(len(responses), 4, proc.stdout)
         for bad_response in responses[:3]:
             self.assertEqual(bad_response["error"]["code"], -32700)

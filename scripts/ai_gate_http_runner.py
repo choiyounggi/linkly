@@ -5,12 +5,15 @@
         --gate "$GATE_NAME" --api-style "${API_STYLE:-classic}" \\
         --schema schemas/ai-gate-verdict.schema.json \\
         --prompt-file "$RUNNER_TEMP/ai-gate-prompt.txt" \\
-        --diff-file "$RUNNER_TEMP/ai-gate.diff" --out "$RUNNER_TEMP/ai-gate-verdict.json"
+        --diff-file "$RUNNER_TEMP/ai-gate.diff" \\
+        --pr-text-file "$RUNNER_TEMP/ai-gate-pr.txt" \\
+        --out "$RUNNER_TEMP/ai-gate-verdict.json"
 
 게이트 프롬프트와 PR diff를 한 요청으로 보내고, 모델이 돌려준 JSON 객체를 `--out`에
 쓴다. 그 파일은 Claude Code 러너의 구조화 출력과 같은 것으로, `scripts/ai_gate_verdict.py`가
 같은 스키마로 판정한다 — 이 스크립트는 판정하지 않는다. 키는 환경변수
 `AI_GATE_HTTP_API_KEY`로만 받고, 출력되는 모든 줄에서 가린다(`***`).
+--pr-text-file을 주면 PR 제목·본문·커밋 메시지를 diff 뒤의 별도 구획으로 붙인다(65536바이트에서 자른다).
 
 exit code:
   0  판정 파일을 썼다
@@ -37,6 +40,11 @@ SYSTEM = (
     "{schema}"
 )
 DIFF_SEPARATOR = "\n\n--- unified diff (merge-base..head, --diff-filter=d) ---\n\n"
+PR_TEXT_SEPARATOR = "\n\n--- PR text (title, body, commit messages merge-base..head) ---\n\n"
+SYSTEM_MATERIAL = "the gate instructions, and the unified diff."
+SYSTEM_MATERIAL_WITH_PR = ("the gate instructions, the unified diff, and the PR text (title, body, "
+                           "commit messages).")
+MAX_PR_TEXT_BYTES = 65536
 DEFAULT_MAX_TOKENS = {"classic": 16384, "reasoning": 32768}
 
 
@@ -66,10 +74,21 @@ def build_diff(raw, cap):
     return raw.decode("utf-8", "replace")
 
 
-def build_messages(gate, schema_obj, prompt_text, diff_text):
+def build_pr_text(raw):
+    if len(raw) > MAX_PR_TEXT_BYTES:
+        return (raw[:MAX_PR_TEXT_BYTES].decode("utf-8", "ignore")
+                + "\n[pr text truncated at %d bytes]\n" % MAX_PR_TEXT_BYTES)
+    return raw.decode("utf-8", "replace")
+
+
+def build_messages(gate, schema_obj, prompt_text, diff_text, pr_text=None):
     schema = json.dumps(schema_obj, separators=(",", ":"), ensure_ascii=False)
     system = SYSTEM.replace("{gate}", gate).replace("{schema}", schema)
+    if pr_text is not None:
+        system = system.replace(SYSTEM_MATERIAL, SYSTEM_MATERIAL_WITH_PR)
     user = prompt_text.rstrip("\n") + DIFF_SEPARATOR + diff_text
+    if pr_text is not None:
+        user += PR_TEXT_SEPARATOR + (pr_text if pr_text.strip() else "(empty)")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -145,6 +164,7 @@ def main(argv=None):
     parser.add_argument("--api-style", choices=["classic", "reasoning"], default="classic")
     parser.add_argument("--max-tokens", type=positive_int, default=None)
     parser.add_argument("--timeout", type=positive_int, default=300)
+    parser.add_argument("--pr-text-file", type=str, default=None)
     args = parser.parse_args(argv)
     key = os.environ.get("AI_GATE_HTTP_API_KEY", "")
 
@@ -177,9 +197,16 @@ def main(argv=None):
         except OSError:
             raise RunnerError("error: cannot read diff: %s" % args.diff_file) from None
         diff_text = build_diff(raw, args.max_diff_bytes)
+        pr_text = None
+        if args.pr_text_file is not None:
+            try:
+                with open(args.pr_text_file, "rb") as fh:
+                    pr_text = build_pr_text(fh.read())
+            except OSError:
+                raise RunnerError("error: cannot read pr text: %s" % args.pr_text_file) from None
 
         cap = args.max_tokens or DEFAULT_MAX_TOKENS[args.api_style]
-        messages = build_messages(args.gate, schema_obj, prompt_text, diff_text)
+        messages = build_messages(args.gate, schema_obj, prompt_text, diff_text, pr_text)
         body = build_body(args.model, messages, args.api_style, cap)
         resp = post(args.base_url.rstrip("/") + "/chat/completions", body, key, args.timeout)
         obj = extract_verdict(resp)

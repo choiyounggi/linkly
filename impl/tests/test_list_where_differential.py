@@ -95,7 +95,7 @@ class TestCompareObservationsUnverifiedDimensionNote(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertTrue(any("EQUIVALENT" in line for line in report))
-        note_lines = [l for l in report if "unverified dimension" in l]
+        note_lines = [line for line in report if "unverified dimension" in line]
         self.assertEqual(len(note_lines), 1)
         self.assertIn("1 `list where` step", note_lines[0])
         self.assertIn("docs/backends.md", note_lines[0])
