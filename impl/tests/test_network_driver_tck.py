@@ -11,8 +11,8 @@ against a driver that deliberately ignores `retry`.
 
 import unittest
 
-from lnpl.drivers import DriverError, FakeNetworkDriver, HttpNetworkDriver
-from lnpl.testing import NETWORK_TCK_TARGET, NetworkDriverTCK
+from lnpl.drivers import FakeNetworkDriver, HttpNetworkDriver
+from lnpl.testing import NetworkDriverTCK
 
 from tests.test_network_driver import (_ServerTestCase, _make_handler,
                                        _make_scripted_handler)

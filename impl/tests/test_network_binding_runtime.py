@@ -12,7 +12,7 @@ import unittest
 
 from lnpl.drivers import (DEFAULT_NETWORK_TIMEOUT_MS, DriverError,
                           FakeNetworkDriver, HttpNetworkDriver)
-from lnpl.interp import Interpreter, RunError
+from lnpl.interp import Interpreter
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.repo_policy import default_rows

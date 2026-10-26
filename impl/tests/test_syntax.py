@@ -16,11 +16,11 @@ class TestLexer(unittest.TestCase):
     def test_indentation_carries_no_meaning(self):
         flat = tokenize("entity User\nfield\nid UUID\n")
         deep = tokenize("entity User\n        field\n                id UUID\n")
-        self.assertEqual([l.tokens for l in flat], [l.tokens for l in deep])
+        self.assertEqual([line.tokens for line in flat], [line.tokens for line in deep])
 
     def test_comments_and_blank_lines_are_dropped(self):
         lines = tokenize("# header\n\nentity User   # trailing\n\n")
-        self.assertEqual([l.tokens for l in lines], [["entity", "User"]])
+        self.assertEqual([line.tokens for line in lines], [["entity", "User"]])
 
     def test_tabs_are_rejected(self):
         with self.assertRaises(LexError):
@@ -184,7 +184,7 @@ class TestRefineDecl(unittest.TestCase):
         self.assertEqual(d.kind, "refine")
         self.assertEqual(d.name, "Slug")
         self.assertEqual(d.extra["base"], "Text")
-        self.assertEqual([l.tokens for l in d.items],
+        self.assertEqual([line.tokens for line in d.items],
                          [["pattern", "^[a-z0-9-]{1,64}$"], ["maxLength", "64"]])
 
     def test_refine_takes_no_clauses_dict(self):
@@ -195,7 +195,7 @@ class TestRefineDecl(unittest.TestCase):
         self.assertEqual([d.kind for d in decls], ["refine", "entity"])
         # The entity's field line must not leak into the refine block's body.
         self.assertEqual(len(decls[0].items), 2)
-        self.assertEqual([l.tokens for l in decls[1].clauses["field"]],
+        self.assertEqual([line.tokens for line in decls[1].clauses["field"]],
                          [["slug", "Slug"]])
 
     def test_field_line_is_still_two_tokens(self):
@@ -244,7 +244,7 @@ class TestRefineDecl(unittest.TestCase):
     def test_facet_values_are_not_judged_by_the_parser(self):
         d = parse("refine Slug of Bogus\n    maxLenght notanumber\n")[0]
         self.assertEqual(d.extra["base"], "Bogus")
-        self.assertEqual([l.tokens for l in d.items], [["maxLenght", "notanumber"]])
+        self.assertEqual([line.tokens for line in d.items], [["maxLenght", "notanumber"]])
 
 
 class TestRegexTokenization(unittest.TestCase):
@@ -255,15 +255,15 @@ class TestRegexTokenization(unittest.TestCase):
     """
 
     def test_a_space_splits_the_pattern_into_three_tokens(self):
-        self.assertEqual([l.tokens for l in tokenize("pattern ^a b$")],
+        self.assertEqual([line.tokens for line in tokenize("pattern ^a b$")],
                          [["pattern", "^a", "b$"]])
 
     def test_a_leading_hash_leaves_the_facet_with_no_value(self):
-        self.assertEqual([l.tokens for l in tokenize("pattern #abc")],
+        self.assertEqual([line.tokens for line in tokenize("pattern #abc")],
                          [["pattern"]])
 
     def test_a_well_formed_pattern_is_one_token(self):
-        self.assertEqual([l.tokens for l in tokenize("pattern ^[a-z0-9-]{1,64}$")],
+        self.assertEqual([line.tokens for line in tokenize("pattern ^[a-z0-9-]{1,64}$")],
                          [["pattern", "^[a-z0-9-]{1,64}$"]])
 
     def test_KNOWN_LIMITATION_mid_regex_hash_truncates_silently(self):
@@ -277,9 +277,9 @@ class TestRegexTokenization(unittest.TestCase):
         construct (`^a[b#c]$` -> `^a[b`), but `^a` compiles and survives.
         Named so a reader sees a known limitation, not an accident.
         """
-        self.assertEqual([l.tokens for l in tokenize("pattern ^a#b$")],
+        self.assertEqual([line.tokens for line in tokenize("pattern ^a#b$")],
                          [["pattern", "^a"]])
-        self.assertEqual([l.tokens for l in tokenize("pattern ^a[b#c]$")],
+        self.assertEqual([line.tokens for line in tokenize("pattern ^a[b#c]$")],
                          [["pattern", "^a[b"]])
 
 

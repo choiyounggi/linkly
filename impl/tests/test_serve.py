@@ -16,7 +16,7 @@ import unittest
 from lnpl.lower import lower
 from lnpl.openapi import generate
 from lnpl.parser import parse
-from lnpl.serve import ServeError, build_routes, map_result, problem, serve
+from lnpl.serve import build_routes, map_result, problem, serve
 
 
 def compile_src(source, module="mod"):

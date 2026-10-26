@@ -640,7 +640,7 @@ class TestCellSplitting(unittest.TestCase):
         # Guards the test above from becoming vacuous if the document is ever
         # restructured into a single table.
         body = section(read_doc(), HEADING_A)
-        all_rows = [l for l in body.splitlines() if l.strip().startswith("|")]
+        all_rows = [line for line in body.splitlines() if line.strip().startswith("|")]
         self.assertGreater(len(all_rows), len(first_table_rows(body)))
 
 

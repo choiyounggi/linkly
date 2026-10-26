@@ -212,7 +212,10 @@ class GuardReadsCallerTest(unittest.TestCase):
         # Forge the role claim by hand, independent of `issue(role=...)`
         # (issue #202), the same way test_token_provider.py's own tests do, using the
         # provider's real signing key so verification genuinely succeeds.
-        import base64, hmac, hashlib, time
+        import base64
+        import hmac
+        import hashlib
+        import time
         now = int(time.time())
         header = {"alg": "HS256", "typ": "JWT"}
         claims = {"iss": "lnpl", "aud": AUDIENCE, "sub": "alice", "role": "admin",

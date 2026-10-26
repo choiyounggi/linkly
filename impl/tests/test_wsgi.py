@@ -2015,9 +2015,9 @@ class SecretSourceLeakTest(_EnvIsolatedTest):
         """The controls: each clean channel above did carry output."""
         self.assertIn("serve: token rejected", err)
         lines = _json_lines(err)
-        self.assertTrue([l for l in lines if l.get("status") == 401],
+        self.assertTrue([entry for entry in lines if entry.get("status") == 401],
                         "no JSON access-log line for the 401")
-        self.assertTrue([l for l in lines if "span" in l],
+        self.assertTrue([entry for entry in lines if "span" in entry],
                         "no stderr-json trace line")
         self.assertIn("auth-invalid", json.dumps(rejected))
         self.assertIn("status", ready_body)
@@ -2225,7 +2225,7 @@ class SecretSourceLeakTest(_EnvIsolatedTest):
                 self.assertIsNone(app)
                 self.assertEqual(rc, 2)
                 self.assertTrue(
-                    [l for l in err.splitlines() if l.startswith("error:")],
+                    [line for line in err.splitlines() if line.startswith("error:")],
                     "no `error:` line to prove stderr was captured")
                 self._assert_channels_clean(err, [], out)
 

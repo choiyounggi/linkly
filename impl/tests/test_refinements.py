@@ -147,7 +147,7 @@ class TestPresets(unittest.TestCase):
             if pattern is None:
                 continue
             lines = tokenize("pattern " + pattern)
-            self.assertEqual([l.tokens for l in lines], [["pattern", pattern]],
+            self.assertEqual([line.tokens for line in lines], [["pattern", pattern]],
                              "%s's pattern does not survive tokenization" % name)
 
 

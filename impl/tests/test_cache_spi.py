@@ -17,7 +17,6 @@ import json
 import os
 import tempfile
 import threading
-import time
 import unittest
 from importlib import metadata as importlib_metadata
 from unittest import mock

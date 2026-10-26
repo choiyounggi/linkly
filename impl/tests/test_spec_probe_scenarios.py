@@ -295,8 +295,8 @@ class TestT4RateNotifyRestored(unittest.TestCase):
                                      "            value 101")
         _, (_passed, failed, lines) = run(src, "rate-notify")
         self.assertGreater(failed, 0, lines)
-        self.assertTrue(any("Report spec 3" in l and l.startswith("FAIL")
-                            for l in lines), lines)
+        self.assertTrue(any("Report spec 3" in line and line.startswith("FAIL")
+                            for line in lines), lines)
 
 
 class TestT1InventoryOrderRestored(unittest.TestCase):
@@ -326,8 +326,8 @@ class TestR1N4InputBoundarySpec(unittest.TestCase):
     def test_the_boundary_block_runs_and_passes(self):
         _, (_passed, failed, lines) = run(T1_INVENTORY, "inventory-order")
         self.assertEqual(failed, 0, lines)
-        self.assertTrue(any("PlaceOrder spec 4" in l and l.startswith("PASS")
-                            for l in lines), lines)
+        self.assertTrue(any("PlaceOrder spec 4" in line and line.startswith("PASS")
+                            for line in lines), lines)
 
     def test_zero_is_what_makes_it_fail_not_the_form(self):
         # The discriminating control: a quantity the type accepts must take the
@@ -337,8 +337,8 @@ class TestR1N4InputBoundarySpec(unittest.TestCase):
                                    "            input.quantity 1")
         _, (_passed, failed, lines) = run(src, "inventory-order")
         self.assertGreater(failed, 0, lines)
-        self.assertTrue(any("PlaceOrder spec 4" in l and "failed" in l
-                            and l.startswith("FAIL") for l in lines), lines)
+        self.assertTrue(any("PlaceOrder spec 4" in line and "failed" in line
+                            and line.startswith("FAIL") for line in lines), lines)
 
     def test_the_pre_54_spelling_is_now_accepted_too(self):
         # RFC-0015 §G15.2 keeps the bare name a synonym; the probe's original
@@ -378,7 +378,7 @@ class TestR2N2GuardTrueContract(unittest.TestCase):
         _, (_passed, failed, lines) = run(
             R2_REFUND_GUARD % (OUTSIDE_WINDOW, 2), "payment-refund")
         self.assertEqual(failed, 1, lines)
-        self.assertTrue(any("steps=1 want=2" in l for l in lines), lines)
+        self.assertTrue(any("steps=1 want=2" in line for line in lines), lines)
 
 
 class TestR4F6NoScope(unittest.TestCase):

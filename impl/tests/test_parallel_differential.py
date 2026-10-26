@@ -95,7 +95,7 @@ class TestCompareObservationsUnverifiedDimensionNote(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertTrue(any("EQUIVALENT" in line for line in report))
-        note_lines = [l for l in report if "unverified dimension" in l]
+        note_lines = [line for line in report if "unverified dimension" in line]
         self.assertEqual(len(note_lines), 1)
         self.assertIn("1 `parallel` block", note_lines[0])
         self.assertIn("mode B runs them sequentially", note_lines[0])
@@ -126,10 +126,10 @@ class TestCompareObservationsUnverifiedDimensionNote(unittest.TestCase):
         ok, report = compare_observations(obs, dict(obs), doc, wid)
 
         self.assertTrue(ok)
-        note_lines = [l for l in report if "unverified dimension" in l]
+        note_lines = [line for line in report if "unverified dimension" in line]
         self.assertEqual(len(note_lines), 2)
-        self.assertTrue(any("list where" in l for l in note_lines))
-        self.assertTrue(any("parallel" in l for l in note_lines))
+        self.assertTrue(any("list where" in line for line in note_lines))
+        self.assertTrue(any("parallel" in line for line in note_lines))
 
     def test_omitting_document_and_workflow_id_never_adds_a_note(self):
         # Every pre-#108 caller passes neither — behaviour is unchanged.

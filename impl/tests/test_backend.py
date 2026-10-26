@@ -552,7 +552,7 @@ class TestNativeBuild(unittest.TestCase):
     def test_binary_reports_every_step(self):
         path = backend.build(golden(), "wf.login", self.workdir)
         _rc, lines = backend.run_binary(path)
-        steps = [l for l in lines if l.startswith("step ")]
+        steps = [line for line in lines if line.startswith("step ")]
         self.assertEqual(len(steps), 6)
 
     def test_intermediates_are_kept_for_inspection(self):
@@ -566,8 +566,8 @@ class TestNativeBuild(unittest.TestCase):
         path = backend.build(doc, "wf.w", self.workdir)
         _rc, ran = backend.run_binary(path, skip=False)
         _rc, skipped = backend.run_binary(path, skip=True)
-        self.assertEqual(len([l for l in ran if l.startswith("step ")]), 2)
-        self.assertEqual(len([l for l in skipped if l.startswith("step ")]), 1)
+        self.assertEqual(len([line for line in ran if line.startswith("step ")]), 2)
+        self.assertEqual(len([line for line in skipped if line.startswith("step ")]), 1)
 
 
 @NEEDS_TOOLS

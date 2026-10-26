@@ -13,7 +13,6 @@ prove for other subcommands.
 
 import contextlib
 import io
-import json
 import os
 import shutil
 import unittest

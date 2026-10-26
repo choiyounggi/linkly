@@ -173,7 +173,7 @@ class TestLnplEmission(unittest.TestCase):
 
     def test_every_op_carries_a_node_id_and_a_location(self):
         text = backend.emit_lnpl_mlir(golden(), "wf.login")
-        op_lines = [l for l in text.split("\n") if l.strip().startswith('"lnpl.')]
+        op_lines = [line for line in text.split("\n") if line.strip().startswith('"lnpl.')]
         # Assert there is something to iterate before iterating, or an emitter
         # that produced no ops at all would satisfy the loop vacuously.
         self.assertEqual(len(op_lines), 9)          # 6 steps + 3 effects
@@ -562,7 +562,7 @@ class TestBuildGatesOnTheDialect(unittest.TestCase):
         rc, lines = backend.run_binary(path)
         self.assertEqual(rc, 0)
         self.assertEqual(lines[-1], "status completed")
-        self.assertEqual(len([l for l in lines if l.startswith("step ")]), 6)
+        self.assertEqual(len([line for line in lines if line.startswith("step ")]), 6)
 
     def test_a_module_failing_the_dialect_verifier_fails_the_build(self):
         """Negative control for the gate: without this, "load-bearing" is a claim.

@@ -17,12 +17,10 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import unittest
 
 from lnpl import cli
 from lnpl.lower import LoaderError, load_sources, lower
-from lnpl.parser import parse
 from lnpl.mcp_server import serve as mcp_serve
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

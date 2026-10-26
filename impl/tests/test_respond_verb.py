@@ -32,7 +32,6 @@ from lnpl.lower import LowerError, lower
 from lnpl.openapi import generate
 from lnpl.parser import parse
 from lnpl.repo_policy import row_key
-from lnpl.serve import serve
 from tests.test_serve import ServerTestCase
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

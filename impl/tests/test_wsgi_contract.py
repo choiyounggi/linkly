@@ -18,7 +18,7 @@ import unittest
 
 from lnpl.drivers import SqliteRepositoryDriver
 from lnpl.interp import FakeRepository
-from lnpl.wsgi import SSE_IDLE_TIMEOUT_S, SSE_POLL_INTERVAL_S, make_wsgi_app
+from lnpl.wsgi import make_wsgi_app
 import lnpl.wsgi as wsgi_mod
 from tests.test_serve import ServerTestCase
 from tests.test_serve_get import ORDERS_SRC, compile_doc, order_payload, uid

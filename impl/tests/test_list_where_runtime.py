@@ -255,8 +255,8 @@ class TestNonPushdownDriverFallback(unittest.TestCase):
     def test_logs_one_info_line_naming_the_entity(self):
         repo = _NoPushdownRepository()
         _, interp = run_with_orders({"0": {"id": "0", "amount": 20}}, repository=repo)
-        info_logs = [l for l in interp.trace.logs
-                    if l["message"] == "predicate-not-pushed-down"]
+        info_logs = [entry for entry in interp.trace.logs
+                    if entry["message"] == "predicate-not-pushed-down"]
         self.assertEqual(len(info_logs), 1)
         self.assertEqual(info_logs[0]["level"], "INFO")
         self.assertEqual(info_logs[0]["entity"], "entity.order")
@@ -289,8 +289,8 @@ class TestNonPushdownDriverFallback(unittest.TestCase):
         _, interp = run_with_orders({"0": {"id": "0", "amount": 5}},
                                     source=doc, repository=repo)
         self.assertEqual(
-            [l for l in interp.trace.logs
-            if l["message"] == "predicate-not-pushed-down"], [])
+            [entry for entry in interp.trace.logs
+            if entry["message"] == "predicate-not-pushed-down"], [])
 
 
 if __name__ == "__main__":

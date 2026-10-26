@@ -838,8 +838,8 @@ class TestGuardSkipIsReported(unittest.TestCase):
         # indented line under the `skipped by` line it belongs to.
         _rc, out, _err = run_cli_split(["run", self.src, "--payload", self.rejected])
         lines = out.splitlines()
-        skip_i = next(i for i, l in enumerate(lines)
-                     if "skipped by `when stock > 0`" in l)
+        skip_i = next(i for i, line in enumerate(lines)
+                     if "skipped by `when stock > 0`" in line)
         self.assertIn("stock > 0 (measured=0)", lines[skip_i + 1])
 
     def test_a_diagnostic_reports_the_skip_on_stderr(self):

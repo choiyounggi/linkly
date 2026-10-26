@@ -446,7 +446,7 @@ class TestSpecObservation(unittest.TestCase):
     def test_one_read_cannot_claim_a_hit(self):
         passed, failed, lines = self.run_spec(False)
         self.assertEqual((passed, failed), (2, 1), lines)
-        self.assertTrue(any("cache hit (cache hits=0)" in l for l in lines), lines)
+        self.assertTrue(any("cache hit (cache hits=0)" in line for line in lines), lines)
 
 
 if __name__ == "__main__":

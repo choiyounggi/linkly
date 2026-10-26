@@ -29,14 +29,14 @@ from lnpl.lower import LowerError, lower
 from lnpl.parser import ParseError, parse
 from lnpl.repo_policy import row_key
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
-
 # The sources live in `tests.fixtures` — `test_backend.py` runs the same three
 # through the differential, and one home per source is that module's rule.
 from tests.fixtures import (VALUE_INVENTORY as INVENTORY,
                             VALUE_PAYMENT as PAYMENT,
                             VALUE_REFUND as REFUND)
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 
 PRODUCT_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
 

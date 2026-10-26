@@ -17,7 +17,7 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | RFC lint(`rfc_lint.py`) | 결정론 | `ci.yml` | blocking | RFC-0007 §3 번호·제목, §2.1 Status 어휘, §7 템플릿 섹션(이름·순서), §2.1 CHANGELOG 인용(인용한 RFC가 rfcs/에 있고 Accepted 또는 Superseded — issue #249), §2.2 `Updated-by:` 역링크(Accepted RFC의 `Updates:` 대상마다 — issue #263) |
 | 참조 drift(`gen_plugin_references.py --check`) | 결정론 | `ci.yml` | blocking | 플러그인 스킬 참조 문서가 컴파일러 상수에서 재생성한 것과 다름 |
 | 버전 동기(`check_version_sync.py`) | 결정론 | `ci.yml` | blocking | 루트 `pyproject.toml`과 플러그인 manifest 버전 드리프트 |
-| ruff | 결정론 | `ci.yml`(t1) | advisory → blocking 예정 | 파이썬 린트 위반 |
+| ruff | 결정론 | `ci.yml`(t1) | blocking + required | 파이썬 린트 위반(`impl/lnpl`, `scripts`, `impl/tests`) |
 | 산문 스니펫 컴파일(`check_doc_snippets.py`) | 결정론 | `ci.yml`(t2) | advisory → blocking 예정 | 문서에 박힌 `.lnpl` 스니펫이 실제로 컴파일되는지 |
 | `rfc-conformance` | AI | `_ai-gate.yml`(t4) | advisory | RFC가 말하는 것과 코드가 하는 것의 불일치 |
 | `golden-approval` | AI | `_ai-gate.yml`(t4) | advisory | 골든 시나리오 변경의 타당성 |

@@ -6,7 +6,6 @@ ENV 이름 형식만 허용한다는 issue #101 규율, `${VAR}` 치환이 순�
 """
 
 import os
-import shutil
 import tempfile
 import unittest
 
