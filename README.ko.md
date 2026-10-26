@@ -201,7 +201,7 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 **테스트 5,390여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 65편 — 62편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048은 `Draft`.** RFC-0007은
+**RFC 66편 — 62편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048·RFC-0065는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -281,8 +281,9 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0062 읽기 동사의 `cached` 절 — read-through](rfcs/0062-cached-read-through-clause.md) | `.lnpl`은 캐시를 쓰고(`cache`) 비울 수는 있어도 읽을 수 없어서 read-through를 쓸 수 없었고, 같은 행을 반복해 읽어도 `redis MONITOR`에 `GET`이 없었다(probe-v0.8 s4 F-2, issue #188). `find`/`read`/`load`/`authenticate`에 `by <ref>` 뒤의 선택 꼬리 `cached`를 더한다(`find product by input.sku cached`): hit이면 캐시의 행을 바인딩하고 저장소를 부르지 않으며, miss면 저장소를 읽어 소유 서비스의 `performance cache` TTL로 같은 키에 기록한다. `performance cache` 예산이 없는 서비스의 `cached` 스텝, 또는 같은 워크플로가 그 엔티티를 `update`/`delete`/`set`으로 쓰는 경우는 컴파일 에러이고, 캐시 장애는 miss로 처리된다. 이 문서의 쓰기는 저장소 커밋 뒤에 그 키를 비우고, 롤백된 실행은 자기가 캐시한 키를 버린다. spec 블록은 `cache hit` / `cache miss`를 관측하고, 모드 B는 `cached` 워크플로를 기록된 차동 예외로 거부한다. *RFC-0002 §Full grammar(+RFC-0012, RFC-0052, RFC-0060), RFC-0003 §Reference-level Specification/Execution Model(+RFC-0032, RFC-0056) 갱신* |
 | [0063 기본 호출 본문에서 Password 계열 필드 제외](rfcs/0063-default-body-omits-password-fields.md) | `send` 절이 없는 `call`/`request`는 실행 입력 전체를 보냈고, 그래서 Password 계열 입력 필드의 원문이 상대에게 나갔다 — 이슈 #43의 마스킹 계약이 막지 않던 출력 채널이다(이슈 #214). 이제 기본 본문은 어느 엔티티든 `Password`나 `refine ... of Password`로 선언한 이름의 입력 키를 뺀다(키가 없고, `***`가 아니다). 그런 필드가 없는 입력은 같은 객체 그대로, 바이트 동일하게 나간다. 하나뿐인 네트워크 호출 지점의 필터 하나가 `mask_payload`와 같은 이름 도출을 쓴다. `send`와 모드 B는 그대로다. 경로 인자(`with input.<Password 필드>`)와 `send`/`emit ... with`의 컴파일 시점 같은 이름 공백은 이제 선언한 모든 엔티티를 보는 컴파일 거부다(이슈 #218, #219). 다른 마스킹 채널의 첫 엔티티 뷰는 후속 이슈로 남긴다. *Updates RFC-0057 §Guide-level Explanation, §Reference-level Specification/4, /5, /8* |
 | [0064 0행에 영향을 준 update·delete는 not-found로 실패](rfcs/0064-write-miss-not-found.md) | 행을 하나도 건드리지 않은 `update`/`delete`(bare 또는 `by <ref>`)가 `completed`(serve 200)로 끝났고, 같은 키의 `find`는 이슈 #197부터 404였다(이슈 #215). 이제 드라이버가 `{"affected": 0}`을 돌려준 쓰기는 그 스텝을 `failure_kind` `not-found`로 실패시킨다 — serve 404, 소비 경로 422 — `fake`·`sqlite:`·모드 B 모두 같고, 그 실행의 앞선 쓰기는 롤백된다(RFC-0032). delete는 기본이 실패이며 멱등 delete 표기는 이번 변경에 없다. 드라이버 TCK에 부재 행 갱신 케이스가 추가되어 외부 드라이버도 통과해야 한다. |
+| [0065 레퍼런스 릴레이 배치 상한](rfcs/0065-relay-batch-limit.md) | *(Draft)* `lnpl relay`는 미배달 백로그 전체를 배치 하나로 드레인했고, 그래서 issue #257의 배치 트랜잭션 아래에서 행 잠금 드라이버(`lnpl-postgres`)의 릴레이 하나가 모든 행을 잠가 두 번째 릴레이는 아무것도 받지 못했다(issue #262). 이제 배치 하나는 자기 트랜잭션 안에서 최대 100행을 드레인하고, 꽉 찬 배치가 한 행이라도 ack했을 때만 다음 배치를 돈다. `--once`는 처음으로 짧거나 ack가 0인 배치 뒤에 끝나고, `drain_outbox`가 `limit`을 받지 않는 드라이버는 상한 없는 배치 하나를 유지한다. *Updates RFC-0040 §Reference-level Specification/8* |
 
-62편이 `Accepted`, 2편(`0034`, `0048`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+62편이 `Accepted`, 3편(`0034`, `0048`, `0065`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -456,7 +457,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0064              RFC (0000은 Superseded, 62편은 Accepted, 2편은 Draft)
+rfcs/0000~0065              RFC (0000은 Superseded, 62편은 Accepted, 3편은 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR

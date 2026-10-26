@@ -75,5 +75,6 @@
 | RFC-0062 읽기 동사의 `cached` 절 — read-through | 같은 행을 반복해 읽는 부하를 캐시가 흡수하게 하고 싶다(`cached`) — hit/miss가 무엇을 하는지, TTL이 어디서 오는지, 쓰기·롤백 뒤 캐시가 어떻게 비워지는지, 모드 B는 왜 거부하는지 | `rfcs/0062-cached-read-through-clause.md` |
 | RFC-0063 send 없는 call/request의 기본 본문은 Password 계열 입력 필드를 뺀다 | send 없는 call/request가 입력의 어떤 필드를 빼는지 — 어느 엔티티든 Password·refine … of Password로 선언한 이름이 기본 본문에서 빠지는 이유와 그 판정 규칙, 그런 필드가 없으면 본문이 바이트 동일한 이유 | `rfcs/0063-default-body-omits-password-fields.md` |
 | RFC-0064 0행에 영향을 준 update·delete는 not-found로 실패한다 | update·delete가 0행에 영향을 주면 왜 not-found(serve 404, 소비 422)로 실패하는지 — fake·sqlite·모드 B가 같은 답을 내는 방법, 기본 시드가 update·delete로 시작하는 엔티티를 왜 채우지 않는지, 멱등 delete 표기가 왜 없는지 | `rfcs/0064-write-miss-not-found.md` |
+| RFC-0065 레퍼런스 릴레이 배치 상한 — lnpl relay bounded drain | `lnpl relay`가 아웃박스를 왜 100행 배치로 나눠 드레인하는지 — 배치마다 트랜잭션 하나, 다음 배치는 언제 도는지(꽉 찬 배치 + ack 1개 이상), `limit`을 받지 않는 드라이버는 어떻게 되는지 | `rfcs/0065-relay-batch-limit.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

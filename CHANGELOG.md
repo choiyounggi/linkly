@@ -9,6 +9,19 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Changed
+
+- `lnpl relay` now drains the outbox in batches of at most 100 rows, each
+  in its own driver transaction. Before, one batch drained the whole
+  undelivered backlog, so on a row-locking driver (`lnpl-postgres`:
+  `SELECT ... FOR UPDATE SKIP LOCKED`) the first relay locked every row
+  while it published them one by one and a second relay got nothing. A
+  batch that comes back full and acks at least one row is followed at
+  once by the next batch; `--once` exits after the first short or no-ack
+  batch, and the polling loop pauses only between such passes. A driver
+  whose `drain_outbox` takes no `limit` keeps the old single unbounded
+  batch (issue #262).
+
 ## [0.9.0] — 2026-10-22
 "The operations-hardening release."
 
