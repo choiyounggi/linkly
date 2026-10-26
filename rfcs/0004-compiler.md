@@ -3,6 +3,7 @@
 ## Status
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
+- Updated-by: RFC-0031 (§Reference-level Specification > 파이프라인 표, S1 `Semantic Parser` 행)
 
 ## Motivation
 
@@ -87,6 +88,8 @@ IR은 정확히 "도메인 시맨틱을 담는 최상위 dialect" 패턴에 해�
 ## Reference-level Specification
 
 ### 파이프라인
+
+> 갱신됨: RFC-0031
 
 파이프라인은 7단계다. CHARTER §Native Compiler의 논리 단계를 유지하되 하강 경로는
 plan.md D18의 MLIR progressive lowering으로 구체화한다. 고수준 최적화 3종은 S3

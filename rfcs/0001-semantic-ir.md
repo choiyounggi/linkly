@@ -4,6 +4,8 @@
 
 - Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
 - Updated-by: RFC-0011 (§부록 A.6.3, §부록 A.7), RFC-0028 (§노드 카탈로그/Guard)
+- Updated-by: RFC-0015 (§노드 카탈로그)
+- Updated-by: RFC-0016 (§노드 카탈로그)
 - Updated-by: RFC-0053 (§Reference-level Specification/노드 카탈로그/Entity)
 - Updated-by: RFC-0054 (§노드 카탈로그/Guard)
 - Updated-by: RFC-0056 (§Reference-level Specification/노드 카탈로그)
@@ -92,6 +94,9 @@ rule을 내장해 검증·OpenAPI·프런트엔드 검증 코드 자동 생성�
 
 ### 노드 카탈로그
 
+> 갱신됨: RFC-0015 (`Assignment` 행 신설)
+> 갱신됨: RFC-0016 (`Event.source` 스케줄 분기)
+> 갱신됨: RFC-0028 (`Guard` 행)
 > 갱신됨: RFC-0053 (`Entity` 행)
 > 갱신됨: RFC-0054 (`Guard` 행)
 > 갱신됨: RFC-0056 (Effect 표 `Rejection` 행 신설, Behavior 표 `WorkflowStep` 행)
@@ -421,8 +426,6 @@ IR은 의도만 보존한다. `event.user.created`는 User *생성* 시 발행�
    깨뜨린다. 확장은 기존 타입 제약 강화(refinement)로만 허용한다.
 
 ## Open Questions
-
-> 갱신됨: RFC-0048
 
 1. **제네릭/컬렉션 타입** — List·Map·Optional을 Semantic Type 시스템에 어떻게
    넣을 것인가(타입 파라미터 허용 범위, 중첩 컬렉션의 validation rule 합성).

@@ -1584,3 +1584,45 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 **향후 처리:** 이 RFC(RFC-0049)가 `Updates: RFC-0002 §Full grammar`로 해소한다 — `StepLine ::= Verb Word? Word? Word? EOL`을 `StepLine ::= Verb Word* EOL`로 대체하는 자기완결적 최신 텍스트를 RFC-0049 자신이 싣는다(RFC-0007 §2.2 규칙 4).
 
 **영향도:** 낮음 — 실행에는 영향 없음(파서가 이미 무제한이었다), 문서 신뢰도 문제일 뿐이다.
+
+---
+
+### 발견 F6: RFC-0007 §2.2 규칙 7 통합 후보 15절 — Supersedes 통합을 후속으로 이월 (2026-10-26 기록)
+
+**사실:** RFC-0007 §2.2 규칙 7은 한 절을 읽으려고 열어야 하는 문서가 2개를 넘으면 Updates를 더 쌓지 말고 통합본으로 Supersedes하라고 한다. 이슈 #263 §3이 RFC 10개·15절을 후보로 꼽았다. 아래 "열 문서 수"는 대상 RFC 1개와 그 절을 갱신한 Accepted RFC의 수를 더한 값이다 — 이슈 #263 처리 뒤 대상 머리의 `Updated-by:` 줄과 절 머리 `> 갱신됨:` 줄 기준이며, Draft RFC-0048은 규칙 6에 따라 세지 않는다.
+
+| 대상 절 | 갱신한 Accepted RFC | 열 문서 수 | 결정 |
+|---------|--------------------|-----------|------|
+| RFC-0001 §노드 카탈로그/Guard | RFC-0028, RFC-0054, RFC-0060 | 4 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0002 §Full grammar | RFC-0008, RFC-0012, RFC-0015, RFC-0016, RFC-0049, RFC-0052, RFC-0060, RFC-0062 | 9 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0002 §Block structure | RFC-0019, RFC-0058, RFC-0060 | 4 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0003 §Execution Model | RFC-0027, RFC-0029, RFC-0032, RFC-0041, RFC-0056, RFC-0062 | 7 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0012 §G12.2 | RFC-0025, RFC-0027, RFC-0030, RFC-0052 | 5 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0012 §G12.5 | RFC-0025, RFC-0030, RFC-0052 | 4 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0014 §2.1 `when` 모드 | RFC-0028, RFC-0060 | 3 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0014 §2.4 스킵 레코드 | RFC-0027, RFC-0028, RFC-0050, RFC-0060 | 5 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0015 §1 Full Grammar | RFC-0025, RFC-0028, RFC-0050 | 4 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0015 §3 정적 거부 | RFC-0051, RFC-0053, RFC-0054, RFC-0060 | 5 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0016 §3 피연산자의 차원 규칙 | RFC-0038, RFC-0051, RFC-0053, RFC-0054 | 5 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0016 §5 mode A/B 등가 | RFC-0051, RFC-0052 | 3 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0025 §5 실행 스코프 | RFC-0059 | 2 | deferred — consolidate via Supersedes in a follow-up (문턱 아래 — RFC-0048이 Accepted되면 3) |
+| RFC-0028 §6 Mode B | RFC-0050, RFC-0051 | 3 | deferred — consolidate via Supersedes in a follow-up |
+| RFC-0038 §3 등가 비교의 타입 규칙 | RFC-0051, RFC-0053, RFC-0054 | 4 | deferred — consolidate via Supersedes in a follow-up |
+
+**결정:** 사용자 결정(2026-10-26, 이슈 #263): 이번 변경은 통합 RFC를 쓰지 않는다. 15절 모두 위 표대로 이월하고 후속 이슈가 Supersedes 통합을 다룬다.
+
+**영향도:** 낮음 — 효력 있는 계약은 §2.2 규칙 3(최신 갱신이 이긴다)으로 여전히 정해진다. 남는 것은 읽는 비용이다.
+
+---
+
+### 발견 F7: §2.2 역링크 표류 — 이슈 #263 §4 처리 기록 (2026-10-26 기록)
+
+**사실:** 이슈 #263이 `scripts/rfc_lint.py`에 더한 §2.2 검사(Accepted RFC의 `- Updates:`가 괄호 밖에서 지목한 대상마다 `Updated-by: RFC-<갱신>`)를 이 변경 전 트리에 돌리면 17쌍이 걸린다. 이슈 본문 §4는 그중 RFC-0015 → RFC-0002 하나만 적었다. 17쌍(갱신 → 대상): RFC-0015 → 0001, 0002, 0008; RFC-0016 → 0001, 0002, 0008; RFC-0017 → 0008; RFC-0018 → 0017; RFC-0022 → 0014, 0021; RFC-0023 → 0021; RFC-0024 → 0023; RFC-0028 → 0025, 0027; RFC-0031 → 0004; RFC-0045 → 0025; RFC-0047 → 0045.
+
+**처리:**
+
+1. 역링크 17쌍 — 대상 RFC 11개(0001, 0002, 0004, 0008, 0014, 0017, 0021, 0023, 0025, 0027, 0045)의 머리에 `Updated-by:` 줄을, 해당 절 머리에 `> 갱신됨:` 줄을 달았다. RFC-0007 §2.2 표가 "대상에 남는 표기"로 정한 것이고 §2.1이 허용하는 비실질 편집이다. RFC-0015와 RFC-0016의 `Updates:`는 RFC-0001의 대상 절을 `§Appendix A/A.4 Node catalogue`로 적었지만 RFC-0001의 부록 A.4는 "constrained-decoding 호환 부분집합"이고 노드 카탈로그는 `### 노드 카탈로그` 절이다. 그래서 RFC-0001에 단 두 `Updated-by:` 줄은 실제 절 이름 `§노드 카탈로그`를 적었다 — RFC-0015·0016의 `Updates:` 문면은 Accepted 본문이라 고치지 않는다.
+2. 앞선 갱신을 빠뜨린 포인터 블록 — RFC-0001 §노드 카탈로그, RFC-0002 §Full grammar, RFC-0003 §Execution Model, RFC-0012 §G12.2·§G12.5, RFC-0014 §2.1·§2.4, RFC-0015 §1, RFC-0016 §3의 블록을 대상 머리의 `Updated-by:`와 맞췄다. 이슈 본문과 달리 RFC-0003 §Execution Model과 RFC-0012 §G12.2에는 블록이 있었고 앞선 갱신만 빠져 있었다.
+3. Draft RFC-0048의 표기 9곳을 지웠다 — 포인터 8줄(RFC-0001 §Open Questions, RFC-0025 §1·§3·§5, RFC-0038 §2·§Open Questions, RFC-0045 §2·§Open Questions)과 RFC-0012 머리의 `Updated-by: RFC-0048 (§G12.2)`. 근거: RFC-0007 §2.2 규칙 6(갱신 RFC는 Accepted된 순간 효력이 생긴다), 그리고 RFC-0050~0063이 Draft 시점에 남긴 기록("Draft이므로 대상 RFC에 `Updated-by:` 포인터를 달지 않는다"). RFC-0048이 Accepted되면 이 9곳을 다시 단다 — 그때부터 린터가 RFC-0001·0012·0025·0038·0045 머리의 `Updated-by: RFC-0048`을 요구한다.
+4. 직전 갱신 이름(규칙 5: 대상과 직전 갱신 RFC를 함께 지목, 이슈 #263 §4와 RFC-0062 l.6처럼 앞선 갱신을 여럿 적는 레포 선례를 따른 코디네이터 결정) — RFC-0049는 RFC-0002 §Full grammar에 RFC-0012를, RFC-0056과 RFC-0062는 RFC-0003 §Execution Model에 RFC-0041을 `Updates:` 괄호에 더했다(§2.1 깨진 인용 경로 수정 — 어느 텍스트가 이기는지는 규칙 3·5의 "최신 갱신이 이긴다"로 이미 정해져 있어 바뀌지 않는다).
+5. 고치지 않고 기록만 한 것 — RFC-0052(§Status의 바인딩 항목, §Reference-level Specification/2의 "RFC-0048 §4의 최종 텍스트 위에")와 RFC-0059(§Status의 `Updates:` 괄호와 본문)는 Draft RFC-0048 §4의 텍스트를 기반으로 쓰였다. 규칙 6에 따라 RFC-0048은 아직 효력이 없으므로 이 서술은 결함이지만, 그 문장을 바꾸는 것은 갱신의 기반을 바꾸는 실질 변경이라 RFC-0007 §2.1이 직접 편집을 금지한다. 해소는 RFC-0048의 승격 또는 Updates 개정이다 — 후속 이슈에 함께 적었다.

@@ -4,7 +4,7 @@
 
 - Status: **Accepted** (RFC-0056, 2026-10-22)
 - Updates: RFC-0001 §Reference-level Specification/노드 카탈로그 (Effect 표 — `Rejection` 행 신설, Behavior 표의 `WorkflowStep` 행 — children 허용에 `Rejection` 추가),
-  RFC-0003 §Reference-level Specification/Execution Model (Effect 표 — `Rejection` 행 신설; RFC-0032가 직전에 갱신한 표),
+  RFC-0003 §Reference-level Specification/Execution Model (+RFC-0041; Effect 표 — `Rejection` 행 신설; RFC-0032가 직전에 갱신한 표),
   RFC-0014 §Open Questions/1
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라 이미

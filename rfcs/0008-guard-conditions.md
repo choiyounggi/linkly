@@ -6,6 +6,9 @@
 - Implementation: **Complete** (Parser ✓, Mode A ✓, Mode B ✓, Differential ✓)
 - Updates: RFC-0002 §Full grammar, RFC-0003 §Guard
 - Updated-by: RFC-0012 (§Reference-level Specification/1. Full Grammar), RFC-0014 (§Reference-level Specification/2. Guard Runtime Semantics), RFC-0046 (§Examples)
+- Updated-by: RFC-0015 (§Reference-level Specification/1. Full Grammar)
+- Updated-by: RFC-0016 (§Reference-level Specification/1. Full Grammar)
+- Updated-by: RFC-0017 (§Examples/5.2 Guarded Workflow: guarded.lnpl)
 
 ## Motivation
 
@@ -55,6 +58,10 @@ until retryBudget == 0
 ## Reference-level Specification
 
 ### 1. Full Grammar (RFC-0002 §Full grammar/Condition 갱신)
+
+> 갱신됨: RFC-0012
+> 갱신됨: RFC-0015
+> 갱신됨: RFC-0016
 
 RFC-0002의 `Condition` 정의를 다음과 같이 갱신한다:
 
@@ -200,6 +207,9 @@ RFC-0004의 differential 등가 판정에 다음 항목을 실행 순서 분류�
 기존 `examples/login.lnpl` 시나리오는 **변경 없이 유지**된다. 이 RFC의 예제가 아니다.
 
 ### 5.2 Guarded Workflow: guarded.lnpl
+
+> 갱신됨: RFC-0017
+> 갱신됨: RFC-0046
 
 조건식 두 형태를 실증하는 새 시나리오. `examples/guarded.lnpl`:
 

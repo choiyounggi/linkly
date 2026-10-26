@@ -5,6 +5,7 @@
 - Status: **Accepted** (RFC-0045, 2026-08-30)
 - Updates: RFC-0025 §Reference-level Specification/2. 집계 표현식 문법,
   RFC-0025 §Reference-level Specification/3. 정적 거부
+- Updated-by: RFC-0047 (§Reference-level Specification/1. `AggFunc` 문법, §Reference-level Specification/5. `sum`의 Money 확장)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. RFC-0025 §2의 `AggFunc`
 생산 규칙(`'sum' | 'count'`)을 이 RFC가 처음으로 다시 넓힌다. RFC-0028의 Status는
@@ -117,6 +118,8 @@ Specification/3). "0을 낸다"거나 "조용히 무시한다"는 §Motivation�
 
 ### 1. `AggFunc` 문법 — RFC-0025 §2 갱신 (치환 후 최종 텍스트)
 
+> 갱신됨: RFC-0047
+
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0025 §Reference-level Specification/2의
 `AggFunc` 생산 규칙에 대한 **치환 후 최종 텍스트**다. 같은 절의 `AssignStep`·
 `Aggregate` 생산 규칙과 "정규화" 문단은 RFC-0025 원문 그대로 유효하며 이 RFC가
@@ -137,8 +140,6 @@ AggFunc      ::= 'sum' | 'count'
 `avg`/`min`/`max`가 그대로 들어간다 — 새 정규화 규칙이 필요 없다.
 
 ### 2. 정적 거부 — RFC-0025 §3 갱신 (치환 후 최종 텍스트)
-
-> 갱신됨: RFC-0048
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0025 §Reference-level Specification/3의
 **치환 후 최종 텍스트**다. `lower`에서 판정한다는 원칙(RFC-0025 §3 원문)은
@@ -183,6 +184,8 @@ epoch-ms 인코딩을 통한 순서, Money는 RFC-0044 §5의 같은-통화 순�
 결정이고, 같은 이유(§Guide-level Explanation의 "무음 실패를 만들지 않는다")다.
 
 ### 5. `sum`의 Money 확장
+
+> 갱신됨: RFC-0047
 
 `sum <ref>`가 Money 필드를 가리킬 때, 값은 RowSet의 모든 행에서 그 필드의
 minor-unit 정수(RFC-0044 §1)를 더한 합이다 — 통화는 첫 행이 정하고, 이후
@@ -343,8 +346,6 @@ workflow BadSummary
 | 5 | **`min`/`max`가 Money를 받되 통화 불일치를 컴파일 타임에 거부** | RFC-0044 §Reference-level Specification/5·§Alternatives 5가 이미 기각한 것과 같다 — 통화는 행 데이터이므로 정적으로 알 수 없다 |
 
 ## Open Questions
-
-> 갱신됨: RFC-0048
 
 1. **`group by`.** §Alternatives 1이 이월한 것 그대로 — RFC-0038 §Open
    Questions 1의 나머지 절반이다. 다중 그룹의 RowSet 표현(그룹 경계를 어느
