@@ -82,8 +82,11 @@ unavailable 갈래로 떨어진다 — response_format json_object는 JSON임만
 AI 게이트 4종은 전부 **advisory**로 시작한다(`_ai-gate.yml`의 `blocking` 입력
 기본값 `false`). advisory는 **exit 1(verdict=fail 또는 blocker finding)과
 게이트 실행 실패에만** 적용된다 — PR 코멘트로 결과는 남지만(또는 실행 실패
-로그만 남고) 머지를 막지 않는다. exit 2(형식 오류)·exit 3(공허한 통과)는
-`blocking` 값과 무관하게 **항상** 잡을 실패시킨다. "코드가 나쁨"(1)과
+로그만 남고) 머지를 막지 않는다. exit 3(공허한 통과)은 두 러너 모두에서,
+exit 2(형식 오류)는 claude-code 러너에서 `blocking` 값과 무관하게 **항상** 잡을
+실패시킨다. 알려진 예외는 generic-http 러너의 exit 2다 — 위에서 적은 대로
+`unavailable` 갈래로 떨어져 `blocking`이 false인 동안은 경고만 남기고, 실제
+원인(스키마 위반 줄)은 판정 스텝 로그에서 봐야 한다. "코드가 나쁨"(1)과
 "게이트 자체가 고장남"(2·3)을 advisory가 같이 삼키면, 고장난 게이트가 오탐
 0건의 가장 깨끗한 게이트로 보여 아래 승격 절차 자체를 속인다.
 
@@ -128,7 +131,7 @@ approvals를 걸지 않는가") AI 게이트 하나가 두 번째 리뷰어 자�
 2. 게이트 실행 실패 — "판정 반영"의 `unavailable` 갈래(Claude 스텝 실패 또는 빈 출력).
 3. 변경 파일 0건 — 삭제만 있는 PR이거나 빈 diff. "변경 파일 없음 처리"가 실패시킨다
    (advisory이면 경고만). 삭제만 있는 PR은 아래 `skip-ai-gate` 라벨로 우회한다.
-4. 판정 스크립트 exit 2(형식 오류)·exit 3(공허한 통과) — `blocking`과 무관하게 항상 실패.
+4. 판정 스크립트 exit 3(공허한 통과)은 `blocking`과 무관하게 항상 실패. exit 2(형식 오류)는 claude-code 러너에서 항상 실패, generic-http 러너에서는 2번의 `unavailable` 갈래.
 
 탈출구는 `skip-ai-gate` 라벨이다(아래 절). 이 예외는 기준을 채운 뒤 이 절을
 실측 수용률로 갱신해 닫는다.
