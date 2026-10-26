@@ -16,7 +16,7 @@
             "description": "the workflow completed"
           },
           "400": {
-            "description": "validation failed (validation-failed), or a create received no id for an entity whose id is not derived generated (id-required) -- issue #209"
+            "description": "validation failed (validation-failed), or a create received no id for an entity whose id is not derived generated (id-required) -- issue #209, or the Idempotency-Key header is longer than 255 bytes (idempotency-key-too-long) -- issue #258"
           },
           "404": {
             "description": "a workflow read found no row for the entity it looked up, or a workflow update/delete affected no row (not-found) -- issue #197, issue #215"
@@ -37,7 +37,8 @@
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 255
             },
             "description": "replay this workflow's prior response for the same key instead of running it again"
           },

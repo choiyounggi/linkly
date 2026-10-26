@@ -25,10 +25,12 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
 
+from lnpl import wsgi
 from lnpl.drivers import DriverError, SqliteRepositoryDriver
 from lnpl.interp import FakeRepository
 from lnpl.lower import lower
@@ -43,6 +45,7 @@ from tests.test_wsgi_contract import call_wsgi
 EVENTS_PATH_VALIDATE = "/-/events/order-validated"
 EVENTS_PATH_CREATE = "/-/events/order-created"
 EVENTS_PATH_ADJUST = "/-/events/order-adjusted"
+_TMP_BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".claude", "tmp")
 
 # Issue #201: a read-then-set consumer, the shape an optimistic-version write
 # conflict needs. Its own document, so `SRC`'s route set stays as it was.
@@ -252,6 +255,123 @@ class TestEnvelopeValidation(unittest.TestCase):
         self.assertIn("data", body["detail"])
 
 
+class TestCloudEventsIdBound(unittest.TestCase):
+    """Issue #261: the CloudEvents id is the idempotency key, so it gets M23's 255-byte bound (UTF-8 bytes) and must be strict UTF-8 -- both refused before any driver is opened."""
+
+    def setUp(self):
+        os.makedirs(_TMP_BASE, exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix="lnpl-t261-", dir=_TMP_BASE)
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.path = os.path.join(tmp, "store.db")
+        self.calls = []
+        self.opened = []
+        path, calls, opened = self.path, self.calls, self.opened
+
+        class _CountingDriver(SqliteRepositoryDriver):
+            def __init__(self):
+                super().__init__(path)
+                opened.append(1)
+
+            def execute(self, entity_id, operation, key):
+                calls.append(("execute", operation))
+                return super().execute(entity_id, operation, key)
+
+            def idempotency_begin(self, workflow_id, key, now_ms, ttl_ms):
+                calls.append(("begin", key))
+                return super().idempotency_begin(workflow_id, key, now_ms, ttl_ms)
+
+        self.app = make_wsgi_app(_doc(SRC), repository_factory=_CountingDriver)
+        self.opened_at_boot = len(self.opened)
+        del self.calls[:]
+
+    def _create(self, event_id, order_id, app=None):
+        return _post(app or self.app, EVENTS_PATH_CREATE,
+                     _envelope(event_id=event_id, event_type="OrderCreated",
+                               data={"id": order_id, "amount": 1}))
+
+    def assert_refused(self, status, headers, body, code, detail):
+        self.assertEqual(400, status)
+        self.assertEqual("application/problem+json", headers["Content-Type"])
+        self.assertEqual(code, body["code"])
+        self.assertEqual(400, body["status"])
+        self.assertEqual(wsgi._TITLES[code], body["title"])
+        self.assertEqual(detail, body["detail"])
+        self.assertNotIn("correlation_id", body)
+        self.assertEqual(self.opened_at_boot, len(self.opened))
+        self.assertEqual([], self.calls)
+
+    def test_error_a_256_byte_id_is_400_before_any_claim(self):
+        detail = "CloudEvents id is 256 bytes long; the maximum is 255 bytes"
+        status, headers, body = self._create("a" * 256, "ord-261-1")
+        self.assert_refused(status, headers, body, "cloudevents-id-too-long", detail)
+        # Redelivered: still 400, never 409 -- nothing was claimed.
+        status, headers, body = self._create("a" * 256, "ord-261-1")
+        self.assert_refused(status, headers, body, "cloudevents-id-too-long", detail)
+
+    def test_error_a_4000_byte_id_is_400(self):
+        status, headers, body = self._create("k" * 4000, "ord-261-2")
+        self.assert_refused(
+            status, headers, body, "cloudevents-id-too-long",
+            "CloudEvents id is 4000 bytes long; the maximum is 255 bytes")
+
+    def test_boundary_a_255_byte_id_is_claimed_and_replayed(self):
+        first_status, _h, first_body = self._create("b" * 255, "ord-261-3")
+        self.assertEqual(200, first_status)
+        self.assertEqual("completed", first_body["status"])
+        self.assertEqual(1, sum(1 for c in self.calls if c == ("execute", "create")))
+        second_status, _h2, second_body = self._create("b" * 255, "ord-261-3")
+        self.assertEqual(200, second_status)
+        self.assertEqual(first_body, second_body)
+        self.assertEqual(1, sum(1 for c in self.calls if c == ("execute", "create")))
+
+    def test_boundary_85_hangul_chars_are_255_bytes_and_accepted(self):
+        status, _headers, _body = self._create("가" * 85, "ord-261-4")
+        self.assertEqual(200, status)
+
+    def test_error_128_e_acute_chars_are_256_bytes_and_refused(self):
+        status, headers, body = self._create("é" * 128, "ord-261-5")
+        self.assert_refused(
+            status, headers, body, "cloudevents-id-too-long",
+            "CloudEvents id is 256 bytes long; the maximum is 255 bytes")
+
+    def test_boundary_63_four_byte_chars_are_252_bytes_and_accepted(self):
+        status, _headers, _body = self._create("\U0001F600" * 63, "ord-261-6")
+        self.assertEqual(200, status)
+
+    def test_error_64_four_byte_chars_are_256_bytes_and_refused(self):
+        status, headers, body = self._create("\U0001F600" * 64, "ord-261-7")
+        self.assert_refused(
+            status, headers, body, "cloudevents-id-too-long",
+            "CloudEvents id is 256 bytes long; the maximum is 255 bytes")
+
+    def test_error_an_unpaired_surrogate_id_is_cloudevents_invalid(self):
+        status, headers, body = self._create("\ud800x", "ord-261-8")
+        self.assert_refused(
+            status, headers, body, "cloudevents-invalid",
+            "id: 'id' must be encodable as UTF-8 (it contains an unpaired surrogate)")
+
+    def test_error_an_unpaired_surrogate_over_255_bytes_is_still_cloudevents_invalid(self):
+        status, headers, body = self._create("\ud800" * 86, "ord-261-9")
+        self.assert_refused(
+            status, headers, body, "cloudevents-invalid",
+            "id: 'id' must be encodable as UTF-8 (it contains an unpaired surrogate)")
+
+    def test_boundary_the_fake_backend_refuses_the_same_256_byte_id(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            app = make_wsgi_app(_doc(SRC))
+        status, _headers, body = self._create("a" * 256, "ord-261-fake", app=app)
+        self.assertEqual(400, status)
+        self.assertEqual("cloudevents-id-too-long", body["code"])
+
+    def test_error_authentication_still_runs_before_the_bound(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            app = make_wsgi_app(_doc(SECURED_SRC))
+        status, _headers, body = _post(app, EVENTS_PATH_VALIDATE,
+                                       _envelope(event_id="a" * 256))
+        self.assertEqual(401, status)
+        self.assertEqual("auth-missing", body["code"])
+
+
 class TestExecutionOutcomes(unittest.TestCase):
     """D7 — the 3-way status contract."""
 
@@ -446,7 +566,7 @@ class TestIdempotency(unittest.TestCase):
         only (ruling R-t258-1): this route keys on the CloudEvents `id`
         and never reads that header."""
         app = self._counting_app()
-        envelope = _envelope(event_id="e" * 300, event_type="OrderCreated",
+        envelope = _envelope(event_id="e" * 255, event_type="OrderCreated",
                              data={"id": "ord-long-id", "amount": 1})
         status, _headers, body = call_wsgi(
             app, "POST", EVENTS_PATH_CREATE,
@@ -731,6 +851,94 @@ class TestIdempotency(unittest.TestCase):
         # same "no store, no dedup" signal `test_idempotency.py` pins for
         # the general workflow route.
         self.assertNotEqual(body1["correlation_id"], body2["correlation_id"])
+
+
+class TestReleaseFailure(unittest.TestCase):
+    """Issue #261: a DriverError from idempotency_release on either consume
+    503 path still answers that path's 503, never a raw 500; the claim is
+    kept (in-progress until its TTL), like a failed rollback leaves it."""
+
+    def setUp(self):
+        os.makedirs(_TMP_BASE, exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix="lnpl-t261-", dir=_TMP_BASE)
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.path = os.path.join(tmp, "store.db")
+
+    def test_error_a_failing_release_on_the_escape_path_still_answers_503(self):
+        path = self.path
+
+        class _ReleaseFailsAfterEscape(SqliteRepositoryDriver):
+            def __init__(self):
+                super().__init__(path)
+
+            def execute(self, entity_id, operation, key):
+                if operation == "create":
+                    raise RuntimeError("boom")
+                return super().execute(entity_id, operation, key)
+
+            def idempotency_release(self, workflow_id, key):
+                raise DriverError("release boom")
+
+        app = make_wsgi_app(_doc(SRC), repository_factory=_ReleaseFailsAfterEscape)
+        envelope = _envelope(event_id="evt-release-fails-1", event_type="OrderCreated",
+                             data={"id": "ord-release-fails-1", "amount": 1})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            first_status, first_headers, first_body = _post(
+                app, EVENTS_PATH_CREATE, envelope)
+            second_status, _h2, second_body = _post(app, EVENTS_PATH_CREATE, envelope)
+
+        self.assertEqual(503, first_status)
+        self.assertEqual("application/problem+json", first_headers["Content-Type"])
+        self.assertEqual("event-retry-later", first_body["code"])
+        self.assertTrue(first_body["correlation_id"].startswith("req-"))
+        self.assertEqual("1", first_headers.get("Retry-After"))
+        # The claim was kept, so the redelivery sees it in progress.
+        self.assertEqual(409, second_status)
+        self.assertEqual("idempotency-in-progress", second_body["code"])
+        log = err.getvalue()
+        self.assertIn("serve: internal error consuming event", log)
+        self.assertIn("RuntimeError: boom", log)
+        self.assertIn("idempotency_release", log)
+        self.assertIn("the claim is kept until its TTL", log)
+        self.assertIn("(correlation_id=%s): release boom" % first_body["correlation_id"], log)
+
+    def test_error_a_failing_release_on_the_503_branch_still_answers_503(self):
+        path = self.path
+
+        class _ReleaseFailsAfterDriverError(SqliteRepositoryDriver):
+            def __init__(self):
+                super().__init__(path)
+
+            def execute(self, entity_id, operation, key):
+                if operation == "create":
+                    raise DriverError("the store is unreachable")
+                return super().execute(entity_id, operation, key)
+
+            def idempotency_release(self, workflow_id, key):
+                raise DriverError("release boom")
+
+        app = make_wsgi_app(_doc(SRC), repository_factory=_ReleaseFailsAfterDriverError)
+        envelope = _envelope(event_id="evt-release-fails-2", event_type="OrderCreated",
+                             data={"id": "ord-release-fails-2", "amount": 1})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            first_status, first_headers, first_body = _post(
+                app, EVENTS_PATH_CREATE, envelope)
+            second_status, _h2, second_body = _post(app, EVENTS_PATH_CREATE, envelope)
+
+        self.assertEqual(503, first_status)
+        self.assertEqual("event-retry-later", first_body["code"])
+        self.assertEqual("1", first_headers.get("Retry-After"))
+        self.assertEqual(409, second_status)
+        self.assertEqual("idempotency-in-progress", second_body["code"])
+        log = err.getvalue()
+        self.assertIn("idempotency_release", log)
+        self.assertIn("the claim is kept until its TTL", log)
+        self.assertIn("correlation_id=req-", log)
+        self.assertIn("release boom", log)
+        # The normal 503 branch, not the escape path.
+        self.assertNotIn("serve: internal error consuming event", log)
 
 
 if __name__ == "__main__":

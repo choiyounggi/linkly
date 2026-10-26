@@ -144,11 +144,21 @@ def _validate_cloudevents_envelope(payload):
     cross-checked against the event's own name here — the slug already IS
     the routing key (RFC-0040 D5); that cross-check is left to the relay,
     a deliberate simplification the RFC states.
+
+    `id` must also be strict UTF-8 (issue #261): a JSON lone-surrogate
+    escape is refused here, because the id becomes the idempotency key.
     """
     for field in _CLOUDEVENTS_REQUIRED:
         value = payload.get(field)
         if not isinstance(value, str) or not value:
             return field, "%r must be a non-empty string" % field
+    # issue #261: the id becomes the idempotency key a driver stores, so it
+    # must be strict UTF-8 -- json.loads turns a lone-surrogate escape
+    # ("\ud800") into a str that no UTF-8 encoder accepts.
+    try:
+        payload["id"].encode("utf-8")
+    except UnicodeEncodeError:
+        return "id", "'id' must be encodable as UTF-8 (it contains an unpaired surrogate)"
     if payload["specversion"] != "1.0":
         return "specversion", "must be \"1.0\", got %r" % payload["specversion"]
     if "data_base64" in payload:
@@ -863,6 +873,23 @@ def map_consume_result(result):
     return 422, "event-rejected"
 
 
+def _release_event_claim(repository, workflow_id, event_key, correlation_id):
+    """Release the consume route's claim on `event_key` (issue #118, D6 r2).
+
+    issue #261: a `DriverError` from `idempotency_release` must not escape
+    the route as a raw 500 -- the caller is already answering 503, and the
+    claim simply stays `in-progress` until its TTL, the same state a failed
+    `rollback()` leaves. Logged once, under the request's correlation id.
+    Any other exception type is a driver bug and still propagates.
+    """
+    try:
+        repository.idempotency_release(workflow_id, event_key)
+    except DriverError as exc:
+        print("serve: idempotency_release failed consuming event; the claim "
+              "is kept until its TTL (correlation_id=%s): %s"
+              % (correlation_id, exc), file=sys.stderr)
+
+
 _TITLES = {
     "not-found": "no such path",
     "id-required": "the payload must supply an id for this create",
@@ -888,6 +915,7 @@ _TITLES = {
     "read-failed": "repository read failed",
     "not-ready": "the server is not ready to receive traffic",
     "cloudevents-invalid": "the CloudEvents envelope is invalid",
+    "cloudevents-id-too-long": "the CloudEvents id is too long",
     "event-rejected": "the event was permanently rejected",
     "event-retry-later": "processing failed transiently -- retry after backing off",
     "rate-limited": "rate limit exceeded",
@@ -2206,6 +2234,16 @@ class LnplWsgiApp:
             return _json_response(start_response, 400,
                                   problem(400, "cloudevents-invalid",
                                          "%s: %s" % (field, detail)))
+        # issue #261: the CloudEvents id is the idempotency key, so it gets
+        # M23's bound (same constant, same wording) before any driver is
+        # opened -- counted in UTF-8 bytes of the decoded JSON string.
+        id_bytes = len(payload["id"].encode("utf-8"))
+        if id_bytes > MAX_IDEMPOTENCY_KEY_LENGTH:
+            return _json_response(
+                start_response, 400,
+                problem(400, "cloudevents-id-too-long",
+                       "CloudEvents id is %d bytes long; the maximum is %d bytes"
+                       % (id_bytes, MAX_IDEMPOTENCY_KEY_LENGTH)))
         workflow_id = route["workflow"]
         event_key = payload["id"]
         data = payload.get("data") or {}
@@ -2282,7 +2320,8 @@ class LnplWsgiApp:
                               file=sys.stderr)
                         traceback.print_exc(file=sys.stderr)
                     if rolled_back:
-                        repository.idempotency_release(workflow_id, event_key)
+                        _release_event_claim(repository, workflow_id, event_key,
+                                             correlation_id)
                 return _json_response(
                     start_response, 503,
                     problem(503, "event-retry-later", "internal server error",
@@ -2314,7 +2353,8 @@ class LnplWsgiApp:
                     # a fresh run, turning one transient failure into an
                     # hours-long outage for this event id. Releasing right
                     # here reclaims the key immediately for the next attempt.
-                    repository.idempotency_release(workflow_id, event_key)
+                    _release_event_claim(repository, workflow_id, event_key,
+                                         correlation_id)
                 else:
                     # A 200 or 422 is a DETERMINISTIC outcome -- the
                     # identical envelope would fail (or succeed) the
