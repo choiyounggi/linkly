@@ -70,6 +70,12 @@ exit 2(형식 오류)가 되어 "게이트 정의 결함"과 "게이트가 실�
 `scripts/ai_gate_verdict.py`가 같은 스키마·같은 exit code로 그 파일을 검사한다.
 generic-http의 실패(비-2xx 응답, 잘린 출력, 비었거나 JSON이 아닌 content)는 Claude Code
 액션의 실패와 같은 **게이트 실행 실패**(`unavailable`) 갈래로 떨어진다.
+generic-http에서는 스키마를 어기거나 다른 gate 값을 단 JSON(판정 스크립트 exit 2)도 같은
+unavailable 갈래로 떨어진다 — response_format json_object는 JSON임만 보장하고 스키마 준수는
+보장하지 않기 때문이다. 이때 화면의 경고는 일반 실행 실패 문구("generic-http 러너 실패 또는 빈
+출력")로 보이고, 실제 원인(스키마 위반 줄)은 판정 스텝 로그에 있다. 모델의 형식 실수는 결정적일
+수 있어 재실행으로 사라지지 않는다. claude-code 러너에서는 exit 2가 여전히 blocking과 무관하게
+잡을 실패시킨다.
 
 ## advisory → blocking 승격 절차
 
@@ -220,9 +226,15 @@ gh variable set AI_GATE_HTTP_API_STYLE --body "classic"   # 선택
     temperature를 HTTP 400으로 거부한다.
 - 변수는 있는데 시크릿이 없으면, Anthropic 경우와 같은 `시크릿 부재 처리` 규칙으로
   skip한다(advisory: `::warning::`을 남기고 초록, blocking: 빨강).
+- PR 텍스트: 러너는 네 generic-http 게이트(rfc-conformance·golden-approval·test-quality·
+  prose-factcheck) 모두에 PR 제목·본문과 merge-base..head 커밋 메시지를 user 메시지 끝의
+  "--- PR text" 구획으로 함께 보낸다. 워크플로는 제목·본문을 GITHUB_EVENT_PATH 이벤트 파일에서
+  jq로 읽는다. 본문이 비면 (empty), 커밋이 없으면 (none)이 들어간다.
 - 크기 예산: diff는 200000바이트에서 잘리고 `[diff truncated at 200000 bytes]` 줄이 눈에
-  보이게 붙는다. 대상 모델의 컨텍스트 창은 128k 토큰 이상이어야 한다. 창이 더 작으면
-  `error: http 400`으로 실패하고 `unavailable`로 보인다.
+  보이게 붙는다. PR 텍스트는 65536바이트에서 잘리고 `[pr text truncated at 65536 bytes]` 줄이
+  붙는다. 두 상한은 128k 토큰 창을 기준으로 잡았지만, 바이트당 토큰 수는 모델과 언어마다
+  달라서 두 상한이 다 찬 요청은 128k 창도 넘을 수 있다. 창을 넘으면 `error: http 400`으로
+  실패하고 `unavailable`로 보인다.
 - 키 노출:
   - 평문 `http://` base URL은 키를 암호화 없이 보낸다. 엔드포인트가 신뢰된 사설망에
     있지 않다면 `https://`를 쓴다. 리다이렉트는 따라가지 않으므로(3xx는 이름 붙은

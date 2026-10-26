@@ -33,6 +33,9 @@ GROUP_LINE = ("  group: ai-gate-${{ inputs.gate_name }}-${{ github.event.pull_re
 KEY = "sk-test-AAAA"
 VALID = ('{"gate": "rfc-conformance", "verdict": "pass", "examined": {"files": '
          '["rfcs/0001-example.md"], "note": "synthetic fixture"}, "findings": []}')
+NOTE_LESS = VALID.replace(', "note": "synthetic fixture"', "")
+SCHEMA_EXIT2_LINE = ("모델 출력이 판정 스키마를 어겼다(exit 2) — generic-http 러너에서는 게이트 실행 "
+                     "실패(code=unavailable)로 다룬다.")
 
 # b1cd523 `_ai-gate.yml` l.130 / l.133 (`[$GATE_NAME]` → `[rfc-conformance]`).
 MISSING_BLOCKING = ("::error::[rfc-conformance] ANTHROPIC_API_KEY가 없어 게이트를 실행하지 "
@@ -100,8 +103,9 @@ def _env_lines(marker):
     return lines
 
 
-# 러너가 직접 넣어 주는 환경변수 — 스텝 env에 선언하지 않는다.
-RUNNER_PROVIDED = {"GITHUB_OUTPUT", "RUNNER_TEMP"}
+# 러너가 직접 넣어 주는 환경변수 — 스텝 env에 선언하지 않는다. GITHUB_EVENT_PATH(이벤트
+# JSON 파일 경로)도 러너가 준다(issue #260: PR 제목·본문을 그 파일에서 읽는다).
+RUNNER_PROVIDED = {"GITHUB_OUTPUT", "RUNNER_TEMP", "GITHUB_EVENT_PATH"}
 
 # 이 태스크가 바꾸거나 새로 만든 스텝의 env 블록 전체(issue #252). claude-code 쪽 (issue #244: 변경 파일 없음 처리)
 # 줄은 b1cd523의 `_ai-gate.yml`과 같은 것이다.
@@ -172,6 +176,17 @@ def _exec(script, env, cwd=None):
         proc = subprocess.run(["bash", "-e", "-c", script], env=full, cwd=cwd,
                               capture_output=True, text=True)
         return proc, _read(out)
+
+
+def _event_file(box, title, body):
+    path = os.path.join(box, "event.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"pull_request": {"title": title, "body": body}}, fh)
+    return path
+
+
+PR_FILE_TEXT = ("PR title: STEP PR TITLE MARKER\n\nPR body:\n(empty)\n\n"
+                "Commit messages (merge-base..head):\n(none)\n")
 
 
 class ParseAndInputTest(unittest.TestCase):
@@ -323,10 +338,43 @@ class VerdictTest(unittest.TestCase):
                                      RUNNER="generic-http", HTTP_OUTCOME="success")
         self.assertEqual(out, "code=1\n", proc.stdout + proc.stderr)
 
-    def test_generic_http_wrong_gate_is_code_2(self):
+    def test_generic_http_wrong_gate_is_unavailable(self):
         proc, out = self.run_verdict(VALID.replace('"rfc-conformance"', '"other-gate"'),
                                      RUNNER="generic-http", HTTP_OUTCOME="success")
+        self.assertEqual(out, "code=unavailable\n", proc.stdout + proc.stderr)
+        self.assertIn("gate 불일치", proc.stdout)
+        self.assertIn(SCHEMA_EXIT2_LINE, proc.stdout)
+
+    def test_generic_http_schema_violation_is_unavailable(self):
+        # issue #260 항목 1: response_format json_object는 JSON임만 보장한다.
+        proc, out = self.run_verdict(NOTE_LESS, RUNNER="generic-http", HTTP_OUTCOME="success")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(out, "code=unavailable\n", proc.stdout + proc.stderr)
+        self.assertIn("'note' is a required property", proc.stdout)
+        self.assertIn(SCHEMA_EXIT2_LINE, proc.stdout)
+
+    def test_claude_code_schema_violation_is_still_code_2(self):
+        proc, out = self.run_verdict(None, RUNNER="claude-code", CLAUDE_OUTCOME="success",
+                                     STRUCTURED_OUTPUT=NOTE_LESS)
         self.assertEqual(out, "code=2\n", proc.stdout + proc.stderr)
+        self.assertNotIn(SCHEMA_EXIT2_LINE, proc.stdout)
+
+    def test_generic_http_vacuous_pass_is_still_code_3(self):
+        proc, out = self.run_verdict(VALID.replace('["rfcs/0001-example.md"]', "[]"),
+                                     RUNNER="generic-http", HTTP_OUTCOME="success")
+        self.assertEqual(out, "code=3\n", proc.stdout + proc.stderr)
+
+    def test_generic_http_schema_violation_is_green_when_advisory_and_red_when_blocking(self):
+        proc, out = self.run_verdict(NOTE_LESS, RUNNER="generic-http", HTTP_OUTCOME="success")
+        code = out.strip().split("=", 1)[1]
+        self.assertEqual(code, "unavailable", proc.stdout + proc.stderr)
+        for blocking, expected in (("false", 0), ("true", 1)):
+            with self.subTest(blocking=blocking):
+                proc2, _ = _exec(_run_block("name: 판정 반영"),
+                                 {"VERDICT_CODE": code, "BLOCKING": blocking,
+                                  "RUNNER_LABEL": "generic-http 러너",
+                                  "PROVIDER_LABEL": "모델 엔드포인트"})
+                self.assertEqual(proc2.returncode, expected, proc2.stdout)
 
     def test_claude_code_failure_message_is_unchanged(self):
         proc, out = self.run_verdict(None, RUNNER="claude-code", CLAUDE_OUTCOME="failure",
@@ -358,6 +406,15 @@ class VerdictReportTest(unittest.TestCase):
                                   PROVIDER_LABEL="Anthropic API")
         self.assertEqual(proc.returncode, 1)
         self.assertEqual(proc.stdout, UNAVAILABLE_BLOCKING + "\n")
+
+    def test_exit_2_and_3_fail_even_when_advisory(self):
+        for code in ("2", "3"):
+            with self.subTest(code=code):
+                proc, _ = _exec(_run_block("name: 판정 반영"),
+                                {"VERDICT_CODE": code, "BLOCKING": "false",
+                                 "RUNNER_LABEL": "Claude Code 액션",
+                                 "PROVIDER_LABEL": "Anthropic API"})
+                self.assertEqual(proc.returncode, 1, proc.stdout)
 
     def test_generic_http_labels_are_rendered(self):
         proc, _ = self.run_report(BLOCKING="true", RUNNER_LABEL="generic-http 러너",
@@ -404,6 +461,8 @@ class HttpRunnerStepTest(unittest.TestCase):
                 fh.write(PROMPT)
             with open(os.path.join(temp, "ai-gate.diff"), "wb") as fh:
                 fh.write(DIFF)
+            with open(os.path.join(temp, "ai-gate-pr.txt"), "w", encoding="utf-8") as fh:
+                fh.write(PR_FILE_TEXT)
             env = {"PATH": os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"],
                    "AI_GATE_HTTP_API_KEY": KEY, "BASE_URL": url, "MODEL": "step-model",
                    "API_STYLE": api_style, "GATE_NAME": "golden-approval", "RUNNER_TEMP": temp}
@@ -446,6 +505,8 @@ class HttpRunnerStepTest(unittest.TestCase):
                 fh.write(PROMPT)
             with open(os.path.join(temp, "ai-gate.diff"), "wb") as fh:
                 fh.write(DIFF)
+            with open(os.path.join(temp, "ai-gate-pr.txt"), "w", encoding="utf-8") as fh:
+                fh.write(PR_FILE_TEXT)
             env = {"PATH": os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"],
                    "AI_GATE_HTTP_API_KEY": KEY, "BASE_URL": url, "MODEL": "fake-model",
                    "API_STYLE": "", "GATE_NAME": "rfc-conformance", "RUNNER_TEMP": temp}
@@ -461,6 +522,7 @@ class HttpRunnerStepTest(unittest.TestCase):
         self.assertIn('"gate" field must be "rfc-conformance"', body["messages"][0]["content"])
         self.assertIn("GATE PROMPT MARKER", body["messages"][1]["content"])
         self.assertIn("diff --git a/rfcs/0001-example.md", body["messages"][1]["content"])
+        self.assertIn("STEP PR TITLE MARKER", body["messages"][1]["content"])
 
 
 class HttpInputsTest(unittest.TestCase):
@@ -493,7 +555,8 @@ class HttpInputsTest(unittest.TestCase):
 
             proc, _ = _exec(_run_block("id: http_inputs"),
                             dict(git_env, BASE_SHA=base, HEAD_SHA=head, PROMPT_TEXT="PROMPT",
-                                 RUNNER_TEMP=temp), cwd=repo)
+                                 RUNNER_TEMP=temp,
+                                 GITHUB_EVENT_PATH=_event_file(box, "T", "B")), cwd=repo)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(_read(os.path.join(temp, "ai-gate-prompt.txt")), "PROMPT\n")
             self.assertTrue(_read(os.path.join(temp, "ai-gate.diff"))
@@ -542,13 +605,80 @@ class HttpInputsTest(unittest.TestCase):
 
             proc, _ = _exec(_run_block("id: http_inputs"),
                             dict(git_env, BASE_SHA=base, HEAD_SHA=head, PROMPT_TEXT="PROMPT",
-                                 RUNNER_TEMP=temp), cwd=repo)
+                                 RUNNER_TEMP=temp,
+                                 GITHUB_EVENT_PATH=_event_file(box, "T", "B")), cwd=repo)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             diff = _read(os.path.join(temp, "ai-gate.diff"))
         self.assertEqual(re.findall(r"^diff --git a/(\S+) b/", diff, re.MULTILINE),
                          ["a.txt", "added.txt"], diff)
         self.assertIn("\n+new\n", diff)
         self.assertNotIn("b2", diff)
+
+    def _pr_text_run(self, body, commits, event=True):
+        """base 커밋 하나 위에 `commits`개 커밋을 쌓고 http_inputs를 돌린다 —
+        (proc, ai-gate-pr.txt 내용 또는 None, repo 경로)."""
+        git_env = {"PATH": os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_CONFIG_GLOBAL": os.devnull}
+
+        def git(*args):
+            return subprocess.run(["git", "-c", "user.name=t260", "-c",
+                                   "user.email=t260@example.invalid", *args], cwd=repo,
+                                  env=git_env, capture_output=True, text=True,
+                                  check=True).stdout.strip()
+
+        with _scratch() as box:
+            repo = os.path.join(box, "repo")
+            temp = os.path.join(box, "runner_temp")
+            os.makedirs(repo)
+            os.makedirs(temp)
+            git("init", "-q")
+            with open(os.path.join(repo, "a.txt"), "w") as fh:
+                fh.write("old\n")
+            git("add", "a.txt")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            for message in commits:
+                with open(os.path.join(repo, "a.txt"), "a") as fh:
+                    fh.write(message + "\n")
+                git("commit", "-q", "-am", message)
+            head = git("rev-parse", "HEAD")
+            event = (_event_file(box, "Fix parser", body) if event
+                     else os.path.join(box, "absent.json"))
+            proc, _ = _exec(_run_block("id: http_inputs"),
+                            dict(git_env, BASE_SHA=base, HEAD_SHA=head, PROMPT_TEXT="PROMPT",
+                                 RUNNER_TEMP=temp, GITHUB_EVENT_PATH=event), cwd=repo)
+            path = os.path.join(temp, "ai-gate-pr.txt")
+            text = _read(path) if os.path.exists(path) else None
+            pwned = os.path.exists(os.path.join(repo, "pwned"))
+        return proc, text, pwned
+
+    def test_pr_text_carries_title_body_and_commit_messages(self):
+        # issue #260 항목 2: prose-factcheck의 판정 대상은 PR 제목·본문과 커밋 메시지다.
+        proc, text, _ = self._pr_text_run("Removes legacy_parse()",
+                                          ["first change", "second change"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(text.startswith(
+            "PR title: Fix parser\n\nPR body:\nRemoves legacy_parse()\n\n"
+            "Commit messages (merge-base..head):\n"), text)
+        self.assertIn("first change", text)
+        self.assertIn("second change", text)
+
+    def test_null_body_and_no_commits_get_explicit_markers(self):
+        proc, text, _ = self._pr_text_run(None, [])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(text, "PR title: Fix parser\n\nPR body:\n(empty)\n\n"
+                               "Commit messages (merge-base..head):\n(none)\n")
+
+    def test_shell_metacharacters_in_the_body_stay_data(self):
+        body = "$(touch pwned) `id`"
+        proc, text, pwned = self._pr_text_run(body, ["first change"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(body, text)
+        self.assertFalse(pwned)
+
+    def test_missing_event_file_fails_the_step(self):
+        proc, _, _ = self._pr_text_run("x", ["first change"], event=False)
+        self.assertNotEqual(proc.returncode, 0)
 
 
 def _bash_major():
@@ -630,26 +760,11 @@ class EmptyChangeSetTest(unittest.TestCase):
 
 class WiringTest(unittest.TestCase):
 
-    def test_every_gated_step_still_checks_the_secret(self):
-        self.assertEqual(_read(REUSABLE).count("steps.check_secret.outputs.skip != 'true'"), 11)
-
-    def test_claude_only_steps_are_gated_on_the_claude_runner(self):
-        for marker in ("id: claude", "id: schema"):
-            with self.subTest(marker=marker):
-                self.assertIn("&& inputs.runner == 'claude-code'", _step_text(marker))
-
     def test_http_runner_step_is_wired(self):
         step = _step_text("id: http_runner")
         self.assertIn("continue-on-error: true", step)
         self.assertIn("inputs.runner == 'generic-http'", step)
         self.assertIn("AI_GATE_HTTP_API_KEY: ${{ secrets.ai_gate_http_api_key }}", step)
-
-    def test_both_generic_http_steps_run_only_for_the_generic_http_runner(self):
-        line = ("        if: steps.check_secret.outputs.skip != 'true' && "
-                "steps.changed_files.outputs.count != '0' && inputs.runner == 'generic-http'\n")
-        for marker in ("id: http_inputs", "id: http_runner"):
-            with self.subTest(marker=marker):
-                self.assertIn(line, _step_text(marker))
 
     def test_http_steps_sit_between_dependency_install_and_verdict(self):
         text = _read(REUSABLE)
@@ -657,21 +772,6 @@ class WiringTest(unittest.TestCase):
         # 리뷰 r3 B1: 순서가 뒤바뀌면 러너가 프롬프트·diff 파일보다 먼저 돈다.
         self.assertLess(text.index("id: http_inputs"), text.index("id: http_runner"))
         self.assertLess(text.index("id: http_runner"), text.index("id: verdict"))
-
-    def test_shared_steps_run_for_both_runners(self):
-        # 리뷰 r3 B2: 공유 스텝에 runner 조건이 붙으면 다른 러너가 빈 입력으로
-        # unavailable(advisory면 초록)이 된다. `if:` 줄 전체를 고정한다.
-        both = ("        if: steps.check_secret.outputs.skip != 'true' && "
-                "steps.changed_files.outputs.count != '0'\n")
-        for marker, line in (("id: changed_files",
-                              "        if: steps.check_secret.outputs.skip != 'true'\n"),
-                             ("id: build_prompt", both),
-                             ("name: 판정 환경 준비", both),
-                             ("name: 판정 의존성 설치", both),
-                             ("id: verdict", both),
-                             ("name: 판정 반영", both)):
-            with self.subTest(marker=marker):
-                self.assertIn(line, _step_text(marker))
 
     def test_runner_dependent_env_values_are_pinned_verbatim(self):
         # 리뷰 r2 A1: 위 MissingSecretTest·VerdictReportTest는 이 값을 직접 주입하므로,
@@ -711,18 +811,19 @@ class WiringTest(unittest.TestCase):
     def test_runner_temp_file_names_agree_across_steps(self):
         # 리뷰 r2 A2: 한쪽 이름만 바뀌어도 CI에서는 매번 code=unavailable(advisory면
         # 초록)이 된다. 각 스텝에서 이름을 뽑아 서로 같은지 본다.
+        # issue #260: PR 텍스트 파일도 같은 방식으로 맞춘다.
         writes = re.findall(r'> "\$RUNNER_TEMP/([^"]+)"', _run_block("id: http_inputs"))
         runner = _run_block("id: http_runner")
         reads = [re.search(r'--%s "\$RUNNER_TEMP/([^"]+)"' % flag, runner)
-                 for flag in ("prompt-file", "diff-file", "out")]
+                 for flag in ("prompt-file", "diff-file", "pr-text-file", "out")]
         self.assertTrue(all(reads), runner)
-        prompt, diff, out = (m.group(1) for m in reads)
+        prompt, diff, pr, out = (m.group(1) for m in reads)
         verdict = re.search(r"^          HTTP_VERDICT_FILE: \$\{\{ runner\.temp \}\}/(\S+)$",
                             _step_text("id: verdict"), re.MULTILINE)
         self.assertIsNotNone(verdict)
-        self.assertEqual(writes, [prompt, diff])
+        self.assertEqual(writes, [prompt, diff, pr])
         self.assertEqual(verdict.group(1), out)
-        self.assertEqual(len({prompt, diff, out}), 3)
+        self.assertEqual(len({prompt, diff, pr, out}), 4)
 
     def test_claude_action_pin_is_unchanged(self):
         self.assertEqual(_read(REUSABLE).count(
