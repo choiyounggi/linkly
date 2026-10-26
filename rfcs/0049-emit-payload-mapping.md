@@ -3,7 +3,7 @@
 ## Status
 
 - Status: **Accepted** (RFC-0049, 2026-10-22)
-- Updates: RFC-0002 §Full grammar (`StepLine` 프로덕션 — `docs/CONSISTENCY-CHECK.md`
+- Updates: RFC-0002 §Full grammar (+RFC-0012; `StepLine` 프로덕션 — `docs/CONSISTENCY-CHECK.md`
   발견 F5, 2026-09-28 기록)
 
 번호가 0049인 이유: 0048까지 점유됐다(RFC-0048). RFC-0007 §3은 번호 재사용을

@@ -13,12 +13,19 @@
   §2.1 출하 기록 CHANGELOG.md(Unreleased와 모든 릴리스 절)가 `RFC-NNNN`
                  (빗금 꼴 `RFC-NNNN/NNNN` 포함)으로 인용한 RFC는 rfcs/에 문서가
                  있고 Accepted 또는 Superseded여야 함 (issue #249)
+  §2.2 역링크    Accepted RFC의 `- Updates:` 항목(이어지는 줄 포함)이 괄호 밖에서
+                 지목한 `RFC-NNNN`마다 대상 문서의 `- Updated-by:` 항목에
+                 `RFC-<갱신>`이 있어야 함. 괄호 안 이름은 직전 갱신(규칙 5)이라
+                 대상이 아니고, `없음`으로 시작하는 항목은 대상이 없다. Draft·
+                 Review·Superseded 갱신 RFC는 건너뛴다(규칙 6) (issue #263)
 
-검사하지 않는 것: 내용의 정합성, Supersedes/Updates가 가리키는 대상의 존재
-여부(§2.2는 연쇄 갱신까지 요구해서 기계적 판정이 모호하다), 골든 시나리오 사용.
+검사하지 않는 것: 내용의 정합성, 절 머리 포인터 줄(`> 갱신됨:`)과 절 이름,
+연쇄(괄호 안 직전 갱신)의 정확성, 규칙 7의 누적 길이, Supersedes 대상,
+골든 시나리오 사용.
 
-이 스크립트는 테스트 스위트에 걸려 있지 않다 — 기여자가 손으로 돌리는 도구다.
-검사 로직 자체는 `impl/tests/test_rfc_lint.py`가 합성 입력으로 검증한다.
+CI(`.github/workflows/ci.yml`)가 blocking 게이트로 돌린다. 검사 로직은
+`impl/tests/test_rfc_lint.py`가 합성 입력으로 검증하고, §2.2 역링크만은 실제
+rfcs/에도 돌려 0건을 요구한다.
 """
 import os
 import re
@@ -204,6 +211,110 @@ def check_changelog_file(path, statuses):
         return check_changelog_citations(fh.read(), statuses)
 
 
+# 역링크 검사(RFC-0007 §2.2, issue #263): Accepted 갱신 RFC가 `Updates:`로 지목한 대상은
+# 자기 머리의 `Updated-by:`로 그 RFC를 되짚어야 한다(RFC-0007 §2.2 표).
+ENTRY_RE = re.compile(r"^-\s*(Updates|Updated-by):\s*(.*)$")
+RFC_REF_RE = re.compile(r"RFC-(\d{4})(?!\d)")
+
+
+def header_entries(text, key):
+    """`- <key>:` 항목 본문의 목록. `key`는 "Updates" 또는 "Updated-by".
+
+    항목은 그 줄과 이어지는 줄이다 — 빈 줄, `- `·`#`·`>`로 시작하는 줄, 코드 펜스
+    줄에서 끝난다. 펜스 안(프로세스 RFC가 인용한 템플릿)은 건너뛴다.
+    """
+    out, fenced, current = [], False, None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if line.startswith("```"):
+            fenced = not fenced
+            if current is not None:
+                out.append(current)
+                current = None
+            continue
+        if fenced:
+            continue
+        m = ENTRY_RE.match(stripped)
+        if m:
+            if current is not None:
+                out.append(current)
+            current = m.group(2) if m.group(1) == key else None
+            continue
+        if current is None:
+            continue
+        if not stripped or stripped.startswith(("- ", "#", ">")):
+            out.append(current)
+            current = None
+        else:
+            current += " " + stripped
+    if current is not None:
+        out.append(current)
+    return out
+
+
+def outside_parens(text):
+    """괄호 밖 글자만 남긴다(중첩 허용). 괄호 안 RFC 이름은 직전 갱신(규칙 5)이다."""
+    depth, kept = 0, []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            kept.append(ch)
+    return "".join(kept)
+
+
+def update_targets(number, text):
+    """RFC `number`의 `Updates:` 항목이 괄호 밖에서 지목한 RFC 번호 집합.
+
+    `없음`으로 시작하는 항목은 대상이 없다. 자기 번호는 대상이 아니다.
+    """
+    targets = set()
+    for entry in header_entries(text, "Updates"):
+        if entry.lstrip("* ").startswith("없음"):
+            continue
+        targets.update(RFC_REF_RE.findall(outside_parens(entry)))
+    targets.discard(number)
+    return targets
+
+
+def back_link_sources(text):
+    """`Updated-by:` 항목이 이름을 댄 RFC 번호 집합(괄호 안 절 이름은 보지 않는다)."""
+    sources = set()
+    for entry in header_entries(text, "Updated-by"):
+        sources.update(RFC_REF_RE.findall(entry))
+    return sources
+
+
+def check_back_links(named_texts):
+    """§2.2 역링크 누락. 각 항목은 (파일명, 조항, 메시지), (대상, 갱신) 번호 순.
+
+    Accepted 갱신 RFC만 본다 — Draft·Review·Superseded는 규칙 6에 따라 효력이 없다.
+    """
+    docs = {}
+    for name, text in named_texts:
+        m = FILENAME_RE.match(name)
+        if m:
+            docs[m.group(1)] = (name, text)
+    keyed = []
+    for updater in sorted(docs):
+        name, text = docs[updater]
+        if status_of(text) != "Accepted":
+            continue
+        for target in sorted(update_targets(updater, text)):
+            if target not in docs:
+                keyed.append(((target, updater), (
+                    name, "§2.2", "RFC-%s의 Updates가 지목한 RFC-%s의 문서가 rfcs/에 없다"
+                    % (updater, target))))
+            elif updater not in back_link_sources(docs[target][1]):
+                keyed.append(((target, updater), (
+                    docs[target][0], "§2.2",
+                    "RFC-%s가 RFC-%s를 Updates로 지목했는데 RFC-%s 머리에 "
+                    "`Updated-by: RFC-%s`가 없다" % (updater, target, target, updater))))
+    return [finding for _, finding in sorted(keyed)]
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     quiet = "--quiet" in argv
@@ -223,6 +334,7 @@ def main(argv=None):
     findings.extend(("CHANGELOG.md", clause, msg)
                     for clause, msg in check_changelog_file(
                         CHANGELOG_PATH, collect_statuses(named)))
+    findings.extend(check_back_links(named))
 
     if not quiet:
         print("RFC lint — %d개 문서" % len(names))

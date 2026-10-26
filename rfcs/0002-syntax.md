@@ -6,6 +6,8 @@
 - Updated-by: RFC-0008 (§Full grammar)
 - Updated-by: RFC-0009 (§Open Questions)
 - Updated-by: RFC-0012 (§Full grammar)
+- Updated-by: RFC-0015 (§Full grammar)
+- Updated-by: RFC-0016 (§Full grammar)
 - Updated-by: RFC-0019 (§Block structure)
 - Updated-by: RFC-0049 (§Full grammar)
 - Updated-by: RFC-0052 (§Full grammar)
@@ -317,6 +319,9 @@ workflow 본문의 각 라인은 step이거나 제어 구조다:
 ### Full grammar (W3C-style EBNF)
 
 > 갱신됨: RFC-0008
+> 갱신됨: RFC-0012
+> 갱신됨: RFC-0015
+> 갱신됨: RFC-0016
 > 갱신됨: RFC-0049
 > 갱신됨: RFC-0052
 > 갱신됨: RFC-0060

@@ -4,6 +4,7 @@
 
 - Status: **Accepted** (RFC-0017, 2026-08-06)
 - Updates: RFC-0008 §Examples/5.2 Guarded Workflow: guarded.lnpl
+- Updated-by: RFC-0018 (§Open Questions 1)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목한다. 이 문서는 RFC-0008 §5.2의
 **예제 목록만** 갱신한다. 가드의 문법(RFC-0008 §1, RFC-0015·RFC-0016이 갱신),
@@ -198,6 +199,8 @@ step 3 cache token           # 비교식이 거짓 → call token 건너뜀
 가르치는 표면이고, 알려진 발산을 내는 예제는 그 반대를 가르친다.
 
 ## Open Questions
+
+> 갱신됨: RFC-0018
 
 1. **차등 관측 맵의 스텝 이름 키.** 맵을 스텝 이름으로 키잡는 것이 의도된
    설계인지, 스텝 id로 잡아야 하는지 정해진 바가 없다. 정해지지 않은 채 두 모드가

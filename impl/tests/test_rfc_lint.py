@@ -4,6 +4,9 @@
 도구이고 스위트에 걸려 있지 않다(현재 RFC-0011이 §7 템플릿 섹션 5개를 빠뜨려
 있는데, 그것을 채우는 일은 내용 작업이라 도구가 강제할 사안이 아니다).
 
+예외는 §2.2 역링크 하나다: `BackLinkRealTreeTest`가 실제 rfcs/에 검사를 돌려 0건을
+요구한다(issue #263 — 승격 때 손으로 다는 역링크가 표류했다).
+
 검사하는 것은 린터가 **옳게 판정하는가**다. 도구가 틀리면 그것을 믿고 내린
 판단이 전부 틀어지므로, 규칙마다 통과 케이스와 위반 케이스를 함께 둔다.
 """
@@ -275,6 +278,180 @@ class StatusCollectionTest(unittest.TestCase):
             {"0008": "Accepted"})
 
 
+def doc(number, status="Accepted", header=""):
+    """good_body 문서의 Status 줄 바로 뒤에 머리 줄(`header`)을 끼운다."""
+    body = good_body(number=number, title="RFC-%s: 제목" % number, status=status)
+    return body.replace("(2026-08-05)\n", "(2026-08-05)\n" + header, 1)
+
+
+class BackLinkTest(unittest.TestCase):
+    """§2.2: Accepted RFC의 `Updates:` 대상마다 `Updated-by: RFC-<갱신>`이 있어야 한다."""
+
+    def test_flags_a_target_without_the_back_link(self):
+        problems = rfc_lint.check_back_links([
+            ("0002-syntax.md", doc("0002")),
+            ("0008-guard-conditions.md",
+             doc("0008", header="- Updates: RFC-0002 §Full grammar\n"))])
+        self.assertEqual(len(problems), 1)
+        where, clause, msg = problems[0]
+        self.assertEqual((where, clause), ("0002-syntax.md", "§2.2"))
+        self.assertIn("RFC-0008", msg)
+        self.assertIn("RFC-0002", msg)
+
+    def test_accepts_a_present_back_link(self):
+        self.assertEqual(rfc_lint.check_back_links([
+            ("0002-syntax.md",
+             doc("0002", header="- Updated-by: RFC-0008 (§Full grammar)\n")),
+            ("0008-guard-conditions.md",
+             doc("0008", header="- Updates: RFC-0002 §Full grammar\n"))]), [])
+
+    def test_skips_a_draft_updater(self):
+        self.assertEqual(rfc_lint.check_back_links([
+            ("0002-syntax.md", doc("0002")),
+            ("0008-guard-conditions.md",
+             doc("0008", status="Draft", header="- Updates: RFC-0002 §Full grammar\n"))]), [])
+
+    def test_skips_a_review_updater(self):
+        self.assertEqual(rfc_lint.check_back_links([
+            ("0002-syntax.md", doc("0002")),
+            ("0008-guard-conditions.md",
+             doc("0008", status="Review", header="- Updates: RFC-0002 §Full grammar\n"))]), [])
+
+    def test_skips_a_superseded_updater(self):
+        self.assertEqual(rfc_lint.check_back_links([
+            ("0002-syntax.md", doc("0002")),
+            ("0008-guard-conditions.md",
+             doc("0008", status="Superseded", header="- Updates: RFC-0002 §Full grammar\n"))]), [])
+
+    def test_a_parenthesised_predecessor_is_not_a_target(self):
+        self.assertEqual(rfc_lint.check_back_links([
+            ("0002-syntax.md",
+             doc("0002", header="- Updated-by: RFC-0060 (§Full grammar)\n")),
+            ("0049-emit-payload-mapping.md", doc("0049")),
+            ("0060-assigned-field-guard.md",
+             doc("0060", header="- Updates: RFC-0002 §Full grammar (+RFC-0049)\n"))]), [])
+
+    def test_the_target_outside_the_parentheses_is_still_checked(self):
+        problems = rfc_lint.check_back_links([
+            ("0002-syntax.md", doc("0002")),
+            ("0049-emit-payload-mapping.md", doc("0049")),
+            ("0060-assigned-field-guard.md",
+             doc("0060", header="- Updates: RFC-0002 §Full grammar (+RFC-0049)\n"))])
+        self.assertEqual([p[0] for p in problems], ["0002-syntax.md"])
+
+    def test_reads_targets_on_continuation_lines(self):
+        problems = rfc_lint.check_back_links([
+            ("0002-syntax.md",
+             doc("0002", header="- Updated-by: RFC-0028 (§Full grammar)\n")),
+            ("0014-guard-skip-observability.md", doc("0014")),
+            ("0028-arith.md", doc("0028", header=(
+                "- Updates: RFC-0002 §Full grammar,\n"
+                "  RFC-0014 §Reference-level Specification/2\n")))])
+        self.assertEqual([p[0] for p in problems], ["0014-guard-skip-observability.md"])
+
+    def test_reads_a_back_link_on_a_continuation_line(self):
+        self.assertEqual(rfc_lint.check_back_links([
+            ("0024-line.md", doc("0024", header=(
+                "- Updated-by: RFC-0001 (§집행 진단의\n"
+                "  `line`), RFC-0026 (§Examples)\n"))),
+            ("0026-enforce.md",
+             doc("0026", header="- Updates: RFC-0024 §Reference-level Specification/5\n"))]), [])
+
+    def test_a_blank_line_ends_the_entry(self):
+        self.assertEqual(rfc_lint.update_targets("0008", doc("0008", header=(
+            "- Updates: RFC-0002 §Full grammar\n\nRFC-0014는 본문 산문이다.\n"))), {"0002"})
+
+    def test_a_list_item_or_pointer_line_ends_the_entry(self):
+        self.assertEqual(rfc_lint.update_targets("0008", doc("0008", header=(
+            "- Updates: RFC-0002 §Full grammar\n- Note: RFC-0014는 목록 항목이다\n"))), {"0002"})
+        self.assertEqual(rfc_lint.update_targets("0008", doc("0008", header=(
+            "- Updates: RFC-0002 §Full grammar\n> 갱신됨: RFC-0014\n"))), {"0002"})
+
+    def test_a_five_digit_number_is_not_an_rfc_reference(self):
+        self.assertEqual(rfc_lint.update_targets("0008", doc("0008", header=(
+            "- Updates: RFC-00149 §x, RFC-0002 §Full grammar\n"))), {"0002"})
+
+    def test_an_entry_starting_with_none_has_no_targets(self):
+        self.assertEqual(rfc_lint.update_targets("0064", doc("0064", header=(
+            "- Updates: 없음 — RFC-0012 §G12.2와 RFC-0025를 참조만 한다\n"))), set())
+
+    def test_an_entry_inside_a_code_fence_is_ignored(self):
+        self.assertEqual(rfc_lint.update_targets("0007", doc("0007", header=(
+            "```markdown\n- Updates: RFC-0002 §Full grammar\n```\n"))), set())
+
+    def test_the_rfcs_own_number_is_not_a_target(self):
+        self.assertEqual(rfc_lint.update_targets("0031", doc("0031", header=(
+            "- Updates: RFC-0004 §파이프라인 — RFC-0031 자신의 범위는 이 행뿐이다\n"))), {"0004"})
+
+    def test_a_prose_mention_is_not_a_back_link(self):
+        problems = rfc_lint.check_back_links([
+            ("0002-syntax.md", doc("0002", header=(
+                "  `Updated-by: RFC-0008`는 아직 달지 않았다.\n"))),
+            ("0008-guard-conditions.md",
+             doc("0008", header="- Updates: RFC-0002 §Full grammar\n"))])
+        self.assertEqual([p[0] for p in problems], ["0002-syntax.md"])
+
+    def test_flags_a_target_without_a_document(self):
+        problems = rfc_lint.check_back_links([
+            ("0008-guard-conditions.md",
+             doc("0008", header="- Updates: RFC-0099 §Full grammar\n"))])
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems[0][0], "0008-guard-conditions.md")
+        self.assertIn("RFC-0099", problems[0][2])
+
+    def test_empty_input_has_no_findings(self):
+        self.assertEqual(rfc_lint.check_back_links([]), [])
+
+    def test_findings_follow_target_then_updater_order(self):
+        problems = rfc_lint.check_back_links([
+            ("0001-semantic-ir.md", doc("0001")),
+            ("0002-syntax.md", doc("0002")),
+            ("0015-value.md", doc("0015", header="- Updates: RFC-0002 §a, RFC-0001 §b\n")),
+            ("0016-time.md", doc("0016", header="- Updates: RFC-0001 §b\n"))])
+        self.assertEqual([(p[0], p[2][:8]) for p in problems],
+                         [("0001-semantic-ir.md", "RFC-0015"),
+                          ("0001-semantic-ir.md", "RFC-0016"),
+                          ("0002-syntax.md", "RFC-0015")])
+
+
+def real_rfcs():
+    """실제 rfcs/의 (파일명, 본문) 목록."""
+    names = sorted(n for n in os.listdir(rfc_lint.RFC_DIR) if n.endswith(".md"))
+    out = []
+    for name in names:
+        with open(os.path.join(rfc_lint.RFC_DIR, name), encoding="utf-8") as fh:
+            out.append((name, fh.read()))
+    return out
+
+
+class BackLinkRealTreeTest(unittest.TestCase):
+    """known-good: 실제 rfcs/는 §2.2 역링크 누락이 0건이어야 한다(issue #263)."""
+
+    def test_the_sweep_selects_real_updates(self):
+        texts = dict(real_rfcs())
+        self.assertEqual(
+            rfc_lint.update_targets("0015", texts["0015-value-semantics.md"]),
+            {"0001", "0002", "0008"})
+
+    def test_every_accepted_update_has_its_back_link(self):
+        self.assertEqual(rfc_lint.check_back_links(real_rfcs()), [])
+
+    def test_removing_one_real_back_link_reddens_the_check(self):
+        named = real_rfcs()
+        line = "- Updated-by: RFC-0015 (§Full grammar)\n"
+        mutated = []
+        for name, text in named:
+            if name == "0002-syntax.md":
+                mutant = text.replace(line, "", 1)
+                self.assertNotEqual(mutant, text, "the mutation did not apply")
+                text = mutant
+            mutated.append((name, text))
+        problems = rfc_lint.check_back_links(mutated)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems[0][0], "0002-syntax.md")
+        self.assertIn("RFC-0015", problems[0][2])
+
+
 TMP_PARENT = os.path.join(REPO, ".claude", "tmp")
 
 
@@ -321,6 +498,23 @@ class MainWiringTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("notes.md", out)
         self.assertIn("§3", out)
+
+    def test_main_fails_on_a_missing_back_link(self):
+        rc, out = self.run_main(
+            {"0001-semantic-ir.md": doc("0001"),
+             "0002-syntax.md": doc("0002", header="- Updates: RFC-0001 §노드 카탈로그\n")},
+            "- Changed (issue #1, RFC-0001).\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("§2.2", out)
+        self.assertIn("RFC-0002", out)
+
+    def test_main_passes_when_the_back_link_is_present(self):
+        rc, out = self.run_main(
+            {"0001-semantic-ir.md": doc("0001", header="- Updated-by: RFC-0002 (§노드 카탈로그)\n"),
+             "0002-syntax.md": doc("0002", header="- Updates: RFC-0001 §노드 카탈로그\n")},
+            "- Changed (issue #1, RFC-0001).\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("문제 없음.", out)
 
 
 if __name__ == "__main__":

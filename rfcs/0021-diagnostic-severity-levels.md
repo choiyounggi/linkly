@@ -3,6 +3,8 @@
 ## Status
 
 - Status: **Accepted** (RFC-0021, 2026-08-07)
+- Updated-by: RFC-0022 (§코드 → 등급 (정본))
+- Updated-by: RFC-0023 (§코드 → 등급 (정본))
 - Updated-by: RFC-0042 (§Reference-level Specification/코드 → 등급 (정본), §Reference-level Specification/`--strict[=LEVEL]`)
 
 새 계약 표면이라 Supersedes도 Updates도 없다. 진단 채널 자체(RFC-0009 계열의
@@ -76,6 +78,10 @@ lnpl compile app.lnpl --strict=error      # 예약 — 오늘 아무것도 일�
 비교는 `SEVERITIES.index()`다. 이 순서를 바꾸면 CLI의 모든 문턱이 뒤집힌다.
 
 ### 코드 → 등급 (정본)
+
+> 갱신됨: RFC-0022
+> 갱신됨: RFC-0023
+> 갱신됨: RFC-0042
 
 `impl/lnpl/diagnostics.py`의 `SEVERITY_OF`가 정본이며 `CODES`를 정확히 덮는다.
 
