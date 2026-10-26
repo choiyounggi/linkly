@@ -582,15 +582,17 @@ def _operation(wf, service, con, nodes, entities, refined):
         "description": "Steps: %s" % " -> ".join(s["name"] for s in steps),
         "responses": {
             "200": {"description": "the workflow completed"},
-            "400": {"description": "validation failed (validation-failed), or a create received no id for an entity whose id is not derived generated (id-required) -- issue #209"},
+            "400": {"description": "validation failed (validation-failed), or a create received no id for an entity whose id is not derived generated (id-required) -- issue #209, or the Idempotency-Key header is longer than 255 bytes (idempotency-key-too-long) -- issue #258"},
             "404": {"description": "a workflow read found no row for the entity it looked up, or a workflow update/delete affected no row (not-found) -- issue #197, issue #215"},
             "409": {"description": "a repository create conflicted with an existing row (conflict), another request with the same Idempotency-Key is still running (idempotency-in-progress) -- issue #113, or an optimistic-version write conflict (write-conflict) -- issue #201"},
             "412": {"description": "If-Match no longer matches the current version of the entity this workflow reads -- issue #113"},
             "504": {"description": "the workflow deadline was exceeded"},
         },
         "parameters": [
+            # issue #261: equals wsgi.MAX_IDEMPOTENCY_KEY_LENGTH (cannot import it:
+            # wsgi imports this module).
             {"name": "Idempotency-Key", "in": "header", "required": False,
-             "schema": {"type": "string"},
+             "schema": {"type": "string", "maxLength": 255},
              "description": "replay this workflow's prior response for the same key instead of running it again"},
             {"name": "If-Match", "in": "header", "required": False,
              "schema": {"type": "string"},

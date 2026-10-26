@@ -12,6 +12,7 @@ from lnpl.openapi import (DECIMAL_FACET_KEYWORD, FACET_KEYWORD, NARROWING,
                           _response_schema, _slug, generate)
 from lnpl.parser import parse
 from lnpl.types import SEMANTIC_TYPES
+from lnpl.wsgi import MAX_IDEMPOTENCY_KEY_LENGTH
 
 SRC = """
 capability postgres
@@ -1305,6 +1306,51 @@ class TestDeclaredFailureCodes(unittest.TestCase):
             for method, op in item.items():
                 with self.subTest(path=path, method=method):
                     self.assertNotIn("422", op.get("responses", {}))
+
+
+class TestIdempotencyKeyHeaderBound(unittest.TestCase):
+    """issue #261: the generated contract declares the server's M23 bound
+    (issue #258) on the Idempotency-Key header and names its 400 code."""
+
+    EXAMPLES = ("login", "checkout", "shorten", "guarded", "linkhub", "emitted")
+
+    def _post_operations(self, name):
+        with open(os.path.join(REPO_ROOT, "examples", name + ".lnpl"),
+                  encoding="utf-8") as fh:
+            spec = generate(lower(parse(fh.read()), name).to_document())
+        return [item["post"] for item in spec["paths"].values() if "post" in item]
+
+    def test_every_post_operation_declares_max_length_255(self):
+        self.assertEqual(255, MAX_IDEMPOTENCY_KEY_LENGTH)
+        for name in self.EXAMPLES:
+            with self.subTest(example=name):
+                ops = self._post_operations(name)
+                self.assertTrue(ops)
+                for op in ops:
+                    params = {p["name"]: p for p in op["parameters"]}
+                    self.assertEqual(
+                        {"type": "string", "maxLength": MAX_IDEMPOTENCY_KEY_LENGTH},
+                        params["Idempotency-Key"]["schema"])
+
+    def test_if_match_keeps_its_unbounded_schema(self):
+        for name in self.EXAMPLES:
+            with self.subTest(example=name):
+                for op in self._post_operations(name):
+                    params = {p["name"]: p for p in op["parameters"]}
+                    self.assertEqual({"type": "string"}, params["If-Match"]["schema"])
+
+    def test_400_description_names_idempotency_key_too_long(self):
+        for name in self.EXAMPLES:
+            with self.subTest(example=name):
+                for op in self._post_operations(name):
+                    desc = op["responses"]["400"]["description"]
+                    self.assertIn("(idempotency-key-too-long)", desc)
+                    self.assertIn("issue #258", desc)
+                    self.assertIn("(validation-failed)", desc)
+                    self.assertIn("(id-required)", desc)
+
+    def test_boundary_an_example_without_workflows_has_no_post_operation(self):
+        self.assertEqual([], self._post_operations("staged"))
 
 
 if __name__ == "__main__":

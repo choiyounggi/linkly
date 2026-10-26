@@ -9,6 +9,27 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Changed
+- **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a
+  CloudEvents `id` longer than 255 bytes (UTF-8) with 400
+  `cloudevents-id-too-long` (problem+json, E9) before any repository
+  driver is opened. Such ids were accepted before; on `lnpl-postgres` an
+  `id` of about 4000 characters failed with an unhandled 500. An `id`
+  that is not valid UTF-8 (an unpaired surrogate escape such as `\ud800`)
+  is now refused with 400 `cloudevents-invalid`; before, the `fake`
+  backend accepted it and the bundled sqlite driver failed with an
+  unhandled 500 (issue #261).
+- `lnpl openapi`: the generated `Idempotency-Key` header parameter
+  declares `maxLength: 255`, and the workflow POST `400` description
+  lists `idempotency-key-too-long` (issue #261).
+
+### Fixed
+- `lnpl serve` / `build_app()`: a `DriverError` raised by
+  `idempotency_release` on the event-consume 503 paths no longer escapes
+  as a raw 500; the response stays 503 `event-retry-later` with
+  `Retry-After: 1`, the claim is kept until its TTL, and stderr logs the
+  release failure under the same `correlation_id` (issue #261).
+
 ## [0.9.0] — 2026-10-22
 "The operations-hardening release."
 

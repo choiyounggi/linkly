@@ -182,6 +182,7 @@ linkly가 따르는 규범 문서는 없다.
 비ASCII 문자는 2~4바이트로 센다. 255는 Stripe의 상한과 같다("Idempotency keys
 are up to 255 characters long"); 헤더 draft는 길이를 정하지 않는다. 빈 값은
 여전히 유효한 키다.
+생성된 OpenAPI도 이 헤더에 `maxLength: 255`를 선언한다(이슈 #261) — JSON Schema의 `maxLength`는 문자 수를 세므로 ASCII 키에서만 바이트 상한과 같다.
 
 | # | 관측 조건 | HTTP | error `code` |
 |---|-----------|------|--------------|
@@ -329,10 +330,11 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 `application/json`만(`;` 뒤 파라미터는 무시) 받고, 그 외 값이나
 `data_base64`(바이너리 모드)는 거부한다. `data`는 기본값 `{}`로, 이
 워크플로의 입력 페이로드가 된다(D6).
+`id`는 멱등성 키로 `lnpl_idempotency (workflow_id, key)` 인덱스에 그대로 들어가므로 M23과 같은 255바이트 상한을 둔다(E9) — 길이는 JSON 문자열 값을 UTF-8로 인코딩한 바이트 수다. CloudEvents 명세는 `id`의 최대 길이를 정하지 않으므로 이 상한은 소비자 측 정책이다.
 
 | # | 관측 조건 | HTTP | error `code` |
 |---|-----------|------|--------------|
-| E1 | `specversion`/`id`/`source`/`type` 중 하나라도 비어있지 않은 문자열이 아니거나 `specversion != "1.0"` | 400 | `cloudevents-invalid` |
+| E1 | `specversion`/`id`/`source`/`type` 중 하나라도 비어있지 않은 문자열이 아니거나 `specversion != "1.0"`이거나, `id`가 UTF-8로 인코딩할 수 없는 문자열(짝 없는 서로게이트 이스케이프 `\ud800` 등, 이슈 #261) | 400 | `cloudevents-invalid` |
 | E2 | `datacontenttype`이 있는데 `application/json`이 아니거나, `data_base64`가 있음(바이너리 모드) | 400 | `cloudevents-invalid` |
 | E3 | `data`가 있는데 JSON object가 아님 | 400 | `cloudevents-invalid` |
 | E4 | 같은 `id`로 이미 실행 중(#113과 같은 충돌 신호) | 409 | `idempotency-in-progress` |
@@ -340,6 +342,7 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 | E6 | 실행 실패, 데드라인 초과 또는 실패 스텝의 효과가 `RepositoryCall`/`NetworkCall`(`DriverError` 계열), 또는 낙관적 버전 쓰기 충돌(`failure_kind == "write-conflict"`, 이슈 #201 — 실패 스텝이 `set`이라 효과가 `Assignment`여도 여기다) — 일시적, 릴레이는 재시도해야 한다 | 503 + `Retry-After: 1` | `event-retry-later` |
 | E7 | 실행 실패, 그 외 전부(`Validation` 거부, 명시적 비즈니스/가드 `RunError`(저자가 선언한 `fail <code>` — `failure_kind == "rejected"`, RFC-0056), create 충돌, `not-found` — 영속 백엔드 읽기 미스(이슈 #197)나 0행 `update`/`delete`(이슈 #215), `id` 없는 create `id-required`(RFC-0055)) — 영구적, 같은 페이로드를 다시 돌려도 같은 결과다 | 422 | `event-rejected` |
 | E8 | 저장소 드라이버(`RepositoryDriver`)의 `supports_idempotency()`가 False — CloudEvents `id`가 곧 멱등성 키이므로 이 라우트의 모든 요청이 해당한다. 봉투 검사(E1-E3) 다음, E4보다 먼저 판정하며 클레임도 워크플로 실행도 하지 않는다 | 501 | `idempotency-unsupported` |
+| E9 | CloudEvents `id`가 255바이트(UTF-8 인코딩 기준)를 넘음(이슈 #261) — 봉투 검사(E1-E3) 다음, E8·E4보다 먼저, 저장소 드라이버를 열기 전에 거부하므로 클레임도 워크플로 실행도 하지 않는다. `fake`를 포함한 모든 백엔드에서 같다 | 400 | `cloudevents-id-too-long` |
 
 **멱등성 (D6)** — CloudEvents `id`가 멱등성 키다. `lnpl_idempotency`(이슈
 #113)를 **그대로** 재사용한다 — 두 번째 저장소를 만들지 않는다. 200과
@@ -355,6 +358,7 @@ dead-letter할지 기계로 판정해야 하는 대상이 "이 호출자가 뭘 
 실행의 부분 쓰기가 해제와 함께 커밋되지 않는다. 그 `rollback()`마저 실패하면
 클레임을 해제하지 않는다 — 부분 쓰기를 커밋하는 것보다 낫기 때문에, 그 `id`는
 TTL이 끝날 때까지 E4(409)를 받는다.
+`idempotency_release` 자체가 `DriverError`로 실패해도(이슈 #261) 응답은 같은 503 `event-retry-later`이고, 클레임은 해제되지 않은 채 TTL이 끝날 때까지 E4(409)를 받는다 — stderr에는 원래 실패의 트레이스백과 해제 실패 한 줄이 같은 `correlation_id`로 남는다.
 `fake` 백엔드(멱등성 저장소 없음)는 매번 독립적으로
 실행한다(D9/D11 기존 규약과 동일). 클레임 메서드 3종을 구현하지 않은
 드라이버(`supports_idempotency()` False)에서는 봉투 검사 다음 E8(501
