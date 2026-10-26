@@ -454,10 +454,15 @@ class _RecordingSqliteDriver(drivers_module.SqliteRepositoryDriver):
     every transaction/outbox call the relay makes -- the
     `RelayBatchTransactionTest.record_publishes` wrapper appends "publish"
     to the same list -- plus the seqs it drained and acked. `ack_error` /
-    `commit_error` (str) make `ack_outbox` / `commit` raise DriverError."""
+    `commit_error` (str) make `ack_outbox` / `commit` raise DriverError.
+    `max_drains` is the test's own deadline (issue #262): a relay whose
+    batch loop never stops fails with AssertionError on the next drain
+    instead of hanging the suite; no correct run here needs more than 5."""
 
-    def __init__(self, path, ack_error=None, commit_error=None):
+    def __init__(self, path, ack_error=None, commit_error=None,
+                 max_drains=20):
         super().__init__(path)
+        self.max_drains = max_drains
         self.calls = []
         self.drained = []
         self.acked = []
@@ -472,6 +477,10 @@ class _RecordingSqliteDriver(drivers_module.SqliteRepositoryDriver):
     def drain_outbox(self, limit=None):
         self.limits.append(limit)
         self.calls.append("drain_outbox")
+        if len(self.limits) > self.max_drains:
+            raise AssertionError("relay drained %d times (max_drains=%d): "
+                                 "its batch loop did not stop"
+                                 % (len(self.limits), self.max_drains))
         rows = super().drain_outbox(limit=limit)
         self.drained.extend(row["seq"] for row in rows)
         return rows
