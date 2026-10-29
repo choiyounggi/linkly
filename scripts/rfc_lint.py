@@ -13,23 +13,27 @@
   §2.1 출하 기록 CHANGELOG.md(Unreleased와 모든 릴리스 절)가 `RFC-NNNN`
                  (빗금 꼴 `RFC-NNNN/NNNN` 포함)으로 인용한 RFC는 rfcs/에 문서가
                  있고 Accepted 또는 Superseded여야 함 (issue #249)
-  §2.2 역링크    Accepted RFC의 `- Updates:` 항목(이어지는 줄 포함)이 괄호 밖에서
-                 지목한 `RFC-NNNN`마다 대상 문서의 `- Updated-by:` 항목에
+  §2.2 역링크    Accepted RFC의 `## Status` 절 `- Updates:` 항목(이어지는 줄 포함)이
+                 괄호 밖에서 지목한 `RFC-NNNN`마다 대상 문서의 `- Updated-by:` 항목에
                  `RFC-<갱신>`이 있어야 함. 괄호 안 이름은 직전 갱신(규칙 5)이라
-                 대상이 아니고, `없음`으로 시작하는 항목은 대상이 없다. Draft·
-                 Review·Superseded 갱신 RFC는 건너뛴다(규칙 6) (issue #263)
+                 대상이 아니고, 값이 `없음`·`해당 없음`·`none`·`N/A`(강조·괄호 표기
+                 포함)로 시작하는 항목은 대상이 없다. Draft·Review·Superseded 갱신
+                 RFC는 건너뛴다(규칙 6) (issue #263, #268)
+  §2.2 규칙 7    Accepted RFC의 한 절을 읽으려고 여는 문서(대상 + 대상 머리의
+                 `Updated-by:`가 그 절 이름으로 묶은 Accepted 갱신)가 2개 이하이고,
+                 Accepted 갱신의 `Updated-by:`마다 절 이름 묶음 `(§…)`이 있음 (issue #268)
 
 검사하지 않는 것: 내용의 정합성, 절 머리 포인터 줄(`> 갱신됨:`)과 절 이름,
-연쇄(괄호 안 직전 갱신)의 정확성, 규칙 7의 누적 길이, Supersedes 대상,
-골든 시나리오 사용.
+연쇄(괄호 안 직전 갱신)의 정확성, Supersedes 대상, 골든 시나리오 사용.
 
 CI(`.github/workflows/ci.yml`)가 blocking 게이트로 돌린다. 검사 로직은
-`impl/tests/test_rfc_lint.py`가 합성 입력으로 검증하고, §2.2 역링크만은 실제
+`impl/tests/test_rfc_lint.py`가 합성 입력으로 검증하고, §2.2 역링크와 규칙 7은 실제
 rfcs/에도 돌려 0건을 요구한다.
 """
 import os
 import re
 import sys
+import unicodedata
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RFC_DIR = os.path.join(REPO, "rfcs")
@@ -215,16 +219,42 @@ def check_changelog_file(path, statuses):
 # 자기 머리의 `Updated-by:`로 그 RFC를 되짚어야 한다(RFC-0007 §2.2 표).
 ENTRY_RE = re.compile(r"^-\s*(Updates|Updated-by):\s*(.*)$")
 RFC_REF_RE = re.compile(r"RFC-(\d{4})(?!\d)")
+# `Updates:` 값이 "대상 없음"을 뜻하는 철자(issue #268 §3). 강조·괄호 표기를 벗긴 낱말이
+# 값의 끝, 공백, 또는 — – : , . ; 앞에서 끝나야 한다 — `없음없는`·`none-such`는 빈 값이 아니다.
+EMPTY_VALUE_RE = re.compile(r"[\s*_`(]*(?:없음|해당 없음|none|n/a)[*_`)]*(?=$|[\s—–:,.;])",
+                            re.IGNORECASE)
+
+
+def status_section(text):
+    """`## Status` 절의 줄만 남긴다 — 그 제목 줄 다음부터 펜스 밖 다음 `## ` 제목 앞까지.
+
+    펜스 안의 `## Status`(프로세스 RFC가 인용한 템플릿)는 절을 열지 않는다. 절 안의 펜스
+    줄은 남겨 header_entries가 펜스 안을 계속 건너뛰게 한다. 절이 없으면 빈 문자열이다.
+    """
+    kept, fenced, inside = [], False, False
+    for line in text.split("\n"):
+        if line.startswith("```"):
+            fenced = not fenced
+            if inside:
+                kept.append(line)
+            continue
+        if not fenced and line.startswith("## "):
+            inside = line[3:].strip() == "Status"
+            continue
+        if inside:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def header_entries(text, key):
-    """`- <key>:` 항목 본문의 목록. `key`는 "Updates" 또는 "Updated-by".
+    """`## Status` 절 안의 `- <key>:` 항목 본문의 목록. `key`는 "Updates" 또는 "Updated-by".
 
     항목은 그 줄과 이어지는 줄이다 — 빈 줄, `- `·`#`·`>`로 시작하는 줄, 코드 펜스
-    줄에서 끝난다. 펜스 안(프로세스 RFC가 인용한 템플릿)은 건너뛴다.
+    줄에서 끝난다. 펜스 안(프로세스 RFC가 인용한 템플릿)은 건너뛰고, `## Status`
+    절이 없는 문서(프로세스 RFC)는 항목이 없다.
     """
     out, fenced, current = [], False, None
-    for line in text.split("\n"):
+    for line in status_section(text).split("\n"):
         stripped = line.strip()
         if line.startswith("```"):
             fenced = not fenced
@@ -268,11 +298,11 @@ def outside_parens(text):
 def update_targets(number, text):
     """RFC `number`의 `Updates:` 항목이 괄호 밖에서 지목한 RFC 번호 집합.
 
-    `없음`으로 시작하는 항목은 대상이 없다. 자기 번호는 대상이 아니다.
+    값이 빈 값 철자(EMPTY_VALUE_RE)로 시작하는 항목은 대상이 없다. 자기 번호는 대상이 아니다.
     """
     targets = set()
     for entry in header_entries(text, "Updates"):
-        if entry.lstrip("* ").startswith("없음"):
+        if EMPTY_VALUE_RE.match(unicodedata.normalize("NFC", entry)):
             continue
         targets.update(RFC_REF_RE.findall(outside_parens(entry)))
     targets.discard(number)
@@ -315,6 +345,177 @@ def check_back_links(named_texts):
     return [finding for _, finding in sorted(keyed)]
 
 
+# 규칙 7(RFC-0007 §2.2, issue #268): 한 절을 읽으려고 여는 문서 = 대상 1개 + 그 절을 갱신한
+# Accepted RFC 수. 2개를 넘으면 Updates를 더 쌓지 말고 통합 Supersedes를 쓴다.
+# 출처는 대상 머리 `Updated-by: RFC-NNNN (§절, …)`의 절 이름 묶음이다(RFC-0007 §2.2 표).
+RULE7_LIMIT = 2
+SECTION_SEP_RE = re.compile(r"\s*[,·/]\s*§")
+SECTION_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)*)(?=[.\s]|$)")
+NUMBERED_KEY_RE = re.compile(r"\d+(?:\.\d+)*")
+REFERENCE_PREFIX = "Reference-level Specification/"
+
+
+def section_groups(entry):
+    """`Updated-by:` 항목 하나에서 (갱신 번호, 절 이름 묶음 또는 None) 목록.
+
+    괄호 밖 `RFC-NNNN`마다 하나다. 바로 뒤(공백 허용)에 괄호가 열리면 짝이 맞는 닫는
+    괄호까지가 묶음이다 — `코드 → 등급 (정본)`처럼 이름 안의 괄호도 묶음에 남는다.
+    괄호가 열리지 않으면 묶음은 None이다.
+    """
+    out, depth, i = [], 0, 0
+    while i < len(entry):
+        ch = entry[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            m = RFC_REF_RE.match(entry, i)
+            if m:
+                j = m.end()
+                while entry[j:j + 1] == " ":
+                    j += 1
+                if entry[j:j + 1] != "(":
+                    out.append((m.group(1), None))
+                    i = m.end()
+                    continue
+                level, k = 0, j
+                while k < len(entry):
+                    if entry[k] == "(":
+                        level += 1
+                    elif entry[k] == ")":
+                        level -= 1
+                        if level == 0:
+                            break
+                    k += 1
+                out.append((m.group(1), entry[j + 1:k]))
+                i = k + 1
+                continue
+        i += 1
+    return out
+
+
+def section_key(name):
+    """절 이름의 비교 키. 갱신 RFC마다 같은 절을 다르게 적는 철자를 하나로 모은다.
+
+    NFC 정규화, 공백 접기, 앞의 `§`와 `Reference-level Specification/` 제거. 그 뒤가
+    점 찍힌 절 번호(`3`, `2.1`)로 시작하면 번호만 남긴다(`3. 피연산자의 차원 규칙` → `3`).
+    """
+    key = " ".join(unicodedata.normalize("NFC", name).split()).lstrip("§").strip()
+    if key.startswith(REFERENCE_PREFIX):
+        key = key[len(REFERENCE_PREFIX):]
+    m = SECTION_NUMBER_RE.match(key)
+    return m.group(1) if m else key
+
+
+def updated_sections(text):
+    """`Updated-by:` 항목에서 (갱신 번호, 절 키) 목록. 묶음이 없는 갱신은 절 키가 None이다.
+
+    한 묶음의 여러 절은 `, §`·`·§`·`/§`로 나뉜다. `노드 카탈로그/Guard`처럼 `§`가 뒤따르지
+    않는 빗금이나 쉼표는 이름의 일부다.
+    """
+    out = []
+    for entry in header_entries(text, "Updated-by"):
+        for updater, group in section_groups(entry):
+            if group is None:
+                out.append((updater, None))
+            else:
+                out.extend((updater, section_key(name)) for name in SECTION_SEP_RE.split(group))
+    return out
+
+
+def _numbered(named_texts):
+    """(파일명, 본문) 쌍에서 {번호: (파일명, 본문)}. 형식 밖 파일명은 건너뛴다."""
+    docs = {}
+    for name, text in named_texts:
+        m = FILENAME_RE.match(name)
+        if m:
+            docs[m.group(1)] = (name, text)
+    return docs
+
+
+def rule7_violations(named_texts):
+    """규칙 7 위반 절. 각 항목은 (대상 번호, 절 키, 열 문서 수, 갱신 번호 튜플), 대상·절 키 순.
+
+    Accepted 대상만 보고, 자기 상태가 Accepted인 갱신만 센다(규칙 6). 절 키가 점 찍힌 번호면
+    같은 대상의 상위 번호 절(`2` → `2.1`)을 갱신한 RFC도 센다. 빗금 경로(`노드 카탈로그/Guard`)는
+    상위 절을 물려받지 않는다.
+    """
+    docs = _numbered(named_texts)
+    statuses = {number: status_of(text) for number, (_, text) in docs.items()}
+    rows = []
+    for target in sorted(docs):
+        if statuses[target] != "Accepted":
+            continue
+        by_key = {}
+        for updater, key in updated_sections(docs[target][1]):
+            if key is None or updater == target or statuses.get(updater) != "Accepted":
+                continue
+            by_key.setdefault(key, set()).add(updater)
+        for key in sorted(by_key):
+            updaters = set(by_key[key])
+            if NUMBERED_KEY_RE.fullmatch(key):
+                for other, more in by_key.items():
+                    if (other != key and NUMBERED_KEY_RE.fullmatch(other)
+                            and key.startswith(other + ".")):
+                        updaters |= more
+            documents = 1 + len(updaters)
+            if documents > RULE7_LIMIT:
+                rows.append((target, key, documents, tuple(sorted(updaters))))
+    return rows
+
+
+def ungrouped_updaters(named_texts):
+    """절 이름 묶음 없이 `Updated-by:`에 오른 갱신. 각 항목은 (대상 번호, 갱신 번호), 번호 순.
+
+    Accepted 대상의 Accepted 갱신만 본다 — 규칙 7은 그 갱신을 어느 절에 셀지 알 수 없다.
+    """
+    docs = _numbered(named_texts)
+    statuses = {number: status_of(text) for number, (_, text) in docs.items()}
+    pairs = set()
+    for target in docs:
+        if statuses[target] != "Accepted":
+            continue
+        for updater, key in updated_sections(docs[target][1]):
+            if key is None and updater != target and statuses.get(updater) == "Accepted":
+                pairs.add((target, updater))
+    return sorted(pairs)
+
+
+def rule7_check(named_texts):
+    """§2.2 규칙 7. 각 항목은 (대상 파일명, 조항, 메시지), 대상 번호 순.
+
+    한 대상 안에서는 절 위반(절 키 순)이 먼저, 묶음 없는 갱신(갱신 번호 순)이 뒤다.
+    """
+    docs = _numbered(named_texts)
+    keyed = []
+    for target, key, documents, updaters in rule7_violations(named_texts):
+        keyed.append(((target, 0, key), (
+            docs[target][0], "§2.2",
+            "RFC-%s §%s: 읽으려면 문서 %d개를 열어야 한다(RFC-%s + 갱신 %s) — 규칙 7의 "
+            "문턱 %d개를 넘는다. Updates를 더 쌓지 말고 통합 Supersedes를 써라"
+            % (target, key, documents, target,
+               ", ".join("RFC-" + u for u in updaters), RULE7_LIMIT))))
+    for target, updater in ungrouped_updaters(named_texts):
+        keyed.append(((target, 1, updater), (
+            docs[target][0], "§2.2",
+            "RFC-%s 머리의 `Updated-by: RFC-%s`에 절 이름 묶음 `(§…)`이 없다 — 규칙 7이 "
+            "그 갱신을 어느 절에 셀지 알 수 없다" % (target, updater))))
+    return [finding for _, finding in sorted(keyed)]
+
+
+# docs/CI-GATES.md 게이트 로스터의 `RFC lint(`rfc_lint.py`)` 행이 main()이 부르는 검사마다
+# 지녀야 하는 표기(issue #268 §3). impl/tests/test_rfc_lint.py의 RosterPinTest가 양쪽을
+# 대조한다 — main()에 검사를 더하면 여기와 그 행에 표기를 함께 더한다.
+ROSTER_TOKENS = {
+    "check_numbering": ("§3 번호 중복·공백",),
+    "check_document": ("§3 번호·제목", "§2.1 Status 어휘", "§7 템플릿 섹션"),
+    "check_changelog_file": ("§2.1 CHANGELOG 인용",),
+    "check_back_links": ("§2.2 `Updated-by:` 역링크",),
+    "rule7_check": ("§2.2 규칙 7 문서 수",),
+}
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     quiet = "--quiet" in argv
@@ -335,6 +536,7 @@ def main(argv=None):
                     for clause, msg in check_changelog_file(
                         CHANGELOG_PATH, collect_statuses(named)))
     findings.extend(check_back_links(named))
+    findings.extend(rule7_check(named))
 
     if not quiet:
         print("RFC lint — %d개 문서" % len(names))

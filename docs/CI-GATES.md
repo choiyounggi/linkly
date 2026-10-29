@@ -14,7 +14,7 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | 게이트 | 결정론/AI | 트리거 | 현재 상태 | 무엇을 잡는가 |
 |--------|-----------|--------|-----------|----------------|
 | 테스트 스위트(matrix) | 결정론 | `ci.yml` — `pull_request`, `push: main` | blocking | `impl/tests/` 회귀 |
-| RFC lint(`rfc_lint.py`) | 결정론 | `ci.yml` | blocking | RFC-0007 §3 번호·제목, §2.1 Status 어휘, §7 템플릿 섹션(이름·순서), §2.1 CHANGELOG 인용(인용한 RFC가 rfcs/에 있고 Accepted 또는 Superseded — issue #249), §2.2 `Updated-by:` 역링크(Accepted RFC의 `Updates:` 대상마다 — issue #263) |
+| RFC lint(`rfc_lint.py`) | 결정론 | `ci.yml` | blocking | RFC-0007 §3 번호·제목, §3 번호 중복·공백, §2.1 Status 어휘, §7 템플릿 섹션(이름·순서), §2.1 CHANGELOG 인용(인용한 RFC가 rfcs/에 있고 Accepted 또는 Superseded — issue #249), §2.2 `Updated-by:` 역링크(Accepted RFC의 `Updates:` 대상마다 — issue #263), §2.2 규칙 7 문서 수(Accepted RFC의 한 절을 읽으려고 여는 문서가 2개 이하, `Updated-by:`마다 절 이름 묶음 — issue #268) |
 | 참조 drift(`gen_plugin_references.py --check`) | 결정론 | `ci.yml` | blocking | 플러그인 스킬 참조 문서가 컴파일러 상수에서 재생성한 것과 다름 |
 | 버전 동기(`check_version_sync.py`) | 결정론 | `ci.yml` | blocking | 루트 `pyproject.toml`과 플러그인 manifest 버전 드리프트 |
 | ruff | 결정론 | `ci.yml`(t1) | blocking + required | 파이썬 린트 위반(`impl/lnpl`, `scripts`, `impl/tests`) |

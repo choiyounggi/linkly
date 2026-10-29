@@ -12,8 +12,8 @@ description: Use when adding, revising, renumbering, or reviewing an RFC in link
 python scripts/rfc_lint.py
 ```
 
-exit 0이면 문제 없음. 이 린터는 **테스트 스위트에 걸려 있지 않다** — 기여자가
-손으로 돌리는 도구다.
+exit 0이면 문제 없음. CI가 이 린터를 blocking 단계로 돌리고, §2.2 역링크 규칙은
+테스트 스위트의 `BackLinkRealTreeTest`도, 규칙 7은 `Rule7RealTreeTest`도 실제 rfcs/에 돌린다.
 
 ## 번호 (§3)
 
@@ -67,7 +67,7 @@ RFC-0005가 추가 섹션을 가진 것처럼 보이지만 그것들은 **코드
   연쇄를 밝히지 않으면 어느 텍스트가 이기는지 기계적으로 확인할 수 없다
   (RFC-0012가 이 형식의 예다)
 
-린터는 역링크만 검사한다 — Accepted RFC의 `Updates:`가 괄호 밖에서 지목한 대상마다 대상 머리에 `Updated-by: RFC-<갱신>`이 있어야 한다(`scripts/rfc_lint.py`, issue #263). 절 머리 포인터 줄과 연쇄(괄호 안 직전 갱신)의 정확성은 여전히 읽어야 안다.
+린터는 역링크와 규칙 7을 검사한다 — Accepted RFC의 `Updates:`가 괄호 밖에서 지목한 대상마다 대상 머리에 `Updated-by: RFC-<갱신>`이 있어야 하고(issue #263), Accepted RFC의 한 절을 읽으려고 여는 문서(대상과 그 절을 갱신한 Accepted RFC)가 2개를 넘으면 안 되며 `Updated-by:`마다 절 이름 묶음 `(§…)`이 있어야 한다(issue #268). 둘 다 `scripts/rfc_lint.py`가 본다. 절 머리 포인터 줄과 연쇄(괄호 안 직전 갱신)의 정확성은 여전히 읽어야 안다.
 
 ## 언어 (§4)
 

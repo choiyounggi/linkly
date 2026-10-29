@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: **Accepted** (RFC-0025, 2026-08-18)
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0075
 - Updates: RFC-0012 §G12.2, RFC-0012 §G12.4, RFC-0012 §G12.5, RFC-0015 §1
 - Updated-by: RFC-0028 (§Reference-level Specification/2. 집계 표현식 문법)
 - Updated-by: RFC-0038 (§Reference-level Specification/1)

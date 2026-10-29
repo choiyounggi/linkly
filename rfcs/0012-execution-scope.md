@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: **Accepted** (RFC-0012, 2026-08-05)
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0070
 - Updates: RFC-0002 §Full grammar, RFC-0008 §Reference-level Specification/1. Full Grammar, RFC-0003 §Guard
 - Updated-by: RFC-0025 (§G12.2), RFC-0025 (§G12.4), RFC-0025 (§G12.5)
 - Updated-by: RFC-0027 (§G12.2)

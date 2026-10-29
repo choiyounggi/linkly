@@ -31,9 +31,9 @@ bash scripts/dev_doctor.sh      # 환경 전제 넷을 진단
 python scripts/rfc_lint.py      # RFC-0007의 기계적 조항을 검사
 ```
 
-`rfc_lint.py`는 테스트 스위트에 걸려 있지 않다. 검사 **로직**은
-`impl/tests/test_rfc_lint.py`가 합성 입력으로 검증하지만, 레포의 RFC가 깨끗한지는
-게이트하지 않는다 — 빠진 섹션을 채우는 일은 도구가 강제할 사안이 아니다.
+`rfc_lint.py`는 CI(`.github/workflows/ci.yml`)가 blocking 단계로 돌린다. 검사 **로직**은
+`impl/tests/test_rfc_lint.py`가 합성 입력으로 검증하고, §2.2 역링크 규칙은
+`BackLinkRealTreeTest`가, 규칙 7은 `Rule7RealTreeTest`가 실제 rfcs/에도 돌려 테스트 스위트 안에서 0건을 요구한다.
 
 ## 설치
 

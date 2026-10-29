@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: **Accepted** (RFC-0015, 2026-08-06)
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0072
 - Updates: RFC-0001 §Appendix A/A.4 Node catalogue(`Assignment` 1종 추가), RFC-0002 §Full grammar(`Condition`/`Value`/`AssignStep`), RFC-0008 §Reference-level Specification/1. Full Grammar
 - Updated-by: RFC-0025 (§1), RFC-0028 (§1, §4)
 - Updated-by: RFC-0050 (§1)

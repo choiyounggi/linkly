@@ -39,8 +39,10 @@
 대상이 **아닌** 것 — 이건 finding으로 내지 말 것:
 
 - 문체·표현·오타·번역 지적.
-- RFC 형식 검사(상태 필드, 번호, 템플릿 섹션, Supersedes/Updates 표기). 이건
-  `scripts/rfc_lint.py`가 이미 결정론적으로 하고 CI에서 blocking이다. 중복이다.
+- RFC 형식 검사(상태 필드, 번호, 템플릿 섹션, Supersedes/Updates 표기). 상태 필드·번호·
+  템플릿 섹션과 `Updates:` 대상의 `Updated-by:` 역링크는 `scripts/rfc_lint.py`가 이미
+  결정론적으로 하고 CI에서 blocking이다. 중복이다. Supersedes 표기는 rfc_lint도 보지 않지만
+  이 게이트의 대상도 아니다.
 - 코드 품질·성능·리팩터링 제안. 이 게이트는 RFC와 코드의 **불일치**만 본다.
 - 변경되지 않은 RFC와 변경되지 않은 코드 사이의 오래된 불일치. 이 PR이 만든 것도,
   이 PR이 건드린 것도 아니다.
