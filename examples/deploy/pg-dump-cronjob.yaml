@@ -1,0 +1,49 @@
+# Nightly logical backup of the postgres database behind the lnpl-postgres
+# driver (issue #238). pg_dump makes a consistent export while the database is
+# in use; -Fc writes the compressed custom format that pg_restore reads.
+# pg_dump refuses a server newer than its own major version, so keep this
+# image's major version at or above the server's (the generator's default
+# server image is postgres:16).
+# Before applying: create the Secret lnpl-pg-dump with the key "password",
+# create the PersistentVolumeClaim lnpl-pg-backups, and set the PG* values.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lnpl-pg-dump
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pg-dump
+              image: postgres:16
+              command: ["sh", "-c", "pg_dump -Fc -f /backup/lnpl-$(date -u +%Y%m%dT%H%M%SZ).dump"]
+              env:
+                - name: PGHOST
+                  value: "postgres"
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: "lnpl"
+                - name: PGDATABASE
+                  value: "lnpl"
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: lnpl-pg-dump
+                      key: password
+              volumeMounts:
+                - name: backups
+                  mountPath: /backup
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: lnpl-pg-backups

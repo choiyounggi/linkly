@@ -1323,6 +1323,39 @@ def cmd_db_check(args):
     return 1 if findings else 0
 
 
+def cmd_db_backup(args):
+    """`lnpl db backup --backend sqlite:PATH --out PATH` — an online copy of a
+    sqlite store through the SQLite backup API (issue #238). JSON
+    `{"out", "rows"}` on stdout and rc 0; rc 2 on an operator error (nothing
+    written); rc 1 when sqlite failed mid-copy (the partial copy is removed).
+    """
+    # Local import on purpose: the file-top import block is edited by other tasks.
+    from .sqlite_backup import BackupFailed, BackupRefused, backup_sqlite
+    spec = args.backend
+    if spec == "sqlite" or spec.startswith("sqlite:"):
+        source_raw = spec[len("sqlite:"):]
+    else:
+        # Scheme only: a postgres DSN carries a password.
+        head, sep, _ = spec.partition(":")
+        scheme = head if (sep and head) else (
+            "fake" if spec == "fake" else "<unrecognized>")
+        print("error: db backup: backend '%s' does not support online backup; "
+              "for postgres use pg_dump (see docs/backends.md §14)" % scheme,
+              file=sys.stderr)
+        return 2
+    try:
+        rows = backup_sqlite(source_raw, args.out)
+    except BackupRefused as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    except BackupFailed as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    sys.stdout.write(json.dumps({"out": args.out, "rows": rows}, indent=2,
+                                ensure_ascii=False) + "\n")
+    return 0
+
+
 # Distinguishes "the operator asked for the default in-memory store" (None,
 # which the Interpreter turns into its FakeRepository) from "the selector was
 # rejected" — two answers `open_repository` cannot both return as None.
@@ -2278,6 +2311,19 @@ def _build_parser(subparsers_out=None):
                      help="a persistent capability backend, e.g. "
                           "sqlite:./store.db (`fake` has no rows to check)")
     dbc.set_defaults(func=cmd_db_check)
+
+    dbb = db_sub.add_parser("backup",
+                            help="online copy of a sqlite store through "
+                                 "the SQLite backup API (issue #238); "
+                                 "refuses an existing --out and any "
+                                 "non-sqlite backend")
+    dbb.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="the sqlite store to copy, e.g. "
+                          "sqlite:./store.db (postgres: use pg_dump, "
+                          "docs/backends.md §14)")
+    dbb.add_argument("--out", required=True, metavar="PATH",
+                     help="the backup file to create; must not exist")
+    dbb.set_defaults(func=cmd_db_backup)
 
     mg = sub.add_parser("migrate",
                         help="backfill one field onto every row of an "

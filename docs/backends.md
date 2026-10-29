@@ -1254,8 +1254,123 @@ may be delivered more than once
   파일시스템 I/O가 더 적을 수 있다
   ([`VACUUM` — SQLite Query Language](https://sqlite.org/lang_vacuum.html)).
 
-둘 다 이 드라이버가 여는 연결과 별개의 연결/프로세스로 실행한다 —
-`SqliteRepositoryDriver`는 백업용 API를 자체로 노출하지 않는다.
+둘 다 이 드라이버가 여는 연결과 별개의 연결/프로세스로 실행한다. 앞의 것(online backup API)을 감싼 커맨드가 아래의 `lnpl db backup`이다.
+
+### sqlite — `lnpl db backup` (이슈 #238)
+
+`lnpl db backup --backend sqlite:<path> --out <path>`는 SQLite online
+backup API로 원본과 별개의 연결을 열어 일관된 사본을 만든다. `serve`가
+쓰는 중에도 안전하다 — 커밋된 행은 `-wal`에만 있어도 사본에 들어가고,
+아직 커밋되지 않은 트랜잭션의 행은 들어가지 않는다. 사본은 언제나 새
+파일이다: 이미 있는 `--out`은 덮어쓰지 않는다. 사본 옆에는 `-wal`/`-shm`
+파일이 남지 않는다. 행을 선언과 대조하지 않으므로 `.lnpl` 소스 인자는
+받지 않는다. 원본은 읽기만 하므로 원본 디렉터리에 쓰기 권한이 없어도
+된다(데이터 볼륨을 `:ro`로 마운트한 백업 사이드카). 단 SQLite는 WAL
+저장소를 읽으려면 `-shm` 파일이 있거나 만들 수 있어야 해서, 쓰는
+프로세스가 모두 끝나 `-shm`이 없는 저장소가 읽기 전용 디렉터리에 있으면
+`cannot read ... as a sqlite database`(rc 2)로 거부된다.
+
+측정: 2026-10-29, `git rev-parse --short HEAD` = cc54829 + t6 작업 트리, Python 3.13.1 / SQLite 3.53.4, `python -m lnpl`(= `lnpl` 콘솔 스크립트)로 실행.
+
+백업 (행 3개가 든 `store.db`):
+
+```bash
+lnpl db backup --backend sqlite:store.db --out backup.db
+```
+
+stdout:
+
+```
+{
+  "out": "backup.db",
+  "rows": 3
+}
+```
+
+stderr는 비어 있고 rc 0이다.
+
+같은 명령을 한 번 더 — `--out`이 이미 있다:
+
+```bash
+lnpl db backup --backend sqlite:store.db --out backup.db
+```
+
+stderr:
+
+```
+error: db backup: --out already exists, refusing to overwrite: 'backup.db'
+```
+
+stdout은 비어 있고 rc 2다.
+
+sqlite가 아닌 백엔드:
+
+```bash
+lnpl db backup --backend fake --out backup2.db
+```
+
+stderr:
+
+```
+error: db backup: backend 'fake' does not support online backup; for postgres use pg_dump (see docs/backends.md §14)
+```
+
+stdout은 비어 있고 rc 2다.
+
+postgres — 메시지는 스킴만 밝히고 DSN(비밀번호 포함)은 옮기지 않는다:
+
+```bash
+lnpl db backup --backend postgres:postgresql://app:example-password@db.invalid/app --out backup2.db
+```
+
+stderr:
+
+```
+error: db backup: backend 'postgres' does not support online backup; for postgres use pg_dump (see docs/backends.md §14)
+```
+
+stdout은 비어 있고 rc 2다.
+
+| rc | 뜻 |
+|----|-----|
+| 0 | 백업 완료 — stdout에 `{"out", "rows"}` JSON (`rows`는 사본의 `lnpl_rows` 행 수) |
+| 1 | 복사 도중 sqlite 오류 — 이번 실행이 만든 부분 파일은 지운다 |
+| 2 | 운영자 오류 — sqlite가 아닌 `--backend`(postgres는 `pg_dump`로 안내), 빈 `--out`, 이미 있는 `--out`이나 그 `-wal`/`-shm`/`-journal`, 없는 부모 디렉터리, 없는 원본, sqlite가 아닌 파일, `lnpl_rows`가 없는 파일, 읽기 전용 디렉터리에서 `-shm` 없이 닫혀 있는 WAL 저장소 |
+
+### 복원 확인
+
+1. 쓰는 프로세스(`serve` 등)를 모두 멈춘다.
+2. `store.db`, `store.db-wal`, `store.db-shm`을 지운다.
+3. 백업 파일을 `store.db`로 복사한다(`cp backup.db store.db`).
+4. 선언과 대조한다 — `[]`와 rc 0이어야 한다 (아래 첫 명령).
+5. 행 수를 확인한다 — 두 번째 명령의 `rows`가 백업 때의 `rows`와 같아야
+   한다. 런타임 이미지에는 `sqlite3` CLI가 없고 `db check`는 불일치만
+   출력하므로 이 커맨드로 센다. 확인 뒤 `verify.db`는 지운다.
+
+```bash
+lnpl db check app.lnpl --backend sqlite:store.db
+```
+
+stdout (stderr는 비어 있고 rc 0):
+
+```
+[]
+```
+
+```bash
+lnpl db backup --backend sqlite:store.db --out verify.db
+```
+
+stdout (stderr는 비어 있고 rc 0):
+
+```
+{
+  "out": "verify.db",
+  "rows": 3
+}
+```
+
+이 절차는 `impl/tests/test_cli_db_backup.py`의 `RestoreRehearsalTest`가 CI에서 매번 실행한다.
 
 ### 연속 복제·PITR — Litestream
 
@@ -1266,6 +1381,8 @@ may be delivered more than once
 가장 가까운 스냅샷을 내려받은 뒤 그 뒤에 기록된 변경을 재생하는 것이다.
 백그라운드 프로세스로 이 sqlite 파일 옆에서 도는 것이라, `lnpl` 쪽
 코드 변경은 없다.
+
+실행 예시는 `examples/deploy/litestream-compose.yml`과 `examples/deploy/litestream.yml`, 복원·확인 명령은 `examples/deploy/README.md`의 "백업과 복원 (이슈 #238)" 절이다.
 
 ### postgres 드라이버 — `pg_dump`/PITR에 위임
 
@@ -1278,6 +1395,8 @@ PITR은 WAL 아카이빙 기반의 별도 절차다 — `pg_dump`/`pg_dumpall`
 ([Continuous Archiving and Point-in-Time Recovery (PITR)](https://www.postgresql.org/docs/current/continuous-archiving.html)).
 이 레포는 그 드라이버를 구현하지 않는다 — `RepositoryDriver` SPI(§8)를
 구현하는 쪽의 책임이다.
+
+`lnpl db backup`은 postgres 백엔드를 위의 rc 2 메시지로 거부한다. 정기 덤프 예시는 `examples/deploy/pg-dump-cronjob.yaml`(Kubernetes CronJob, `pg_dump -Fc`, `concurrencyPolicy: Forbid`)이다.
 
 ## 15. SPI: 외부 이벤트 발행자 등록 (issue #191, RFC-0061)
 

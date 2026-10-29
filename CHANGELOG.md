@@ -21,6 +21,13 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   `route` is the declared route template, `unmatched` for any other path.
   Decision D7 (#110, "no new label axis") is revised; the rule and its
   rationale are in docs/serving.md `/-/metrics` (#237).
+- `lnpl db backup --backend sqlite:<path> --out <path>`: an online copy of a
+  sqlite store through the SQLite backup API, safe while `serve` writes. It
+  prints `{"out", "rows"}`, refuses an existing `--out` and any non-sqlite
+  backend (rc 2; postgres points to `pg_dump`), and exits 1 on a sqlite
+  error mid-copy. `docs/backends.md` §14 documents the restore check
+  (`lnpl db check` plus a row count), and `examples/deploy/` gains a
+  Litestream sidecar compose file and a `pg_dump` CronJob (issue #238).
 
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a
