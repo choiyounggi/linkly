@@ -191,6 +191,16 @@ docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - < <dir>/k
 `test_deploy.py`가 이를 `ComposeGeneratorSmokeTest`(2케이스)와
 `K8sKubeconformTest`(2케이스)로 자동화한다.
 
+## Grafana RED 대시보드 예시 (이슈 #237)
+
+`grafana-red-dashboard.json`은 `/-/metrics`의 HTTP 지표로 그린 RED 대시보드다.
+서버를 `LNPL_METRICS=1`(또는 `lnpl serve --metrics`)로 띄우고, Prometheus가
+`/-/metrics`를 스크레이프하게 둔다. Grafana의 Dashboards → New → Import에 이
+파일을 올리고 `datasource` 변수에 Prometheus 데이터 소스를 고른다. 패널은
+셋이다: Rate(라우트별 초당 요청), Errors(5xx 비율과 4xx 비율을 따로 — 429
+폭주가 보이되 서버 오류로 세지 않는다), Duration p95. `route` 라벨은 선언된
+라우트 템플릿이고, 어느 라우트에도 맞지 않는 경로는 `unmatched`다.
+
 ## 이 참조가 다루지 않는 것
 
 이미지 레지스트리 push는 더 이상 범위 밖이 아니다 — `docker/Dockerfile`과

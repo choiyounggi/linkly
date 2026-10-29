@@ -532,31 +532,62 @@ readyz로 간다 — 둘을 하나로 합치면 트래픽 차단이면 충분한
 
 `--metrics` 없이 띄우면 `/-/metrics`는 라우팅 테이블에 아예 없다 — **404다,
 "비활성" 본문이 아니다**. 켜면 Prometheus 텍스트 노출 형식(`# HELP`/`# TYPE`
-포함)으로 RED 3종을 낸다:
+포함)으로 아래 지표를 낸다:
 
 | 메트릭 | 종류 | 라벨 |
 |---|---|---|
 | `lnpl_workflow_runs_total` | counter | `service`, `workflow`, `status` |
 | `lnpl_workflow_duration_seconds` | histogram | `service`, `workflow` |
 | `lnpl_step_failures_total` | counter | `service`, `workflow`, `step`, `kind` |
+| `lnpl_http_requests_total` | counter | `route`, `method`, `status` |
+| `lnpl_http_request_duration_seconds` | histogram | `route` |
+| `lnpl_cache_ops_total` | counter | `op`(`get`/`set`/`invalidate`), `result`(`hit`/`miss`/`ok`/`error`) |
+| `lnpl_idempotency_claims_total` | counter | `status`(`started`/`in-progress`/`done`/`unsupported`/`other`) |
+| `lnpl_outbox_undelivered` | gauge | 없음 — 드라이버가 `outbox_undelivered_count()`를 구현할 때만(내장 sqlite는 구현) |
+| `lnpl_driver_<name>` | gauge | 없음 — 드라이버의 선택 훅 `metrics()`가 돌려준 dict의 항목마다 |
 
-**카디널리티 계약(D8).** 위 라벨 값은 전부 컴파일 시점에 알려진, 작고 닫힌
-집합의 이름이다 — 서비스/워크플로/스텝 선언 이름, 그리고 `completed`/
-`failed`나 매핑표의 `code`처럼 작은 고정 열거값. **`correlation_id`,
-엔티티 id, payload 값은 라벨이 될 수 없다** — 무한 카디널리티는 Prometheus
-자체를 무너뜨린다. 이건 새 규칙이 아니라 이미 있던 것의 승격이다:
+**카디널리티 계약(D8, 이슈 #237에서 D7 개정).** 이슈 #110의 D7은 "새 라벨
+축 금지"였다. 그 결과 워크플로 밖에서 끝나는 응답(401/403/404/409/412/429)은
+하나도 집계되지 않았고, 라우트별 SLO 대시보드와 알림을 만들 수 없었다.
+개정한 규칙은 이렇다: **새 라벨 축은 값이 전부 서버가 정하는 닫힌 집합일
+때만 허용한다.** `route`는 선언된 라우트 키(단건 GET은
+`/<svc>/<entity>/{id}` 템플릿)이고, 어느 라우트에도 맞지 않는 경로는 고정값
+`unmatched` 하나로 모인다. `method`는 RFC 9110 메서드 9개 또는 `other`,
+`status`는 이 서버가 내는 상태 코드, `op`/`result`와 멱등 `status`는 고정
+단어다. 그래서 라벨 조합 수는 선언된 라우트 수에 비례할 뿐, 들어오는 요청이
+늘릴 수 없다. **원시 경로, 엔티티 id, `correlation_id`, payload 값은 여전히
+라벨이 될 수 없다** — 무한 카디널리티는 Prometheus 자체를 무너뜨린다.
 `interp.Trace.metric`의 라벨 allowlist(`{module, service, workflow, step,
-kind}`, RFC-0003)가 소스에서부터 이 계약을 막아 왔고, 이 issue의 세 지표는
-전부 그 allowlist 안의 라벨만 쓴다(새 라벨 축 없음). allowlist를 벗어난
-라벨은 여전히 `RunError`다 — 이 issue가 그 판단을 바꾸지 않는다.
+kind}`, RFC-0003)는 바뀌지 않았고, 벗어난 라벨은 여전히 `RunError`다.
+`lnpl_driver_<name>`은 이름 전체가 Prometheus 이름 문법
+`[a-zA-Z_:][a-zA-Z0-9_:]*`에 맞는 항목만 내보내고, 숫자가 아니거나(불리언
+포함) 유한하지 않은 값은 그 항목만 건너뛴다. 훅이나
+`outbox_undelivered_count()`가 예외를 내면 그 지표만 빠지고 스크레이프는
+200이다. stderr 줄(`serve: metrics: <source> failed (...)`)은 내용이 같으면
+UTC 하루에 한 번만 찍힌다.
 
 **적재 위치(D9).** `interp.Trace.metrics`(요청마다 새로 생기는 배열,
 `--trace-exporter`/이슈 #78 계약)는 건드리지 않는다. 그 옆에서, 요청이
-끝날 때(`LnplWsgiApp._respond`) 이미 계산된 `result`를 읽어 **프로세스
-수준**(`wsgi.MetricsRegistry`, 요청 간에 살아남는다)에 더한다 — 두 채널은
-서로 독립이라 한쪽을 껐다고 다른 쪽이 달라지지 않는다. 갱신은
+끝날 때 이미 계산된 결과를 읽어 **프로세스 수준**(`wsgi.MetricsRegistry`,
+요청 간에 살아남는다)에 더한다 — 두 채널은 서로 독립이라 한쪽을 껐다고
+다른 쪽이 달라지지 않는다. 워크플로 지표는 여전히
+`LnplWsgiApp._respond`에서 더한다. HTTP 지표는 응답마다 정확히 한 번,
+`LnplWsgiApp._finalize_response`에서 기록한다 — 디스패치 전에 끝나는
+429/503, 처리 중 예외(500으로 센다), SSE(스트림이 끝나거나 닫힐 때)까지
+포함이다. `/-/healthz`·`/-/readyz`·`/-/metrics` 요청도 세지만, 스크레이프는
+자기 자신의 요청을 담지 않는다(본문을 만든 뒤에 기록한다). 두 게이지는
+스크레이프 때마다 저장소를 하나 열어 읽고 닫는다. 모든 갱신은 하나의
 `threading.Lock`으로 보호한다(D10) — dev 서버는 스레드-퍼-요청이라 락 없는
 `+=`는 동시 요청 아래서 갱신을 잃는다.
+
+오류율과 p95 지연의 PromQL이다 — 대시보드 전체 예시는
+`examples/deploy/grafana-red-dashboard.json`.
+
+```promql
+sum by (route) (rate(lnpl_http_requests_total{status=~"5.."}[5m]))
+  / sum by (route) (rate(lnpl_http_requests_total[5m]))
+histogram_quantile(0.95, sum by (le, route) (rate(lnpl_http_request_duration_seconds_bucket[5m])))
+```
 
 **`build_app()` 경로에서도 켤 수 있다(이슈 #187).** `--metrics`,
 `--trust-incoming-trace`, readyz 검사 ③(살아있는 `--jwt-secret-env`

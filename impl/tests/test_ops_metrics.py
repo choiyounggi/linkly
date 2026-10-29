@@ -100,8 +100,9 @@ def _raw_get(app, path):
     return status_code, captured["headers"], raw
 
 
+# issue #237: label values may contain "}" (route templates such as /<svc>/<entity>/{id}); match quoted values whole.
 _SERIES_RE = re.compile(r'^(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)'
-                        r'(\{(?P<labels>[^}]*)\})?\s+(?P<value>\S+)$')
+                        r'(\{(?P<labels>(?:[^}"]|"(?:[^"\\]|\\.)*")*)\})?\s+(?P<value>\S+)$')
 _LABEL_RE = re.compile(r'(?P<key>[a-zA-Z_][a-zA-Z0-9_]*)="(?P<value>(?:[^"\\]|\\.)*)"')
 
 

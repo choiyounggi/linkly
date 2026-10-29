@@ -9,6 +9,19 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Added
+- `lnpl serve --metrics` / `build_app()`: `/-/metrics` now counts every HTTP
+  response — `lnpl_http_requests_total{route,method,status}` and
+  `lnpl_http_request_duration_seconds{route}`, including 401/403/404/409/412/429
+  and 503 responses that end outside a workflow — plus
+  `lnpl_cache_ops_total{op,result}`, `lnpl_idempotency_claims_total{status}`,
+  the scrape-time gauge `lnpl_outbox_undelivered` (drivers that implement
+  `outbox_undelivered_count()`; the bundled sqlite driver does) and one
+  `lnpl_driver_<name>` gauge per entry of an optional driver `metrics()` hook.
+  `route` is the declared route template, `unmatched` for any other path.
+  Decision D7 (#110, "no new label axis") is revised; the rule and its
+  rationale are in docs/serving.md `/-/metrics` (#237).
+
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a
   CloudEvents `id` longer than 255 bytes (UTF-8) with 400

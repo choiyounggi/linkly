@@ -27,6 +27,7 @@ import http.client
 import json
 import math
 import os
+import re
 import stat
 import sys
 import threading
@@ -227,6 +228,24 @@ def _label_value(value):
     return '"%s"' % escaped
 
 
+# issue #237, D3: the one `route` label value for a path no route matches.
+UNMATCHED_ROUTE_LABEL = "unmatched"
+# issue #237, D4: the one `method` label value for a non-RFC 9110 method.
+OTHER_METHOD_LABEL = "other"
+# issue #237, D4: the RFC 9110 method names kept as `method` label values.
+_HTTP_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT",
+                           "OPTIONS", "TRACE", "PATCH"})
+
+
+def _method_label(method):
+    return method if method in _HTTP_METHODS else OTHER_METHOD_LABEL
+
+
+# issue #237, D11: used only through .fullmatch(); "$" under .match() would accept a trailing newline.
+_METRIC_NAME_RE = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
+DRIVER_GAUGE_PREFIX = "lnpl_driver_"
+
+
 class MetricsRegistry:
     """issue #110, D7/D9/D10: the process-level RED registry `--metrics`
     exposes at `/-/metrics`.
@@ -234,19 +253,32 @@ class MetricsRegistry:
     D9: lives ALONGSIDE `Trace.metrics`, not instead of it. That array is
     the per-request `--trace-exporter` (#78) contract and is neither read
     from nor written to here — this registry is populated by reading a
-    COMPLETED request's already-computed `result` (`_respond`), so removing
+    COMPLETED request's already-computed `result`, so removing
     `--trace-exporter` support later could never affect this registry, and
-    vice versa.
+    vice versa. The workflow series are populated from `_respond`; the HTTP
+    series (`lnpl_http_*`) at `LnplWsgiApp._finalize_response`, once per
+    response.
 
     D10: `wsgi` is one thread per request (`_Server(ThreadingMixIn, ...)`,
     serve.py), so every update goes through `_lock` — an unprotected `+=`
     here would lose updates under concurrent requests.
 
-    D7's three: `lnpl_workflow_runs_total{service,workflow,status}`
-    (counter), `lnpl_workflow_duration_seconds{service,workflow}`
-    (histogram), `lnpl_step_failures_total{service,workflow,step,kind}`
-    (counter) — every label already inside `Trace.metric`'s own allowlist
-    (D7: no new label axis).
+    D7 revised (issue #237): seven families —
+    `lnpl_workflow_runs_total{service,workflow,status}`,
+    `lnpl_workflow_duration_seconds{service,workflow}`,
+    `lnpl_step_failures_total{service,workflow,step,kind}`,
+    `lnpl_http_requests_total{route,method,status}`,
+    `lnpl_http_request_duration_seconds{route}`,
+    `lnpl_cache_ops_total{op,result}`,
+    `lnpl_idempotency_claims_total{status}`. A new label axis is allowed
+    only when every value comes from a closed, server-controlled set:
+    `route` is a declared route key or `unmatched`, `method` one of nine
+    RFC 9110 names or `other`, `status` this server's own status codes,
+    `op`/`result` fixed words, the idempotency `status` four words or
+    `other`. `interp.Trace.metric`'s label allowlist is unchanged and still
+    raises `RunError`. `render(gauges)` appends scrape-time gauges
+    (`lnpl_outbox_undelivered`, `lnpl_driver_<name>`) that the app samples;
+    the registry stores none of them.
     """
 
     def __init__(self):
@@ -259,6 +291,12 @@ class MetricsRegistry:
         self._duration_buckets = {}      # (service, workflow) -> [int, ...]
         self._duration_sum = {}          # (service, workflow) -> float
         self._duration_count = {}        # (service, workflow) -> int
+        self._http_requests_total = {}  # (route, method, status) -> int
+        self._http_duration_buckets = {}  # route -> [int, ...]
+        self._http_duration_sum = {}  # route -> float
+        self._http_duration_count = {}  # route -> int
+        self._cache_ops_total = {}  # (op, result) -> int
+        self._idempotency_claims_total = {}  # status -> int
 
     def record_run(self, service, workflow, status, duration_s):
         key = (service, workflow, status)
@@ -278,17 +316,47 @@ class MetricsRegistry:
         with self._lock:
             self._step_failures_total[key] = self._step_failures_total.get(key, 0) + 1
 
-    def render(self):
-        """-> Prometheus text exposition format (D7's RED 3). A stable sort
-        over every series so the same registry state always renders the
-        same text — a scraper (and a test) can parse this, not just count
-        lines."""
+    def record_http_request(self, route, method, status, duration_s):
+        """issue #237: one HTTP response (`LnplWsgiApp._finalize_response`)."""
+        with self._lock:
+            key = (route, method, status)
+            self._http_requests_total[key] = self._http_requests_total.get(key, 0) + 1
+            buckets = self._http_duration_buckets.setdefault(
+                route, [0] * len(_DURATION_BUCKETS))
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                if duration_s <= bound:
+                    buckets[i] += 1
+            self._http_duration_sum[route] = self._http_duration_sum.get(route, 0.0) + duration_s
+            self._http_duration_count[route] = self._http_duration_count.get(route, 0) + 1
+
+    def record_cache_op(self, op, result):
+        with self._lock:
+            key = (op, result)
+            self._cache_ops_total[key] = self._cache_ops_total.get(key, 0) + 1
+
+    def record_idempotency_claim(self, status):
+        with self._lock:
+            self._idempotency_claims_total[status] = (
+                self._idempotency_claims_total.get(status, 0) + 1)
+
+    def render(self, gauges=()):
+        """-> Prometheus text exposition format (D7 revised, issue #237). A
+        stable sort over every series so the same registry state always
+        renders the same text — a scraper (and a test) can parse this, not
+        just count lines. `gauges` is a sequence of `(name, help_text,
+        value)` sampled by the caller, rendered last in the given order."""
         with self._lock:
             runs = dict(self._runs_total)
             failures = dict(self._step_failures_total)
             buckets = {k: list(v) for k, v in self._duration_buckets.items()}
             sums = dict(self._duration_sum)
             counts = dict(self._duration_count)
+            http = dict(self._http_requests_total)
+            http_buckets = {k: list(v) for k, v in self._http_duration_buckets.items()}
+            http_sums = dict(self._http_duration_sum)
+            http_counts = dict(self._http_duration_count)
+            cache_ops = dict(self._cache_ops_total)
+            claims = dict(self._idempotency_claims_total)
         lines = [
             "# HELP lnpl_workflow_runs_total Total workflow runs, by outcome.",
             "# TYPE lnpl_workflow_runs_total counter",
@@ -328,6 +396,57 @@ class MetricsRegistry:
                 "lnpl_step_failures_total{service=%s,workflow=%s,step=%s,kind=%s} %d"
                 % (_label_value(service), _label_value(workflow), _label_value(step),
                    _label_value(kind), failures[(service, workflow, step, kind)]))
+        lines += [
+            "# HELP lnpl_http_requests_total Total HTTP responses, by route template, method and status.",
+            "# TYPE lnpl_http_requests_total counter",
+        ]
+        for route, method, status in sorted(http):
+            lines.append(
+                "lnpl_http_requests_total{route=%s,method=%s,status=%s} %d"
+                % (_label_value(route), _label_value(method),
+                   _label_value(status), http[(route, method, status)]))
+        lines += [
+            "# HELP lnpl_http_request_duration_seconds HTTP response duration, in seconds, by route template.",
+            "# TYPE lnpl_http_request_duration_seconds histogram",
+        ]
+        for route in sorted(http_buckets):
+            bucket_counts = http_buckets[route]
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                lines.append(
+                    "lnpl_http_request_duration_seconds_bucket{route=%s,le=%s} %d"
+                    % (_label_value(route), _label_value(repr(bound)), bucket_counts[i]))
+            lines.append(
+                'lnpl_http_request_duration_seconds_bucket{route=%s,le="+Inf"} %d'
+                % (_label_value(route), http_counts[route]))
+            lines.append(
+                "lnpl_http_request_duration_seconds_sum{route=%s} %s"
+                % (_label_value(route), repr(http_sums[route])))
+            lines.append(
+                "lnpl_http_request_duration_seconds_count{route=%s} %d"
+                % (_label_value(route), http_counts[route]))
+        lines += [
+            "# HELP lnpl_cache_ops_total Cache driver calls made while serving requests, by operation and result.",
+            "# TYPE lnpl_cache_ops_total counter",
+        ]
+        for op, result in sorted(cache_ops):
+            lines.append(
+                "lnpl_cache_ops_total{op=%s,result=%s} %d"
+                % (_label_value(op), _label_value(result), cache_ops[(op, result)]))
+        lines += [
+            "# HELP lnpl_idempotency_claims_total Idempotency-Key claim outcomes, by status.",
+            "# TYPE lnpl_idempotency_claims_total counter",
+        ]
+        for status in sorted(claims):
+            lines.append(
+                "lnpl_idempotency_claims_total{status=%s} %d"
+                % (_label_value(status), claims[status]))
+        for name, help_text, value in gauges:
+            lines.append("# HELP %s %s" % (name, help_text))
+            lines.append("# TYPE %s gauge" % name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                lines.append("%s %d" % (name, value))
+            else:
+                lines.append("%s %s" % (name, repr(float(value))))
         return "\n".join(lines) + "\n"
 
 
@@ -1060,6 +1179,87 @@ def _driver_name(repository):
     return type(repository).__module__ + "." + type(repository).__qualname__
 
 
+class _FinalizeOnClose:
+    """issue #237, D1: wraps a streaming (SSE) body so its response is
+    finalized exactly once — at the stream's end, on the host's `close()`
+    (client disconnect), and also when the host closes it before its first
+    chunk (an unstarted generator's `finally` never runs)."""
+
+    def __init__(self, body, on_done):
+        self._body = body
+        self._it = iter(body)
+        self._on_done = on_done
+        self._finished = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            self._done()
+            raise
+
+    def close(self):
+        try:
+            close = getattr(self._body, "close", None)
+            if callable(close):
+                close()
+        finally:
+            self._done()
+
+    def _done(self):
+        if self._finished:
+            return
+        self._finished = True
+        self._on_done()
+
+
+class _CountingCache:
+    """issue #237, D12: wraps an `Interpreter`'s cache so every driver call
+    it makes while serving a request counts in `lnpl_cache_ops_total`. It
+    covers the three interp.py call sites: the `cached` read-through
+    (get/set), the `CacheAccess` effect (set/get/invalidate) and
+    `_invalidate_read_through` (post-commit invalidation, rollback discard).
+    An exception from the inner call counts `error` and is re-raised
+    unchanged."""
+
+    def __init__(self, inner, registry):
+        self._inner = inner
+        self._registry = registry
+
+    def get(self, key):
+        try:
+            value = self._inner.get(key)
+        except Exception:
+            self._registry.record_cache_op("get", "error")
+            raise
+        self._registry.record_cache_op("get", "miss" if value is None else "hit")
+        return value
+
+    def set(self, key, value, ttl_ms):
+        try:
+            result = self._inner.set(key, value, ttl_ms)
+        except Exception:
+            self._registry.record_cache_op("set", "error")
+            raise
+        self._registry.record_cache_op("set", "ok")
+        return result
+
+    def invalidate(self, key):
+        try:
+            result = self._inner.invalidate(key)
+        except Exception:
+            self._registry.record_cache_op("invalidate", "error")
+            raise
+        self._registry.record_cache_op("invalidate", "ok")
+        return result
+
+    def close(self):
+        return self._inner.close()
+
+
 class LnplWsgiApp:
     """A PEP-3333 callable bound to one compiled document + routing table.
 
@@ -1132,6 +1332,8 @@ class LnplWsgiApp:
         # it is the process-level `MetricsRegistry` `_respond` records
         # into and `_metrics` renders from.
         self.metrics = metrics_registry
+        # issue #237, D21: sampler source -> (last stderr line, UTC date) printed for it.
+        self._gauge_failure_last = {}
         # issue #110, D11: process-level, set only by a SIGTERM handler
         # (serve.py) that does no I/O in the handler itself. `/-/readyz`
         # reads this and nothing else decides it; `/-/healthz` never reads
@@ -1320,10 +1522,73 @@ class LnplWsgiApp:
             self._inflight_decr()
 
     def __call__(self, environ, start_response):
+        """issue #237, D1: this wrapper is the only caller of
+        `_finalize_response`; the route is resolved before `_dispatch` so
+        the pre-dispatch 429/503 carry their real route."""
+        start_t = time.monotonic()
         method = environ.get("REQUEST_METHOD", "GET")
         path_info = environ.get("PATH_INFO", "")
         query = environ.get("QUERY_STRING", "")
         raw_path = path_info + ("?" + query if query else "")
+        route = self._route_label(method, path_info, raw_path)
+        seen = {}
+
+        def recording_start_response(status_line, headers, exc_info=None):
+            seen["status"] = status_line.split(" ", 1)[0]
+            return start_response(status_line, headers, exc_info)
+
+        try:
+            body = self._dispatch(environ, recording_start_response, method,
+                                  path_info, query, raw_path)
+        except BaseException:
+            self._finalize_response(environ, route, seen.get("status", "500"), start_t)
+            raise
+        if isinstance(body, list):
+            self._finalize_response(environ, route, seen.get("status", "500"), start_t)
+            return body
+        return self._finalize_after_stream(body, environ, route, seen, start_t)
+
+    def _route_label(self, method, path_info, raw_path):
+        """issue #237, D2: the bounded `route` label — mirrors `_do_get` /
+        `_do_post` / `_reject_non_post` matching, side-effect free. Every
+        return value is a key of `self.routes` or `UNMATCHED_ROUTE_LABEL`."""
+        if method == "GET":
+            segments = path_info.split("/")
+            if len(segments) == 4 and segments[3]:
+                template = "/%s/%s/{id}" % (segments[1], segments[2])
+                route = self.routes.get(template)
+                if route is not None and route.get("kind") == "get-single":
+                    return template
+                route = self.routes.get(path_info)
+                if route is not None and route.get("kind") == "sse-subscribe":
+                    return path_info
+                return UNMATCHED_ROUTE_LABEL
+            return path_info if path_info in self.routes else UNMATCHED_ROUTE_LABEL
+        return raw_path if raw_path in self.routes else UNMATCHED_ROUTE_LABEL
+
+    def _finalize_response(self, environ, route, status, start_t):
+        """issue #237: the ONE per-response finalization point — called
+        exactly once per response by `__call__` (list body, exception,
+        stream end or close). issue #241 (t5) hooks the audit trail here."""
+        duration_s = time.monotonic() - start_t
+        if self.metrics is not None:
+            self.metrics.record_http_request(
+                route, _method_label(environ.get("REQUEST_METHOD", "GET")),
+                status, duration_s)
+
+    def _finalize_after_stream(self, body, environ, route, seen, start_t):
+        return _FinalizeOnClose(body, lambda: self._finalize_response(
+            environ, route, seen.get("status", "500"), start_t))
+
+    def _record_idempotency_claim(self, status):
+        """issue #237, D13: one Idempotency-Key claim outcome; a status
+        string outside the four known words is counted as `other`."""
+        if self.metrics is None:
+            return
+        label = status if status in ("started", "in-progress", "done", "unsupported") else "other"
+        self.metrics.record_idempotency_claim(label)
+
+    def _dispatch(self, environ, start_response, method, path_info, query, raw_path):
         # issue #148, D1/D2: `/-/` ops paths (healthz/readyz/metrics) are
         # exempt from BOTH gates -- a k8s probe getting 429 is worse than
         # the probe that exemption exists to serve reliably, and readyz is
@@ -1886,11 +2151,72 @@ class LnplWsgiApp:
         this method, not a branch inside it. Prometheus text exposition
         format, rendered from the process-level registry (D9) — no
         auth (D2), same as healthz/readyz."""
-        payload = self.metrics.render().encode("utf-8")
+        payload = self.metrics.render(self._sample_driver_gauges()).encode("utf-8")
         headers = [("Content-Type", "text/plain; version=0.0.4; charset=utf-8"),
                   ("Content-Length", str(len(payload)))]
         start_response(_status_line(200), headers)
         return [payload]
+
+    def _gauge_failed(self, source, exc):
+        line = "serve: metrics: %s failed (%s): %s" % (source, type(exc).__name__, exc)
+        date = time.strftime("%Y-%m-%d", time.gmtime())
+        if self._gauge_failure_last.get(source) != (line, date):
+            print(line, file=sys.stderr)
+            self._gauge_failure_last[source] = (line, date)
+
+    def _gauge_ok(self, source):
+        self._gauge_failure_last.pop(source, None)
+
+    def _sample_driver_gauges(self):
+        """issue #237, D10/D11/D21: scrape-time gauges from one repository
+        opened and closed per scrape — `lnpl_outbox_undelivered` when the
+        driver implements `outbox_undelivered_count()`, one
+        `lnpl_driver_<name>` per valid entry of its optional `metrics()`
+        dict. A failing method leaves its gauges out (the scrape is still
+        200) and prints its stderr line only when the line or the UTC date
+        changed; sampling itself is never suppressed."""
+        if self.repository_factory is None:
+            return []
+        try:
+            repository = self.repository_factory()
+        except DriverError:
+            return []
+        gauges = []
+        try:
+            count_fn = getattr(repository, "outbox_undelivered_count", None)
+            if callable(count_fn):
+                try:
+                    count = int(count_fn())
+                except Exception as exc:
+                    self._gauge_failed("outbox_undelivered_count", exc)
+                else:
+                    self._gauge_ok("outbox_undelivered_count")
+                    gauges.append(("lnpl_outbox_undelivered",
+                                   "Outbox rows not yet delivered, sampled at scrape time.",
+                                   count))
+            hook = getattr(repository, "metrics", None)
+            if callable(hook):
+                try:
+                    values = hook()
+                except Exception as exc:
+                    self._gauge_failed("metrics()", exc)
+                    values = None
+                else:
+                    self._gauge_ok("metrics()")
+                if isinstance(values, dict):
+                    for key in sorted(k for k in values if isinstance(k, str)):
+                        value = values[key]
+                        name = DRIVER_GAUGE_PREFIX + key
+                        if (not key or isinstance(value, bool)
+                                or not isinstance(value, (int, float))
+                                or (isinstance(value, float) and not math.isfinite(value))
+                                or _METRIC_NAME_RE.fullmatch(name) is None):
+                            continue
+                        gauges.append((name, "Value reported by the repository driver's metrics() hook.",
+                                       value))
+        finally:
+            repository.close()
+        return gauges
 
     def _last_event_id(self, environ, start_response):
         """`Last-Event-ID` header -> the outbox seq to resume after (issue
@@ -2076,6 +2402,7 @@ class LnplWsgiApp:
         mode = (_idempotency_mode(repository)
                 if idempotency_key is not None else None)
         if mode == "refuse":
+            self._record_idempotency_claim("unsupported")
             return _json_response(
                 start_response, 501,
                 problem(501, "idempotency-unsupported",
@@ -2091,6 +2418,7 @@ class LnplWsgiApp:
             now_ms = int(time.time() * 1000)
             claim_status, stored = repository.idempotency_begin(
                 workflow_id, idempotency_key, now_ms, self.idempotency_ttl_ms)
+            self._record_idempotency_claim(claim_status)
             if claim_status == "in-progress":                       # D8
                 return _json_response(
                     start_response, 409,
@@ -2124,6 +2452,8 @@ class LnplWsgiApp:
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
                              network=self.network, cache=self.cache, claims=claims)
+        if self.metrics is not None:
+            interp.cache = _CountingCache(interp.cache, self.metrics)
         # issue #111, D6: computed once, reused for the canonical line's
         # `input_digest` on both the escape path below and the normal
         # completion path — the same masking chokepoint the workflow-start
@@ -2256,6 +2586,7 @@ class LnplWsgiApp:
             # key, so a driver without the claim set refuses every event.
             mode = _idempotency_mode(repository)
             if mode == "refuse":
+                self._record_idempotency_claim("unsupported")
                 return _json_response(
                     start_response, 501,
                     problem(501, "idempotency-unsupported",
@@ -2271,6 +2602,7 @@ class LnplWsgiApp:
                 now_ms = int(time.time() * 1000)
                 claim_status, stored = repository.idempotency_begin(
                     workflow_id, event_key, now_ms, self.idempotency_ttl_ms)
+                self._record_idempotency_claim(claim_status)
                 if claim_status == "in-progress":
                     return _json_response(
                         start_response, 409,
@@ -2288,6 +2620,8 @@ class LnplWsgiApp:
                                  repo_rows=default_rows(self.document, workflow_id, data),
                                  correlation_id=correlation_id, repository=repository,
                                  network=self.network, cache=self.cache, claims=claims)
+            if self.metrics is not None:
+                interp.cache = _CountingCache(interp.cache, self.metrics)
             try:
                 result = interp.run_workflow(workflow_id, data)
             except Exception:

@@ -210,6 +210,14 @@ class RepositoryDriver:
     `OUTBOX_DRAIN_METHODS`). The base class defines none of those five
     methods; the predicates' default reads the instance, so an
     implementation needs no override (`docs/backends.md` §8).
+
+    `outbox_undelivered_count()` and `metrics()` (issue #237) — optional
+    methods, absent by default and never defined on this base class:
+    `lnpl serve --metrics` probes each with `callable(getattr(driver, name,
+    None))` at scrape time. `outbox_undelivered_count()` returns an int
+    (exported as `lnpl_outbox_undelivered`); `metrics()` returns a dict of
+    name to int or float, each valid entry exported as gauge
+    `lnpl_driver_<name>` (`docs/serving.md` `/-/metrics`).
     """
 
     def seed(self, rows):
@@ -663,6 +671,7 @@ _SELECT_OUTBOX_SEQ = "SELECT 1 FROM lnpl_outbox WHERE seq = ?"
 _SELECT_UNDELIVERED = ("SELECT seq, emission_id, event, payload, created_at "
                        "FROM lnpl_outbox WHERE delivered_at IS NULL ORDER BY seq")
 _SELECT_UNDELIVERED_LIMIT = _SELECT_UNDELIVERED + " LIMIT ?"
+_COUNT_UNDELIVERED = "SELECT COUNT(*) FROM lnpl_outbox WHERE delivered_at IS NULL"
 # issue #103: the SSE tail's read — scoped to one event, `delivered_at`
 # ignored entirely (that column is the drain/ack consumer's alone).
 _SELECT_OUTBOX_SINCE = ("SELECT seq, emission_id, event, payload, created_at "
@@ -1132,6 +1141,16 @@ class SqliteRepositoryDriver(RepositoryDriver):
         return [{"seq": row[0], "emission_id": row[1], "event": row[2],
                 "payload": json.loads(row[3]), "created_at": row[4]}
                for row in found]
+
+    def outbox_undelivered_count(self):
+        """issue #237: how many outbox rows `drain_outbox` would return right
+        now; `lnpl serve --metrics` samples it at scrape time as
+        `lnpl_outbox_undelivered`."""
+        try:
+            (count,) = self._conn.execute(_COUNT_UNDELIVERED).fetchone()
+        except sqlite3.Error as exc:
+            raise DriverError("cannot count undelivered outbox rows: %s" % exc) from exc
+        return int(count)
 
     def read_outbox(self, event, after_seq=0):
         """Every emission of `event` with `seq > after_seq`, ascending (issue
