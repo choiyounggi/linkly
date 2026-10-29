@@ -198,10 +198,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 5,670여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 5,720여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
-**RFC 66편 — 62편 `Accepted`, RFC-0000은 RFC-0007로 `Superseded`, RFC-0034·RFC-0048·RFC-0065는 `Draft`.** RFC-0007은
+**RFC 78편 — 62편 `Accepted`, 13편 `Superseded`(RFC-0000은 RFC-0007로, RFC-0001·0002·0003·0008·0012·0014·0015·0016·0021·0025·0028·0038은 통합본 RFC-0066~0077로 — issue #268), RFC-0034·RFC-0048·RFC-0065는 `Draft`.** RFC-0007은
 2026-08-03에 정식 Accepted가 됐고, 효력은 RFC-0000이 대체된 2026-07-31부터였다
 ([이슈 #11](https://github.com/choiyounggi/linkly/issues/11)).
 [로드맵](docs/ROADMAP.md) 참조.
@@ -218,33 +218,33 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 |-----|------|
 | [0000 RFC Process](rfcs/0000-rfc-process.md) | *0007로 대체됨* — 수명주기, 번호 체계, 고정 7섹션 템플릿 |
 | [0007 RFC Process v2](rfcs/0007-rfc-process-v2.md) | `Updates` 관계 신설 — RFC를 대체하지 않고 지목한 **절**만 갱신 |
-| [0001 Semantic IR](rfcs/0001-semantic-ir.md) — [영어 요약](docs/rfc-0001-semantic-ir.en.md) | 노드 21종, Semantic Type 18종, 평탄 구조, canonical JSON 직렬화 |
-| [0002 Syntax](rfcs/0002-syntax.md) | 라인 지향·키워드 구획 EBNF(58 생산규칙) + 문법→IR lowering 매핑 |
-| [0003 Runtime](rfcs/0003-runtime.md) | actor, structured concurrency, 정책 집행, 메모리 프리미티브, 관측성 계약 |
+| [0001 Semantic IR](rfcs/0001-semantic-ir.md) — [영어 요약](docs/rfc-0001-semantic-ir.en.md) | *0066으로 대체됨* — 노드 21종, Semantic Type 18종, 평탄 구조, canonical JSON 직렬화 |
+| [0002 Syntax](rfcs/0002-syntax.md) | *0067로 대체됨* — 라인 지향·키워드 구획 EBNF(58 생산규칙) + 문법→IR lowering 매핑 |
+| [0003 Runtime](rfcs/0003-runtime.md) | *0068로 대체됨* — actor, structured concurrency, 정책 집행, 메모리 프리미티브, 관측성 계약 |
 | [0004 Compiler](rfcs/0004-compiler.md) | MLIR progressive lowering 7단계, 패스 불변조건, Optimizer 3종 책임 축 |
 | [0005 Knowledge Base](rfcs/0005-knowledge-base.md) | 12 카테고리, 3단 progressive disclosure 라우팅, 소비 인터페이스 |
 | [0006 Agent Protocol](rfcs/0006-agent-protocol.md) | 역할 9종, JSON-RPC 메서드 8종, 구조화 오류, 멱등, 태스크 수명주기 |
-| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | 가드 조건식: 존재 검사·비교식 2형태, 명세 정정, 모드 B 컴파일. *0002 §Full grammar·0003 §Guard 갱신* |
+| [0008 Guard Conditions](rfcs/0008-guard-conditions.md) | *0069로 대체됨* — 가드 조건식: 존재 검사·비교식 2형태, 명세 정정, 모드 B 컴파일. *0002 §Full grammar·0003 §Guard 갱신* |
 | [0009 Guard Condition OQ](rfcs/0009-guard-condition-open-question.md) | 문법이 확정됐으므로 RFC-0002 미결 ②를 해소. *0002 §Open Questions 갱신* |
 | [0010 Proposal Intent](rfcs/0010-proposal-intent.md) | 역할이 저작 권한 없는 노드에 자기 노드를 부착하는 법, 그리고 참조가 이동할 때의 의미론. *0006 §Agent Roles & IR Access·§Methods/ir.propose 갱신* |
 | [0011 Refinement enum 정합과 이름 충돌](rfcs/0011-refinement-enum-and-name-collisions.md) | 어떤 refinement 이름이 적법한가, 그리고 선언 둘이 한 이름을 주장할 때 무엇이 이기는가. *0001 §부록 A.6.3·§부록 A.7 갱신* |
-| [0012 실행 스코프와 스텝 결과 바인딩](rfcs/0012-execution-scope.md) | 가드 조건식이 무엇을 가리킬 수 있는가, 그리고 한 step의 결과가 다음 step에 어떻게 묶이는가. *0002 §Full grammar·0008 §Reference-level Specification/1. Full Grammar·0003 §Guard 갱신* |
+| [0012 실행 스코프와 스텝 결과 바인딩](rfcs/0012-execution-scope.md) | *0070으로 대체됨* — 가드 조건식이 무엇을 가리킬 수 있는가, 그리고 한 step의 결과가 다음 step에 어떻게 묶이는가. *0002 §Full grammar·0008 §Reference-level Specification/1. Full Grammar·0003 §Guard 갱신* |
 | [0013 Step Attempt Ceiling](rfcs/0013-step-attempt-ceiling.md) | 선언된 `retry` 예산을 읽지 않는 절대 시도 상한 — 그 예산을 잃어도 무한 루프가 아니라 실패로 끝나게 한다. *0003 §Policy Enforcement 갱신* |
-| [0014 가드 스킵의 관측 가능성](rfcs/0014-guard-skip-observability.md) | 스킵된 스텝이 더 이상 완주한 스텝으로 위장되지 않는다 — 스킵이 INFO 한 줄이 아니라 기록되는 계약 신호가 된다. *0008 §Guard Runtime Semantics 갱신* |
-| [0015 값 의미론](rfcs/0015-value-semantics.md) | 가드가 무엇을 비교할 수 있고 `set`이 무엇을 쓸 수 있는가 — 필드 참조, 이항 산술 1개, `and` 결합, `input.` 페이로드 네임스페이스. 집계(`sum`/`count`)는 행 집합 표현이 먼저라 로드맵이 §Alternatives에 있다. *0001 §A.4·0002 §Full grammar·0008 §1 갱신* |
-| [0016 시간 값 의미론과 스케줄 트리거](rfcs/0016-time-and-schedule-semantics.md) | DateTime을 epoch-ms 코덱으로 두어 기간이 i64가 되고 두 모드가 같게 비교한다. `event … on schedule daily at HH:MM UTC`는 IR과 OpenAPI까지 도달하고 집행되지 않는다. *0001 §A.4·0002 §Full grammar·0008 §1 갱신* |
+| [0014 가드 스킵의 관측 가능성](rfcs/0014-guard-skip-observability.md) | *0071로 대체됨* — 스킵된 스텝이 더 이상 완주한 스텝으로 위장되지 않는다 — 스킵이 INFO 한 줄이 아니라 기록되는 계약 신호가 된다. *0008 §Guard Runtime Semantics 갱신* |
+| [0015 값 의미론](rfcs/0015-value-semantics.md) | *0072로 대체됨* — 가드가 무엇을 비교할 수 있고 `set`이 무엇을 쓸 수 있는가 — 필드 참조, 이항 산술 1개, `and` 결합, `input.` 페이로드 네임스페이스. 집계(`sum`/`count`)는 행 집합 표현이 먼저라 로드맵이 §Alternatives에 있다. *0001 §A.4·0002 §Full grammar·0008 §1 갱신* |
+| [0016 시간 값 의미론과 스케줄 트리거](rfcs/0016-time-and-schedule-semantics.md) | *0073으로 대체됨* — DateTime을 epoch-ms 코덱으로 두어 기간이 i64가 되고 두 모드가 같게 비교한다. `event … on schedule daily at HH:MM UTC`는 IR과 OpenAPI까지 도달하고 집행되지 않는다. *0001 §A.4·0002 §Full grammar·0008 §1 갱신* |
 | [0017 guarded.lnpl 예제 정정](rfcs/0017-guarded-example-correction.md) | 가드가 빨개진 예제를 예외로 빼지 않고 다시 쓴 이유. *0008 §5.2 갱신* |
 | [0018 반복 스텝 관측의 fold 규칙](rfcs/0018-repeated-step-observation-fold.md) | 두 번 이상 도는 스텝이 하나의 관측으로 접히는 방식 — 그래야 모드 간 비교를 이름으로 할 수 있다. *0017 §Open Questions 1 갱신* |
 | [0019 구조와 모순되는 들여쓰기의 거부](rfcs/0019-misleading-indentation.md) | 들여쓰기는 의미가 없지만, 블록 구조와 모순되는 들여쓰기는 거부한다 — 스코프에 대한 조용한 거짓말이 관례 부재보다 나쁘다. *0002 §Block structure 갱신* |
 | [0020 spec `given`의 입력 네임스페이스](rfcs/0020-spec-given-input-namespace.md) | `spec` 케이스가 실행 payload의 필드를 지목하는 법 — 그래야 `input.` 가드를 계약할 수 있다. |
-| [0021 진단 등급과 `--strict` 문턱](rfcs/0021-diagnostic-severity-levels.md) | 등급 사다리와 `--strict[=LEVEL]`가 게이팅하는 것. `warning`은 프로그램을 고치면 사라지는 것, `info`는 플랫폼이 자기가 하는 일을 진술한 것. |
+| [0021 진단 등급과 `--strict` 문턱](rfcs/0021-diagnostic-severity-levels.md) | *0074로 대체됨* — 등급 사다리와 `--strict[=LEVEL]`가 게이팅하는 것. `warning`은 프로그램을 고치면 사라지는 것, `info`는 플랫폼이 자기가 하는 일을 진술한 것. |
 | [0022 mode B의 관측 표면](rfcs/0022-mode-b-observation-surface.md) | 네이티브 빌드가 스킵된 스텝과 `--field` 도달을 무엇으로 말해야 하는가 — "돌았다"와 "건너뛰었다"가 구별되도록. *0014 §2.5·§2.6·0021 §코드 갱신* |
 | [0023 가드 밖으로 새어 나간 상태 변경](rfcs/0023-guard-scope-diagnostic.md) | 가드는 다음 항목 하나만 소유하므로 뒤의 스텝이 가드가 지키려던 상태를 바꿀 수 있다. `guard-orphaned-steps`가 그것을 컴파일 타임에 말한다 — 형태가 아니라 결과로 판정한다. *0021 §코드 갱신* |
 | [0024 집행 진단에 소스 line 병기](rfcs/0024-enforcement-diagnostic-line.md) | 집행 진단(`declared-not-enforced`/`declared-measured-only`/`authorization-not-verified`)이 노드 id에 더해 `(line N)`을 갖는다 — 한 절의 선언 둘이 같은 노드 id를 공유해도 더는 위치로 구별 불가능하지 않다. *0023 §5 갱신* |
-| [0025 행 집합(Row Set)과 집계](rfcs/0025-row-sets-and-aggregation.md) | `list`가 엔티티의 전 행을 RowSet — 단일 행 바인딩과 별개의 이름공간 — 으로 읽고, `set`의 `sum`/`count`가 그것을 집계한다. mode B는 집계 값을 계산하지 않지만 `lnpl diff`는 관측 4클래스의 합의를 그대로 증명한다. *0012 §G12.2·0015 §1 갱신* |
+| [0025 행 집합(Row Set)과 집계](rfcs/0025-row-sets-and-aggregation.md) | *0075로 대체됨* — `list`가 엔티티의 전 행을 RowSet — 단일 행 바인딩과 별개의 이름공간 — 으로 읽고, `set`의 `sum`/`count`가 그것을 집계한다. mode B는 집계 값을 계산하지 않지만 `lnpl diff`는 관측 4클래스의 합의를 그대로 증명한다. *0012 §G12.2·0015 §1 갱신* |
 | [0026 unknown-verb의 line과 suggestion](rfcs/0026-unknown-verb-line-and-suggestion.md) | `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps`가 구조화 `line`을 갖고, 어휘 밖 동사는 2단 did-you-mean을 받는다 — 의미 동의어는 수제 별칭 테이블(`persist` → `create`), 철자 오타는 difflib. *0024 §Scope 갱신* |
 | [0027 네트워크 드라이버와 결과 바인딩](rfcs/0027-network-driver-and-result-binding.md) | `call`/`request`가 `NetworkDriver`(`--network fake\|http`) 뒤의 실제 아웃바운드 호출이 되고, `as <이름>`이 응답을 바인딩해 가드가 `status`로 분기한다 — 바인딩된 호출의 접속 실패는 예외가 아니라 값(`status` 0)이다. *0003 §Execution Model·0012 §G12.2·0014 갱신* |
-| [0028 산술 연산자 확장과 대안 가드](rfcs/0028-arithmetic-and-alternative-guards.md) | `*`/`/`가 `+`/`-`에 합류한다(정수, 절삭 나눗셈 — 0 나눗셈은 리터럴 0이 아닌 한 컴파일 에러가 아니라 `RunError`다), `when A` / `or B`는 가드 두 줄을 대안 가드로 승격한다 — `Condition` 문법의 연산자가 아니라 구조다. *0001 §노드 카탈로그/Guard·0014 §2·0015 §1 §4 갱신* |
+| [0028 산술 연산자 확장과 대안 가드](rfcs/0028-arithmetic-and-alternative-guards.md) | *0076으로 대체됨* — `*`/`/`가 `+`/`-`에 합류한다(정수, 절삭 나눗셈 — 0 나눗셈은 리터럴 0이 아닌 한 컴파일 에러가 아니라 `RunError`다), `when A` / `or B`는 가드 두 줄을 대안 가드로 승격한다 — `Condition` 문법의 연산자가 아니라 구조다. *0001 §노드 카탈로그/Guard·0014 §2·0015 §1 §4 갱신* |
 | [0029 Clock 계약과 `--clock real` 바인딩](rfcs/0029-clock-contract-and-real-binding.md) | `timeout`/`retry`/`CacheAccess`가 이미 공유하던 시간 소스를 Clock 계약으로 이름 붙이고, 두 번째 바인딩을 더한다 — `--clock real`은 `CacheAccess` TTL을 실제 벽시계 경과에 묶는다. 기본 virtual 바인딩과, `--clock`을 아예 받지 않는 `diff`/`spec`은 바뀌지 않는다. *0003 §Execution Model 갱신* |
 | [0030 `create` 결과 바인딩과 payload 시드](rfcs/0030-create-result-binding-and-payload-seed.md) | `create <명사> as <이름>`이 RFC-0027의 결과 바인딩 표기를 확장해 생성 행에 `set`/`format`/`respond`를 쓸 수 있게 한다. 별개로, `as` 유무와 무관하게 생성 행이 payload의 동명 비-`derived` 필드로 시드된다 — "뼈대 행" 갭의 해소. `as` 없는 `create`는 컴파일 표면에서 이전과 바이트 동일하다(`result` 필드도, 새 스코프 편입도 없다). *0012 §G12.2·§G12.5 갱신* |
 | [0031 다중 파일 컴파일 단위](rfcs/0031-multi-file-compilation-unit.md) | 컴파일 단위가 파일 집합으로 확장된다 — `lnpl <cmd> <src...>`는 명시한 파일들을 인자 순서로 병합하고, `lnpl <cmd> <dir>`은 그 디렉터리의 `*.lnpl`을 파일명 정렬로 수집한다. 선언 이름은 전역 유일 — 서로 다른 파일에서 이름이 겹치면 거부하며 두 `<파일>:<줄>` 위치를 함께 병기한다. 문법·lexer는 불변이고, 소스 인자 1개는 바이트 동일하다. *0004 §Reference-level Specification(파이프라인 표 S1 행) 갱신* |
@@ -254,7 +254,7 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0035 인가 집행의 유보된 범위](rfcs/0035-authorization-enforcement-deferred-scope.md) | `security role`이 실제로 집행되면서 issue #119가 미결로 남긴 세 질문에 답한다 — 워크플로 수준 `security role`은 지금은 도입하지 않는다(실측된 수요 없음, 재검토 조건 명시), `authorize` 동사는 승격된 `warning` 등급을 유지한 채 최종 운명((a) 선언 연결 대 (b) 폐기)을 실사용 관측으로 미룬다(판단 기준 표 포함), `security encrypt`는 제거를 결정한다("드라이버 의존"은 외부 드라이버가 0건인 공집합에 대한 서술이라 기각) — 마이그레이션 안내를 적고, 실제 제거는 후속 `tech-debt` 이슈로 넘긴다. |
 | [0036 `policy rollback` 선언의 실제 효력 정정](rfcs/0036-policy-rollback-declaration-effect.md) | `policy rollback`의 문서화된 효력을 정정한다 — `run_workflow`는 선언 여부와 무관하게 실패한 모든 실행의 쓰기를 무조건 롤백한다. 선언이 실제로 좌우하는 것은 INFO trace 로그 한 줄과 컴파일 타임 `rollback-escapes-network` 진단(issue #112)뿐이다. `enforced` 상태는 유지한다(보장 자체는 실재한다) — 틀린 것은 설명문뿐이었다. 동작 변경 없음. *0032 §실행 경계·§docs/ENFORCEMENT-MATRIX.md §B — policy rollback 행 갱신* |
 | [0037 아웃바운드 HTTP 회복성 계층](rfcs/0037-http-resilience.md) | `capability http`에 `retry <N> backoff <duration> [jitter]`(지수 백오프, full jitter, Retry-After 인지)와 `breaker after <N> within <duration>`(인프로세스 서킷브레이커)를 더하고, `method`가 `get/post/put/patch/delete`로 넓어지고, `path "<template>"` + `call ... with <ref>...`가 이스케이프된 URL 경로를 조립한다. `NetworkDriver.call`은 파괴적으로 3-튜플 `(status, body, headers)`가 되며 두 구현에 한 번에 적용된다 — `NetworkDriverTCK`가 둘이 같은 선언을 다르게 채점하지 않는지 검사한다. 선언이 없으면 이전과 바이트 동일. *0027 §Reference-level Specification/1 갱신* |
-| [0038 `list where` 질의 술어 + order by/limit](rfcs/0038-list-where-predicate.md) | `list <Entity>`에 `where <cond> [order by <field> [desc]] [limit <N>]`가 더해진다 — 가드 조건 문법(`condition.py`)을 그대로 재사용해 새 표현식 언어를 만들지 않는다. 등가(`==`/`!=`)는 선언 타입이 같으면(UUID/Text/Email 포함) 허용하고, 순서 비교(`<`,`<=`,`>`,`>=`)는 Integer/DateTime 차원 제약을 그대로 유지한다. `RepositoryDriver.query`에 `predicate`/`order`/`limit`이 더해지며(전부 기본값 `None`, 없으면 바이트 동일) 드라이버는 `supports_predicate`로 푸시다운을 옵트인하고, 아니면 코어가 과다수신 후 파이썬에서 걸러 INFO `predicate-not-pushed-down` 한 줄을 남긴다. *0016 §Reference-level Specification/3, 0025 §Reference-level Specification/1 갱신* |
+| [0038 `list where` 질의 술어 + order by/limit](rfcs/0038-list-where-predicate.md) | *0077로 대체됨* — `list <Entity>`에 `where <cond> [order by <field> [desc]] [limit <N>]`가 더해진다 — 가드 조건 문법(`condition.py`)을 그대로 재사용해 새 표현식 언어를 만들지 않는다. 등가(`==`/`!=`)는 선언 타입이 같으면(UUID/Text/Email 포함) 허용하고, 순서 비교(`<`,`<=`,`>`,`>=`)는 Integer/DateTime 차원 제약을 그대로 유지한다. `RepositoryDriver.query`에 `predicate`/`order`/`limit`이 더해지며(전부 기본값 `None`, 없으면 바이트 동일) 드라이버는 `supports_predicate`로 푸시다운을 옵트인하고, 아니면 코어가 과다수신 후 파이썬에서 걸러 INFO `predicate-not-pushed-down` 한 줄을 남긴다. *0016 §Reference-level Specification/3, 0025 §Reference-level Specification/1 갱신* |
 | [0039 `note` 동사 + canonical log line](rfcs/0039-note-verb-and-canonical-line.md) | `note "<template>" [with <ref>...]`가 Effect가 아닌 `Annotation` 노드로 lower된다(`respond`/`Response`와 같은 취급) — `condition._parse_format_rhs`를 그대로 재사용한다. 미바인딩 참조는 `null`로 기록될 뿐 실행을 실패시키지 않고, Password 타입 값은 기존 `mask_payload` chokepoint로 마스킹된다. 워크플로당 `note` 16개 초과는 컴파일 에러가 아니라 `note-cap-exceeded` 경고다. `--log-format json`의 canonical line에 `notes`/`effects`/`input_digest`가 존재할 때만 덧붙고, `lnpl serve --capture-on-failure`(기본 off)는 실패/500으로 끝난 실행의 줄에만 마스킹된 입력 payload를 싣는다. `_call_with_json_log`는 이제 끝까지 예외 안전하다 — `_respond`에 닿기도 전에 죽는 요청도 canonical line 한 줄을 낸다. |
 | [0040 이벤트 소비 계약](rfcs/0040-event-consumption-contract.md) | `event ... consume by <Workflow>`가 도착 시 워크플로를 실행한다 — RFC-0032가 이미 확정한 발행 쪽의 남은 소비 절반. `POST /-/events/<slug>`(예약 공간, RFC-0016 스케줄 트리거와 같은 모양)가 CloudEvents v1.0 구조화 봉투를 받고, 그 `id`가 멱등성 키다(이슈 #113의 `lnpl_idempotency` 테이블·API·TTL을 그대로 재사용, 두 번째 저장소 없음). 실행 결과는 정확히 3갈래로 매핑된다 — 200 성공, 503+`Retry-After` 일시적(데드라인, 또는 `RepositoryCall`/`NetworkCall` effect 실패), 422 영구적(Validation 거부, 비즈니스/가드 RunError, create 충돌) — 그리고 503은 `idempotency_finish`를 의도적으로 건너뛰어 재시도가 503을 영원히 재생하는 대신 새로 실행되게 한다. `consume by`와 그 워크플로 자신의 `emit` 사이의 순환은 정적 경고(`event-consume-cycle`)이지 컴파일 에러가 아니다. `lnpl relay`가 outbox를 드레인해 소비 라우트로 미는 레퍼런스 릴레이다(urllib만, 브로커 의존 없음). |
 | [0041 `parallel` 블록 실행](rfcs/0041-parallel-block-execution.md) | RFC-0003이 구조적 동시성으로 이미 약속했던 것을 mode A가 마침내 집행한다 — `parallel` 블록의 스텝이 블록 스코프 `ThreadPoolExecutor`에서 실행되고, fail-fast(한 브랜치 실패 시 시작 전인 나머지를 취소하고 블록 실패), 동시성 상한은 `policy parallel <N>`(기존 정책 이름에 새로 붙은 선택적 정수 인자 — 값이 없으면 블록 자신의 스텝 수로 폴백)이 정한다. 같은 entity에 쓰는 두 스텝이 한 블록에 있으면 컴파일 타임 `LowerError`가 두 줄번호를 함께 인용한다 — RFC-0012의 바인딩은 순서 의존적인데 `parallel` 블록에는 순서가 없기 때문이다. 보고는 완료 순서가 아니라 선언 순서를 유지해 `spec.py`의 `steps <N>`이 순차 실행과 같은 모양을 낸다. 각 스텝 스팬은 가상 `Clock`이 아니라 실제 벽시계 타임스탬프를 써서, 겹치는 형제 스팬이 실제 동시 실행의 증거가 된다. mode B는 손대지 않았다(RFC-0004 §5(#7) 계속 미결) — `differential`이 이제 `parallel`을 가진 워크플로의 리포트를 정확히 그 이유로 미검증 차원으로 표시한다. |
@@ -282,8 +282,20 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 | [0063 기본 호출 본문에서 Password 계열 필드 제외](rfcs/0063-default-body-omits-password-fields.md) | `send` 절이 없는 `call`/`request`는 실행 입력 전체를 보냈고, 그래서 Password 계열 입력 필드의 원문이 상대에게 나갔다 — 이슈 #43의 마스킹 계약이 막지 않던 출력 채널이다(이슈 #214). 이제 기본 본문은 어느 엔티티든 `Password`나 `refine ... of Password`로 선언한 이름의 입력 키를 뺀다(키가 없고, `***`가 아니다). 그런 필드가 없는 입력은 같은 객체 그대로, 바이트 동일하게 나간다. 하나뿐인 네트워크 호출 지점의 필터 하나가 `mask_payload`와 같은 이름 도출을 쓴다. `send`와 모드 B는 그대로다. 경로 인자(`with input.<Password 필드>`)와 `send`/`emit ... with`의 컴파일 시점 같은 이름 공백은 이제 선언한 모든 엔티티를 보는 컴파일 거부다(이슈 #218, #219). 다른 마스킹 채널의 첫 엔티티 뷰는 후속 이슈로 남긴다. *Updates RFC-0057 §Guide-level Explanation, §Reference-level Specification/4, /5, /8* |
 | [0064 0행에 영향을 준 update·delete는 not-found로 실패](rfcs/0064-write-miss-not-found.md) | 행을 하나도 건드리지 않은 `update`/`delete`(bare 또는 `by <ref>`)가 `completed`(serve 200)로 끝났고, 같은 키의 `find`는 이슈 #197부터 404였다(이슈 #215). 이제 드라이버가 `{"affected": 0}`을 돌려준 쓰기는 그 스텝을 `failure_kind` `not-found`로 실패시킨다 — serve 404, 소비 경로 422 — `fake`·`sqlite:`·모드 B 모두 같고, 그 실행의 앞선 쓰기는 롤백된다(RFC-0032). delete는 기본이 실패이며 멱등 delete 표기는 이번 변경에 없다. 드라이버 TCK에 부재 행 갱신 케이스가 추가되어 외부 드라이버도 통과해야 한다. |
 | [0065 레퍼런스 릴레이 배치 상한](rfcs/0065-relay-batch-limit.md) | *(Draft)* `lnpl relay`는 미배달 백로그 전체를 배치 하나로 드레인했고, 그래서 issue #257의 배치 트랜잭션 아래에서 행 잠금 드라이버(`lnpl-postgres`)의 릴레이 하나가 모든 행을 잠가 두 번째 릴레이는 아무것도 받지 못했다(issue #262). 이제 배치 하나는 자기 트랜잭션 안에서 최대 100행을 드레인하고, 꽉 찬 배치가 한 행이라도 ack했을 때만 다음 배치를 돈다. `--once`는 처음으로 짧거나 ack가 0인 배치 뒤에 끝나고, `drain_outbox`가 `limit`을 받지 않는 드라이버는 상한 없는 배치 하나를 유지한다. *Updates RFC-0040 §Reference-level Specification/8* |
+| [0066 Semantic IR](rfcs/0066-semantic-ir-v2.md) | *0001 대체* — 통합본: 0001에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0067 Syntax](rfcs/0067-syntax-v2.md) | *0002 대체* — 통합본: 0002에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0068 Runtime](rfcs/0068-runtime-v2.md) | *0003 대체* — 통합본: 0003에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0069 Guard Conditions](rfcs/0069-guard-conditions-v2.md) | *0008 대체* — 통합본: 0008에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0070 실행 스코프와 스텝 결과 바인딩](rfcs/0070-execution-scope-v2.md) | *0012 대체* — 통합본: 0012에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0071 가드 스킵의 관측 가능성](rfcs/0071-guard-skip-observability-v2.md) | *0014 대체* — 통합본: 0014에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0072 값 의미론](rfcs/0072-value-semantics-v2.md) | *0015 대체* — 통합본: 0015에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0073 시간 값 의미론과 스케줄 트리거](rfcs/0073-time-and-schedule-semantics-v2.md) | *0016 대체* — 통합본: 0016에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0074 진단 등급과 `--strict` 문턱](rfcs/0074-diagnostic-severity-levels-v2.md) | *0021 대체* — 통합본: 0021에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0075 행 집합(Row Set)과 집계](rfcs/0075-row-sets-and-aggregation-v2.md) | *0025 대체* — 통합본: 0025에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
+| [0076 산술 연산자 확장과 대안 가드](rfcs/0076-arithmetic-and-alternative-guards-v2.md) | *0028 대체* — 통합본: 0028에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). *0027 §6 갱신* |
+| [0077 `list where` 질의 술어 + order by/limit](rfcs/0077-list-where-predicate-v2.md) | *0038 대체* — 통합본: 0038에 각 절의 Accepted 갱신을 합친 효력 있는 텍스트, 절 이름과 순서는 그대로(issue #268). |
 
-62편이 `Accepted`, 3편(`0034`, `0048`, `0065`)은 `Draft`이고 0000은 0007로 대체됐으며 그 0007은 2026-08-03에 정식
+62편이 `Accepted`, 3편(`0034`, `0048`, `0065`)은 `Draft`이며 13편은 대체됐다 — 12편은 통합본 0066~0077로(issue #268), 0000은 0007로 대체됐고 그 0007은 2026-08-03에 정식
 Accepted가 됐다(이슈 #11). 교차 정합성 검사는 전항 통과했고 소유자도 승인했다.
 이후 실질 변경은 **어떤 경우에도 본문 편집이 아니다**. 바꾸는 방법은 두 가지이고
 범위에 비례한다(RFC-0007 §2.2): **Supersedes**는 RFC를 통째로 대체하고 종결시키며,
@@ -340,8 +352,8 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 5668 tests in 173.643s
-OK (skipped=1)
+Ran 5717 tests in 182.524s
+OK (skipped=2)
 ```
 
 모드 B 테스트에는 MLIR/LLVM 도구가 `PATH`에 있어야 한다([모드 B](#모드-b--네이티브-바이너리)
@@ -457,7 +469,7 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 
 ```
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
-rfcs/0000~0065              RFC (0000은 Superseded, 62편은 Accepted, 3편은 Draft)
+rfcs/0000~0077              RFC (13편은 Superseded, 62편은 Accepted, 3편은 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR

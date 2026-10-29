@@ -5,8 +5,9 @@
 
 실제 파일을 읽는 테스트도 있다: `BackLinkRealTreeTest`가 실제 rfcs/에 §2.2 역링크
 검사를 돌려 0건을 요구하고(issue #263 — 승격 때 손으로 다는 역링크가 표류했다),
-`RosterPinTest`가 docs/CI-GATES.md의 rfc_lint 행이 main()이 부르는 검사마다 표기를
-지니는지 대조한다(issue #268 §3).
+`Rule7RealTreeTest`가 규칙 7(한 절을 읽으려고 여는 문서 수)을 실제 rfcs/에 돌려
+0건을 요구하고(issue #268), `RosterPinTest`가 docs/CI-GATES.md의 rfc_lint 행이
+main()이 부르는 검사마다 표기를 지니는지 대조한다(issue #268 §3).
 
 검사하는 것은 린터가 **옳게 판정하는가**다. 도구가 틀리면 그것을 믿고 내린
 판단이 전부 틀어지므로, 규칙마다 통과 케이스와 위반 케이스를 함께 둔다.
@@ -718,6 +719,30 @@ class BackLinkRealTreeTest(unittest.TestCase):
         self.assertIn("RFC-0047", problems[0][2])
 
 
+class Rule7RealTreeTest(unittest.TestCase):
+    """known-good: 실제 rfcs/는 규칙 7 위반이 0건이어야 한다(issue #268)."""
+
+    def test_no_accepted_section_needs_more_than_two_documents(self):
+        self.assertEqual(rfc_lint.rule7_check(real_rfcs()), [])
+
+    def test_one_more_updater_on_a_real_section_reddens_the_check(self):
+        prefix = "- Updated-by: RFC-0047 ("
+        added = "- Updated-by: RFC-0066 (§1)\n"
+        mutated = []
+        for name, text in real_rfcs():
+            if name == "0045-rowset-aggregation-extension.md":
+                mutant = "".join(line + added if line.startswith(prefix) else line
+                                 for line in text.splitlines(keepends=True))
+                self.assertNotEqual(mutant, text, "the mutation did not apply")
+                text = mutant
+            mutated.append((name, text))
+        problems = rfc_lint.rule7_check(mutated)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems[0][:2], ("0045-rowset-aggregation-extension.md", "§2.2"))
+        for part in ("RFC-0045 §1", "문서 3개", "RFC-0047", "RFC-0066"):
+            self.assertIn(part, problems[0][2])
+
+
 CI_GATES_PATH = os.path.join(REPO, "docs", "CI-GATES.md")
 ROSTER_ROW_NAME = "RFC lint(`rfc_lint.py`)"
 # main()이 부르지만 발견을 내지 않는 도우미 — 로스터에 표기가 없다.
@@ -782,6 +807,7 @@ class RosterPinTest(unittest.TestCase):
 
 
 TMP_PARENT = os.path.join(REPO, ".claude", "tmp")
+CATALOGUE_UPDATES = "- Updates: RFC-0001 §노드 카탈로그\n"
 
 
 class MainWiringTest(unittest.TestCase):
@@ -844,6 +870,37 @@ class MainWiringTest(unittest.TestCase):
             "- Changed (issue #1, RFC-0001).\n")
         self.assertEqual(rc, 0)
         self.assertIn("문제 없음.", out)
+
+    def test_main_fails_when_a_section_needs_three_documents(self):
+        rc, out = self.run_main(
+            {"0001-semantic-ir.md": doc("0001", header=(
+                "- Updated-by: RFC-0002 (§노드 카탈로그)\n"
+                "- Updated-by: RFC-0003 (§노드 카탈로그)\n")),
+             "0002-syntax.md": doc("0002", header=CATALOGUE_UPDATES),
+             "0003-runtime.md": doc("0003", header=CATALOGUE_UPDATES)},
+            "- Changed (issue #1, RFC-0001).\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("RFC-0001 §노드 카탈로그", out)
+        self.assertIn("문서 3개", out)
+        self.assertIn("1 problem(s)", out)
+
+    def test_main_passes_when_a_section_needs_two_documents(self):
+        rc, out = self.run_main(
+            {"0001-semantic-ir.md": doc("0001", header="- Updated-by: RFC-0002 (§노드 카탈로그)\n"),
+             "0002-syntax.md": doc("0002", header=CATALOGUE_UPDATES)},
+            "- Changed (issue #1, RFC-0001).\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("문제 없음.", out)
+
+    def test_main_fails_on_an_updated_by_without_a_section_group(self):
+        rc, out = self.run_main(
+            {"0001-semantic-ir.md": doc("0001", header="- Updated-by: RFC-0002\n"),
+             "0002-syntax.md": doc("0002", header=CATALOGUE_UPDATES)},
+            "- Changed (issue #1, RFC-0001).\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("(§…)", out)
+        self.assertIn("RFC-0002", out)
+        self.assertIn("1 problem(s)", out)
 
 
 if __name__ == "__main__":

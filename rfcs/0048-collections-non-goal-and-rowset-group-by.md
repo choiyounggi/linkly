@@ -3,17 +3,14 @@
 ## Status
 
 - Status: Draft
-- Updates: RFC-0001 §Open Questions/1, RFC-0025 §Reference-level Specification/1
-  (RFC-0038 §Reference-level Specification/1이 이미 갱신한 절 — 이 개정은 그
-  절의 최종 텍스트 위에 grouped-list 전용 carve-out을 더한다), RFC-0025
-  §Reference-level Specification/3 (RFC-0045 §Reference-level Specification/2가
-  이미 갱신한 절 — 이 개정은 그 절의 최종 텍스트 위에 그룹-파생 RowSet의 필드
-  참조 화이트리스트를 더한다), RFC-0012 §G12.2 (RFC-0025
-  §Reference-level Specification/5, RFC-0027 §Reference-level Specification/4,
-  RFC-0030 §Reference-level Specification/2가 이미 갱신한 절 — 이 개정은 그
-  절의 최종 텍스트 위에 grouped-list의 다섯 번째 바인딩 이름공간을 더한다),
-  RFC-0038 §Reference-level Specification/2, RFC-0038 §Open Questions/1,
-  RFC-0045 §Open Questions/1
+- Updates: RFC-0066 §Open Questions/1, RFC-0075 §Reference-level Specification/1
+  (이 개정은 그 절의 텍스트 위에 grouped-list 전용 carve-out을 더한다), RFC-0075
+  §Reference-level Specification/3 (이 개정은 그 절의 텍스트 위에 그룹-파생 RowSet의
+  필드 참조 화이트리스트를 더한다), RFC-0070 §G12.2 (이 개정은 그 절의 텍스트 위에
+  grouped-list의 다섯 번째 바인딩 이름공간을 더한다), RFC-0077 §Reference-level
+  Specification/2, RFC-0077 §Open Questions/1, RFC-0045 §Open Questions/1
+
+2026-10-28(이슈 #268): `Updates:`의 대상 RFC-0001·RFC-0012·RFC-0025·RFC-0038이 통합본 RFC-0066·RFC-0070·RFC-0075·RFC-0077로 대체돼, 같은 절 이름으로 대상을 옮겼다. 통합본의 그 절에는 앞선 갱신이 없어 괄호에 직전 갱신을 적지 않는다. 본문의 옛 번호 인용은 그대로 둔다.
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 2에 따라 모순되는
 모든 절을 지목하며, 규칙 5(연쇄 갱신)에 따라 이미 갱신된 절은 대상 RFC와

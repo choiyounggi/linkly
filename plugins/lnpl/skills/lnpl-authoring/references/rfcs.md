@@ -11,34 +11,34 @@
 | RFC | 이 질문이면 여기 | 경로 |
 |-----|------------------|------|
 | RFC-0000 RFC Process | — | `rfcs/0000-rfc-process.md` |
-| RFC-0001 Semantic IR | 컴파일 산출물(IR)의 노드가 어떻게 생겼는지 읽어야 한다 | `rfcs/0001-semantic-ir.md` |
-| RFC-0002 Syntax | 문법 생산규칙 전체와 문법에서 IR로 내려가는 대응이 궁금하다 | `rfcs/0002-syntax.md` |
-| RFC-0003 Runtime | 실행기가 정책·동시성·관측을 어떻게 다루는지 | `rfcs/0003-runtime.md` |
+| RFC-0001 Semantic IR | (Superseded → RFC-0066) 컴파일 산출물(IR)의 노드가 어떻게 생겼는지 읽어야 한다 | `rfcs/0001-semantic-ir.md` |
+| RFC-0002 Syntax | (Superseded → RFC-0067) 문법 생산규칙 전체와 문법에서 IR로 내려가는 대응이 궁금하다 | `rfcs/0002-syntax.md` |
+| RFC-0003 Runtime | (Superseded → RFC-0068) 실행기가 정책·동시성·관측을 어떻게 다루는지 | `rfcs/0003-runtime.md` |
 | RFC-0004 Compiler | mode B(MLIR/LLVM)가 무엇을 관측하고 어디까지 내려가는지 | `rfcs/0004-compiler.md` |
 | RFC-0005 Knowledge Base | kb 라우팅이 어떤 카테고리로 나뉘는지 | `rfcs/0005-knowledge-base.md` |
 | RFC-0006 Agent Protocol | 에이전트 역할과 JSON-RPC 메서드 | `rfcs/0006-agent-protocol.md` |
 | RFC-0007 RFC Process v2 | — | `rfcs/0007-rfc-process-v2.md` |
-| RFC-0008 Guard Conditions | 가드 조건의 두 형태(존재 검사·비교)가 각각 무엇을 받는지 | `rfcs/0008-guard-conditions.md` |
+| RFC-0008 Guard Conditions | (Superseded → RFC-0069) 가드 조건의 두 형태(존재 검사·비교)가 각각 무엇을 받는지 | `rfcs/0008-guard-conditions.md` |
 | RFC-0009 Guard Condition Open Question 정리 | 가드 문법의 미결 질문이 왜 닫혔는지 | `rfcs/0009-guard-condition-open-question.md` |
 | RFC-0010 Proposal Intent | 에이전트가 자기 소유가 아닌 노드를 어떻게 붙이는지 | `rfcs/0010-proposal-intent.md` |
 | RFC-0011 Refinement enum 정합과 이름 충돌 | refinement 이름이 어디까지 합법이고 충돌하면 어떻게 되는지 | `rfcs/0011-refinement-enum-and-name-collisions.md` |
-| RFC-0012 실행 스코프와 스텝 결과 바인딩 | 가드가 무엇을 이름 지을 수 있는지, 스텝 결과가 다음 스텝에 어떻게 바인딩되는지 — `set` 대상 규칙의 정본 | `rfcs/0012-execution-scope.md` |
+| RFC-0012 실행 스코프와 스텝 결과 바인딩 | (Superseded → RFC-0070) 가드가 무엇을 이름 지을 수 있는지, 스텝 결과가 다음 스텝에 어떻게 바인딩되는지 — `set` 대상 규칙의 정본 | `rfcs/0012-execution-scope.md` |
 | RFC-0013 Step Attempt Ceiling | retry 예산을 잃어도 왜 무한 루프가 되지 않는지 | `rfcs/0013-step-attempt-ceiling.md` |
-| RFC-0014 가드 스킵의 관측 가능성 | 스킵된 스텝이 완료로 보이지 않게 하는 계약 | `rfcs/0014-guard-skip-observability.md` |
-| RFC-0015 값 의미론 | 값 표현식과 산술, 그리고 집계(`sum`/`count`)가 왜 아직 없고 로드맵이 어디 있는지 — §Alternatives | `rfcs/0015-value-semantics.md` |
-| RFC-0016 시간 값 의미론과 스케줄 트리거 | 기간·시각을 비교하거나 스케줄로 트리거하고 싶다 | `rfcs/0016-time-and-schedule-semantics.md` |
+| RFC-0014 가드 스킵의 관측 가능성 | (Superseded → RFC-0071) 스킵된 스텝이 완료로 보이지 않게 하는 계약 | `rfcs/0014-guard-skip-observability.md` |
+| RFC-0015 값 의미론 | (Superseded → RFC-0072) 값 표현식과 산술, 그리고 집계(`sum`/`count`)가 왜 아직 없고 로드맵이 어디 있는지 — §Alternatives | `rfcs/0015-value-semantics.md` |
+| RFC-0016 시간 값 의미론과 스케줄 트리거 | (Superseded → RFC-0073) 기간·시각을 비교하거나 스케줄로 트리거하고 싶다 | `rfcs/0016-time-and-schedule-semantics.md` |
 | RFC-0017 guarded.lnpl 예제 정정 | 동봉된 `guarded.lnpl` 예제가 왜 그렇게 고쳐졌는지 | `rfcs/0017-guarded-example-correction.md` |
 | RFC-0018 반복 스텝 관측의 fold 규칙 | `repeat`/`until`의 반복이 관측에서 어떻게 접히는지 | `rfcs/0018-repeated-step-observation-fold.md` |
 | RFC-0019 구조와 모순되는 들여쓰기의 거부 | 들여쓰기가 의미 없다면서 왜 어떤 들여쓰기는 거부되는지 | `rfcs/0019-misleading-indentation.md` |
 | RFC-0020 spec `given`의 입력 네임스페이스 | spec의 `given`에서 입력 필드를 어떻게 지목하는지 | `rfcs/0020-spec-given-input-namespace.md` |
-| RFC-0021 진단 등급과 `--strict` 문턱 | `--strict`가 무엇을 게이팅하는지, 진단 등급이 무엇인지 | `rfcs/0021-diagnostic-severity-levels.md` |
+| RFC-0021 진단 등급과 `--strict` 문턱 | (Superseded → RFC-0074) `--strict`가 무엇을 게이팅하는지, 진단 등급이 무엇인지 | `rfcs/0021-diagnostic-severity-levels.md` |
 | RFC-0022 mode B의 관측 표면 | mode B가 스킵과 `--field`를 어떻게 드러내는지 | `rfcs/0022-mode-b-observation-surface.md` |
 | RFC-0023 가드 밖으로 새어 나간 상태 변경의 컴파일 타임 진단 | 가드 뒤의 스텝이 왜 가드 밖인지, 그리고 컴파일러가 그걸 언제 경고하는지 | `rfcs/0023-guard-scope-diagnostic.md` |
 | RFC-0024 집행 진단에 소스 line 병기 | 집행 진단이 노드 id에 더해 소스 line을 왜, 어떻게 싣는지 — `lnpl compile`과 `lnpl run`이 나눠 가진 진단 범위도 함께 | `rfcs/0024-enforcement-diagnostic-line.md` |
-| RFC-0025 행 집합(Row Set)과 집계 | `list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 집계 값을 전혀 계산하지 않는지 | `rfcs/0025-row-sets-and-aggregation.md` |
+| RFC-0025 행 집합(Row Set)과 집계 | (Superseded → RFC-0075) `list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 집계 값을 전혀 계산하지 않는지 | `rfcs/0025-row-sets-and-aggregation.md` |
 | RFC-0026 `unknown-verb`/`guard-orphaned-steps`/`guard-skipped-steps`의 `line`과 `suggestion` | `unknown-verb`/`guard-orphaned-steps`가 왜 구조화 `line`을 갖는지, did-you-mean 제안이 별칭과 철자 오타를 어떻게 나눠 잡는지 | `rfcs/0026-unknown-verb-line-and-suggestion.md` |
 | RFC-0027 네트워크 드라이버와 결과 바인딩 | `call`/`request ... as <name>`로 네트워크 응답을 바인딩하고 실패를 status 값으로 분기하고 싶다 — `--network`의 fake/http 선택이 무엇을 고르는지, 접속 실패가 왜 예외가 아니라 값인지 | `rfcs/0027-network-driver-and-result-binding.md` |
-| RFC-0028 산술 연산자 확장과 대안 가드 | `*`/`/`를 쓰고 싶다, 또는 `when A` / `or B`로 대안 가드를 쓰고 싶다 — 0 나눗셈이 왜 컴파일 에러가 아니라 RunError인지, mode B가 왜 그 실패에 합의할 의무가 없는지 | `rfcs/0028-arithmetic-and-alternative-guards.md` |
+| RFC-0028 산술 연산자 확장과 대안 가드 | (Superseded → RFC-0076) `*`/`/`를 쓰고 싶다, 또는 `when A` / `or B`로 대안 가드를 쓰고 싶다 — 0 나눗셈이 왜 컴파일 에러가 아니라 RunError인지, mode B가 왜 그 실패에 합의할 의무가 없는지 | `rfcs/0028-arithmetic-and-alternative-guards.md` |
 | RFC-0029 Clock 계약과 `--clock real` 바인딩 | `CacheAccess` TTL을 벽시계 경과에 묶고 싶다 — `--clock real`이 무엇을 바꾸고 무엇을 바꾸지 않는지, `diff`/`spec`이 왜 이 선택자를 받지 않는지 | `rfcs/0029-clock-contract-and-real-binding.md` |
 | RFC-0030 `create` 결과 바인딩과 payload 시드 | `create <명사> as <이름>`로 생성 직후 그 행에 `set`/`format`/`respond`를 쓰고 싶다 — payload 동명 필드가 `derived` 제외하고 왜 `as` 유무와 무관하게 시드되는지, `as` 없는 `create`는 정확히 무엇이 바이트 동일한지 | `rfcs/0030-create-result-binding-and-payload-seed.md` |
 | RFC-0031 다중 파일 컴파일 단위 | 서비스 하나를 여러 `.lnpl` 파일로 나누고 싶다 — 파일을 여러 개 주거나 디렉터리를 줄 때 병합 순서가 무엇으로 정해지는지, 이름이 겹치면 왜 두 파일:줄이 함께 나오는지, 파일 하나만 줄 때 왜 여전히 바이트 동일한지 | `rfcs/0031-multi-file-compilation-unit.md` |
@@ -48,7 +48,7 @@
 | RFC-0035 인가 집행의 유보된 범위 — 워크플로 수준 role, `authorize`의 운명, `security encrypt` | (Draft) 워크플로마다 다른 `security role`을 왜 아직 못 쓰는지, `authorize` 동사가 왜 아직 선언과 연결되지 않았는지, `security encrypt`를 계속 써도 되는지 궁금하다 — 셋 다 이슈 #119가 미결로 남긴 질문이고, 이 RFC가 지금은 안 하는 이유와 재검토 조건을 적는다 | `rfcs/0035-authorization-enforcement-deferred-scope.md` |
 | RFC-0036 `policy rollback` 선언의 실제 효력 정정 | `policy rollback`을 선언해야 실패한 실행의 쓰기가 롤백되는지 궁금하다 — 선언 여부와 무관하게 왜 항상 롤백되는지, 선언이 실제로 좌우하는 것(INFO trace 로그, `rollback-escapes-network` 진단)이 무엇뿐인지 | `rfcs/0036-policy-rollback-declaration-effect.md` |
 | RFC-0037 아웃바운드 HTTP 회복성 계층 | `capability http`에 재시도·서킷브레이커·경로 템플릿을 어떻게 선언하는지, `NetworkDriver.call`이 왜 3-튜플이 됐는지 궁금하다 — 재시도 대상 판정(408/429/5xx, 501 제외)·지수 백오프와 jitter·Retry-After 반영·브레이커 half-open 규칙의 정본 | `rfcs/0037-http-resilience.md` |
-| RFC-0038 `list where` — 질의 술어, order by/limit, 드라이버 푸시다운 | `list <Entity> where <cond>`로 RowSet을 걸러 `order by`/`limit`을 쓰고 싶다 — 좌변이 왜 항상 나열 대상 엔티티 자신의 필드인지, 등가(`==`/`!=`)가 왜 UUID/Text/Email까지 허용하는데 순서 비교는 여전히 Integer/DateTime뿐인지, `RepositoryDriver.query`가 예전 호출부와 왜 바이트 동일을 지키는지 | `rfcs/0038-list-where-predicate.md` |
+| RFC-0038 `list where` — 질의 술어, order by/limit, 드라이버 푸시다운 | (Superseded → RFC-0077) `list <Entity> where <cond>`로 RowSet을 걸러 `order by`/`limit`을 쓰고 싶다 — 좌변이 왜 항상 나열 대상 엔티티 자신의 필드인지, 등가(`==`/`!=`)가 왜 UUID/Text/Email까지 허용하는데 순서 비교는 여전히 Integer/DateTime뿐인지, `RepositoryDriver.query`가 예전 호출부와 왜 바이트 동일을 지키는지 | `rfcs/0038-list-where-predicate.md` |
 | RFC-0039 `note` 동사와 canonical log line 확장 | `note "<template>" with <ref>...`로 span에 도메인 맥락을 남기고 싶다 — `note`가 왜 Effect가 아니라 `Annotation`인지, 미바인딩 참조가 왜 컴파일/런타임 실패가 아니라 값 `null`인지, canonical log line의 `notes`/`effects`/`input_digest`가 각각 무엇이고 `--capture-on-failure`가 언제만 입력을 싣는지 | `rfcs/0039-note-verb-and-canonical-line.md` |
 | RFC-0040 이벤트 소비 계약 — `consume by`, CloudEvents 인입, 멱등/오류 분류, 레퍼런스 릴레이 | `event ... consume by <Workflow>`로 이벤트가 도착하면 워크플로를 돌리고 싶다 — `POST /-/events/<slug>`가 왜 CloudEvents 봉투만 받는지, 같은 `id`가 왜 워크플로를 다시 실행하지 않고 첫 응답을 재생하는지, 200/503/422 3갈래가 각각 언제 나오고 503은 왜 멱등성 클레임을 확정하지 않는지, `lnpl relay`가 outbox를 어떻게 CloudEvents로 감싸 미는지 | `rfcs/0040-event-consumption-contract.md` |
 | RFC-0041 `parallel` 블록 실행 — mode A 구조적 동시성 집행 | `parallel` 블록의 스텝이 정말 동시 실행되는지, 한 브랜치가 실패하면 나머지가 어떻게 되는지 궁금하다 — `policy parallel <N>`이 동시성 상한을 어떻게 정하는지(값 없으면 무엇으로 폴백하는지), 같은 entity에 쓰는 두 스텝을 한 블록에 넣으면 왜 컴파일 에러인지, span 타임스탬프가 왜 이 블록 안에서만 벽시계를 쓰는지, mode B가 왜 여전히 순차이고 그것이 `diff`에 어떻게 나타나는지 | `rfcs/0041-parallel-block-execution.md` |
@@ -76,5 +76,17 @@
 | RFC-0063 send 없는 call/request의 기본 본문은 Password 계열 입력 필드를 뺀다 | send 없는 call/request가 입력의 어떤 필드를 빼는지 — 어느 엔티티든 Password·refine … of Password로 선언한 이름이 기본 본문에서 빠지는 이유와 그 판정 규칙, 그런 필드가 없으면 본문이 바이트 동일한 이유 | `rfcs/0063-default-body-omits-password-fields.md` |
 | RFC-0064 0행에 영향을 준 update·delete는 not-found로 실패한다 | update·delete가 0행에 영향을 주면 왜 not-found(serve 404, 소비 422)로 실패하는지 — fake·sqlite·모드 B가 같은 답을 내는 방법, 기본 시드가 update·delete로 시작하는 엔티티를 왜 채우지 않는지, 멱등 delete 표기가 왜 없는지 | `rfcs/0064-write-miss-not-found.md` |
 | RFC-0065 레퍼런스 릴레이 배치 상한 — lnpl relay bounded drain | `lnpl relay`가 아웃박스를 왜 100행 배치로 나눠 드레인하는지 — 배치마다 트랜잭션 하나, 다음 배치는 언제 도는지(꽉 찬 배치 + ack 1개 이상), `limit`을 받지 않는 드라이버는 어떻게 되는지 | `rfcs/0065-relay-batch-limit.md` |
+| RFC-0066 Semantic IR | 컴파일 산출물(IR)의 노드가 어떻게 생겼는지 읽어야 한다 | `rfcs/0066-semantic-ir-v2.md` |
+| RFC-0067 Syntax v2 | 문법 생산규칙 전체와 문법에서 IR로 내려가는 대응이 궁금하다 | `rfcs/0067-syntax-v2.md` |
+| RFC-0068 Runtime | 실행기가 정책·동시성·관측을 어떻게 다루는지 | `rfcs/0068-runtime-v2.md` |
+| RFC-0069 Guard Conditions | 가드 조건의 두 형태(존재 검사·비교)가 각각 무엇을 받는지 | `rfcs/0069-guard-conditions-v2.md` |
+| RFC-0070 실행 스코프와 스텝 결과 바인딩 | 가드가 무엇을 이름 지을 수 있는지, 스텝 결과가 다음 스텝에 어떻게 바인딩되는지 — `set` 대상 규칙의 정본 | `rfcs/0070-execution-scope-v2.md` |
+| RFC-0071 가드 스킵의 관측 가능성 | 스킵된 스텝이 완료로 보이지 않게 하는 계약 | `rfcs/0071-guard-skip-observability-v2.md` |
+| RFC-0072 값 의미론 | 값 표현식과 산술, 그리고 집계(`sum`/`count`)가 왜 아직 없고 로드맵이 어디 있는지 — §Alternatives | `rfcs/0072-value-semantics-v2.md` |
+| RFC-0073 시간 값 의미론과 스케줄 트리거 | 기간·시각을 비교하거나 스케줄로 트리거하고 싶다 | `rfcs/0073-time-and-schedule-semantics-v2.md` |
+| RFC-0074 진단 등급과 `--strict` 문턱 | `--strict`가 무엇을 게이팅하는지, 진단 등급이 무엇인지 | `rfcs/0074-diagnostic-severity-levels-v2.md` |
+| RFC-0075 행 집합(Row Set)과 집계 | `list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 집계 값을 전혀 계산하지 않는지 | `rfcs/0075-row-sets-and-aggregation-v2.md` |
+| RFC-0076 산술 연산자 확장과 대안 가드 | `*`/`/`를 쓰고 싶다, 또는 `when A` / `or B`로 대안 가드를 쓰고 싶다 — 0 나눗셈이 왜 컴파일 에러가 아니라 RunError인지, mode B가 왜 그 실패에 합의할 의무가 없는지 | `rfcs/0076-arithmetic-and-alternative-guards-v2.md` |
+| RFC-0077 `list where` — 질의 술어, order by/limit, 드라이버 푸시다운 | `list <Entity> where <cond>`로 RowSet을 걸러 `order by`/`limit`을 쓰고 싶다 — 좌변이 왜 항상 나열 대상 엔티티 자신의 필드인지, 등가(`==`/`!=`)가 왜 UUID/Text/Email까지 허용하는데 순서 비교는 여전히 Integer/DateTime뿐인지, `RepositoryDriver.query`가 예전 호출부와 왜 바이트 동일을 지키는지 | `rfcs/0077-list-where-predicate-v2.md` |
 
 Accepted RFC는 직접 편집하지 않는다 — 개정 절차는 `rfcs/0007-rfc-process-v2.md`에 있다.

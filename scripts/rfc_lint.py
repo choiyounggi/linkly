@@ -19,14 +19,15 @@
                  대상이 아니고, 값이 `없음`·`해당 없음`·`none`·`N/A`(강조·괄호 표기
                  포함)로 시작하는 항목은 대상이 없다. Draft·Review·Superseded 갱신
                  RFC는 건너뛴다(규칙 6) (issue #263, #268)
+  §2.2 규칙 7    Accepted RFC의 한 절을 읽으려고 여는 문서(대상 + 대상 머리의
+                 `Updated-by:`가 그 절 이름으로 묶은 Accepted 갱신)가 2개 이하이고,
+                 Accepted 갱신의 `Updated-by:`마다 절 이름 묶음 `(§…)`이 있음 (issue #268)
 
 검사하지 않는 것: 내용의 정합성, 절 머리 포인터 줄(`> 갱신됨:`)과 절 이름,
 연쇄(괄호 안 직전 갱신)의 정확성, Supersedes 대상, 골든 시나리오 사용.
-규칙 7의 누적 길이(한 절을 읽으려고 여는 문서 수)는 `rule7_check`로 구현돼 있지만
-main()이 아직 부르지 않는다 — 과적 RFC의 통합이 머지된 뒤 연결한다(issue #268).
 
 CI(`.github/workflows/ci.yml`)가 blocking 게이트로 돌린다. 검사 로직은
-`impl/tests/test_rfc_lint.py`가 합성 입력으로 검증하고, §2.2 역링크만은 실제
+`impl/tests/test_rfc_lint.py`가 합성 입력으로 검증하고, §2.2 역링크와 규칙 7은 실제
 rfcs/에도 돌려 0건을 요구한다.
 """
 import os
@@ -485,7 +486,6 @@ def rule7_check(named_texts):
     """§2.2 규칙 7. 각 항목은 (대상 파일명, 조항, 메시지), 대상 번호 순.
 
     한 대상 안에서는 절 위반(절 키 순)이 먼저, 묶음 없는 갱신(갱신 번호 순)이 뒤다.
-    main()은 아직 부르지 않는다 — 과적 RFC의 통합이 머지된 뒤 연결한다(issue #268).
     """
     docs = _numbered(named_texts)
     keyed = []
@@ -512,6 +512,7 @@ ROSTER_TOKENS = {
     "check_document": ("§3 번호·제목", "§2.1 Status 어휘", "§7 템플릿 섹션"),
     "check_changelog_file": ("§2.1 CHANGELOG 인용",),
     "check_back_links": ("§2.2 `Updated-by:` 역링크",),
+    "rule7_check": ("§2.2 규칙 7 문서 수",),
 }
 
 
@@ -535,6 +536,7 @@ def main(argv=None):
                     for clause, msg in check_changelog_file(
                         CHANGELOG_PATH, collect_statuses(named)))
     findings.extend(check_back_links(named))
+    findings.extend(rule7_check(named))
 
     if not quiet:
         print("RFC lint — %d개 문서" % len(names))

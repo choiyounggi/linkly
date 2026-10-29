@@ -32,6 +32,18 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   batch, and the polling loop pauses only between such passes. A driver
   whose `drain_outbox` takes no `limit` keeps the old single unbounded
   batch (issue #262).
+- RFCs: the twelve RFCs whose sections took more than two documents to read
+  (RFC-0007 §2.2 rule 7) are consolidated by Supersedes. Each new RFC carries
+  its target's effective text under the same section names: RFC-0066
+  (RFC-0001), RFC-0067 (RFC-0002), RFC-0068 (RFC-0003), RFC-0069 (RFC-0008),
+  RFC-0070 (RFC-0012), RFC-0071 (RFC-0014), RFC-0072 (RFC-0015), RFC-0073
+  (RFC-0016), RFC-0074 (RFC-0021), RFC-0075 (RFC-0025), RFC-0076 (RFC-0028),
+  RFC-0077 (RFC-0038). The superseded RFCs stay in `rfcs/` as history, and
+  citations of their numbers elsewhere are not rewritten. `scripts/rfc_lint.py`
+  now fails when an Accepted section needs more than two documents to read or
+  an `Updated-by:` entry names no section, and `docs/CI-GATES.md`'s rfc_lint
+  row is pinned to the checks `main()` runs. The Draft collections RFC now
+  names the consolidated RFCs in its `Updates:` (issue #268).
 
 ### Fixed
 - `lnpl serve` / `build_app()`: a `DriverError` raised by

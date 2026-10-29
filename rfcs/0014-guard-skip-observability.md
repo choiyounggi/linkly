@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: **Superseded** (RFC-0014, 2026-10-28)
+- Status: Superseded (2026-10-28)
 - Superseded-by: RFC-0071
 - Updates: RFC-0008 §Reference-level Specification/2. Guard Runtime Semantics
 - Updated-by: RFC-0022 (§2.5·§2.6)

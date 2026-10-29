@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: **Superseded** (RFC-0008, 2026-10-28)
+- Status: Superseded (2026-10-28)
 - Superseded-by: RFC-0069
 - Implementation: **Complete** (Parser ✓, Mode A ✓, Mode B ✓, Differential ✓)
 - Updates: RFC-0002 §Full grammar, RFC-0003 §Guard
