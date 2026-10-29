@@ -9,6 +9,15 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 
 ## [Unreleased]
 
+### Added
+- `lnpl db backup --backend sqlite:<path> --out <path>`: an online copy of a
+  sqlite store through the SQLite backup API, safe while `serve` writes. It
+  prints `{"out", "rows"}`, refuses an existing `--out` and any non-sqlite
+  backend (rc 2; postgres points to `pg_dump`), and exits 1 on a sqlite
+  error mid-copy. `docs/backends.md` §14 documents the restore check
+  (`lnpl db check` plus a row count), and `examples/deploy/` gains a
+  Litestream sidecar compose file and a `pg_dump` CronJob (issue #238).
+
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a
   CloudEvents `id` longer than 255 bytes (UTF-8) with 400

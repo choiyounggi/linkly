@@ -300,6 +300,24 @@ lnpl db check <source...> --backend sqlite:<path>
 `db check`는 그 실시간 진단과 같은 판단 로직(`interp.row_shape_mismatches`,
 `check_semantic_type` 재사용)을 전체 저장소에 훑어 적용한 것뿐이다.
 
+### `db backup` — sqlite 온라인 백업 (이슈 #238)
+
+```
+lnpl db backup --backend sqlite:<path> --out <path>
+```
+
+SQLite online backup API로 일관된 사본을 만든다 — `serve`가 쓰는 중에도
+안전하고, 사본은 `-wal`/`-shm` 없는 파일 하나다. `.lnpl` 소스 인자는 받지
+않는다. stdout은 `{"out": <받은 그대로의 --out>, "rows": <사본의 행 수>}` JSON.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--backend` | 필수. `sqlite:<path>`만 유효 — 그 밖의 값은 스킴만 밝히고 rc 2로 거부, postgres는 `pg_dump` 안내 |
+| `--out` | 필수. 아직 없는 파일 경로 — 이미 있으면 덮어쓰지 않고 rc 2 |
+
+rc 0 성공, rc 1 복사 도중 sqlite 오류(부분 파일 삭제), rc 2 운영자 오류.
+메시지 전문과 복원 확인 절차는 `docs/backends.md` §14.
+
 ### `migrate` — 부재 필드 배치 백필 + 스키마 세대 재스탬프 (이슈 #147)
 
 ```

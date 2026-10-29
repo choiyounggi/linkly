@@ -1,0 +1,8 @@
+# Litestream 0.5 config for the sidecar in litestream-compose.yml (issue #238).
+# Credentials come from LITESTREAM_ACCESS_KEY_ID and LITESTREAM_SECRET_ACCESS_KEY
+# in the container environment; the replica URL is expanded from
+# LITESTREAM_REPLICA_URL. Reference: https://litestream.io/reference/config/
+dbs:
+  - path: /data/store.db
+    replica:
+      url: ${LITESTREAM_REPLICA_URL}
