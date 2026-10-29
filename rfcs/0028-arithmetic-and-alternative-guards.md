@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: **Accepted** (RFC-0028, 2026-08-24)
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0076
 - Updates: RFC-0015 §1, RFC-0025 §Reference-level Specification/2. 집계 표현식 문법,
   RFC-0015 §4, RFC-0001 §노드 카탈로그/Guard,
   RFC-0014 §Reference-level Specification/2. Guard Runtime Semantics,
