@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0068
 - Updated-by: RFC-0008 (§Guard)
 - Updated-by: RFC-0012 (§Guard)
 - Updated-by: RFC-0013 (§Policy Enforcement)
