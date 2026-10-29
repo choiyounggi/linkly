@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: **Accepted** (RFC-0008, 2026-07-31)
+- Status: **Superseded** (RFC-0008, 2026-10-28)
+- Superseded-by: RFC-0069
 - Implementation: **Complete** (Parser ✓, Mode A ✓, Mode B ✓, Differential ✓)
 - Updates: RFC-0002 §Full grammar, RFC-0003 §Guard
 - Updated-by: RFC-0012 (§Reference-level Specification/1. Full Grammar), RFC-0014 (§Reference-level Specification/2. Guard Runtime Semantics), RFC-0046 (§Examples)
