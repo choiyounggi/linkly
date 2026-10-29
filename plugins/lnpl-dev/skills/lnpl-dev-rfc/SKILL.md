@@ -12,8 +12,8 @@ description: Use when adding, revising, renumbering, or reviewing an RFC in link
 python scripts/rfc_lint.py
 ```
 
-exit 0이면 문제 없음. 이 린터는 **테스트 스위트에 걸려 있지 않다** — 기여자가
-손으로 돌리는 도구다.
+exit 0이면 문제 없음. CI가 이 린터를 blocking 단계로 돌리고, §2.2 역링크 규칙은
+테스트 스위트의 `BackLinkRealTreeTest`도 실제 rfcs/에 돌린다.
 
 ## 번호 (§3)
 
