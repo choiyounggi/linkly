@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: **Accepted** (RFC-0038, 2026-08-27)
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0077
 - Updates: RFC-0016 §Reference-level Specification/3. 피연산자의 차원 규칙,
   RFC-0025 §Reference-level Specification/1. `VERB_LEXICON`과 표면 문법
 - Updated-by: RFC-0051 (§Reference-level Specification/3. 등가 비교의 타입 규칙)
