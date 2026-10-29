@@ -924,6 +924,16 @@ class RfcPointerTest(unittest.TestCase):
         self.assertNotEqual(row[0][1], "—")
         self.assertRegex(row[0][1], r"기간|시각|스케줄")
 
+    def test_the_current_value_semantics_row_does_not_call_aggregation_missing(self):
+        """issue #268: RFC-0072 §1이 `Aggregate`를 정의한다 — 대체된 RFC-0015의 "아직 없다"를 물려받지 않는다."""
+        row = [c for c in self._rows() if c[0].startswith("RFC-0072")]
+        self.assertEqual(len(row), 1)
+        self.assertIn("Aggregate", row[0][1])
+        self.assertNotIn("왜 아직 없", row[0][1])
+        with open(os.path.join(REPO, "rfcs", "0072-value-semantics-v2.md"),
+                  encoding="utf-8") as fh:
+            self.assertIn("Aggregate     ::= AggFunc Reference", fh.read())
+
     # -- 양태 (sentinel의 철자) -------------------------------------------
     def test_process_only_rfcs_carry_the_explicit_sentinel(self):
         rows = {c[0][:8]: c[1] for c in self._rows()}

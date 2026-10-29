@@ -82,7 +82,7 @@
 | RFC-0069 Guard Conditions | 가드 조건의 두 형태(존재 검사·비교)가 각각 무엇을 받는지 | `rfcs/0069-guard-conditions-v2.md` |
 | RFC-0070 실행 스코프와 스텝 결과 바인딩 | 가드가 무엇을 이름 지을 수 있는지, 스텝 결과가 다음 스텝에 어떻게 바인딩되는지 — `set` 대상 규칙의 정본 | `rfcs/0070-execution-scope-v2.md` |
 | RFC-0071 가드 스킵의 관측 가능성 | 스킵된 스텝이 완료로 보이지 않게 하는 계약 | `rfcs/0071-guard-skip-observability-v2.md` |
-| RFC-0072 값 의미론 | 값 표현식과 산술, 그리고 집계(`sum`/`count`)가 왜 아직 없고 로드맵이 어디 있는지 — §Alternatives | `rfcs/0072-value-semantics-v2.md` |
+| RFC-0072 값 의미론 | 값 표현식·산술과 집계(`Aggregate` — `sum`/`count`/`avg`/`min`/`max`)의 문법 — 가드가 무엇을 비교하고 `set`이 무엇을 쓸 수 있는지, `Value`와 `Aggregate`가 왜 별개 생산 규칙인지 | `rfcs/0072-value-semantics-v2.md` |
 | RFC-0073 시간 값 의미론과 스케줄 트리거 | 기간·시각을 비교하거나 스케줄로 트리거하고 싶다 | `rfcs/0073-time-and-schedule-semantics-v2.md` |
 | RFC-0074 진단 등급과 `--strict` 문턱 | `--strict`가 무엇을 게이팅하는지, 진단 등급이 무엇인지 | `rfcs/0074-diagnostic-severity-levels-v2.md` |
 | RFC-0075 행 집합(Row Set)과 집계 | `list`로 엔티티의 전 행을 읽고 `sum`/`count`로 집계하고 싶다 — RowSet이 단일 행 바인딩과 왜 별개 이름공간인지, mode B가 왜 집계 값을 전혀 계산하지 않는지 | `rfcs/0075-row-sets-and-aggregation-v2.md` |

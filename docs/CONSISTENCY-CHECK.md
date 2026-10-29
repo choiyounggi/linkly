@@ -1624,6 +1624,8 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 | RFC-0014 §2.5 | RFC-0022, RFC-0028 | 3 | consolidated by RFC-0071 (Supersedes RFC-0014) |
 | RFC-0014 §2.6 | RFC-0022, RFC-0028 | 3 | consolidated by RFC-0071 (Supersedes RFC-0014) |
 
+**RFC-0007 §10 미결 1 (2026-10-29):** RFC-0007 §10 미결 1(갱신 누적의 기계적 검증 — 규칙 7은 사람이 판단하고 검사는 아직 없다)은 이제 답이 있다. `scripts/rfc_lint.py`의 `main()`이 `rule7_check`를 불러, Accepted RFC의 한 절을 읽으려고 여는 문서가 2개를 넘거나 `Updated-by:`에 절 이름 묶음이 없으면 실패하고, CI(`.github/workflows/ci.yml`)가 그 린터를 blocking 단계로 돌린다. RFC-0007은 Accepted 본문이라 고치지 않고 여기에만 기록한다 — 미결을 닫는 문면 개정은 후속 Updates RFC의 몫이다.
+
 **영향도:** 낮음 — 효력 있는 계약은 §2.2 규칙 3(최신 갱신이 이긴다)으로 여전히 정해진다. 남는 것은 읽는 비용이다.
 
 ---
@@ -1640,17 +1642,17 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 4. 직전 갱신 이름(규칙 5: 대상과 직전 갱신 RFC를 함께 지목, 이슈 #263 §4와 RFC-0062 l.6처럼 앞선 갱신을 여럿 적는 레포 선례를 따른 코디네이터 결정) — RFC-0049는 RFC-0002 §Full grammar에 RFC-0012를, RFC-0056과 RFC-0062는 RFC-0003 §Execution Model에 RFC-0041을 `Updates:` 괄호에 더했다(§2.1 깨진 인용 경로 수정 — 어느 텍스트가 이기는지는 규칙 3·5의 "최신 갱신이 이긴다"로 이미 정해져 있어 바뀌지 않는다).
 5. 고치지 않고 기록만 한 것 — RFC-0052(§Status의 바인딩 항목, §Reference-level Specification/2의 "RFC-0048 §4의 최종 텍스트 위에")와 RFC-0059(§Status의 `Updates:` 괄호와 본문)는 Draft RFC-0048 §4의 텍스트를 기반으로 쓰였다. 규칙 6에 따라 RFC-0048은 아직 효력이 없으므로 이 서술은 결함이지만, 그 문장을 바꾸는 것은 갱신의 기반을 바꾸는 실질 변경이라 RFC-0007 §2.1이 직접 편집을 금지한다. 해소는 RFC-0048의 승격 또는 Updates 개정이다 — 후속 이슈에 함께 적었다.
 
-   (2026-10-28, 이슈 #268) 두 서술의 대상인 RFC-0012 §G12.2와 RFC-0025 §5는 이제 `Superseded`이고, 효력 있는 텍스트는 통합본 RFC-0070 §G12.2와 RFC-0075 §5에 있다. 통합본은 RFC-0048의 텍스트를 싣지 않는다 — 규칙 6, 발견 F8의 RFC-0070·RFC-0075 묶음에 있는 RFC-0048 항목, 그리고 rfcs/0066~0077 열두 파일 모두 `grep -c 'RFC-0048'`이 0이다. RFC-0052(l.18-19, l.134)와 RFC-0059(l.6, l.13, l.157, l.277)의 RFC-0048 기반 서술은 Accepted 본문이라 그대로 남고, 해소는 여전히 RFC-0048의 승격 또는 Updates 개정이다. RFC-0048의 `Updates:`는 같은 절 이름으로 통합본 번호(RFC-0066·RFC-0070·RFC-0075·RFC-0077)로 옮겼다. 항목 3의 재부착 대상도 함께 옮겨 갔다 — RFC-0048이 Accepted되면 표기를 다시 달고 린터가 `Updated-by: RFC-0048`을 요구하는 곳은 RFC-0066·RFC-0070·RFC-0075·RFC-0077과 RFC-0045다(RFC-0045는 그대로).
+   (2026-10-28, 이슈 #268; 2026-10-29 해소) 해소됐다 — 사용자 결정(2026-10-29). 두 서술의 대상인 RFC-0012 §G12.2와 RFC-0025 §5는 이제 `Superseded`라, RFC-0052(l.18-19, l.134)와 RFC-0059(l.6, l.13, l.157, l.277)의 RFC-0048 기반 서술은 대체된 대상만 가리키는 이력이다. 효력 있는 텍스트는 통합본 RFC-0070 §G12.2와 RFC-0075 §5에 있고(같은 G12.2 텍스트의 사본이 RFC-0068 §Guard에도 있다 — 발견 F9), 통합본은 RFC-0048의 텍스트를 싣지 않는다 — 규칙 6, 발견 F8의 RFC-0070·RFC-0075 묶음에 있는 RFC-0048 항목, 그리고 rfcs/0066~0077 열두 파일 모두 `grep -c 'RFC-0048'`이 0이다. RFC-0048은 Draft로 남고, `Updates:`는 같은 절 이름으로 통합본 번호로 옮겼으며 G12.2는 세 사본(RFC-0070 §G12.2, RFC-0068 §Guard/G12.2, RFC-0075 §5)을 모두 지목한다. 항목 3의 재부착 대상도 함께 옮겨 갔다 — RFC-0048이 Accepted되면 표기를 다시 달고 린터가 `Updated-by: RFC-0048`을 요구하는 곳은 RFC-0066·RFC-0068·RFC-0070·RFC-0075·RFC-0077과 RFC-0045다(RFC-0045는 그대로).
 
 ---
 
-### 발견 F8: 이슈 #268 통합 작업의 발견 — 통합 RFC별 전사 (2026-10-28 기록)
+### 발견 F8: 이슈 #268 통합 작업의 발견 — 통합 RFC별 전사 (2026-10-29 기록)
 
-**사실:** 이슈 #268의 통합 작업(t1–t8)이 작업 중 남긴 발견 기록을 그대로 옮긴다. 원천은 작업 블랙보드의 `- [tN] finding:` 줄 213개(`grep -c 'finding:'` = 213, 2026-10-29)이고, 바이트까지 같은 줄 0개를 하나로 합쳐 213개 항목이다. 항목 문면은 원문(영어) 그대로이고 앞의 `[tN]`은 기록한 작업이다. 각 항목 끝의 경로:줄은 그 작업의 기준 트리 기준이며 여기서 다시 맞추지 않았다 — t1·t2·t4·t5·t6·t7은 a310017, t3은 `@` 뒤에 적은 커밋(적지 않은 줄은 f7a808d), t8은 975299f. 경로:줄이 없는 항목은 원문이 적은 명령·문면이 증거다.
+**사실:** 이슈 #268의 작업(t1–t9)이 작업 중 남긴 발견 기록을 그대로 옮긴다. 원천은 작업 블랙보드의 `- [tN] finding:` 줄 216개다(`grep -c 'finding:'` = 217, 2026-10-29 — 나머지 1줄은 그 수를 적은 t9의 사실 줄이라 발견이 아니다). 바이트까지 같은 줄 0개를 하나로 합쳐 216개 항목이다. 항목 문면은 원문(영어) 그대로이고 앞의 `[tN]`은 기록한 작업이다. 뒤의 작업이 항목의 처리를 바꾼 곳은 그 항목 아래 들여쓴 줄에 적었다. 각 항목 끝의 경로:줄은 그 작업의 기준 트리 기준이며 여기서 다시 맞추지 않았다 — t1·t2·t4·t5·t6·t7은 a310017, t3은 `@` 뒤에 적은 커밋(적지 않은 줄은 f7a808d), t8은 975299f, t9는 67af189. 경로:줄이 없는 항목은 원문이 적은 명령·문면이 증거다.
 
 **처리:** 항목 머리(첫 ` — ` 앞)를 왼쪽부터 읽어, 대체된 12개(통합 번호로 옮긴다) 또는 RFC-0066~0077에 드는 첫 번호로 묶는다. 그 밖의 번호는 건너뛴다. 드는 번호가 없으면 마지막 "그 밖" 묶음이다. 묶음 안 순서는 블랙보드 순서다.
 
-**RFC-0066 (Supersedes RFC-0001) — 24건**
+**RFC-0066 (Supersedes RFC-0001) — 25건**
 
 - [t2] RFC-0001 §노드 카탈로그 — RFC-0015 and RFC-0016 name `§Appendix A/A.4 Node catalogue`, which is no single section (부록 A.4 is the constrained-decoding subset; the catalogue is §노드 카탈로그, where RFC-0001's own Updated-by and pointer lines place both), and give a delta, not a final text (rule 4); applied in their own words per C1 (Assignment block, Event.source schedule block) — rfcs/0015-value-semantics.md:6, :172; rfcs/0016-time-and-schedule-semantics.md:6, :165; rfcs/0001-semantic-ir.md:7-8, :97-98, :220
 - [t2] RFC-0001 §공통 필드, §노드 카탈로그, §부록 A: 직렬화 — the kind count `21` is stale (22 table rows after RFC-0056 plus Assignment from RFC-0015 = 23 kinds) and is carried verbatim in three places: the `kind` cell (`21개 PascalCase 식별자`), the catalogue lead (`21개 kind`) and A.4 (`anyOf 21분기`) — rfcs/0001-semantic-ir.md:73, :105, :225; rfcs/0015-value-semantics.md:172
@@ -1676,8 +1678,10 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 - [t2] RFC-0001 §노드 카탈로그/Guard — RFC-0060 §3 says its final text includes RFC-0028 §3 and RFC-0054 §2 text but carries only its own paragraph after the row, silently omitting the RFC-0028 `alternatives` paragraph and the RFC-0054 `textEqualityOperands` paragraph; both kept per U2/C12/C18 after the Behavior table, with RFC-0060's paragraph — rfcs/0060-assigned-field-guard-and-otherwise.md:193-195, :201-205; rfcs/0028-arithmetic-and-alternative-guards.md:234-240; rfcs/0054-text-equality-guards.md:153-156
 - [t2] RFC-0001 §노드 카탈로그/Guard (C18 paragraphs) — the carried paragraphs cite their own RFC's sections without an RFC number (`§Reference-level Specification/6` of RFC-0028, `§5 4항` of RFC-0060), which inside RFC-0066 resolve to sections that do not hold that content; kept as written (R3 allows no rewrite) — rfcs/0028-arithmetic-and-alternative-guards.md:236; rfcs/0060-assigned-field-guard-and-otherwise.md:205
 - [t2] RFC-0001 §노드 카탈로그 — re-pointing `RFC-0002가` (R3(a) token rewrite) yields `RFC-0067가`, whose particle no longer agrees with the number as read (0067 ends in a consonant → 이); kept, since R3 allows only the number change — rfcs/0001-semantic-ir.md:107; rfcs/0066-semantic-ir-v2.md:111
+  - **t9 처리 (2026-10-29):** 고쳤다 — C26 정정으로 rfcs/0066-semantic-ir-v2.md:111은 이제 `RFC-0067이`다. 위의 "kept"는 t2가 기록한 시점의 처리다.
+- [t9] RFC-0048 Updates block spans l.6-16 at 67af189 (plan text said l.6-15); replaced by text anchor ("- Updates: RFC-0001 §Open Questions/1, " through "  RFC-0045 §Open Questions/1"), same result — rfcs/0048-collections-non-goal-and-rowset-group-by.md:6
 
-**RFC-0067 (Supersedes RFC-0002) — 20건**
+**RFC-0067 (Supersedes RFC-0002) — 21건**
 
 - [t1] F1 RFC-0002 §Status — Updated-by: RFC-0009 names only §Open Questions; RFC-0009 also updates §Workflow body & control/가드 라인 — rfcs/0002-syntax.md:7, rfcs/0009-guard-condition-open-question.md:6
 - [t1] F2 RFC-0002 §Open Questions item 3 — commit 95eafee (2026-08-04) added the 해소 note in place, after RFC-0009 (Accepted 2026-08-02) had replaced the section; RFC-0009's text still has item 3 unresolved. Kept the in-place note per C5 — rfcs/0009-guard-condition-open-question.md:81-83 vs rfcs/0002-syntax.md:705-714; commit 55ae27c (2026-08-05) further edited item 3 in place (Url→URL), also kept (C5) — rfcs/0002-syntax.md:712
@@ -1699,6 +1703,7 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 - [t1] F29 commit 8d3a8b9 (2026-07-31 13:06, after the 9712ea2 Accepted promotion at 11:23 the same day) edited RFC-0002 §부록 A in place: the EventEmit verb-dictionary row and the "2026-07-31 구현" goal note; content is RFC-0002's own (no updater carries it), so kept (C5). Measured with git blame -s a310017 -- rfcs/0002-syntax.md and git log --format='%h %ci' -1 on both commits — rfcs/0002-syntax.md:505,610-615
 - [t1] F32 RFC-0009 §Open Questions item 2 and §Workflow body & control/가드 라인 (carried in RFC-0067) — "`Condition`은 `Presence | Comparison`이다(RFC-0008 §Full grammar)" keeps its old reference (C25a, review r1 F1/F2): re-pointed it would claim RFC-0069 §Full grammar defines Condition as Presence | Comparison, but RFC-0069 carries RFC-0050 §1's `Condition ::= Presence | Term ('and' Term)*`; the sentence's staleness is F5/F23 — rfcs/0009-guard-condition-open-question.md:74,99; rfcs/0067-syntax-v2.md:349,423,939
 - [t1] F33 RFC-0060 §5 (carried as RFC-0067 §Block structure) — "가드와 `otherwise`는 항목 하나만 소유하므로(RFC-0008 §5.2)" cites RFC-0008 §5.2, which is the example "5.2 Guarded Workflow: guarded.lnpl" under §Examples, not a rule section; re-pointed to RFC-0069 §5.2 (the cited content is unchanged) — rfcs/0060-assigned-field-guard-and-otherwise.md:257; rfcs/0008-guard-conditions.md:209; rfcs/0067-syntax-v2.md:258
+- [t9] C26 sweep (particles.py 66 77, 55 hits) fixed 1 re-point mismatch rfcs/0066-semantic-ir-v2.md:111 RFC-0067가->RFC-0067이; 3 RFC-0059이 left (not re-points, C6 shared span) — rfcs/0068-runtime-v2.md:343, rfcs/0070-execution-scope-v2.md:158, rfcs/0075-row-sets-and-aggregation-v2.md:287
 
 **RFC-0068 (Supersedes RFC-0003) — 12건**
 
@@ -1863,7 +1868,7 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 - [t6] RFC-0038 §Motivation — "RFC-0016의 차원 규칙이 등가 비교에는 지나치게 좁다" and "`_dimension_of`(RFC-0016 §3)는 Integer/DateTime이 아닌 선언 타입을 전부 거부한다" describe RFC-0016 §3 before RFC-0038, RFC-0051 and RFC-0054 changed it; kept as written (C25: re-pointing to RFC-0073 would be false) — rfcs/0038-list-where-predicate.md:53-55
 - [t6] RFC-0038 §Open Questions 1 — "avg/min/max/group by … `sum`/`count`(RFC-0025) 이상으로 넓히는 것" is half answered by RFC-0045 (avg/min/max); stale, kept; its `group by` wording is RFC-0038's own text (Accepted 2026-08-27), not RFC-0048-derived, so brief R7 does not exclude it — rfcs/0038-list-where-predicate.md:365-367, rfcs/0048-collections-non-goal-and-rowset-group-by.md:5
 
-**그 밖 — 36건**
+**그 밖 — 37건**
 
 - [t1] F11 RFC-0052 §1 — cites Reference as RFC-0012 §G12.1's CamelName-dot-CamelName form; the effective Reference is RFC-0015 §1's Namespace form — rfcs/0052-lookup-key-clause.md:112
 - [t1] F14b RFC-0039 — defines a `note` StepLine form (StringLiteral, with Reference+) without an Updates entry for RFC-0002 §Full grammar; not folded in (C15) — rfcs/0039-note-verb-and-canonical-line.md:122
@@ -1901,7 +1906,30 @@ RFC-0002는 "부록 A.4"에서 Guard 문법을 규정했으나, 실제로 RFC-00
 - [t3] RFC-0032 §Examples/타임라인 C — the final-text block carries relation text ("(이전 서술과의 차이)", "타임라인 C의 이 부분은 바뀌지 않는다"; dropped, C3) and omits the target's ERROR and deadline bullets and closing paragraph without saying so; kept (U2) — rfcs/0032-transaction-boundary-and-rollback-enforcement.md:196, rfcs/0032-transaction-boundary-and-rollback-enforcement.md:203-207, rfcs/0003-runtime.md:384-393@a310017
 - [t3] RFC-0062 §7 — the CacheAccess row is given as a blockquoted row whose cell ends in a period, unlike the other rows; carried as written with the container stripped — rfcs/0062-cached-read-through-clause.md:214
 - [t3] RFC-0060 §7 — declares changes to the first sentence and the mode/condition/steps/evaluations rows, but the rounds row changes too (`when`·`otherwise`) — rfcs/0060-assigned-field-guard-and-otherwise.md:342-345, rfcs/0060-assigned-field-guard-and-otherwise.md:359
+- [t9] RFC-0048 paragraph after the Updates block (규칙 5 연쇄 — "이미 갱신된 절은 대상 RFC와 직전 갱신 RFC를 모두 지목한다") now describes chain parentheses the re-targeted block no longer carries; left unchanged per plan D20, the dated 2026-10-28 note explains the drop — rfcs/0048-collections-non-goal-and-rowset-group-by.md:15-18
 
-**판정:** 기록만 한다. 통합본은 사용자 결정 U1(효력 있는 계약을 그대로 옮기고 모순은 기록만 한다)에 따라 이 발견을 고치지 않았다.
+**판정:** 기록만 한다. 통합본은 사용자 결정 U1(효력 있는 계약을 그대로 옮기고 모순은 기록만 한다)에 따라 이 발견을 고치지 않았다. 예외는 항목 아래 들여쓴 줄에 적은 t9의 오타 수준 정정(RFC-0007 §2.1)뿐이다.
 
 **영향도:** 낮음 — 효력 있는 계약은 바뀌지 않았다. 각 항목은 후속 Updates RFC나 이슈의 입력이다.
+
+---
+
+### 발견 F9: 여러 통합본에 실린 같은 단위 — Updates는 모든 사본을 지목해야 한다 (2026-10-29 기록)
+
+**사실:** 통합은 대상마다 효력 있는 텍스트를 따로 실었다. 그래서 한 갱신 RFC가 여러 대상을 고친 단위는 이제 둘 이상의 통합본에 바이트까지 같은 사본으로 있다. 아래 표는 RFC-0066~0077에서 `## Status` 밖의 60자 이상 문단이 두 RFC 이상에 똑같이 나오는 곳을 센 결과다(t9 측정 스크립트 `.claude/tmp/t9/shared.py`, 커밋하지 않음 — 2026-10-29 트리). "같은 문단 수"는 RFC 묶음마다 센 문단을 더한 값이다.
+
+| 단위 | 사본이 있는 통합본(절) | 같은 문단 수 |
+|------|------------------------|-------------|
+| 문법 생산 규칙(EBNF 블록과 그 문단) | RFC-0067 §Full grammar, RFC-0069 §1, RFC-0070의 RFC-0002 §Full grammar / `Condition` 절, RFC-0072 §1, RFC-0073 §1, RFC-0075 §2, RFC-0076 §1 | 21 |
+| 실행 스코프 G12.1–G12.7 | RFC-0068 §Guard, RFC-0070의 RFC-0003 §Guard 절(둘 다 G12.1–G12.7). G12.2·G12.4·G12.5는 RFC-0075 §5·§6.1·§6.2에도 | 38 |
+| 가드 런타임 §2(2.1–2.6) | RFC-0068 §Guard, RFC-0069 §2, RFC-0071 §2. 2.1·2.4·2.6의 일부는 RFC-0076 §4에도 | 24 |
+| 피연산자의 차원 규칙(RFC-0016 §3, 3.1–3.3 — RFC-0054 §6 텍스트 포함) | RFC-0073 §3, RFC-0077 §3 | 14 |
+| 값 도메인과 실패(RFC-0015 §4 — RFC-0028 §2의 표) | RFC-0072 §4, RFC-0076 §2 | 3 |
+| 노드 카탈로그 Guard 행 블록 | RFC-0066 §노드 카탈로그, RFC-0076 §3 | 3 |
+| 노드 카탈로그의 그 밖 문단 | RFC-0066 §노드 카탈로그와 RFC-0072 §2(4문단), RFC-0073 §4·§Examples(1문단) | 5 |
+
+**규칙:** 이런 단위를 고치는 Updates RFC는 그 단위의 모든 사본을 지목해야 한다. 한 사본만 지목하면 그 RFC가 Accepted되는 순간 나머지 Accepted 사본과 모순되고(RFC-0007 §2.2 규칙 2), 규칙 7 검사(`rule7_check`)도 역링크 검사도 사본 사이의 차이를 보지 못한다. 첫 적용: Draft RFC-0048의 `Updates:`는 G12.2의 세 사본(RFC-0070 §G12.2, RFC-0068 §Guard/G12.2, RFC-0075 §Reference-level Specification/5)을 지목한다(2026-10-29). RFC-0048이 고치는 다른 절(RFC-0066 §Open Questions/1, RFC-0075 §1·§3, RFC-0077 §2·§Open Questions/1, RFC-0045 §Open Questions/1)은 같은 방식으로 재면 다른 통합본에 사본이 없다.
+
+**처리:** 위 단위를 고치는 후속 Updates(열린 이슈 #233·#240 등)의 작성자는 표의 모든 사본을 `Updates:`에 적고, 각 사본 대상 머리에 `Updated-by:`를 단다.
+
+**영향도:** 중간 — 사본 하나만 고친 Updates가 Accepted되면 효력 있는 계약이 두 갈래가 된다. 이것을 잡는 기계 검사가 없어 리뷰가 막아야 한다.
