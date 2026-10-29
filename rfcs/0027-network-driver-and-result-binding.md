@@ -10,6 +10,7 @@
 - Updated-by: RFC-0028 (§Reference-level Specification/6. 관측)
 - Updated-by: RFC-0037 (§Reference-level Specification/1 — `NetworkDriver` 계약)
 - Updated-by: RFC-0057 (§Reference-level Specification/2)
+- Updated-by: RFC-0076 (§Reference-level Specification/6. 관측)
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 5(연쇄 갱신)에 따라
 RFC-0012 §G12.2를 이미 갱신한 RFC-0025 §5도 함께 지목한다 — G12.2의 효력 있는
@@ -384,6 +385,7 @@ pool을 고갈시킨다"). 이 값은 이 RFC가 새로 정하는 상수이며, 
 ### 6. 관측 — RFC-0014 §2.4 갱신 (마스킹 범위) (D3)
 
 > 갱신됨: RFC-0028
+> 갱신됨: RFC-0076
 
 RFC-0007 §2.2 규칙 4에 따라, 아래는 RFC-0014 §2.4(스킵 레코드)의 마스킹
 규칙에 대한 갱신이다. §2.4 D3(이슈 #83)는 `evaluations`의 `ref`가 가리키는
