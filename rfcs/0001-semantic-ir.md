@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: Accepted (2026-07-31) <!-- Draft | Review | Accepted | Superseded -->
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0066
 - Updated-by: RFC-0011 (§부록 A.6.3, §부록 A.7), RFC-0028 (§노드 카탈로그/Guard)
 - Updated-by: RFC-0015 (§노드 카탈로그)
 - Updated-by: RFC-0016 (§노드 카탈로그)

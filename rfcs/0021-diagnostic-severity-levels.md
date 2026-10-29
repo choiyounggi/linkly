@@ -2,7 +2,8 @@
 
 ## Status
 
-- Status: **Accepted** (RFC-0021, 2026-08-07)
+- Status: Superseded (2026-10-28)
+- Superseded-by: RFC-0074
 - Updated-by: RFC-0022 (§코드 → 등급 (정본))
 - Updated-by: RFC-0023 (§코드 → 등급 (정본))
 - Updated-by: RFC-0042 (§Reference-level Specification/코드 → 등급 (정본), §Reference-level Specification/`--strict[=LEVEL]`)
