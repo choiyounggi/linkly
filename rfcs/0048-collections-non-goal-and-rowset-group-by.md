@@ -3,8 +3,9 @@
 ## Status
 
 - Status: Draft
-- Updates: RFC-0066 §Open Questions/1, RFC-0075 §Reference-level Specification/1
-  (이 개정은 그 절의 텍스트 위에 grouped-list 전용 carve-out을 더한다), RFC-0075
+- Updates: RFC-0066 §Open Questions/1, RFC-0075 §Reference-level Specification/1,
+  RFC-0077 §Reference-level Specification/1 (두 절은 같은 `list` 텍스트의 사본이다 —
+  이 개정은 두 사본 모두의 텍스트 위에 grouped-list 전용 carve-out을 더한다), RFC-0075
   §Reference-level Specification/3 (이 개정은 그 절의 텍스트 위에 그룹-파생 RowSet의
   필드 참조 화이트리스트를 더한다), RFC-0070 §G12.2, RFC-0068 §Guard/G12.2,
   RFC-0075 §Reference-level Specification/5 (세 절은 같은 G12.2 텍스트의 사본이다 —
@@ -14,7 +15,7 @@
 
 2026-10-28(이슈 #268): `Updates:`의 대상 RFC-0001·RFC-0012·RFC-0025·RFC-0038이 통합본 RFC-0066·RFC-0070·RFC-0075·RFC-0077로 대체돼, 같은 절 이름으로 대상을 옮겼다. 통합본의 그 절에는 앞선 갱신이 없어 괄호에 직전 갱신을 적지 않는다. 본문의 옛 번호 인용은 그대로 둔다.
 
-2026-10-29(이슈 #268 통합 리뷰): G12.2 텍스트는 통합본 RFC-0070 §G12.2 말고도 RFC-0068 §Guard와 RFC-0075 §Reference-level Specification/5에 같은 사본으로 실려 있어(docs/CONSISTENCY-CHECK.md 발견 F9), 세 사본을 모두 지목했다. 한 사본만 바꾸면 나머지 Accepted 사본과 모순된다(RFC-0007 §2.2 규칙 2).
+2026-10-29(이슈 #268 통합 리뷰): G12.2 텍스트는 통합본 RFC-0070 §G12.2 말고도 RFC-0068 §Guard와 RFC-0075 §Reference-level Specification/5에 같은 사본으로 실려 있어(docs/CONSISTENCY-CHECK.md 발견 F9), 세 사본을 모두 지목했다. 같은 이유로 RFC-0075 §Reference-level Specification/1의 `list` 텍스트(`ListTail`·`OrderBy`·`Limit` 블록과 그 문단)는 RFC-0077 §Reference-level Specification/1에도 `> ` 인용으로 실려 있어 둘 다 지목했다. 한 사본만 바꾸면 나머지 Accepted 사본과 모순된다(RFC-0007 §2.2 규칙 2).
 
 RFC-0007 §2.2 규칙 1에 따라 절을 이름으로 지목하고, 규칙 2에 따라 모순되는
 모든 절을 지목하며, 규칙 5(연쇄 갱신)에 따라 이미 갱신된 절은 대상 RFC와
