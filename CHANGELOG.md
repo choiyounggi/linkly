@@ -45,6 +45,14 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   response; a bad spec refuses startup. The JSON canonical line also gains
   `subject`/`role` when the token was verified. Hash chaining is deferred
   (docs/serving.md). (#241)
+- MCP server: a Streamable HTTP transport (`python -m lnpl.mcp_http`, one
+  `/mcp` endpoint, `Mcp-Session-Id` sessions, JSON responses, Bearer token
+  from `LNPL_MCP_TOKEN` — no token, no start; binds 127.0.0.1 by default;
+  Origin, body-size and per-call time/memory/result limits) beside stdio, and
+  three tools: `lnpl_run` (fake backend and virtual clock only,
+  `{result, trace, diagnostics}`), `lnpl_openapi` and `lnpl_generate`
+  (compose/k8s text, nothing written). `serve`/`build`/`relay` stay
+  unexposed; `plugins/lnpl-mcp/README.md` shows both transports (#250).
 
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a

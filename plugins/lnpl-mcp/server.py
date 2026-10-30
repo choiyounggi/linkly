@@ -38,7 +38,8 @@ DEFAULT_STATE_PATH = os.path.join(os.path.expanduser("~"), ".claude",
 # tools/list가 fallback에서도 이 이름들을 내보낸다 — `lnpl.mcp_server.TOOLS`를
 # 임포트할 수 없는 상태이므로(그 모듈 자체가 lnpl 패키지 안에 있다) 이름만 복제한다.
 _FALLBACK_TOOL_NAMES = ("lnpl_compile", "lnpl_kb_route", "lnpl_spec",
-                       "lnpl_vocabulary", "lnpl_capabilities")
+                       "lnpl_vocabulary", "lnpl_capabilities", "lnpl_run",
+                       "lnpl_openapi", "lnpl_generate")
 
 _NOT_FOUND_REASON = (
     "lnpl-mcp: could not locate the `lnpl` package. Set LNPL_IMPL_PATH to an "

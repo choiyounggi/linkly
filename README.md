@@ -165,7 +165,7 @@ The repo doubles as the marketplace and hosts three plugins with different audie
 |--------|----------|----------|
 | [`lnpl`](plugins/lnpl/README.md) | people writing `.lnpl` | vocabulary routing, compile diagnostics on save, spec derivation, a completion gate, KB lookup |
 | [`lnpl-dev`](plugins/lnpl-dev/README.md) | people building linkly itself | environment-prerequisite diagnosis, RFC process lint, the mutation harness's traps |
-| [`lnpl-mcp`](plugins/lnpl-mcp/README.md) | anyone who would rather call the compiler than shell out to it | `lnpl compile` and `kb.route` as MCP tools, returning diagnostics as records instead of stderr prose |
+| [`lnpl-mcp`](plugins/lnpl-mcp/README.md) | anyone who would rather call the compiler than shell out to it | the compiler, spec runner, fake-backend `run`, OpenAPI and compose/k8s generators as 8 MCP tools over stdio or Streamable HTTP, returning diagnostics as records instead of stderr prose |
 
 Contributors install `/plugin install lnpl-dev@linkly` as well.
 
