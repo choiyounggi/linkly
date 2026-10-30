@@ -1,5 +1,7 @@
-"""Built-in `compose` and `k8s` generators (issue #189): hermetic unit tests
-(no docker, no network). The docker-backed checks live in
+"""Built-in compose and k8s generators (issues #189, #236): unit tests. All are
+hermetic (no docker, no network) except KubeconformTest, which runs the pinned
+kubeconform container through docker and fetches schemas from
+raw.githubusercontent.com. The docker-backed checks live in
 examples/deploy/test_deploy.py and are run by hand.
 
 Goldens under impl/tests/golden/deploy/ are regenerated only with the CLI from the worktree root, no --set:
@@ -10,28 +12,43 @@ then read git diff impl/tests/golden/deploy before committing. There is no auto-
 
 import codecs
 import contextlib
+import inspect
 import io
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from lnpl import cli
-from lnpl.deploy_gen import (COMPOSE_OPTIONS, GRACE_PERIOD_S, auth_env_vars,
-                             check_object_name, check_options, check_quantity,
+from lnpl.deploy_gen import (COMPOSE_OPTIONS, GRACE_PERIOD_S, K8S_OPTIONS,
+                             auth_env_vars, check_object_name, check_options,
+                             check_quantity,
                              classify_capabilities, compose_quote,
                              endpoint_keys, generate_compose, generate_k8s,
                              parse_port, parse_replicas, warn_unknown,
                              yaml_quote)
 from lnpl.generators import GeneratorError, run_generator
 from lnpl.testing import GeneratorTCK
+from lnpl.wsgi import ServeError
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN = os.path.join(REPO, "impl", "tests", "golden", "deploy")
 SCRATCH = os.path.join(REPO, ".claude", "tmp", "test_deploy_generators")
 FIXTURES = ("pg-redis", "no-caps", "unknown-cap", "jwt-http")
 HOSTILE_VALUE = "a: b # c 'q' \"dq\"\n- *x $HOME"
+KUBECONFORM_IMAGE = ("ghcr.io/yannh/kubeconform:v0.6.7@sha256:"
+                     "0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c")
+KUBECONFORM_CMD = ["docker", "run", "--rm", "-i", KUBECONFORM_IMAGE, "-strict",
+                   "-summary", "-kubernetes-version", "1.30.0", "-"]
+ALL_OPTIONS = {"ingress_host": "api.example.com", "hpa_min": "2", "hpa_max": "5",
+               "hpa_cpu": "70", "cpu_request": "100m", "pdb": "true",
+               "network_policy": "true",
+               "egress_cidrs": "203.0.113.0/24,2001:db8::/32"}
+_NO_DOCKER = ("docker not reachable; kubeconform runs as " + KUBECONFORM_IMAGE
+              + " — set LNPL_REQUIRE_KUBECONFORM=1 to make this a failure")
 
 
 def _doc(fixture):
@@ -66,6 +83,43 @@ def _quiet(generator, document, options):
 def _text(generator, key, fixture, options=None):
     out, _ = _quiet(generator, _doc(fixture), options or {})
     return out[key].decode("ascii")
+
+
+def _kinds(text):
+    return re.findall(r"^kind: (\w+)$", text, re.M)
+
+
+def _documents(text):
+    return text.split("\n---\n")
+
+
+def _kubeconform_ready():
+    if shutil.which("docker") is None:
+        return False
+    try:
+        probe = subprocess.run(["docker", "info"], capture_output=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return False
+    return probe.returncode == 0
+
+
+def _require_kubeconform(test):
+    if _kubeconform_ready():
+        return
+    if os.environ.get("LNPL_REQUIRE_KUBECONFORM") == "1":
+        test.fail(_NO_DOCKER)
+    test.skipTest(_NO_DOCKER)
+
+
+def _kubeconform(text):
+    """-> (rc, combined output). A TimeoutExpired propagates: a failure."""
+    done = subprocess.run(KUBECONFORM_CMD, input=text.encode("ascii"),
+                          capture_output=True, timeout=300)
+    return done.returncode, (done.stdout + done.stderr).decode("utf-8", "replace")
+
+
+def _stream(texts):
+    return "---\n".join(texts)
 
 
 def _scratch_dir(test):
@@ -490,6 +544,259 @@ class K8sGeneratorTest(unittest.TestCase):
         lines = [ln for ln in text.splitlines()
                  if ln.startswith("          image: ")]
         self.assertEqual(lines, ["          image: " + yaml_quote(HOSTILE_VALUE)])
+
+
+class K8sIngressTest(unittest.TestCase):
+    """Issue #236 D13: `--set ingress_host=<host>`."""
+
+    def test_normal_ingress_routes_each_service_segment(self):
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis",
+                     {"ingress_host": "api.example.com"})
+        self.assertEqual(_kinds(text), ["ConfigMap", "Deployment", "Service", "Ingress"])
+        self.assertIn('host: "api.example.com"', text)
+        ingress = _documents(text)[-1]
+        self.assertEqual(ingress.count('path: "/note-service"'), 1)
+        self.assertIn('pathType: "Prefix"', ingress)
+        self.assertNotIn('path: "/"\n', ingress)
+        self.assertNotIn('"/-/', ingress)
+
+    def test_error_bad_hosts_are_refused(self):
+        for host in ("Bad Host", "-api.example.com", "api.example.com/x",
+                     "api.example.com\n",
+                     ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 62])):
+            with self.subTest(host=host):
+                with self.assertRaises(GeneratorError) as cm:
+                    _quiet(generate_k8s, _doc("pg-redis"), {"ingress_host": host})
+                self.assertIn("ingress_host", str(cm.exception))
+
+    def test_boundary_253_character_host_is_accepted(self):
+        host = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 61])
+        self.assertEqual(len(host), 253)
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis", {"ingress_host": host})
+        self.assertIn("host: " + yaml_quote(host), text)
+
+    def test_error_no_served_path(self):
+        with mock.patch("lnpl.deploy_gen.build_routes", return_value={}):
+            with self.assertRaises(GeneratorError) as cm:
+                _quiet(generate_k8s, _doc("pg-redis"), {"ingress_host": "api.example.com"})
+        self.assertIn("serves no path", str(cm.exception))
+        with mock.patch("lnpl.deploy_gen.build_routes", side_effect=ServeError("boom")):
+            with self.assertRaises(GeneratorError) as cm:
+                _quiet(generate_k8s, _doc("pg-redis"), {"ingress_host": "api.example.com"})
+        self.assertIn("boom", str(cm.exception))
+
+    def test_boundary_absent_option_emits_no_ingress(self):
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis")
+        self.assertNotIn("kind: Ingress", text)
+
+    def test_signature_and_option_order_are_frozen(self):
+        self.assertEqual(list(inspect.signature(generate_k8s).parameters),
+                         ["document", "options"])
+        self.assertEqual(K8S_OPTIONS[:6], ("image", "name", "replicas", "cpu_request",
+                                           "cpu_limit", "memory"))
+
+    def test_every_k8s_option_is_in_the_set_help(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            cli.main(["generate", "--help"])
+        help_text = " ".join(out.getvalue().split())
+        for key in K8S_OPTIONS:
+            with self.subTest(key=key):
+                self.assertIn(key, help_text)
+
+
+class K8sHpaTest(unittest.TestCase):
+    """Issue #236 D14: `hpa_min`, `hpa_max`, `hpa_cpu` (with `cpu_request`)."""
+
+    GOOD = {"hpa_min": "2", "hpa_max": "5", "hpa_cpu": "70", "cpu_request": "100m"}
+
+    def test_normal_hpa_emitted_and_replicas_dropped(self):
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis", self.GOOD)
+        self.assertIn("minReplicas: 2", text)
+        self.assertIn("maxReplicas: 5", text)
+        self.assertIn("averageUtilization: 70", text)
+        self.assertIn('cpu: "100m"', text)
+        deployment = _documents(text)[1]
+        self.assertIn("kind: Deployment", deployment)
+        self.assertNotIn("replicas:", deployment)
+        self.assertNotIn("PLACEHOLDER: replica count", deployment)
+        self.assertEqual(_kinds(text)[-1], "HorizontalPodAutoscaler")
+
+    def test_normal_leading_zero_is_reserialised(self):
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis", dict(self.GOOD, hpa_min="02"))
+        hpa = _documents(text)[-1].splitlines()
+        self.assertIn("kind: HorizontalPodAutoscaler", hpa)
+        self.assertIn("  minReplicas: 2", hpa)
+        self.assertEqual([ln for ln in hpa if "02" in ln], [])
+
+    def test_error_cases_name_the_key(self):
+        cases = [
+            (dict(self.GOOD, hpa_min="3", hpa_max="2"), "hpa_max"),
+            ({"hpa_min": "2", "cpu_request": "100m"}, "hpa_max"),
+            (dict(self.GOOD, hpa_cpu="0"), "hpa_cpu"),
+            (dict(self.GOOD, hpa_cpu="101"), "hpa_cpu"),
+            (dict(self.GOOD, hpa_min="0"), "hpa_min"),
+            (dict(self.GOOD, hpa_min="two"), "hpa_min"),
+            (dict(self.GOOD, hpa_min="2\n"), "hpa_min"),
+            ({k: v for k, v in self.GOOD.items() if k != "cpu_request"}, "cpu_request"),
+            (dict(self.GOOD, replicas="3"), "replicas"),
+        ]
+        for options, key in cases:
+            with self.subTest(options=options):
+                with self.assertRaises(GeneratorError) as cm:
+                    _quiet(generate_k8s, _doc("pg-redis"), options)
+                self.assertIn(key, str(cm.exception))
+
+    def test_boundary_min_equals_max_and_cpu_100(self):
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis",
+                     {"hpa_min": "1", "hpa_max": "1", "hpa_cpu": "100", "cpu_request": "1"})
+        self.assertIn("minReplicas: 1", text)
+        self.assertIn("maxReplicas: 1", text)
+        self.assertIn("averageUtilization: 100", text)
+
+
+class K8sPdbTest(unittest.TestCase):
+    """Issue #236 D15: `pdb=true`."""
+
+    def test_normal_pdb_true(self):
+        from lnpl.deploy_gen import _PDB_COMMENT
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis", {"pdb": "true"})
+        self.assertIn("kind: PodDisruptionBudget", text)
+        self.assertIn("minAvailable: 1", text)
+        lines = text.splitlines()
+        at = lines.index("apiVersion: policy/v1")
+        self.assertEqual(lines[at - 1], _PDB_COMMENT)
+
+    def test_error_other_literals_refused(self):
+        for value in ("yes", "True", "1", "on"):
+            with self.subTest(value=value):
+                with self.assertRaises(GeneratorError) as cm:
+                    _quiet(generate_k8s, _doc("pg-redis"), {"pdb": value})
+                self.assertIn("pdb", str(cm.exception))
+
+    def test_boundary_false_and_absent_emit_nothing(self):
+        false_out, _ = _quiet(generate_k8s, _doc("pg-redis"), {"pdb": "false"})
+        absent_out, _ = _quiet(generate_k8s, _doc("pg-redis"), {})
+        self.assertNotIn(b"PodDisruptionBudget", false_out["k8s.yaml"])
+        self.assertNotIn(b"PodDisruptionBudget", absent_out["k8s.yaml"])
+        self.assertEqual(false_out["k8s.yaml"], absent_out["k8s.yaml"])
+
+
+class K8sNetworkPolicyTest(unittest.TestCase):
+    """Issue #236 D16-D18: `network_policy=true`, `egress_cidrs`."""
+
+    def test_normal_policy_with_cidrs(self):
+        from lnpl.deploy_gen import _NETPOL_COMMENTS
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis",
+                     {"network_policy": "true",
+                      "egress_cidrs": "203.0.113.0/24,2001:db8::/32"})
+        self.assertEqual(text.count("ipBlock:"), 2)
+        self.assertEqual(text.count('"k8s-app": "kube-dns"'), 1)
+        self.assertIn('cidr: "203.0.113.0/24"', text)
+        self.assertIn('cidr: "2001:db8::/32"', text)
+        lines = text.splitlines()
+        at = lines.index("apiVersion: networking.k8s.io/v1")
+        self.assertEqual(lines[at - 3:at], _NETPOL_COMMENTS)
+        policy = _documents(text)[-1]
+        self.assertIn("kind: NetworkPolicy", policy)
+        self.assertIn('- "Ingress"', policy)
+        self.assertIn('- "Egress"', policy)
+        self.assertIn("port: 8000", policy)
+        self.assertNotIn("from:", policy)
+
+    def test_boundary_policy_alone_has_dns_rule_only(self):
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis", {"network_policy": "true"})
+        self.assertEqual(_kinds(text).count("NetworkPolicy"), 1)
+        self.assertNotIn("ipBlock:", text)
+        self.assertIn('protocol: "UDP"\n          port: 53', text)
+        self.assertIn('protocol: "TCP"\n          port: 53', text)
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis",
+                     {"network_policy": "true", "egress_cidrs": "10.0.0.0/8"})
+        self.assertEqual(text.count("ipBlock:"), 1)
+
+    def test_error_bad_cidrs_name_the_item(self):
+        for value, item in (("203.0.113.0", "'203.0.113.0'"),
+                            ("not-a-cidr", "'not-a-cidr'"),
+                            ("10.0.0.1/8", "'10.0.0.1/8'"),
+                            ("203.0.113.0/24,,10.0.0.0/8", "''"),
+                            ("203.0.113.0/24, 10.0.0.0/8", "' 10.0.0.0/8'")):
+            with self.subTest(value=value):
+                with self.assertRaises(GeneratorError) as cm:
+                    _quiet(generate_k8s, _doc("pg-redis"),
+                           {"network_policy": "true", "egress_cidrs": value})
+                self.assertIn("egress_cidrs", str(cm.exception))
+                self.assertIn(item, str(cm.exception))
+
+    def test_error_cidrs_without_policy(self):
+        with self.assertRaises(GeneratorError) as cm:
+            _quiet(generate_k8s, _doc("pg-redis"), {"egress_cidrs": "10.0.0.0/8"})
+        self.assertIn("network_policy=true", str(cm.exception))
+        with self.assertRaises(GeneratorError) as cm:
+            _quiet(generate_k8s, _doc("pg-redis"), {"network_policy": "on"})
+        self.assertIn("network_policy", str(cm.exception))
+
+
+class K8sAllOptionsTest(unittest.TestCase):
+    def test_all_options_kind_order_and_shape(self):
+        out, _ = _quiet(generate_k8s, _doc("pg-redis"), ALL_OPTIONS)
+        self.assertEqual(list(out), ["k8s.yaml"])
+        text = out["k8s.yaml"].decode("ascii")
+        self.assertEqual(_kinds(text), ["ConfigMap", "Deployment", "Service", "Ingress",
+                                        "HorizontalPodAutoscaler", "PodDisruptionBudget",
+                                        "NetworkPolicy"])
+
+
+class KubeconformTest(unittest.TestCase):
+    """Issue #236 D20/D21: every generated document through the pinned
+    kubeconform container; skips (or fails under LNPL_REQUIRE_KUBECONFORM=1)
+    only when docker does not answer."""
+
+    def test_every_generated_document_validates(self):
+        _require_kubeconform(self)
+        texts = [_text(generate_k8s, "k8s.yaml", f) for f in FIXTURES]
+        texts.append(_text(generate_k8s, "k8s.yaml", "pg-redis", ALL_OPTIONS))
+        stream = _stream(texts)
+        self.assertEqual(len(re.findall(r"^kind: ", stream, re.M)), 19)
+        rc, out = _kubeconform(stream)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Valid: 19, Invalid: 0, Errors: 0, Skipped: 0", out, out)
+
+    def test_known_bad_hpa_is_invalid(self):
+        _require_kubeconform(self)
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis", ALL_OPTIONS)
+        hpa = [d for d in _documents(text) if "kind: HorizontalPodAutoscaler" in d]
+        self.assertEqual(len(hpa), 1)
+        lines = hpa[0].splitlines()
+        self.assertIn("  maxReplicas: 5", lines)
+        lines.remove("  maxReplicas: 5")
+        rc, out = _kubeconform("\n".join(lines) + "\n")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Invalid: 1, Errors: 0", out, out)
+
+    def test_docker_absent_skips_or_fails(self):
+        with mock.patch("shutil.which", return_value=None), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LNPL_REQUIRE_KUBECONFORM", None)
+            with self.assertRaises(unittest.SkipTest) as cm:
+                _require_kubeconform(self)
+            self.assertIn(KUBECONFORM_IMAGE, str(cm.exception))
+            os.environ["LNPL_REQUIRE_KUBECONFORM"] = "1"
+            with self.assertRaises(AssertionError) as cm:
+                _require_kubeconform(self)
+            self.assertIn(KUBECONFORM_IMAGE, str(cm.exception))
+
+    def test_docker_info_timeout_or_failure_skips(self):
+        with mock.patch("shutil.which", return_value="/usr/local/bin/docker"), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LNPL_REQUIRE_KUBECONFORM", None)
+            with mock.patch("subprocess.run",
+                            side_effect=subprocess.TimeoutExpired("docker", 20)):
+                with self.assertRaises(unittest.SkipTest):
+                    _require_kubeconform(self)
+            with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess(
+                    ["docker", "info"], 1)):
+                with self.assertRaises(unittest.SkipTest):
+                    _require_kubeconform(self)
 
 
 class UnknownCapabilityWarningTest(unittest.TestCase):

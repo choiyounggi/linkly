@@ -292,6 +292,12 @@ M21은 `If-Match` 없는 같은 요청이 받는 404(M8b)보다 앞선다.
   메타데이터로부터 crontab 한 줄 또는 systemd `.timer`+`.service` 쌍을
   만든다. 출력은 생성물이고 손으로 고치는 대상이 아니다(헤더에 명시).
 
+**트리거 토큰 (이슈 #236).** `lnpl token <src> --path /-/schedules/<event-slug> --subject <누구> --secret-env LNPL_JWT_SECRET [--role <역할>] [--ttl 5m]`이
+이 라우트용 토큰을 발급한다. 감사(aud)는 `-`다 — `/-/` 아래 모든 경로가 같은 값이라, 이
+토큰은 역할이 맞는 다른 `/-/schedules/`·`/-/events/` 라우트에도 통하고
+`/<service>/<workflow>` 라우트에는 통하지 않는다. `lnpl generate k8s`의 CronJob이 실행마다
+이 명령으로 5분짜리 토큰을 만든다(`docs/backends.md` 12절).
+
 **이벤트→워크플로 연결.** 스케줄 이벤트는 IR에서 어떤 워크플로에도 속하지
 않는다(`lower.py`의 `owner_of`는 워크플로 전용이다). 트리거 표면은 워크플로가
 이미 쓰는 것과 같은 규칙 — "가장 가까이 앞선 `service` 선언"(RFC-0002 A.2 R2)

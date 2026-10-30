@@ -8,12 +8,14 @@ object name after it passed the DNS-1035 rule). See docs/backends.md
 section 12.
 """
 
+import ipaddress
 import re
 import sys
 
 from .drivers import _http_capabilities
 from .generators import GeneratorError
-from .wsgi import _network_targets
+from .openapi import OpenApiError
+from .wsgi import ServeError, _network_targets, build_routes
 
 # The `lnpl serve --grace-period` default (30.0, cli.py) and gunicorn's
 # `graceful_timeout` default 30 s (docs/serving.md "SIGTERM 그레이스풀 드레인").
@@ -24,7 +26,10 @@ SOURCE_PATH = "/srv/lnpl/app.lnpl"
 IMAGE_PLACEHOLDER = "ghcr.io/OWNER/linkly:VERSION"
 ENDPOINT_PLACEHOLDER = "http://endpoint-placeholder.invalid"
 COMPOSE_OPTIONS = ("image", "port", "source", "postgres_image", "redis_image")
-K8S_OPTIONS = ("image", "name", "replicas", "cpu_request", "cpu_limit", "memory")
+K8S_OPTIONS = ("image", "name", "replicas", "cpu_request", "cpu_limit", "memory",
+               "ingress_host", "hpa_min", "hpa_max", "hpa_cpu", "pdb",
+               "network_policy", "egress_cidrs")
+HPA_KEYS = ("hpa_min", "hpa_max", "hpa_cpu")
 MAPPED_CAPABILITIES = ("postgres", "redis", "jwt")
 
 _NAME_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
@@ -32,11 +37,41 @@ _NAME_MAX = 63
 _QUANTITY_RE = re.compile(r"^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DIGITS_RE = re.compile(r"^[0-9]+$")
+# DNS-1123 subdomain; always used with fullmatch (issue #236, D13).
+_HOST_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*")
+_HOST_MAX = 253
 
 _IMAGE_COMMENT = ("# PLACEHOLDER: set the image with "
                   "--set image=ghcr.io/<owner>/linkly:<X.Y> "
                   "(no latest tag is published).")
 _ENDPOINT_COMMENT = "# PLACEHOLDER: base URL of this network target."
+_PDB_COMMENT = ("# With 1 replica, minAvailable: 1 allows zero voluntary evictions "
+                "and a node drain never completes; run 2 or more replicas "
+                "(--set replicas=N or hpa_min=N).")
+_NETPOL_COMMENTS = [
+    "# NetworkPolicy peers are pods, namespaces and IP blocks only; a DNS "
+    "host name cannot be matched.",
+    "# Egress is denied except DNS to kube-dns and the CIDRs from --set "
+    "egress_cidrs=...: list external backends (http endpoints, managed "
+    "databases) as CIDRs.",
+    "# In-cluster backends (postgres, redis pods) need a separate "
+    "NetworkPolicy you own; policies are additive. docs/backends.md "
+    "section 12.",
+]
+_DNS_EGRESS_RULE = [
+    "    - to:",
+    "        - namespaceSelector:",
+    "            matchLabels:",
+    '              "kubernetes.io/metadata.name": "kube-system"',
+    "          podSelector:",
+    "            matchLabels:",
+    '              "k8s-app": "kube-dns"',
+    "      ports:",
+    '        - protocol: "UDP"',
+    "          port: 53",
+    '        - protocol: "TCP"',
+    "          port: 53",
+]
 
 
 def yaml_quote(value):
@@ -107,6 +142,95 @@ def check_quantity(key, value):
         raise GeneratorError(
             "option %r must be a Kubernetes quantity such as 100m, 0.5 or "
             "256Mi, got %r" % (key, value))
+
+
+def check_ingress_host(value):
+    if _HOST_RE.fullmatch(value) and len(value) <= _HOST_MAX:
+        return value
+    raise GeneratorError(
+        "k8s option ingress_host=%r is not a DNS-1123 subdomain (lowercase "
+        "letters, digits, '-' and '.'; each label starts and ends with a "
+        "letter or digit; at most %d characters)" % (value, _HOST_MAX))
+
+
+def ingress_segments(document):
+    """The distinct first path segments of the served workflow paths, sorted
+    (issue #236, D13). `/-/` routes are not in `build_routes`, so health,
+    schedule and event triggers never reach the public Ingress."""
+    try:
+        routes = build_routes(document)
+    except (ServeError, OpenApiError) as exc:
+        raise GeneratorError("k8s option ingress_host: %s" % exc)
+    segments = sorted({path.split("/")[1] for path in routes})
+    if not segments:
+        raise GeneratorError(
+            "k8s option ingress_host: the document serves no path, so the "
+            "Ingress would have no rule path")
+    return segments
+
+
+def parse_hpa(options):
+    """-> None, or (min, max, cpu) (issue #236, D14). Check order: partial
+    set, digits, ranges, cpu_request, replicas."""
+    if not any(key in options for key in HPA_KEYS):
+        return None
+    missing = [key for key in HPA_KEYS if key not in options]
+    if missing:
+        raise GeneratorError(
+            "k8s options %s go together; missing: %s"
+            % (", ".join(HPA_KEYS), ", ".join(missing)))
+    for key in HPA_KEYS:
+        if not _DIGITS_RE.fullmatch(options[key]):
+            raise GeneratorError("k8s option %s=%r is not a whole number"
+                                 % (key, options[key]))
+    low, high, cpu = (int(options[key]) for key in HPA_KEYS)
+    if low < 1:
+        raise GeneratorError("k8s option hpa_min=%r must be at least 1"
+                             % options["hpa_min"])
+    if high < low:
+        raise GeneratorError("k8s option hpa_max=%r must be at least hpa_min=%r"
+                             % (options["hpa_max"], options["hpa_min"]))
+    if not 1 <= cpu <= 100:
+        raise GeneratorError("k8s option hpa_cpu=%r must be between 1 and 100 "
+                             "(percent of cpu_request)" % options["hpa_cpu"])
+    if "cpu_request" not in options:
+        raise GeneratorError("k8s options hpa_* need cpu_request: CPU "
+                             "utilization is undefined without a CPU request")
+    if "replicas" in options:
+        raise GeneratorError("k8s option replicas cannot be combined with "
+                             "hpa_min/hpa_max/hpa_cpu: the HPA owns the "
+                             "replica count")
+    return low, high, cpu
+
+
+def parse_flag(options, key):
+    """`true` -> True, `false` or absent -> False, anything else refused
+    (issue #236, D12: a closed literal set)."""
+    value = options.get(key, "false")
+    if value not in ("true", "false"):
+        raise GeneratorError("k8s option %s=%r must be true or false"
+                             % (key, value))
+    return value == "true"
+
+
+def parse_egress_cidrs(options, network_policy):
+    """-> list of normalised CIDR strings (issue #236, D17)."""
+    if "egress_cidrs" not in options:
+        return []
+    if not network_policy:
+        raise GeneratorError("k8s option egress_cidrs needs network_policy=true")
+    cidrs = []
+    for item in options["egress_cidrs"].split(","):
+        try:
+            if not item or item != item.strip() or "/" not in item:
+                raise ValueError(item)
+            network = ipaddress.ip_network(item, strict=True)
+        except ValueError:
+            raise GeneratorError(
+                "k8s option egress_cidrs: %r is not a CIDR (address/prefix, "
+                "no host bits, no spaces)" % item)
+        cidrs.append(str(network))
+    return cidrs
 
 
 def check_object_name(value, origin):
@@ -304,7 +428,7 @@ def generate_compose(document, options):
 
 
 def generate_k8s(document, options):
-    """-> {"k8s.yaml": bytes}: ConfigMap, Deployment, Service."""
+    """-> {"k8s.yaml": bytes}: ConfigMap, Deployment, Service, then the opt-in objects of issue #236 (Ingress, HPA, PDB, NetworkPolicy)."""
     check_options("k8s", options, K8S_OPTIONS)
     if "name" in options:
         name = options["name"]
@@ -317,6 +441,15 @@ def generate_k8s(document, options):
     for key in ("cpu_request", "cpu_limit", "memory"):
         if key in options:
             check_quantity(key, options[key])
+    ingress_host = None
+    segments = []
+    if "ingress_host" in options:
+        ingress_host = check_ingress_host(options["ingress_host"])
+        segments = ingress_segments(document)
+    hpa = parse_hpa(options)
+    pdb = parse_flag(options, "pdb")
+    network_policy = parse_flag(options, "network_policy")
+    egress_cidrs = parse_egress_cidrs(options, network_policy)
 
     mapped, unknown = classify_capabilities(document)
     warn_unknown("k8s", unknown)
@@ -364,11 +497,12 @@ def generate_k8s(document, options):
         "    " + label,
         "spec:",
     ]
-    if "replicas" not in options:
-        lines.append("  # PLACEHOLDER: replica count is not known to the "
-                     "generator; set with --set replicas=N.")
+    if hpa is None:
+        if "replicas" not in options:
+            lines.append("  # PLACEHOLDER: replica count is not known to the "
+                         "generator; set with --set replicas=N.")
+        lines.append("  replicas: %d" % replicas)
     lines += [
-        "  replicas: %d" % replicas,
         "  selector:",
         "    matchLabels:",
         "      " + label,
@@ -452,4 +586,118 @@ def generate_k8s(document, options):
         "      port: %d" % CONTAINER_PORT,
         '      targetPort: "http"',
     ]
+    if ingress_host is not None:
+        lines += _ingress_lines(name, label, ingress_host, segments)
+    if hpa is not None:
+        lines += _hpa_lines(name, label, hpa)
+    if pdb:
+        lines += _pdb_lines(name, label)
+    if network_policy:
+        lines += _app_netpol_lines(name, label, egress_cidrs)
     return _finish("k8s.yaml", lines)
+
+
+def _ingress_lines(name, label, host, segments):
+    q = yaml_quote
+    lines = [
+        "---",
+        "apiVersion: networking.k8s.io/v1",
+        "kind: Ingress",
+        "metadata:",
+        "  name: " + q(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  rules:",
+        "    - host: " + q(host),
+        "      http:",
+        "        paths:",
+    ]
+    for segment in segments:
+        lines += [
+            "          - path: " + q("/" + segment),
+            '            pathType: "Prefix"',
+            "            backend:",
+            "              service:",
+            "                name: " + q(name),
+            "                port:",
+            '                  name: "http"',
+        ]
+    return lines
+
+
+def _hpa_lines(name, label, hpa):
+    q = yaml_quote
+    low, high, cpu = hpa
+    return [
+        "---",
+        "apiVersion: autoscaling/v2",
+        "kind: HorizontalPodAutoscaler",
+        "metadata:",
+        "  name: " + q(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  scaleTargetRef:",
+        '    apiVersion: "apps/v1"',
+        '    kind: "Deployment"',
+        "    name: " + q(name),
+        "  minReplicas: %d" % low,
+        "  maxReplicas: %d" % high,
+        "  metrics:",
+        '    - type: "Resource"',
+        "      resource:",
+        '        name: "cpu"',
+        "        target:",
+        '          type: "Utilization"',
+        "          averageUtilization: %d" % cpu,
+    ]
+
+
+def _pdb_lines(name, label):
+    return [
+        "---",
+        _PDB_COMMENT,
+        "apiVersion: policy/v1",
+        "kind: PodDisruptionBudget",
+        "metadata:",
+        "  name: " + yaml_quote(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  minAvailable: 1",
+        "  selector:",
+        "    matchLabels:",
+        "      " + label,
+    ]
+
+
+def _app_netpol_lines(name, label, cidrs):
+    lines = ["---"] + _NETPOL_COMMENTS + [
+        "apiVersion: networking.k8s.io/v1",
+        "kind: NetworkPolicy",
+        "metadata:",
+        "  name: " + yaml_quote(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  podSelector:",
+        "    matchLabels:",
+        "      " + label,
+        "  policyTypes:",
+        '    - "Ingress"',
+        '    - "Egress"',
+        "  ingress:",
+        "    - ports:",
+        '        - protocol: "TCP"',
+        "          port: %d" % CONTAINER_PORT,
+        "  egress:",
+    ] + _DNS_EGRESS_RULE
+    if cidrs:
+        lines.append("    - to:")
+        for cidr in cidrs:
+            lines += [
+                "        - ipBlock:",
+                "            cidr: " + yaml_quote(cidr),
+            ]
+    return lines

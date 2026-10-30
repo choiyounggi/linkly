@@ -49,7 +49,8 @@ from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
 from .wsgi import (ExporterError, open_exporter, open_log_format,
-                   resolve_schedule_triggers, _schedule_events,
+                   resolve_schedule_triggers, build_schedule_routes,
+                   _schedule_events,
                    _validate_rate_limit, _merge_endpoint_args,
                    _build_rotating_token_provider, _read_secret_file,
                    _resolve_backend, _resolve_jwt_secret_source)
@@ -1706,10 +1707,23 @@ def cmd_token(args):
     this prints and the check `lnpl serve` runs read the same function and
     cannot drift. A path the server does not serve is rejected here with the
     served set listed — a token for a path that does not exist would fail at
-    request time with nothing to point at.
+    request time with nothing to point at. A schedule-trigger path
+    (/-/schedules/<event-slug>, issue #236) is served too; its audience is "-"
+    like every /-/ path.
     """
     doc, _, _, _ = _compile(args.source)
     routes = build_routes(doc)
+    if args.path.startswith("/-/schedules/"):
+        # issue #236: `lnpl serve` merges the schedule-trigger routes after
+        # the OpenAPI contract check (make_wsgi_app); merged here only for
+        # this prefix, so an ambiguous schedule never blocks a workflow token.
+        try:
+            schedule_routes = build_schedule_routes(doc)
+        except ServeError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
+        routes = dict(routes)
+        routes.update(schedule_routes)
     if args.path not in routes:
         print("error: --path %r is not served (valid: %s)"
               % (args.path, ", ".join(sorted(routes))), file=sys.stderr)
@@ -2102,7 +2116,9 @@ def _build_parser(subparsers_out=None):
     gn.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="generator option (repeatable); compose: image, port, "
                          "source, postgres_image, redis_image; k8s: image, name, "
-                         "replicas, cpu_request, cpu_limit, memory (issue #189)")
+                         "replicas, cpu_request, cpu_limit, memory (issue #189); "
+                         "ingress_host, hpa_min, hpa_max, hpa_cpu, pdb, "
+                         "network_policy, egress_cidrs (issue #236)")
     gn.set_defaults(func=cmd_generate)
 
     sv = sub.add_parser("serve",
@@ -2216,7 +2232,9 @@ def _build_parser(subparsers_out=None):
                          "or a single directory (its *.lnpl, filename-sorted — "
                          "RFC-0031, issue #77)")
     tk.add_argument("--path", required=True, metavar="PATH",
-                    help="the served path the token is for, e.g. /shop/checkout")
+                    help="the served path the token is for, e.g. /shop/checkout, "
+                         "or /-/schedules/<event-slug> for a schedule trigger "
+                         "(issue #236)")
     tk.add_argument("--subject", required=True,
                     help="the `sub` claim — who the token speaks for")
     tk.add_argument("--secret-env", required=True, metavar="NAME",
