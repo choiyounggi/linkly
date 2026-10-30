@@ -1646,6 +1646,10 @@ class Interpreter:
             if isinstance(self.repo, FakeRepository):
                 self.repo.seed(repo_rows or {})
         self.cache = cache if cache is not None else FakeCache(self.clock)
+        # issue #241 (t5, D3): (entity, op, key, lookup_ref) per repository
+        # call the current run issued; read by the WSGI audit record.
+        # Cleared, never rebound, by run_workflow.
+        self.repo_ops = []
         # issue #188 / RFC-0062: entities some `cached` read targets, the
         # keys this run cached (discarded on rollback), and the keys this
         # run's writes touched (invalidated only after commit, D7).
@@ -1982,6 +1986,7 @@ class Interpreter:
                 for f in entity_node.get("fields", []) if f.get("fill_source")}
 
     def run_workflow(self, workflow_id, payload=None, run_context=None):
+        self.repo_ops.clear()
         wf = self.nodes.get(workflow_id)
         if wf is None or wf["kind"] != "Workflow":
             raise RunError("no such workflow: %r" % workflow_id)
@@ -2394,9 +2399,10 @@ class Interpreter:
                 # generation" to track, and its own contract tests assert a
                 # stored row's exact content.
                 row[SCHEMA_GEN_KEY] = schema_generation(entity_node)
+            persist_key = binding_keys.get(binding, row_key(entity_id, payload))
+            self.repo_ops.append((entity_id, "persist", persist_key, None))
             try:
-                self.repo.persist(entity_id, binding_keys.get(
-                    binding, row_key(entity_id, payload)), row)
+                self.repo.persist(entity_id, persist_key, row)
             except DriverError as exc:
                 raise RunError(str(exc)) from exc
             finally:
@@ -2438,6 +2444,7 @@ class Interpreter:
             order = ((effect["order"]["field"], effect["order"]["desc"])
                     if effect.get("order") else None)
             limit = effect.get("limit")
+            self.repo_ops.append((effect["entity"], "query", None, None))
             try:
                 if predicate is None and order is None and limit is None:
                     rows = self.repo.query(effect["entity"])
@@ -2495,6 +2502,7 @@ class Interpreter:
                 # fault.
                 key = _resolve_lookup_key(effect["entity"], effect.get("lookup"),
                                           payload, bindings, self.caller)
+            self.repo_ops.append((effect["entity"], effect["operation"], key, effect.get("lookup")))
             cache_hit = None
             if effect.get("cached"):
                 # issue #188 / RFC-0062: read-through. A cache outage counts
@@ -2627,6 +2635,7 @@ class Interpreter:
                               and not isinstance(self.repo, FakeRepository))
                     if stamped:
                         seeded[SCHEMA_GEN_KEY] = schema_generation(entity_node)
+                    self.repo_ops.append((effect["entity"], "persist", created_key, None))
                     try:
                         self.repo.persist(effect["entity"], created_key, seeded)
                     except DriverError as exc:

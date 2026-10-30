@@ -108,7 +108,8 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
           token_provider=None, network=None, cache=None, clock=None,
           log_format="text", exporter=None, trust_incoming_trace=False,
           jwt_secret_env=None, metrics=False, idempotency_ttl_ms=None,
-          capture_on_failure=False, rate_limit=None, grace_period_s=30.0):
+          capture_on_failure=False, rate_limit=None, grace_period_s=30.0,
+          audit_sink=None):
     """A configured, not-yet-started server bound to `host:port`.
 
     Port 0 binds an ephemeral port (tests); the caller owns the lifecycle —
@@ -138,6 +139,8 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
     rate == burst capacity, tokens/second. `grace_period_s` (issue #148, D2)
     bounds how long a SIGTERM's drain waits for in-flight requests before
     stopping the server anyway — default 30s, unused unless SIGTERM arrives.
+    `audit_sink` (issue #241) receives one audit record per write and per
+    401/403 response; omitted, no record is written.
     """
     kwargs = {}
     if idempotency_ttl_ms is not None:
@@ -150,6 +153,7 @@ def serve(document, host="127.0.0.1", port=8080, repository_factory=None,
                         jwt_secret_env=jwt_secret_env, metrics=metrics,
                         capture_on_failure=capture_on_failure,
                         rate_limit=rate_limit,
+                        audit_sink=audit_sink,
                         **kwargs)
     server = _Server((host, port), _WSGIRequestHandler)
     server.set_app(app)

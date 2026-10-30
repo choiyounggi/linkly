@@ -48,7 +48,7 @@ from .generators import (GeneratorError, parse_generator_options,
 from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
-from .wsgi import (ExporterError, open_exporter, open_log_format,
+from .wsgi import (ExporterError, open_audit_sink, open_exporter, open_log_format,
                    resolve_schedule_triggers, _schedule_events,
                    _validate_rate_limit, _merge_endpoint_args,
                    _build_rotating_token_provider, _read_secret_file,
@@ -856,6 +856,9 @@ def cmd_serve(args):
     if grace_period_s < 0:
         print("error: --grace-period must not be negative", file=sys.stderr)
         return 2
+    audit_sink = _open_audit_sink(getattr(args, "audit_sink", None))
+    if audit_sink is _REJECTED:
+        return 2
 
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     idempotency_ttl_s = getattr(args, "idempotency_ttl", None)
@@ -868,7 +871,8 @@ def cmd_serve(args):
                    idempotency_ttl_ms=(None if idempotency_ttl_s is None
                                        else idempotency_ttl_s * 1000),
                    capture_on_failure=getattr(args, "capture_on_failure", False),
-                   rate_limit=rate_limit, grace_period_s=grace_period_s)
+                   rate_limit=rate_limit, grace_period_s=grace_period_s,
+                   audit_sink=audit_sink)
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -1629,6 +1633,16 @@ def _open_trace_exporter(spec):
         return _REJECTED
 
 
+def _open_audit_sink(spec):
+    """`--audit-sink`'s value -> a sink, None for unset, `_REJECTED` on a
+    bad spec or an unopenable file (issue #241)."""
+    try:
+        return open_audit_sink(spec)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
 def _token_provider(secret_env, issuer=None, provider_name=None):
     """`--jwt-secret-env`'s value -> a provider, None when unset, `_REJECTED`
     when the named variable is missing or too short (or the selected
@@ -2172,6 +2186,11 @@ def _build_parser(subparsers_out=None):
                          "`lnpl.exporters` entry-points group; omitted, "
                          "nothing is exported (independent of --log-format). "
                          "Falls back to lnpl.toml's `trace_exporter` (issue #114)")
+    sv.add_argument("--audit-sink", default=None, metavar="SPEC",
+                    help="write one audit record per write and per 401/403 "
+                         "response: `stderr-json` or `file:<path>` "
+                         "(append-only JSON Lines, mode 0600); omitted, no "
+                         "audit records (issue #241)")
     sv.add_argument("--trust-incoming-trace", action="store_true",
                     help="adopt an inbound `traceparent` header's trace-id "
                          "for this request (default: off). Off means a "

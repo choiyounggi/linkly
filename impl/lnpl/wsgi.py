@@ -45,9 +45,9 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
 from .condition import PAYLOAD_NAMESPACE
-from .interp import (CALLER_NAMESPACE, Interpreter, RunError, _resolve_lookup_key,
-                     caller_view, mask_payload, open_clock, refinement_index,
-                     strip_schema_gen)
+from .interp import (CALLER_NAMESPACE, MASK, Interpreter, RunError, _resolve_lookup_key,
+                     caller_view, mask_payload, masked_field_names, open_clock,
+                     refinement_index, strip_schema_gen)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
@@ -495,6 +495,90 @@ def open_exporter(spec):
         "unknown trace exporter %r (built-in: %s; registered entry-points: %s)"
         % (spec, ", ".join(EXPORTERS),
            ", ".join(_registered_exporter_names()) or "none"))
+
+
+class JsonLinesAuditSink:
+    """issue #241 (t5, D11): the built-in audit sink. `path=None` is
+    `stderr-json` (one `sys.stderr.write` per record, `sys.stderr` looked
+    up at write time); a path is `file:<path>`, opened once with
+    O_APPEND and mode 0o600, one `os.write` per record. One lock per sink
+    serializes this sink's own writes only."""
+
+    def __init__(self, path=None):
+        self._lock = threading.Lock()
+        self._path = path
+        self._fd = None
+        if path is not None:
+            self._fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+
+    def export(self, record):
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        with self._lock:
+            if self._path is None:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+                return
+            if self._fd is None:
+                raise OSError("audit sink is closed")
+            data = line.encode("utf-8")
+            if os.write(self._fd, data) != len(data):
+                raise OSError("short write to audit sink file")
+
+    def close(self):
+        with self._lock:
+            if self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
+
+
+def open_audit_sink(spec):
+    """issue #241 (t5, D10): `--audit-sink`/`LNPL_AUDIT_SINK` -> a sink, or
+    `None` when unset. Exactly two forms; no `lnpl.exporters` lookup (that
+    group's `export()` receives a Trace dict — coordinator ruling r1)."""
+    if spec is None:
+        return None
+    if spec == "stderr-json":
+        return JsonLinesAuditSink()
+    if spec.startswith("file:"):
+        path = spec[len("file:"):]
+        if not path:
+            raise ValueError("--audit-sink file: needs a path")
+        try:
+            return JsonLinesAuditSink(path)
+        except OSError as exc:
+            raise ValueError("audit sink file %r cannot be opened for append: %s"
+                             % (path, exc)) from exc
+    raise ValueError("unknown audit sink %r (accepted: stderr-json, file:<path>)" % spec)
+
+
+AUDIT_ENVIRON_KEY = "lnpl.audit"
+AUDIT_DUE_KINDS = ("workflow", "event-consume")
+
+
+class _AuditContext:
+    """issue #241 (t5, D2): per-request audit facts, carried in
+    `environ[AUDIT_ENVIRON_KEY]`; filled by the auth/run paths, read only
+    by `_finalize_response`."""
+    __slots__ = ("actor", "ops", "replay", "correlation_id", "log_correlation_id",
+                 "trace_id", "span_id", "body")
+
+    def __init__(self):
+        self.actor = None
+        self.ops = None
+        self.replay = False
+        self.correlation_id = None
+        self.log_correlation_id = None
+        self.trace_id = None
+        self.span_id = None
+        self.body = None
+
+
+def _audit_timestamp(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % int((t % 1) * 1000)
+
+
+def _audit_str(value):
+    return value if isinstance(value, str) else None
 
 
 class CursorError(Exception):
@@ -1274,7 +1358,7 @@ class LnplWsgiApp:
                  log_format="text", exporter=None, trust_incoming_trace=False,
                  jwt_secret_env=None, metrics_registry=None,
                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
-                 capture_on_failure=False, rate_limit=None):
+                 capture_on_failure=False, rate_limit=None, audit_sink=None):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
@@ -1286,6 +1370,10 @@ class LnplWsgiApp:
         # provider is the opposite — one immutable object, safe to read from
         # every request.
         self.repository_factory = repository_factory
+        self.audit_sink = audit_sink
+        self._audit_masked_names = frozenset().union(*(
+            masked_field_names(_entity_view(document, n))
+            for n in document["nodes"] if n["kind"] == "Entity"))
         self.token_provider = token_provider
         # issue #101: `HttpNetworkDriver` opens/closes its own connection per
         # `call()`, so one instance is safe to share across every request's
@@ -1532,6 +1620,8 @@ class LnplWsgiApp:
         raw_path = path_info + ("?" + query if query else "")
         route = self._route_label(method, path_info, raw_path)
         seen = {}
+        audit = _AuditContext()
+        environ[AUDIT_ENVIRON_KEY] = audit
 
         def recording_start_response(status_line, headers, exc_info=None):
             seen["status"] = status_line.split(" ", 1)[0]
@@ -1544,6 +1634,7 @@ class LnplWsgiApp:
             self._finalize_response(environ, route, seen.get("status", "500"), start_t)
             raise
         if isinstance(body, list):
+            audit.body = body
             self._finalize_response(environ, route, seen.get("status", "500"), start_t)
             return body
         return self._finalize_after_stream(body, environ, route, seen, start_t)
@@ -1575,6 +1666,71 @@ class LnplWsgiApp:
             self.metrics.record_http_request(
                 route, _method_label(environ.get("REQUEST_METHOD", "GET")),
                 status, duration_s)
+        self._emit_audit(environ, route, status, duration_s)
+
+    def _emit_audit(self, environ, route, status, duration_s):
+        """issue #241 (t5, D12): fail-open — nothing here may raise out of
+        `_finalize_response`, including the diagnostic print (with
+        `stderr-json` the sink failure usually IS a broken stderr)."""
+        if self.audit_sink is None:
+            return
+        cid = None
+        try:
+            record = self._audit_record(environ, route, status, duration_s)
+            if record is None:
+                return
+            cid = record["correlation_id"]
+            self.audit_sink.export(record)
+        except Exception as exc:
+            try:
+                print("serve: audit sink failed (correlation_id=%s): %s" % (cid or "-", exc),
+                      file=sys.stderr)
+            except Exception:
+                pass
+
+    def _audit_record(self, environ, route, status, duration_s):
+        """issue #241 (t5, D1/D4-D9): the record, or None when not due."""
+        method = environ.get("REQUEST_METHOD", "GET")
+        route_def = self.routes.get(route)
+        kind = route_def.get("kind") if route_def is not None else None
+        if not ((method == "POST" and kind in AUDIT_DUE_KINDS) or status in ("401", "403")):
+            return None
+        audit = environ.get(AUDIT_ENVIRON_KEY) or _AuditContext()
+        status_code = int(status)
+        body = {}
+        if status_code != 200 and audit.body is not None:
+            try:
+                parsed = json.loads(b"".join(audit.body))
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                body = parsed
+        resource = []
+        masked_keys = set()
+        for entity, op, key, lookup in (audit.ops or ()):
+            source = "id" if lookup is None else lookup.rsplit(".", 1)[-1]
+            if key is not None and (source in self._audit_masked_names or key in masked_keys):
+                masked_keys.add(key)
+                key = "%s#%s" % (entity, MASK)
+            resource.append({"entity": entity, "op": op, "key": key})
+        return {
+            "record_type": "lnpl.audit",
+            "schema_version": 1,
+            "timestamp": _audit_timestamp(time.time()),
+            "correlation_id": (audit.correlation_id or _audit_str(body.get("correlation_id"))
+                               or audit.log_correlation_id),
+            "trace_id": audit.trace_id,
+            "span_id": audit.span_id,
+            "actor": audit.actor,
+            "action": {"method": method, "route": route, "kind": kind,
+                       "workflow": route_def.get("workflow") if kind in AUDIT_DUE_KINDS else None},
+            "resource": resource,
+            "outcome": {"status": status_code,
+                        "code": "ok" if status_code == 200 else _audit_str(body.get("code")),
+                        "failed_step": _audit_str(body.get("failed_step")),
+                        "replay": audit.replay},
+            "duration_ms": round(duration_s * 1000, 3),
+        }
 
     def _finalize_after_stream(self, body, environ, route, seen, start_t):
         return _FinalizeOnClose(body, lambda: self._finalize_response(
@@ -1659,6 +1815,7 @@ class LnplWsgiApp:
         trace_id, span_id = trace_ctx[:2]
         log_sink = {"trace_id": trace_id, "span_id": span_id}
         captured = {}
+        audit = environ.get(AUDIT_ENVIRON_KEY)
 
         def capture_start_response(status_line, headers, exc_info=None):
             captured["status"] = int(status_line.split(" ", 1)[0])
@@ -1689,18 +1846,18 @@ class LnplWsgiApp:
                 # The SSE generator: log once the stream actually ends.
                 logged = True
                 return self._log_sse_then(body, method, path_info, correlation_id,
-                                          start_t, captured, log_sink)
+                                          start_t, captured, log_sink, audit=audit)
             self._emit_request_log(method, path_info, correlation_id, start_t,
-                                   captured, log_sink)
+                                   captured, log_sink, audit=audit)
             logged = True
             return body
         finally:
             if not logged:
                 self._emit_request_log(method, path_info, correlation_id,
-                                       start_t, captured, log_sink)
+                                       start_t, captured, log_sink, audit=audit)
 
     def _emit_request_log(self, method, path, correlation_id, start_t,
-                          captured, log_sink):
+                          captured, log_sink, audit=None):
         line = {
             "correlation_id": log_sink.get("correlation_id") or correlation_id,
             "method": method,
@@ -1744,16 +1901,30 @@ class LnplWsgiApp:
         captured_input = log_sink.get("input")
         if captured_input is not None:
             line["input"] = captured_input
+        # issue #241 (t5, D15): RFC-0039 §6 present-only — the verified
+        # caller only, never a null placeholder; `effects` is untouched.
+        actor = audit.actor if audit is not None else None
+        if isinstance(actor, dict):
+            if actor.get("subject") is not None:
+                line["subject"] = actor["subject"]
+            if actor.get("role") is not None:
+                line["role"] = actor["role"]
+        if audit is not None:
+            audit.log_correlation_id = line["correlation_id"]
+            if audit.trace_id is None:
+                audit.trace_id = line.get("trace_id")
+            if audit.span_id is None:
+                audit.span_id = line.get("span_id")
         print(json.dumps(line, ensure_ascii=False), file=sys.stderr)
 
     def _log_sse_then(self, generator, method, path, correlation_id, start_t,
-                      captured, log_sink):
+                      captured, log_sink, audit=None):
         try:
             for chunk in generator:
                 yield chunk
         finally:
             self._emit_request_log(method, path, correlation_id, start_t,
-                                   captured, log_sink)
+                                   captured, log_sink, audit=audit)
 
     def _reject_non_post(self, start_response, path_info, raw_path):
         if raw_path in self.routes:                                # M2
@@ -1793,6 +1964,9 @@ class LnplWsgiApp:
                 start_response, header, path_info)
             if response is not None:
                 return None, response
+            audit = environ.get(AUDIT_ENVIRON_KEY)
+            if audit is not None:
+                audit.actor = caller_view(claims)
             response = self._role_accepted(start_response, route, claims)   # M3b
             if response is not None:
                 return None, response
@@ -1888,7 +2062,8 @@ class LnplWsgiApp:
             return body_error
         if kind == "event-consume":
             return self._respond_event_consume(start_response, route, payload,
-                                               claims=claims)
+                                               claims=claims,
+                                               audit=environ.get(AUDIT_ENVIRON_KEY))
         # issue #113, D8/D9: absent by default -- a request with no header
         # takes the exact pre-#113 path through `_run`/`_respond` (D9
         # regression: byte-identical when no key is sent).
@@ -2397,6 +2572,9 @@ class LnplWsgiApp:
     def _respond(self, environ, start_response, doc, workflow_id, payload,
                 correlation_id, repository, claims=None, log_sink=None,
                 trace_ctx=None, idempotency_key=None, if_match=None):
+        audit = environ.get(AUDIT_ENVIRON_KEY)
+        if audit is not None:
+            audit.correlation_id = correlation_id
         # issue #228: the driver declares the capability; `_idempotency_mode`
         # (ruling t2 D1 r2) keeps the pre-#228 opt-in for non-driver objects.
         mode = (_idempotency_mode(repository)
@@ -2426,6 +2604,8 @@ class LnplWsgiApp:
                            "a request with this Idempotency-Key is already running",
                            correlation_id=correlation_id))
             if claim_status == "done":                              # D7: replay
+                if audit is not None:
+                    audit.replay = True
                 http_status, body = stored
                 content_type = ("application/json" if http_status == 200
                                 else "application/problem+json")
@@ -2452,6 +2632,8 @@ class LnplWsgiApp:
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
                              network=self.network, cache=self.cache, claims=claims)
+        if audit is not None:
+            audit.ops = interp.repo_ops
         if self.metrics is not None:
             interp.cache = _CountingCache(interp.cache, self.metrics)
         # issue #111, D6: computed once, reused for the canonical line's
@@ -2481,6 +2663,9 @@ class LnplWsgiApp:
         interp.trace.trace_link = trace_link
         interp.trace.tracestate = tracestate
         interp.trace.flags = flags
+        if audit is not None:
+            audit.trace_id = trace_id
+            audit.span_id = span_id
         try:
             result = interp.run_workflow(workflow_id, payload)
         except Exception:
@@ -2552,7 +2737,8 @@ class LnplWsgiApp:
             repository.idempotency_finish(workflow_id, idempotency_key, status, body)
         return _json_response(start_response, status, body, content_type=content_type)
 
-    def _respond_event_consume(self, start_response, route, payload, claims=None):
+    def _respond_event_consume(self, start_response, route, payload, claims=None,
+                               audit=None):
         """`POST /-/events/<slug>` — CloudEvents envelope in, `Event.consume`'s
         target workflow run (issue #118). D5 (envelope shape) gates D6
         (idempotency, reusing #113's claim/replay AS-IS) which gates D7 (the
@@ -2578,6 +2764,8 @@ class LnplWsgiApp:
         event_key = payload["id"]
         data = payload.get("data") or {}
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        if audit is not None:
+            audit.correlation_id = correlation_id
 
         factory = self.repository_factory
         repository = factory() if factory is not None else None
@@ -2610,6 +2798,8 @@ class LnplWsgiApp:
                                "a request with this CloudEvents id is "
                                "already running", correlation_id=correlation_id))
                 if claim_status == "done":                          # D6 replay
+                    if audit is not None:
+                        audit.replay = True
                     http_status, body = stored
                     content_type = ("application/json" if http_status == 200
                                     else "application/problem+json")
@@ -2620,6 +2810,8 @@ class LnplWsgiApp:
                                  repo_rows=default_rows(self.document, workflow_id, data),
                                  correlation_id=correlation_id, repository=repository,
                                  network=self.network, cache=self.cache, claims=claims)
+            if audit is not None:
+                audit.ops = interp.repo_ops
             if self.metrics is not None:
                 interp.cache = _CountingCache(interp.cache, self.metrics)
             try:
@@ -2708,7 +2900,7 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                   exporter=None, trust_incoming_trace=False,
                   jwt_secret_env=None, metrics=False,
                   idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
-                  capture_on_failure=False, rate_limit=None):
+                  capture_on_failure=False, rate_limit=None, audit_sink=None):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -2761,7 +2953,7 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                        metrics_registry=MetricsRegistry() if metrics else None,
                        idempotency_ttl_ms=idempotency_ttl_ms,
                        capture_on_failure=capture_on_failure,
-                       rate_limit=rate_limit)
+                       rate_limit=rate_limit, audit_sink=audit_sink)
 
 
 # --------------------------------------------------------------------------
@@ -3127,7 +3319,7 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
               idempotency_ttl_s=None, metrics=None, capture_on_failure=None,
               trust_incoming_trace=None, rate_limit=None, cache=None,
               network=None, token_provider=None, jwt_issuer=None,
-              config=None, profile=None, jwt_secret_file=None):
+              config=None, profile=None, jwt_secret_file=None, audit_sink=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
 
@@ -3141,7 +3333,7 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     LNPL_CLOCK -> LNPL_CACHE (needs the clock; closed on ANY later
     failure, see below) -> LNPL_NETWORK (needs the merged endpoints) ->
     LNPL_LOG_FORMAT -> LNPL_TRACE_EXPORTER -> LNPL_IDEMPOTENCY_TTL_S -> the
-    3 booleans + LNPL_RATE_LIMIT (t187a, unchanged) -> make_wsgi_app.
+    3 booleans + LNPL_RATE_LIMIT (t187a, unchanged) -> LNPL_AUDIT_SINK -> make_wsgi_app.
 
     Every argument omitted falls back to its environment variable:
 
@@ -3164,6 +3356,7 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
       trace_exporter LNPL_TRACE_EXPORTER  built-in `stderr-json`, an
                                            `lnpl.exporters` entry-point name,
                                            or unset (default: no exporting)
+      audit_sink     LNPL_AUDIT_SINK      `stderr-json` or `file:<path>` (issue #241); unset -> no audit records
       idempotency_ttl_s LNPL_IDEMPOTENCY_TTL_S  seconds an `Idempotency-Key`
                                            claim is honored before a repeat
                                            becomes a fresh miss (issue #113,
@@ -3410,6 +3603,13 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
                 except ValueError as exc:
                     raise WsgiConfigError("LNPL_RATE_LIMIT is not a number") from exc
         _validate_rate_limit(rate_limit, "LNPL_RATE_LIMIT")
+        # issue #241 (t5, D14): opened last, so no build_app check after it
+        # can fail with the file open.
+        if audit_sink is None:
+            try:
+                audit_sink = open_audit_sink(_env_or_none("LNPL_AUDIT_SINK"))
+            except ValueError as exc:
+                raise WsgiConfigError(str(exc)) from exc
     except BaseException:
         if cache is not None:
             cache.close()
@@ -3423,4 +3623,5 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
                          metrics=metrics, capture_on_failure=capture_on_failure,
                          trust_incoming_trace=trust_incoming_trace,
                          rate_limit=rate_limit,
-                         jwt_secret_env=jwt_secret_env)
+                         jwt_secret_env=jwt_secret_env,
+                         audit_sink=audit_sink)

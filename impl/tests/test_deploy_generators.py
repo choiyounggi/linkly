@@ -273,7 +273,7 @@ class ComposeGeneratorTest(unittest.TestCase):
             "LNPL_IDEMPOTENCY_TTL_S", "LNPL_METRICS", "LNPL_CAPTURE_ON_FAILURE",
             "LNPL_TRUST_INCOMING_TRACE", "LNPL_RATE_LIMIT", "LNPL_CONFIG",
             "LNPL_PROFILE", "LNPL_CACHE", "LNPL_NETWORK", "LNPL_TOKEN_PROVIDER",
-            "LNPL_JWT_ISSUER")
+            "LNPL_JWT_ISSUER", "LNPL_AUDIT_SINK")
         with open(os.path.join(REPO, "docs", "serving.md"), encoding="utf-8") as fh:
             rows = [m.group(1) for m in
                     (re.match(r"^\| `(LNPL_[A-Z_<>]+)` \|", line) for line in fh)

@@ -28,6 +28,15 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   error mid-copy. `docs/backends.md` §14 documents the restore check
   (`lnpl db check` plus a row count), and `examples/deploy/` gains a
   Litestream sidecar compose file and a `pg_dump` CronJob (issue #238).
+- `lnpl serve --audit-sink stderr-json|file:<path>` / `build_app()` with
+  `LNPL_AUDIT_SINK`: one audit record per write (every POST to a workflow or
+  event-consume route) and per 401/403 response — actor `sub`/`role`, action,
+  resource entity/op/key (masked like every other channel), outcome — in a
+  channel separate from the access log; schema fixed in
+  `schemas/audit-record.schema.json`. A failing sink never changes the
+  response; a bad spec refuses startup. The JSON canonical line also gains
+  `subject`/`role` when the token was verified. Hash chaining is deferred
+  (docs/serving.md). (#241)
 
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a

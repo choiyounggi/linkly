@@ -13,12 +13,14 @@ import io
 import json
 import unittest
 
-from lnpl.drivers import DriverError
+from lnpl.drivers import DriverError, HmacTokenProvider
 from lnpl.interp import MASK, FakeRepository
 from lnpl.lower import lower
 from lnpl.parser import parse
 from lnpl.wsgi import make_wsgi_app
 
+from tests.test_role_gate import (ROLE_GATED_SRC, NO_ROLE_SRC, SECRET, AUDIENCE, ORDER_ID,
+                                  PATH as ROLE_PATH)
 from tests.test_wsgi_contract import call_wsgi
 
 SOURCE = """capability postgres
@@ -206,6 +208,61 @@ class TestTextFormatByteInvariance(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertEqual("", buf.getvalue())
+
+
+def _json_line(text):
+    """The one stderr line that parses as a JSON object carrying `method`."""
+    found = []
+    for raw in text.splitlines():
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and "method" in parsed:
+            found.append(parsed)
+    assert len(found) == 1, found
+    return found[0]
+
+
+class CanonicalLineSubjectRoleTest(unittest.TestCase):
+    """issue #241 (t5, D15): `subject`/`role` from the verified token,
+    present-only; `effects` keeps its kind-count shape."""
+
+    def _line(self, src, headers=None):
+        provider = HmacTokenProvider(SECRET)
+        app = make_wsgi_app(lower(parse(src), "o").to_document(), token_provider=provider,
+                            log_format="json")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status, _h, _b = call_wsgi(app, "POST", ROLE_PATH,
+                                       body=json.dumps({"id": ORDER_ID}).encode("utf-8"),
+                                       headers=headers)
+        return status, _json_line(err.getvalue())
+
+    def _auth(self, subject, role=None):
+        token = HmacTokenProvider(SECRET).issue(subject, AUDIENCE, role=role)
+        return {"Authorization": "Bearer " + token}
+
+    def test_normal_verified_token_puts_subject_and_role_on_the_line(self):
+        _status, line = self._line(ROLE_GATED_SRC, self._auth("alice", "admin"))
+        self.assertEqual(line["subject"], "alice")
+        self.assertEqual(line["role"], "admin")
+        if "effects" in line:
+            self.assertIsInstance(line["effects"], dict)
+
+    def test_boundary_token_without_role_puts_subject_only(self):
+        _status, line = self._line(NO_ROLE_SRC, self._auth("bob"))
+        self.assertEqual(line["subject"], "bob")
+        self.assertNotIn("role", line)
+
+    def test_error_rejected_requests_carry_only_what_was_verified(self):
+        status, line = self._line(ROLE_GATED_SRC, self._auth("alice", "clerk"))
+        self.assertEqual(status, 403)
+        self.assertEqual(line["status"], 403)
+        self.assertEqual(line["subject"], "alice")
+        status, line = self._line(ROLE_GATED_SRC)
+        self.assertEqual(status, 401)
+        self.assertNotIn("subject", line)
+        self.assertNotIn("role", line)
 
 
 if __name__ == "__main__":
