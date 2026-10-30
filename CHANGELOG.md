@@ -10,6 +10,14 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
 ## [Unreleased]
 
 ### Added
+- `lnpl generate k8s` emits one hardened CronJob per `event ... on schedule`
+  declaration that POSTs to `/-/schedules/<event-slug>` with a 5-minute token
+  minted per run from `LNPL_JWT_SECRET` (Secret reference only), plus opt-in
+  Ingress (`ingress_host`), HorizontalPodAutoscaler (`hpa_min`, `hpa_max`,
+  `hpa_cpu`), PodDisruptionBudget (`pdb`) and default-deny NetworkPolicy
+  (`network_policy`, `egress_cidrs`); every generated document is checked by
+  a pinned kubeconform in the unit tests. `lnpl token --path` accepts
+  `/-/schedules/<event-slug>` (issue #236).
 - `lnpl serve --metrics` / `build_app()`: `/-/metrics` now counts every HTTP
   response — `lnpl_http_requests_total{route,method,status}` and
   `lnpl_http_request_duration_seconds{route}`, including 401/403/404/409/412/429

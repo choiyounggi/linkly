@@ -117,7 +117,7 @@ OpenAPI `x-lnpl-schedules` 메타데이터(기존 생성물)를 소비해 `lnpl 
 | 플래그 | 뜻 |
 |--------|-----|
 | `--out` | 생성된 파일을 쓸 디렉터리(필수) |
-| `--set` | 생성기 옵션 `KEY=VALUE`(반복 가능). compose: image, port, source, postgres_image, redis_image / k8s: image, name, replicas, cpu_request, cpu_limit, memory — `docs/backends.md` §12 |
+| `--set` | 생성기 옵션 `KEY=VALUE`(반복 가능). compose: image, port, source, postgres_image, redis_image / k8s: image, name, replicas, cpu_request, cpu_limit, memory, ingress_host, hpa_min, hpa_max, hpa_cpu, pdb, network_policy, egress_cidrs — `docs/backends.md` §12 |
 
 ### `serve` — OpenAPI 경로에 워크플로를 HTTP로 바인딩 (모드 A, 이슈 #26)
 
@@ -190,6 +190,8 @@ lnpl config check <source...> [--profile NAME] [--config PATH]
 lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
            --secret-env LNPL_JWT_SECRET [--ttl 15m] [--role <r>]
 ```
+
+스케줄 트리거용 토큰은 `--path /-/schedules/<event-slug>`로 발급한다(aud `-`, 이슈 #236).
 
 | 플래그 | 뜻 |
 |--------|-----|

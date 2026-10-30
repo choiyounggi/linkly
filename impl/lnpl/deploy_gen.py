@@ -14,8 +14,9 @@ import sys
 
 from .drivers import _http_capabilities
 from .generators import GeneratorError
-from .openapi import OpenApiError
-from .wsgi import ServeError, _network_targets, build_routes
+from .openapi import OpenApiError, _schedules, _slug
+from .wsgi import (ServeError, _network_targets, build_routes,
+                   build_schedule_routes)
 
 # The `lnpl serve --grace-period` default (30.0, cli.py) and gunicorn's
 # `graceful_timeout` default 30 s (docs/serving.md "SIGTERM 그레이스풀 드레인").
@@ -45,6 +46,68 @@ _IMAGE_COMMENT = ("# PLACEHOLDER: set the image with "
                   "--set image=ghcr.io/<owner>/linkly:<X.Y> "
                   "(no latest tag is published).")
 _ENDPOINT_COMMENT = "# PLACEHOLDER: base URL of this network target."
+# Run by the schedule-trigger CronJob as python -B -c (issue #236, D4/D6/D8): mints a per-run token with lnpl token, POSTs {} to the trigger route, and never prints the token or the key.
+TRIGGER_SCRIPT = """import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+path = os.environ["LNPL_TRIGGER_PATH"]
+url = os.environ["LNPL_TRIGGER_BASE"] + path
+headers = {"Content-Type": "application/json"}
+if os.environ.get("LNPL_TRIGGER_AUTH") == "jwt":
+    cmd = [sys.executable, "-B", "-m", "lnpl", "token", os.environ["LNPL_SOURCE"],
+           "--path", path, "--subject", os.environ["LNPL_TRIGGER_SUBJECT"],
+           "--secret-env", "LNPL_JWT_SECRET", "--ttl", "5m"]
+    role = os.environ.get("LNPL_TRIGGER_ROLE", "")
+    if role:
+        cmd += ["--role", role]
+    issuer = os.environ.get("LNPL_JWT_ISSUER", "")
+    if issuer:
+        cmd += ["--jwt-issuer", issuer]
+    try:
+        minted = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        print("trigger failed: %s lnpl token timed out" % path, file=sys.stderr)
+        sys.exit(2)
+    sys.stderr.write(minted.stderr)
+    if minted.returncode != 0:
+        sys.exit(2)
+    token = minted.stdout.strip()
+    if not token or any(c.isspace() or not c.isprintable() for c in token):
+        print("trigger failed: lnpl token printed no usable token", file=sys.stderr)
+        sys.exit(2)
+    headers["Authorization"] = "Bearer " + token
+request = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+try:
+    with urllib.request.urlopen(request, timeout=300) as response:
+        status = response.status
+except urllib.error.HTTPError as exc:
+    print("trigger failed: %s HTTP %d" % (path, exc.code), file=sys.stderr)
+    sys.exit(1)
+except urllib.error.URLError as exc:
+    print("trigger failed: %s unreachable: %s" % (path, exc.reason), file=sys.stderr)
+    sys.exit(1)
+except Exception as exc:
+    print("trigger failed: %s %s" % (path, type(exc).__name__), file=sys.stderr)
+    sys.exit(1)
+print("trigger %s: HTTP %d" % (path, status))
+"""
+# Copy of cli._CRONTAB_EXPR (issue #81, D3): the library must not import the
+# CLI module; a conformance test pins the two tables together (issue #236, D2).
+CRONTAB_EXPR = {
+    "daily": lambda hh, mm: "%d %d * * *" % (mm, hh),
+}
+# docker/Dockerfile: useradd --uid 1000 linkly; USER linkly is a name, and the
+# kubelet refuses runAsNonRoot without a numeric uid (issue #236, D9).
+TRIGGER_UID = 1000
+_CRON_NAME_MAX = 52
+_TRIGGER_RESOURCES_COMMENT = ("# PLACEHOLDER: no resources set for the trigger "
+                              "(BestEffort QoS); add requests with a patch if a "
+                              "ResourceQuota requires them.")
+_TRIGGER_KEY_COMMENT = ("# Schedule trigger: this pod reads LNPL_JWT_SECRET and can mint any "
+                        "token the server accepts; docs/backends.md section 12.")
 _PDB_COMMENT = ("# With 1 replica, minAvailable: 1 allows zero voluntary evictions "
                 "and a node drain never completes; run 2 or more replicas "
                 "(--set replicas=N or hpa_min=N).")
@@ -231,6 +294,42 @@ def parse_egress_cidrs(options, network_policy):
                 "no host bits, no spaces)" % item)
         cidrs.append(str(network))
     return cidrs
+
+
+def schedule_triggers(document, name):
+    """-> one dict per `on schedule` event, in node order (issue #236, D1,
+    D2, D10): the CronJob name, event name, trigger path, crontab
+    expression, time zone, and the route's `auth` and `role`."""
+    entries = _schedules(document)
+    if not entries:
+        return []
+    try:
+        routes = build_schedule_routes(document)
+    except ServeError as exc:
+        raise GeneratorError("k8s: %s" % exc)
+    nodes = {n["id"]: n for n in document["nodes"]}
+    triggers = []
+    seen = set()
+    for entry in entries:
+        event = nodes[entry["event"]]
+        path = "/-/schedules/" + _slug(event["name"])
+        cron = name + "-" + _slug(event["name"])
+        if not (_NAME_RE.fullmatch(cron) and len(cron) <= _CRON_NAME_MAX):
+            raise GeneratorError(
+                "k8s: schedule event %r gives the CronJob name %r, which must "
+                "be a DNS-1035 label of at most 52 characters (the CronJob "
+                "controller appends 11); rename the event or set --set "
+                "name=<shorter>" % (event["name"], cron))
+        if cron in seen:
+            raise GeneratorError("k8s: two schedule events give the same "
+                                 "CronJob name %r" % cron)
+        seen.add(cron)
+        hh, mm = (int(part) for part in entry["at"].split(":"))
+        triggers.append({"cron": cron, "event": event["name"], "path": path,
+                         "schedule": CRONTAB_EXPR[entry["every"]](hh, mm),
+                         "zone": entry["zone"], "auth": routes[path]["auth"],
+                         "role": routes[path]["role"]})
+    return triggers
 
 
 def check_object_name(value, origin):
@@ -452,6 +551,14 @@ def generate_k8s(document, options):
     egress_cidrs = parse_egress_cidrs(options, network_policy)
 
     mapped, unknown = classify_capabilities(document)
+    triggers = schedule_triggers(document, name)
+    for trigger in triggers:
+        if trigger["auth"] and "jwt" not in mapped:
+            raise GeneratorError(
+                "k8s: schedule event %r: its service declares security jwt but "
+                "the document has no capability jwt, so the generated "
+                "Deployment holds no LNPL_JWT_SECRET for the trigger to sign "
+                "with; add capability jwt" % trigger["event"])
     warn_unknown("k8s", unknown)
     endpoints = endpoint_keys(document)
     secret_vars = []
@@ -586,6 +693,8 @@ def generate_k8s(document, options):
         "      port: %d" % CONTAINER_PORT,
         '      targetPort: "http"',
     ]
+    for trigger in triggers:
+        lines += _cronjob_lines(name, trigger, image, "image" in options)
     if ingress_host is not None:
         lines += _ingress_lines(name, label, ingress_host, segments)
     if hpa is not None:
@@ -594,7 +703,141 @@ def generate_k8s(document, options):
         lines += _pdb_lines(name, label)
     if network_policy:
         lines += _app_netpol_lines(name, label, egress_cidrs)
+        for trigger in triggers:
+            lines += _trigger_netpol_lines(name, trigger)
     return _finish("k8s.yaml", lines)
+
+
+def _cronjob_lines(name, trigger, image, image_given):
+    q = yaml_quote
+    cron = trigger["cron"]
+    tl = ['"app.kubernetes.io/name": ' + q(cron),
+          '"app.kubernetes.io/part-of": ' + q(name)]
+    lines = ["---"]
+    if trigger["auth"]:
+        lines.append(_TRIGGER_KEY_COMMENT)
+    lines += [
+        "apiVersion: batch/v1",
+        "kind: CronJob",
+        "metadata:",
+        "  name: " + q(cron),
+        "  labels:",
+        "    " + tl[0],
+        "    " + tl[1],
+        "spec:",
+        "  schedule: " + q(trigger["schedule"]),
+        "  timeZone: " + q(trigger["zone"]),
+        '  concurrencyPolicy: "Forbid"',
+        "  startingDeadlineSeconds: 300",
+        "  jobTemplate:",
+        "    spec:",
+        "      backoffLimit: 0",
+        "      activeDeadlineSeconds: 600",
+        "      template:",
+        "        metadata:",
+        "          labels:",
+        "            " + tl[0],
+        "            " + tl[1],
+        "        spec:",
+        '          restartPolicy: "Never"',
+        "          automountServiceAccountToken: false",
+        "          securityContext:",
+        "            runAsNonRoot: true",
+        "            runAsUser: %d" % TRIGGER_UID,
+        "            seccompProfile:",
+        '              type: "RuntimeDefault"',
+        "          containers:",
+        '            - name: "trigger"',
+    ]
+    if not image_given:
+        lines.append("              " + _IMAGE_COMMENT)
+    lines += [
+        "              image: " + q(image),
+        "              command:",
+        '                - "python"',
+        '                - "-B"',
+        '                - "-c"',
+        "                - " + q(TRIGGER_SCRIPT),
+        "              envFrom:",
+        "                - configMapRef:",
+        "                    name: " + q(name + "-config"),
+        "              env:",
+    ]
+    env_lines = [
+        '                - name: "LNPL_TRIGGER_BASE"',
+        "                  value: " + q("http://%s:%d" % (name, CONTAINER_PORT)),
+        '                - name: "LNPL_TRIGGER_PATH"',
+        "                  value: " + q(trigger["path"]),
+    ]
+    if trigger["auth"]:
+        env_lines += [
+            '                - name: "LNPL_TRIGGER_AUTH"',
+            '                  value: "jwt"',
+            '                - name: "LNPL_TRIGGER_SUBJECT"',
+            "                  value: " + q(cron),
+        ]
+        if trigger["role"] is not None:
+            env_lines += [
+                '                - name: "LNPL_TRIGGER_ROLE"',
+                "                  value: " + q(trigger["role"]),
+            ]
+        env_lines += [
+            '                - name: "LNPL_JWT_SECRET"',
+            "                  valueFrom:",
+            "                    secretKeyRef:",
+            "                      name: " + q(name + "-secrets"),
+            '                      key: "LNPL_JWT_SECRET"',
+        ]
+    lines += env_lines
+    lines += [
+        "              securityContext:",
+        "                allowPrivilegeEscalation: false",
+        "                readOnlyRootFilesystem: true",
+        "                capabilities:",
+        "                  drop:",
+        '                    - "ALL"',
+        "              " + _TRIGGER_RESOURCES_COMMENT,
+        "              volumeMounts:",
+        '                - name: "source"',
+        '                  mountPath: "/srv/lnpl"',
+        "                  readOnly: true",
+        "          volumes:",
+        '            - name: "source"',
+        "              configMap:",
+        "                name: " + q(name + "-source"),
+    ]
+    return lines
+
+
+def _trigger_netpol_lines(name, trigger):
+    q = yaml_quote
+    cron = trigger["cron"]
+    return [
+        "---",
+        "apiVersion: networking.k8s.io/v1",
+        "kind: NetworkPolicy",
+        "metadata:",
+        "  name: " + q(cron),
+        "  labels:",
+        '    "app.kubernetes.io/name": ' + q(cron),
+        '    "app.kubernetes.io/part-of": ' + q(name),
+        "spec:",
+        "  podSelector:",
+        "    matchLabels:",
+        '      "app.kubernetes.io/name": ' + q(cron),
+        "  policyTypes:",
+        '    - "Ingress"',
+        '    - "Egress"',
+        "  egress:",
+    ] + _DNS_EGRESS_RULE + [
+        "    - to:",
+        "        - podSelector:",
+        "            matchLabels:",
+        '              "app.kubernetes.io/name": ' + q(name),
+        "      ports:",
+        '        - protocol: "TCP"',
+        "          port: %d" % CONTAINER_PORT,
+    ]
 
 
 def _ingress_lines(name, label, host, segments):
