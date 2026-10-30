@@ -16,6 +16,7 @@ BRANCH_PROTECTION_SCRIPT_PATH = os.path.join(
     REPO, "scripts", "setup_branch_protection.sh"
 )
 WORKLOAD_PATH = os.path.join(REPO, "examples", "linkhub.lnpl")
+SERVE_LOCK_PATH = os.path.join(REPO, "requirements-serve.txt")
 
 
 def _read(path):
@@ -92,7 +93,8 @@ class WorkloadPinTest(unittest.TestCase):
         text = _read(LOAD_YML_PATH)
         self.assertIn("LNPL_SOURCE: examples/linkhub.lnpl", text)
         self.assertTrue(os.path.isfile(WORKLOAD_PATH))
-        self.assertIn("gunicorn==26.2.0", text)
+        self.assertIn("pip install --require-hashes -r requirements-serve.txt\n", text)
+        self.assertRegex(_read(SERVE_LOCK_PATH), r"(?m)^gunicorn==26\.2\.0 ")
 
 
 class CrossFileNotRequiredCheckTest(unittest.TestCase):

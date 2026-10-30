@@ -25,8 +25,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install
-        run: python -m pip install --upgrade pip && pip install .
+      - name: Install from lockfile (requirements.txt)
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
 
       - name: Test suite (mode B toolchain excluded — issue #141 phase 1)
         run: |
@@ -105,8 +109,12 @@ jobs:
       - name: Export LNPL_LLVM_BIN
         run: echo "LNPL_LLVM_BIN=/usr/lib/llvm-$LLVM_MAJOR/bin" >> "$GITHUB_ENV"
 
-      - name: Install
-        run: python -m pip install --upgrade pip && pip install .
+      - name: Install from lockfile (requirements.txt)
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
 
       - name: Test suite (mode B, test_repo_state only — issue #161)
         run: PYTHONPATH=impl python3 -m unittest tests.test_repo_state -v
@@ -121,8 +129,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install
-        run: python -m pip install --upgrade pip && pip install '.[lint]'
+      - name: Install from lockfile (requirements.txt)
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
 
       - name: Ruff (impl/lnpl, scripts, impl/tests)
         run: |
@@ -131,3 +143,24 @@ jobs:
           # Python target both come from pyproject.toml, so this command and a
           # contributor's local `ruff check` cannot disagree.
           ruff check impl/lnpl scripts impl/tests
+
+  pip-audit:
+    name: pip-audit (lockfiles)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      # 3.11 is the requires-python floor: pip-audit evaluates the lockfiles'
+      # environment markers against this interpreter, and only the floor
+      # selects every pinned package (typing-extensions is pinned for < 3.13).
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit from its lockfile (requirements-audit.txt)
+        run: pip install --require-hashes -r requirements-audit.txt
+
+      - name: Audit the lockfiles
+        run: pip-audit --require-hashes -r requirements.txt -r requirements-serve.txt -r requirements-coverage.txt -r requirements-audit.txt
