@@ -62,6 +62,12 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   built without build isolation and installed `--no-deps`), and a new
   `pip-audit (lockfiles)` CI job audits them. `examples/deploy/Dockerfile`
   now pins its base image by digest.
+- `lnpl lsp` (issue #254): stdio LSP 3.17 server — compiler diagnostics with
+  severity, Quick Fix for the `unknown-verb` suggestion, hover linking a step
+  verb to its RFC section; tree-sitter (`editors/tree-sitter-lnpl/`) and
+  TextMate (`editors/vscode/syntaxes/`) grammars generated from
+  `impl/lnpl/grammar.py` under the `gen_plugin_references.py --check` drift
+  gate; VS Code extension skeleton in `editors/vscode/`.
 
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a

@@ -6,6 +6,7 @@
 같은 이유, 같은 장치다.
 """
 import glob
+import json
 import os
 import re
 import shutil
@@ -23,6 +24,9 @@ EXPECTED = ("grammar.md", "verbs.md", "declarations.md", "types.md", "spec.md",
             "naming.md", "rfcs.md", "patterns.md")
 SCHEMAS = os.path.join(REPO, "schemas")
 EXPECTED_SCHEMAS = ("lnpl-grammar.gbnf", "lnpl-grammar.json", "cost-model.json")
+EDITORS = os.path.join(REPO, "editors")
+EXPECTED_EDITOR_FILES = ("tree-sitter-lnpl/grammar.js", "tree-sitter-lnpl/queries/highlights.scm",
+                         "vscode/syntaxes/lnpl.tmLanguage.json")
 
 
 def run_gen(*args):
@@ -170,6 +174,51 @@ class GeneratorTest(unittest.TestCase):
         finally:
             with open(target, "w", encoding="utf-8") as fh:
                 fh.write(original)
+
+    def test_editor_grammar_files_exist_and_are_marked_generated(self):
+        # 에디터 문법(issue #254)도 생성 산출물이다 — 손편집 금지 표지가 있어야 한다.
+        for name in EXPECTED_EDITOR_FILES:
+            self.assertTrue(os.path.isfile(os.path.join(EDITORS, name)),
+                            "%s가 없다 — 생성기를 돌려라" % name)
+        for name in EXPECTED_EDITOR_FILES[:2]:
+            with open(os.path.join(EDITORS, name), encoding="utf-8") as fh:
+                self.assertIn("generated — do not hand-edit", fh.readline())
+        with open(os.path.join(EDITORS, EXPECTED_EDITOR_FILES[2]), encoding="utf-8") as fh:
+            self.assertIs(json.load(fh)["_generated"]["hand_edit"], False)
+
+    def _assert_check_catches_hand_edit(self, target, name):
+        with open(target, encoding="utf-8") as fh:
+            original = fh.read()
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original + "\n손으로 덧붙인 줄\n")
+            proc = run_gen("--check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn(name, proc.stderr)
+        finally:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(original)
+
+    def test_check_mode_detects_a_hand_edit_to_the_tree_sitter_grammar(self):
+        self._assert_check_catches_hand_edit(
+            os.path.join(EDITORS, "tree-sitter-lnpl", "grammar.js"), "grammar.js")
+
+    def test_check_mode_detects_a_hand_edit_to_the_textmate_grammar(self):
+        self._assert_check_catches_hand_edit(
+            os.path.join(EDITORS, "vscode", "syntaxes", "lnpl.tmLanguage.json"),
+            "lnpl.tmLanguage.json")
+
+    def test_check_mode_reports_a_missing_editor_file(self):
+        # boundary: 산출물이 아예 없으면 "없음"으로 보고하고 rc 1.
+        target = os.path.join(EDITORS, "tree-sitter-lnpl", "queries", "highlights.scm")
+        moved = target + ".bak"
+        os.rename(target, moved)
+        try:
+            proc = run_gen("--check")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("highlights.scm: 없음", proc.stderr)
+        finally:
+            os.rename(moved, target)
 
     def test_check_mode_detects_a_hand_edit_to_the_cost_model_schema(self):
         # cost-model.json도 손편집 감지 대상인지 증명한다(issue #164).

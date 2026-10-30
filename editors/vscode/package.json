@@ -1,0 +1,49 @@
+{
+  "name": "lnpl",
+  "displayName": "LNPL",
+  "description": "LNPL diagnostics via `lnpl lsp` and syntax highlighting (skeleton, unpublished)",
+  "version": "0.0.1",
+  "publisher": "choiyounggi",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "activationEvents": [
+    "onLanguage:lnpl"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "lnpl",
+        "aliases": [
+          "LNPL"
+        ],
+        "extensions": [
+          ".lnpl"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lnpl",
+        "scopeName": "source.lnpl",
+        "path": "./syntaxes/lnpl.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "LNPL",
+      "properties": {
+        "lnpl.serverPath": {
+          "type": "string",
+          "default": "lnpl",
+          "description": "Command that starts the LNPL language server; it is run with the single argument `lsp`."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  }
+}

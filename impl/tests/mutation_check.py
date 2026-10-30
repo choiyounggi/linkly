@@ -487,6 +487,8 @@ TREE_CONTENTS = ("impl", "examples", "qa", "schemas", "scripts", "kb", "rfcs", "
                  # issue #190: test_release_workflow.py reads docker/Dockerfile
                  # for the digest-pin assertion.
                  "docker",
+                 # issue #254: test_plugin_references.py and test_editor_grammars.py read editors/.
+                 "editors",
                  # issue #242: test_governance_files.py reads these root files.
                  "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md",
                  # issue #243: test_dependency_lockfile.py reads the four

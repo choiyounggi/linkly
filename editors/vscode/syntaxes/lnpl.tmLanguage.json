@@ -1,0 +1,74 @@
+{
+  "_generated": {
+    "by": "scripts/gen_plugin_references.py",
+    "hand_edit": false,
+    "source": "impl/lnpl/grammar.py:render_textmate()"
+  },
+  "fileTypes": [
+    "lnpl"
+  ],
+  "name": "LNPL",
+  "patterns": [
+    {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.lnpl"
+    },
+    {
+      "captures": {
+        "1": {
+          "name": "keyword.other.verb.lnpl"
+        }
+      },
+      "match": "^\\s*(authenticate|authorize|cache|call|create|delete|emit|fail|find|format|insert|invalidate|list|load|note|publish|read|request|respond|set|update|validate)(?!\\S)"
+    },
+    {
+      "match": "(?<!\\S)(entity|service|workflow|event|capability|refine)(?!\\S)",
+      "name": "storage.type.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(field|goal|policy|security|performance|database|expose|spec|given|when|expect)(?!\\S)",
+      "name": "keyword.other.clause.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(repeat|parallel|until|pipeline|merge)(?!\\S)",
+      "name": "keyword.control.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(Address|Boolean|Currency|DateTime|Decimal|Email|File|GeoLocation|Html|Image|Integer|Json|Markdown|Money|Password|Phone|Text|UUID)(?!\\S)",
+      "name": "support.type.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(<=|>=|==|!=|<|>)(?!\\S)",
+      "name": "keyword.operator.comparison.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(\\+|\\-|\\*|/)(?!\\S)",
+      "name": "keyword.operator.arithmetic.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(and)(?!\\S)",
+      "name": "keyword.operator.logical.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(retry|rollback|timeout)(?!\\S)",
+      "name": "support.constant.policy.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(jwt|role)(?!\\S)",
+      "name": "support.constant.security.lnpl"
+    },
+    {
+      "match": "(?<!\\S)(response|prefetch|batch)(?!\\S)",
+      "name": "support.constant.performance.lnpl"
+    },
+    {
+      "captures": {
+        "1": {
+          "name": "support.function.spec.lnpl"
+        }
+      },
+      "match": "^\\s*(attempts|completed|duration|effects|emitted|error|failed|result|rows|slo|steps)(?!\\S)"
+    }
+  ],
+  "scopeName": "source.lnpl"
+}

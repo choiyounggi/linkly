@@ -446,6 +446,18 @@ cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다
 `cost_model_document()`이고, `scripts/gen_plugin_references.py`의
 `SCHEMA_RENDERERS`(`schemas/cost-model.json`)가 같은 함수를 공유한다.
 
+### `lsp` — stdio 언어 서버 (LSP 3.17, issue #254)
+
+플래그 없음. 에디터가 띄우는 프로세스다 — stdin/stdout으로 `Content-Length` 프레이밍된
+JSON-RPC 2.0을 주고받는다(LSP 3.17 base protocol). 열린 문서마다 `parse` → `lower` →
+확장 진단(RFC-0042)을 돌려 `textDocument/publishDiagnostics`로 보낸다(error 1, warning 2,
+info 3; 컴파일 실패는 `compile-error` 진단 하나). `unknown-verb`의 `suggestion`(RFC-0026)은
+Quick Fix(`textDocument/codeAction`, kind `quickfix`)로, 워크플로 스텝 동사의 `textDocument/hover`는
+RFC 절 링크로 답한다. 파일에 쓰지 않는다 — 편집은 클라이언트가 적용한다. 문서는 한 파일씩 따로
+컴파일하므로 디렉터리 모듈(RFC-0031)의 형제 파일에 선언된 이름은 오류로 보일 수 있다.
+종료 코드는 `## 종료 코드` 표가 아니라 LSP 규칙을 따른다: `shutdown` 뒤 `exit`(또는 EOF)면 0, 그 밖에는 1.
+VS Code 뼈대는 `editors/vscode/`.
+
 ### `kb` — 지식 베이스 조회 (RFC-0005)
 
 | 플래그 | 뜻 |

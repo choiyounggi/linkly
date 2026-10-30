@@ -1934,6 +1934,21 @@ def cmd_grammar(args):
     return 0
 
 
+def cmd_lsp(args):
+    # Editors spawn this process and speak LSP 3.17 over stdin/stdout (#254).
+    # stdout must carry protocol frames only, so a stray print is sent to
+    # stderr while the server runs; the module is imported here, not at the
+    # file top, to leave the shared import block untouched.
+    from lnpl import lsp
+    out = sys.stdout.buffer
+    saved = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        return lsp.serve(sys.stdin.buffer, out)
+    finally:
+        sys.stdout = saved
+
+
 def cmd_cost(args):
     # Mirrors `cmd_vocab`/`cmd_capabilities`: single JSON document, no
     # separate human view (the human view is docs/cost-model.md) — no
@@ -2460,6 +2475,10 @@ def _build_parser(subparsers_out=None):
     cst = sub.add_parser("cost",
                          help="print the operation cost-model contract (#164)")
     cst.set_defaults(func=cmd_cost)
+
+    ls = sub.add_parser("lsp",
+                        help="serve the Language Server Protocol over stdio (#254)")
+    ls.set_defaults(func=cmd_lsp)
 
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "
