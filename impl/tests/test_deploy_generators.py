@@ -10,34 +10,46 @@ PYTHONPATH=impl .venv/bin/python -m lnpl generate k8s impl/tests/golden/deploy/<
 then read git diff impl/tests/golden/deploy before committing. There is no auto-update switch.
 """
 
+import base64
 import codecs
 import contextlib
+import http.server
 import inspect
 import io
+import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+import wsgiref.simple_server
 from unittest import mock
 
-from lnpl import cli
+from lnpl import cli, deploy_gen, lexer
 from lnpl.deploy_gen import (COMPOSE_OPTIONS, GRACE_PERIOD_S, K8S_OPTIONS,
-                             auth_env_vars, check_object_name, check_options,
-                             check_quantity,
+                             TRIGGER_SCRIPT, TRIGGER_UID, auth_env_vars,
+                             check_object_name, check_options, check_quantity,
                              classify_capabilities, compose_quote,
                              endpoint_keys, generate_compose, generate_k8s,
                              parse_port, parse_replicas, warn_unknown,
                              yaml_quote)
+from lnpl.drivers import HmacTokenProvider
 from lnpl.generators import GeneratorError, run_generator
+from lnpl.openapi import _schedules
 from lnpl.testing import GeneratorTCK
-from lnpl.wsgi import ServeError
+from lnpl.wsgi import ServeError, build_schedule_routes, make_wsgi_app
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GOLDEN = os.path.join(REPO, "impl", "tests", "golden", "deploy")
 SCRATCH = os.path.join(REPO, ".claude", "tmp", "test_deploy_generators")
 FIXTURES = ("pg-redis", "no-caps", "unknown-cap", "jwt-http")
+SCHEDULE_SRC = os.path.join(GOLDEN, "schedule.lnpl")
+TRIGGER_PATH = "/-/schedules/daily-rollup"
+FAKE_KEY = "synthetic-trigger-key-0123456789abcdef"
 HOSTILE_VALUE = "a: b # c 'q' \"dq\"\n- *x $HOME"
 KUBECONFORM_IMAGE = ("ghcr.io/yannh/kubeconform:v0.6.7@sha256:"
                      "0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c")
@@ -122,11 +134,144 @@ def _stream(texts):
     return "---\n".join(texts)
 
 
+class _Stub:
+    """A local HTTP server recording every POST it answers with `code`."""
+
+    def __init__(self, code=200, body=b""):
+        self.code = code
+        self.body = body
+        self.calls = []
+
+    def __enter__(self):
+        stub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length)
+                stub.calls.append((self.command, self.path, dict(self.headers), body))
+                self.send_response(stub.code)
+                self.send_header("Content-Length", str(len(stub.body)))
+                self.end_headers()
+                self.wfile.write(stub.body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.base = "http://127.0.0.1:%d" % self.server.server_port
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+_TRIGGER_EGRESS = (
+    "    - to:\n"
+    "        - namespaceSelector:\n"
+    "            matchLabels:\n"
+    '              "kubernetes.io/metadata.name": "kube-system"\n'
+    "          podSelector:\n"
+    "            matchLabels:\n"
+    '              "k8s-app": "kube-dns"\n'
+    "      ports:\n"
+    '        - protocol: "UDP"\n'
+    "          port: 53\n"
+    '        - protocol: "TCP"\n'
+    "          port: 53\n"
+    "    - to:\n"
+    "        - podSelector:\n"
+    "            matchLabels:\n"
+    '              "app.kubernetes.io/name": "rollup"\n'
+    "      ports:\n"
+    '        - protocol: "TCP"\n'
+    "          port: 8000\n")
+_POLICY_TYPES = '  policyTypes:\n    - "Ingress"\n    - "Egress"\n'
+
+
+def _run_trigger(extra_env, pythonpath=None):
+    env = dict({"PATH": os.environ["PATH"],
+                "PYTHONPATH": pythonpath or os.path.join(REPO, "impl")},
+               **extra_env)
+    # `python -m lnpl` puts the working directory first on sys.path, so a
+    # stand-in package on `pythonpath` must also be the cwd.
+    return subprocess.run([sys.executable, "-B", "-c", TRIGGER_SCRIPT], env=env,
+                          cwd=pythonpath, capture_output=True, text=True, timeout=120)
+
+
+def _auth_env(base):
+    return {"LNPL_TRIGGER_BASE": base, "LNPL_TRIGGER_PATH": TRIGGER_PATH,
+            "LNPL_TRIGGER_AUTH": "jwt", "LNPL_TRIGGER_SUBJECT": "rollup-daily-rollup",
+            "LNPL_SOURCE": SCHEDULE_SRC, "LNPL_JWT_SECRET": FAKE_KEY}
+
+
+def _bearer(call):
+    headers = {k.lower(): v for k, v in call[2].items()}
+    return headers.get("authorization")
+
+
 def _scratch_dir(test):
     os.makedirs(SCRATCH, exist_ok=True)
     path = tempfile.mkdtemp(dir=SCRATCH)
     test.addCleanup(shutil.rmtree, path, True)
     return path
+
+
+def _schedule_doc(test, text=None):
+    """The schedule fixture compiled, or `text` compiled under the same
+    module name (`schedule`)."""
+    if text is None:
+        return cli.compile_source([SCHEDULE_SRC])
+    path = os.path.join(_scratch_dir(test), "schedule.lnpl")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return cli.compile_source([path])
+
+
+def _schedule_text(test, options=None, text=None):
+    out, _ = _quiet(generate_k8s, _schedule_doc(test, text), options or {})
+    return out["k8s.yaml"].decode("ascii")
+
+
+def _fixture_text():
+    with open(SCHEDULE_SRC, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _cron_doc(text):
+    docs = [d for d in _documents(text) if "kind: CronJob" in d]
+    assert len(docs) == 1, len(docs)
+    return docs[0]
+
+
+def _without_script(text):
+    """`text` minus the CronJob command line that carries TRIGGER_SCRIPT, whose
+    own text names LNPL_TRIGGER_* and "Bearer" (assertions about env entries
+    and inlined tokens must not read the script)."""
+    script_line = "                - " + yaml_quote(TRIGGER_SCRIPT)
+    lines = text.splitlines()
+    assert script_line in lines
+    return "\n".join(ln for ln in lines if ln != script_line)
+
+
+def _cron_env(cron_doc):
+    """The trigger container's env as the pod would see it: literal values
+    decoded, a secretKeyRef to LNPL_JWT_SECRET filled with FAKE_KEY."""
+    lines = cron_doc.splitlines()
+    env = {}
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("- name: ") or i + 1 >= len(lines):
+            continue
+        nxt = lines[i + 1].strip()
+        name = json.loads(stripped[len("- name: "):])
+        if nxt.startswith("value: "):
+            env[name] = json.loads(nxt[len("value: "):])
+        elif nxt == "valueFrom:" and 'key: "LNPL_JWT_SECRET"' in "\n".join(lines[i:i + 5]):
+            env[name] = FAKE_KEY
+    return env
 
 
 class YamlQuoteTest(unittest.TestCase):
@@ -699,6 +844,7 @@ class K8sNetworkPolicyTest(unittest.TestCase):
         self.assertEqual(lines[at - 3:at], _NETPOL_COMMENTS)
         policy = _documents(text)[-1]
         self.assertIn("kind: NetworkPolicy", policy)
+        self.assertIn(_POLICY_TYPES, policy)
         self.assertIn('- "Ingress"', policy)
         self.assertIn('- "Egress"', policy)
         self.assertIn("port: 8000", policy)
@@ -708,11 +854,13 @@ class K8sNetworkPolicyTest(unittest.TestCase):
         text = _text(generate_k8s, "k8s.yaml", "pg-redis", {"network_policy": "true"})
         self.assertEqual(_kinds(text).count("NetworkPolicy"), 1)
         self.assertNotIn("ipBlock:", text)
+        self.assertEqual(_documents(text)[-1].count("- to:"), 1)
         self.assertIn('protocol: "UDP"\n          port: 53', text)
         self.assertIn('protocol: "TCP"\n          port: 53', text)
         text = _text(generate_k8s, "k8s.yaml", "pg-redis",
                      {"network_policy": "true", "egress_cidrs": "10.0.0.0/8"})
         self.assertEqual(text.count("ipBlock:"), 1)
+        self.assertEqual(_documents(text)[-1].count("- to:"), 2)
 
     def test_error_bad_cidrs_name_the_item(self):
         for value, item in (("203.0.113.0", "'203.0.113.0'"),
@@ -736,6 +884,320 @@ class K8sNetworkPolicyTest(unittest.TestCase):
         self.assertIn("network_policy", str(cm.exception))
 
 
+class TriggerScriptTest(unittest.TestCase):
+    """Issue #236 D4/D6/D8: TRIGGER_SCRIPT run as a real process."""
+
+    def test_script_text_decodes_back_from_yaml(self):
+        self.assertNotIn("\\", TRIGGER_SCRIPT)
+        self.assertNotIn("\t", TRIGGER_SCRIPT)
+        self.assertTrue(all(c == "\n" or 0x20 <= ord(c) <= 0x7e for c in TRIGGER_SCRIPT))
+        self.assertEqual(json.loads(yaml_quote(TRIGGER_SCRIPT)), TRIGGER_SCRIPT)
+
+    def test_normal_without_auth_posts_empty_body(self):
+        with _Stub(200) as stub:
+            done = _run_trigger({"LNPL_TRIGGER_BASE": stub.base,
+                                 "LNPL_TRIGGER_PATH": TRIGGER_PATH})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, "trigger /-/schedules/daily-rollup: HTTP 200\n")
+        self.assertEqual(len(stub.calls), 1)
+        method, path, _, body = stub.calls[0]
+        self.assertEqual((method, path, body), ("POST", TRIGGER_PATH, b"{}"))
+        self.assertIsNone(_bearer(stub.calls[0]))
+
+    def test_normal_with_auth_sends_a_valid_five_minute_token(self):
+        with _Stub(200) as stub:
+            done = _run_trigger(_auth_env(stub.base))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        header = _bearer(stub.calls[0])
+        self.assertTrue(header.startswith("Bearer "), header)
+        token = header[len("Bearer "):]
+        claims = HmacTokenProvider(FAKE_KEY.encode()).verify(token, "-")
+        self.assertEqual(claims["exp"] - claims["iat"], 300)
+        self.assertEqual(claims["sub"], "rollup-daily-rollup")
+        self.assertNotIn(token, done.stdout + done.stderr)
+        self.assertNotIn(FAKE_KEY, done.stdout + done.stderr)
+
+    def test_error_401_exits_nonzero_without_leaking(self):
+        with _Stub(401, body=b'{"detail": "RESPONSE-BODY-MARKER"}') as stub:
+            done = _run_trigger(_auth_env(stub.base))
+        self.assertEqual(done.returncode, 1)
+        self.assertNotIn("RESPONSE-BODY-MARKER", done.stdout + done.stderr)
+        self.assertIn("trigger failed: /-/schedules/daily-rollup HTTP 401", done.stderr)
+        token = _bearer(stub.calls[0])[len("Bearer "):]
+        self.assertTrue(token)
+        self.assertNotIn(token, done.stdout + done.stderr)
+        self.assertNotIn(FAKE_KEY, done.stdout + done.stderr)
+
+    def test_error_unreachable_exits_nonzero(self):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        done = _run_trigger({"LNPL_TRIGGER_BASE": "http://127.0.0.1:%d" % port,
+                             "LNPL_TRIGGER_PATH": TRIGGER_PATH})
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("unreachable", done.stderr)
+        self.assertEqual(done.stdout, "")
+
+    def test_error_key_unset_names_the_variable(self):
+        with _Stub(200) as stub:
+            env = _auth_env(stub.base)
+            del env["LNPL_JWT_SECRET"]
+            done = _run_trigger(env)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("LNPL_JWT_SECRET", done.stderr)
+        self.assertEqual(stub.calls, [])
+
+    def test_error_unusable_token_is_refused_before_any_request(self):
+        # A stand-in `lnpl` whose `token` prints a value with a space: the
+        # script must refuse it instead of building an Authorization header.
+        fake = _scratch_dir(self)
+        os.makedirs(os.path.join(fake, "lnpl"))
+        open(os.path.join(fake, "lnpl", "__init__.py"), "w").close()
+        with open(os.path.join(fake, "lnpl", "__main__.py"), "w") as fh:
+            fh.write('print("not a token")\n')
+        with _Stub(200) as stub:
+            done = _run_trigger(_auth_env(stub.base), pythonpath=fake)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("trigger failed: lnpl token printed no usable token", done.stderr)
+        self.assertNotIn("not a token", done.stdout + done.stderr)
+        self.assertEqual(stub.calls, [])
+
+    def test_normal_issuer_is_passed_through(self):
+        # D6: an issuer the server checks must reach the minted token, else
+        # every run is refused with 401.
+        with _Stub(200) as stub:
+            done = _run_trigger(dict(_auth_env(stub.base),
+                                     LNPL_JWT_ISSUER="https://issuer.example"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        seg = _bearer(stub.calls[0])[len("Bearer "):].split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
+        self.assertEqual(claims["iss"], "https://issuer.example")
+
+    def test_boundary_role_is_passed_through(self):
+        with _Stub(200) as stub:
+            done = _run_trigger(dict(_auth_env(stub.base), LNPL_TRIGGER_ROLE="ops"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        token = _bearer(stub.calls[0])[len("Bearer "):]
+        claims = HmacTokenProvider(FAKE_KEY.encode()).verify(token, "-")
+        self.assertEqual(claims["role"], "ops")
+
+
+class K8sCronJobTest(unittest.TestCase):
+    """Issue #236 D1-D4, D9, D10: one hardened CronJob per schedule event."""
+
+    def test_normal_one_schedule_one_cronjob(self):
+        doc = _schedule_doc(self)
+        text = _schedule_text(self)
+        self.assertEqual(_kinds(text), ["ConfigMap", "Deployment", "Service", "CronJob"])
+        cron = _cron_doc(text)
+        for line in ('name: "schedule-daily-rollup"', 'schedule: "30 6 * * *"',
+                     'timeZone: "UTC"', 'value: "http://schedule:8000"',
+                     'value: "/-/schedules/daily-rollup"'):
+            with self.subTest(line=line):
+                self.assertIn(line, cron)
+        self.assertEqual(list(build_schedule_routes(doc)), [TRIGGER_PATH])
+
+    def test_boundary_no_schedule_no_cronjob(self):
+        for fixture in FIXTURES:
+            with self.subTest(fixture=fixture):
+                self.assertNotIn("CronJob", _kinds(_text(generate_k8s, "k8s.yaml", fixture)))
+
+    def test_bounds_and_hardening_lines(self):
+        cron = _cron_doc(_schedule_text(self, {"name": "rollup"}))
+        lines = [ln.strip() for ln in cron.splitlines()]
+        for line in ('concurrencyPolicy: "Forbid"', "startingDeadlineSeconds: 300",
+                     "backoffLimit: 0", "activeDeadlineSeconds: 600",
+                     'restartPolicy: "Never"', "automountServiceAccountToken: false",
+                     "runAsNonRoot: true", "runAsUser: 1000", 'type: "RuntimeDefault"',
+                     "allowPrivilegeEscalation: false", "readOnlyRootFilesystem: true",
+                     '- "ALL"', "readOnly: true", 'name: "rollup-source"',
+                     'name: "rollup-config"'):
+            with self.subTest(line=line):
+                self.assertIn(line, lines)
+
+    def test_command_decodes_to_the_script(self):
+        lines = _cron_doc(_schedule_text(self)).splitlines()
+        at = [ln.strip() for ln in lines].index('- "-c"')
+        script_line = lines[at + 1].strip()
+        self.assertTrue(script_line.startswith("- "), script_line)
+        self.assertEqual(json.loads(script_line[2:]), TRIGGER_SCRIPT)
+
+    def test_trigger_labels_never_match_the_app(self):
+        cron = _cron_doc(_schedule_text(self, {"name": "rollup"}))
+        self.assertIn('"app.kubernetes.io/name": "rollup-daily-rollup"', cron)
+        self.assertIn('"app.kubernetes.io/part-of": "rollup"', cron)
+        self.assertNotIn('"app.kubernetes.io/name": "rollup"\n', cron + "\n")
+
+    def test_error_event_name_breaks_dns_label(self):
+        text = _fixture_text().replace("DailyRollup", "Nightly_Report2")
+        with self.assertRaises(GeneratorError) as cm:
+            _schedule_text(self, text=text)
+        self.assertIn("Nightly_Report2", str(cm.exception))
+
+    def test_boundary_name_length(self):
+        text = _schedule_text(self, {"name": "a" * 39})
+        self.assertIn('name: "%s-daily-rollup"' % ("a" * 39), _cron_doc(text))
+        self.assertEqual(len("a" * 39 + "-daily-rollup"), 52)
+        with self.assertRaises(GeneratorError) as cm:
+            _schedule_text(self, {"name": "a" * 40})
+        self.assertIn("52", str(cm.exception))
+        with self.assertRaises(GeneratorError) as cm:
+            _schedule_text(self, {"name": "rollup\n"})
+        self.assertIn("CronJob name", str(cm.exception))
+
+    def test_error_duplicate_cron_name(self):
+        entry = _schedules(_schedule_doc(self))[0]
+        with mock.patch("lnpl.deploy_gen._schedules", return_value=[entry, entry]):
+            with self.assertRaises(GeneratorError) as cm:
+                _schedule_text(self)
+        self.assertIn("same CronJob name", str(cm.exception))
+
+    def test_error_unresolvable_schedule(self):
+        line = "event DailyRollup on schedule daily at 06:30 UTC\n"
+        text = _fixture_text()
+        self.assertIn(line, text)
+        text = line + "\n" + text.replace(line, "")
+        with self.assertRaises(GeneratorError) as cm:
+            _schedule_text(self, text=text)
+        self.assertIn("DailyRollup", str(cm.exception))
+
+    def test_crontab_tables_agree(self):
+        self.assertEqual(set(deploy_gen.CRONTAB_EXPR), set(cli._CRONTAB_EXPR))
+        self.assertEqual(set(cli._CRONTAB_EXPR), set(lexer.SCHEDULE_RECURRENCES))
+        for every in deploy_gen.CRONTAB_EXPR:
+            for hh, mm in ((0, 0), (6, 30), (23, 59)):
+                with self.subTest(every=every, at=(hh, mm)):
+                    self.assertEqual(deploy_gen.CRONTAB_EXPR[every](hh, mm),
+                                     cli._CRONTAB_EXPR[every](hh, mm))
+
+    def test_trigger_uid_matches_dockerfile(self):
+        with open(os.path.join(REPO, "docker", "Dockerfile"), encoding="utf-8") as fh:
+            dockerfile = fh.read()
+        self.assertIn("--uid %d" % TRIGGER_UID, dockerfile)
+        self.assertIn("USER linkly", dockerfile.splitlines())
+
+
+class K8sCronJobAuthTest(unittest.TestCase):
+    """Issue #236 D1, D5-D7: the trigger's one Secret key and auth env."""
+
+    ROLLUP = {"name": "rollup"}
+
+    def test_normal_one_secret_key_and_auth_env(self):
+        text = _schedule_text(self, self.ROLLUP)
+        cron = _cron_doc(text)
+        self.assertEqual(cron.count("secretKeyRef:"), 1)
+        self.assertNotIn("optional", _without_script(cron))
+        for line in ('name: "rollup-secrets"', 'key: "LNPL_JWT_SECRET"', 'value: "jwt"',
+                     'value: "rollup-daily-rollup"'):
+            with self.subTest(line=line):
+                self.assertIn(line, cron)
+        for absent in ("LNPL_TRIGGER_ROLE", "LNPL_BACKEND", "LNPL_CACHE"):
+            with self.subTest(absent=absent):
+                self.assertNotIn(absent, _without_script(cron))
+        self.assertEqual(set(_cron_env(cron)),
+                         {"LNPL_TRIGGER_BASE", "LNPL_TRIGGER_PATH", "LNPL_TRIGGER_AUTH",
+                          "LNPL_TRIGGER_SUBJECT", "LNPL_JWT_SECRET"})
+        deployment = _documents(text)[1]
+        self.assertIn('key: "LNPL_BACKEND"', deployment)
+        self.assertIn('key: "LNPL_JWT_SECRET"', deployment)
+        self.assertNotIn("kind: Secret", text)
+        self.assertNotIn("stringData", text)
+        self.assertNotIn("Bearer", _without_script(text))
+        lines = text.splitlines()
+        at = lines.index("apiVersion: batch/v1")
+        self.assertEqual(lines[at - 1], deploy_gen._TRIGGER_KEY_COMMENT)
+
+    def test_boundary_no_security_no_secret(self):
+        source = _fixture_text()
+        self.assertIn("    security\n        jwt\n", source)
+        text = _schedule_text(self, self.ROLLUP,
+                              source.replace("    security\n        jwt\n", ""))
+        cron = _cron_doc(text)
+        self.assertEqual(cron.count("secretKeyRef:"), 0)
+        self.assertNotIn("LNPL_TRIGGER_AUTH", _without_script(cron))
+        self.assertEqual(set(_cron_env(cron)), {"LNPL_TRIGGER_BASE", "LNPL_TRIGGER_PATH"})
+        self.assertNotIn(deploy_gen._TRIGGER_KEY_COMMENT, text)
+
+    def test_normal_role_variant(self):
+        source = _fixture_text().replace("        jwt\n", "        jwt\n        role ops\n")
+        cron = _cron_doc(_schedule_text(self, self.ROLLUP, source))
+        self.assertIn('- name: "LNPL_TRIGGER_ROLE"\n                  value: "ops"', cron)
+        self.assertEqual(_cron_env(cron)["LNPL_TRIGGER_ROLE"], "ops")
+
+    def test_error_security_jwt_without_capability_jwt(self):
+        source = _fixture_text()
+        self.assertIn("capability jwt\n", source)
+        with self.assertRaises(GeneratorError) as cm:
+            _schedule_text(self, self.ROLLUP, source.replace("capability jwt\n", ""))
+        self.assertIn("capability jwt", str(cm.exception))
+
+    def test_real_app_round_trip(self):
+        doc = cli.compile_source([SCHEDULE_SRC])
+        with contextlib.redirect_stderr(io.StringIO()):
+            app = make_wsgi_app(doc, token_provider=HmacTokenProvider(FAKE_KEY.encode()))
+
+        class QuietHandler(wsgiref.simple_server.WSGIRequestHandler):
+            def log_message(self, *args):
+                pass
+
+        server = wsgiref.simple_server.make_server("127.0.0.1", 0, app,
+                                                   handler_class=QuietHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        # The env the generated CronJob gives its container, with the
+        # Service URL pointed at the local server and LNPL_SOURCE (from the
+        # <name>-config ConfigMap) at the fixture.
+        env = _cron_env(_cron_doc(_schedule_text(self)))
+        self.assertEqual(env.get("LNPL_JWT_SECRET"), FAKE_KEY)
+        env.update({"LNPL_TRIGGER_BASE": "http://127.0.0.1:%d" % server.server_port,
+                    "LNPL_SOURCE": SCHEDULE_SRC})
+        with contextlib.redirect_stderr(io.StringIO()):
+            # the serving thread prints compile warnings while it runs
+            done = _run_trigger(env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, "trigger /-/schedules/daily-rollup: HTTP 200\n")
+        self.assertNotIn(FAKE_KEY, done.stdout + done.stderr)
+
+
+class K8sTriggerNetworkPolicyTest(unittest.TestCase):
+    """Issue #236 D11: the trigger pod's own NetworkPolicy."""
+
+    def test_normal_trigger_policy(self):
+        text = _schedule_text(self, {"name": "rollup", "network_policy": "true"})
+        self.assertEqual(_kinds(text).count("NetworkPolicy"), 2)
+        policy = _documents(text)[-1]
+        self.assertIn('podSelector:\n    matchLabels:\n'
+                      '      "app.kubernetes.io/name": "rollup-daily-rollup"', policy)
+        # No `ingress:` key denies every inbound connection only while
+        # "Ingress" is among the policyTypes.
+        self.assertIn(_POLICY_TYPES, policy)
+        self.assertNotIn("ingress:", policy)
+        self.assertIn('"k8s-app": "kube-dns"', policy)
+        self.assertIn('- podSelector:\n            matchLabels:\n'
+                      '              "app.kubernetes.io/name": "rollup"\n'
+                      '      ports:\n        - protocol: "TCP"\n          port: 8000', policy)
+        # The egress rule set is bounded: exactly kube-dns and the app pods
+        # on 8000, nothing after (a pod holding the signing key; r1 F1).
+        self.assertEqual(policy.count("- to:"), 2)
+        self.assertEqual(policy.split("  egress:\n", 1)[1], _TRIGGER_EGRESS)
+
+    def test_boundary_no_schedule_one_policy(self):
+        text = _text(generate_k8s, "k8s.yaml", "pg-redis",
+                     {"name": "rollup", "network_policy": "true"})
+        self.assertEqual(_kinds(text).count("NetworkPolicy"), 1)
+
+    def test_boundary_option_off_no_policy(self):
+        text = _schedule_text(self, {"name": "rollup"})
+        self.assertEqual(_kinds(text).count("NetworkPolicy"), 0)
+
+    def test_error_bad_flag_on_a_schedule_source(self):
+        with self.assertRaises(GeneratorError) as cm:
+            _schedule_text(self, {"name": "rollup", "network_policy": "yes"})
+        self.assertIn("network_policy", str(cm.exception))
+
+
 class K8sAllOptionsTest(unittest.TestCase):
     def test_all_options_kind_order_and_shape(self):
         out, _ = _quiet(generate_k8s, _doc("pg-redis"), ALL_OPTIONS)
@@ -743,6 +1205,13 @@ class K8sAllOptionsTest(unittest.TestCase):
         text = out["k8s.yaml"].decode("ascii")
         self.assertEqual(_kinds(text), ["ConfigMap", "Deployment", "Service", "Ingress",
                                         "HorizontalPodAutoscaler", "PodDisruptionBudget",
+                                        "NetworkPolicy"])
+
+    def test_schedule_all_options_kind_order(self):
+        text = _schedule_text(self, ALL_OPTIONS)
+        self.assertEqual(_kinds(text), ["ConfigMap", "Deployment", "Service", "CronJob",
+                                        "Ingress", "HorizontalPodAutoscaler",
+                                        "PodDisruptionBudget", "NetworkPolicy",
                                         "NetworkPolicy"])
 
 
@@ -755,11 +1224,22 @@ class KubeconformTest(unittest.TestCase):
         _require_kubeconform(self)
         texts = [_text(generate_k8s, "k8s.yaml", f) for f in FIXTURES]
         texts.append(_text(generate_k8s, "k8s.yaml", "pg-redis", ALL_OPTIONS))
+        texts.append(_schedule_text(self))
+        texts.append(_schedule_text(self, ALL_OPTIONS))
         stream = _stream(texts)
-        self.assertEqual(len(re.findall(r"^kind: ", stream, re.M)), 19)
+        self.assertEqual(len(re.findall(r"^kind: ", stream, re.M)), 32)
         rc, out = _kubeconform(stream)
         self.assertEqual(rc, 0, out)
-        self.assertIn("Valid: 19, Invalid: 0, Errors: 0, Skipped: 0", out, out)
+        self.assertIn("Valid: 32, Invalid: 0, Errors: 0, Skipped: 0", out, out)
+
+    def test_known_bad_cronjob_without_schedule_is_invalid(self):
+        _require_kubeconform(self)
+        lines = _cron_doc(_schedule_text(self)).splitlines()
+        self.assertIn('  schedule: "30 6 * * *"', lines)
+        lines.remove('  schedule: "30 6 * * *"')
+        rc, out = _kubeconform("\n".join(lines) + "\n")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Invalid: 1, Errors: 0", out, out)
 
     def test_known_bad_hpa_is_invalid(self):
         _require_kubeconform(self)

@@ -1,0 +1,18 @@
+capability postgres
+capability jwt
+
+entity Report
+    field
+        id UUID
+        total Integer
+
+service Rollup
+    security
+        jwt
+    policy
+        timeout 5s
+
+event DailyRollup on schedule daily at 06:30 UTC
+
+workflow GetReport
+    read report
