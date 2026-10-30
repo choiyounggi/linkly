@@ -47,6 +47,7 @@ PARITY_MAP = {
     ("--profile",): "LNPL_PROFILE",
     ("--jwt-issuer",): "LNPL_JWT_ISSUER",
     ("--token-provider",): "LNPL_TOKEN_PROVIDER",
+    ("--audit-sink",): "LNPL_AUDIT_SINK",
 }
 EXCLUDED = {
     ("-h", "--help"): "argparse auto-added; not an operational option",
