@@ -45,6 +45,12 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   response; a bad spec refuses startup. The JSON canonical line also gains
   `subject`/`role` when the token was verified. Hash chaining is deferred
   (docs/serving.md). (#241)
+- `lnpl lsp` (issue #254): stdio LSP 3.17 server — compiler diagnostics with
+  severity, Quick Fix for the `unknown-verb` suggestion, hover linking a step
+  verb to its RFC section; tree-sitter (`editors/tree-sitter-lnpl/`) and
+  TextMate (`editors/vscode/syntaxes/`) grammars generated from
+  `impl/lnpl/grammar.py` under the `gen_plugin_references.py --check` drift
+  gate; VS Code extension skeleton in `editors/vscode/`.
 
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a

@@ -181,6 +181,24 @@ enough — a hook runs in the agent's process environment, which does not carry 
 > script in `.venv`. Run `.venv/bin/pip install .` once after creating the venv,
 > and `pip install --force-reinstall --no-deps .` after editing `impl/lnpl/`.
 
+### Editor support
+
+`lnpl lsp` is a stdio language server (LSP 3.17). For each open `.lnpl` file it publishes the
+compiler's diagnostics with their severity, offers the `unknown-verb` did-you-mean as a Quick Fix,
+and answers hover on a workflow step's verb with a link to the RFC section that defines it. It never
+writes your files. Each document is compiled on its own, so names declared in sibling files of a
+directory module (RFC-0031) show up as errors.
+
+- **VS Code** — [`editors/vscode/`](editors/vscode/): an unpublished extension skeleton
+  (diagnostics + highlighting). Point `lnpl.serverPath` at `.venv/bin/lnpl`; see its README.
+- **tree-sitter** — [`editors/tree-sitter-lnpl/grammar.js`](editors/tree-sitter-lnpl/grammar.js) and
+  [`queries/highlights.scm`](editors/tree-sitter-lnpl/queries/highlights.scm). Run `tree-sitter generate`
+  in that directory; the generated `src/` is git-ignored.
+- Both grammars and the TextMate grammar
+  ([`editors/vscode/syntaxes/lnpl.tmLanguage.json`](editors/vscode/syntaxes/lnpl.tmLanguage.json)) are
+  generated from `impl/lnpl/grammar.py` by `python scripts/gen_plugin_references.py`;
+  `--check` fails when one is stale. Never hand-edit them.
+
 ### Mode B — a native binary
 
 Mode B needs the MLIR/LLVM tools (`brew install llvm`; ~1.8 GB, keg-only). That is
@@ -552,6 +570,8 @@ nodes), its lowering path is **MLIR → native**, the knowledge base is a
 CHARTER.md                  Stage-0 vision document (preserved verbatim — the RFCs are canonical)
 rfcs/0000~0077              The RFCs (13 Superseded, 62 Accepted, 3 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
+editors/tree-sitter-lnpl/   Generated tree-sitter grammar + highlight query (never hand-edit)
+editors/vscode/             VS Code extension skeleton: lnpl lsp diagnostics + generated TextMate grammar
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR
 scripts/validate_ir.py      Schema validation + self-test

@@ -19,7 +19,9 @@ sys.path.insert(0, os.path.join(REPO, "impl"))
 
 from lnpl import __version__                                    # noqa: E402
 from lnpl.cost_model import cost_model_document                  # noqa: E402
-from lnpl.grammar import grammar_json_document, render_gbnf      # noqa: E402
+from lnpl.grammar import (grammar_json_document, render_gbnf,     # noqa: E402
+                          render_textmate, render_tree_sitter,
+                          render_tree_sitter_highlights)
 from lnpl.lower import KIND_PREFIX, KIND_WORD, derive_id, split_pascal  # noqa: E402
 from lnpl.provenance import _current_vocabulary_digest           # noqa: E402
 from lnpl.spec import EXPECTATIONS, GIVEN_FORMS                  # noqa: E402
@@ -46,6 +48,16 @@ SCHEMA_RENDERERS = {
     "cost-model.json": lambda: json.dumps(cost_model_document(), indent=2,
                                           ensure_ascii=False,
                                           sort_keys=True) + "\n",
+}
+
+EDITOR_OUT_DIR = os.path.join(REPO, "editors")
+
+# Editor grammars (issue #254) — tree-sitter + TextMate, generated from
+# impl/lnpl/grammar.py. Keys are paths relative to EDITOR_OUT_DIR.
+EDITOR_RENDERERS = {
+    "tree-sitter-lnpl/grammar.js": render_tree_sitter,
+    "tree-sitter-lnpl/queries/highlights.scm": render_tree_sitter_highlights,
+    "vscode/syntaxes/lnpl.tmLanguage.json": render_textmate,
 }
 
 SOURCE_CANON = "impl/lnpl/의 모듈 상수"
@@ -956,6 +968,7 @@ def _sync(renderers, out_dir, check):
             if current != text:
                 stale.append("%s: 소스와 다름" % name)
         else:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
     return stale
@@ -966,6 +979,7 @@ def main(argv=None):
     check = "--check" in argv
     stale = _sync(RENDERERS, OUT_DIR, check)
     stale += _sync(SCHEMA_RENDERERS, SCHEMA_OUT_DIR, check)
+    stale += _sync(EDITOR_RENDERERS, EDITOR_OUT_DIR, check)
     if check:
         if stale:
             for line in stale:
@@ -976,6 +990,7 @@ def main(argv=None):
         return 0
     print("wrote %d files to %s" % (len(RENDERERS), OUT_DIR))
     print("wrote %d files to %s" % (len(SCHEMA_RENDERERS), SCHEMA_OUT_DIR))
+    print("wrote %d files to %s" % (len(EDITOR_RENDERERS), EDITOR_OUT_DIR))
     return 0
 
 
