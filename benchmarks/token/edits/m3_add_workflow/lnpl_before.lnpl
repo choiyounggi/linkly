@@ -1,0 +1,36 @@
+# cached.lnpl — token benchmark scenario "cached read" (issue #251).
+# GetProduct reads through the cache: a miss reads the store and fills the cache.
+
+capability postgres
+capability redis
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+service CatalogService
+    performance
+        cache 5m
+
+workflow GetProduct
+    validate input
+    find product cached
+    spec
+        given
+            valid product
+        when
+            getProduct
+        expect
+            completed
+            effects complete
+            cache written
+    spec
+        given
+            empty repository
+        when
+            getProduct
+        expect
+            failed
+            effects complete
+            rows Product 0

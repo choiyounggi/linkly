@@ -1,4 +1,4 @@
-"""measure_tokens.py tests (issue #142): determinism + boundary/error cases.
+"""measure_tokens.py tests (issues #142, #251): determinism + boundary/error cases.
 
 Loud-skip convention matches impl/tests/test_backend.py's NEEDS_TOOLS: this
 benchmark's tiktoken is installed only in benchmarks/token/.venv, never in
@@ -27,7 +27,7 @@ NEEDS_TIKTOKEN = unittest.skipUnless(
     HAS_TIKTOKEN,
     "tiktoken not installed — run from benchmarks/token/.venv "
     "(python3.13 -m venv benchmarks/token/.venv && "
-    "benchmarks/token/.venv/bin/pip install tiktoken fastapi httpx pytest)",
+    "benchmarks/token/.venv/bin/pip install tiktoken==0.14.0 fastapi httpx pytest)",
 )
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "measure_tokens.py"
@@ -52,7 +52,14 @@ class MeasureTokensTest(unittest.TestCase):
         self.assertIn("edit_tokens", report)
         self.assertIn("tiktoken_version", report)
         self.assertEqual(set(report["tokenizers"]), {"o200k_base", "cl100k_base"})
-        # every edit task reports both sides
+        # six scenarios, each measured on both sides
+        self.assertEqual(len(measure_tokens.SCENARIOS), 6)
+        self.assertEqual(set(report["source_tokens"]), set(measure_tokens.SCENARIOS))
+        for scenario, sides in report["source_tokens"].items():
+            self.assertEqual(set(sides), {"lnpl", "fastapi"}, scenario)
+        # five edit kinds, every one reports both sides
+        self.assertEqual(len(measure_tokens.EDIT_KINDS), 5)
+        self.assertEqual(set(report["edit_tokens"]), set(measure_tokens.EDIT_KINDS))
         for task_name, sides in report["edit_tokens"].items():
             self.assertEqual(set(sides), {"lnpl", "fastapi"}, task_name)
         # the JSON encoder must not choke on the report (sort_keys, no NaN/inf)
@@ -70,6 +77,34 @@ class MeasureTokensTest(unittest.TestCase):
         missing = measure_tokens.REPO_ROOT / "benchmarks" / "token" / "does_not_exist.lnpl"
         with self.assertRaises(FileNotFoundError):
             measure_tokens.measure_file(missing, encodings)
+
+    def test_measure_text_empty_source_is_zero(self):
+        # boundary: an empty source has no characters and no tokens
+        encodings = {name: tiktoken.get_encoding(name) for name in measure_tokens.TOKENIZERS}
+        self.assertEqual(
+            measure_tokens.measure_text("", encodings),
+            {"chars": 0, "chars_no_whitespace": 0, "tokens_o200k_base": 0, "tokens_cl100k_base": 0},
+        )
+
+    def test_every_scenario_path_exists(self):
+        # normal case: every measured file is present, so a run never measures a stale path
+        for scenario, sides in measure_tokens.SCENARIOS.items():
+            for side, path in sides.items():
+                self.assertTrue(path.is_file(), f"{scenario}/{side}: {path}")
+        for kind, sides in measure_tokens.EDIT_TASKS.items():
+            for side, (before, after) in sides.items():
+                self.assertTrue(before.is_file(), f"{kind}/{side}: {before}")
+                self.assertTrue(after.is_file(), f"{kind}/{side}: {after}")
+
+    def test_extract_report_block_without_marker_raises(self):
+        # error case: a REPORT without the generated block is rejected loudly
+        with self.assertRaises(ValueError):
+            measure_tokens.extract_report_block("no block here\n")
+
+    def test_extract_report_block_returns_fenced_text(self):
+        # normal case: the fenced JSON after the BEGIN marker comes back verbatim
+        text = "x\n<!-- BEGIN measure_tokens.py output — y -->\n\n```json\n{\n  \"a\": 1\n}\n```\n"
+        self.assertEqual(measure_tokens.extract_report_block(text), "{\n  \"a\": 1\n}\n")
 
 
 if __name__ == "__main__":
