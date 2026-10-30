@@ -19,6 +19,14 @@ lnpl = "lnpl.cli:main"
 [project.optional-dependencies]
 lint = ["ruff==0.16.5"]
 
+# Not published (PEP 735): pinned tool inputs for the hashed lockfiles that
+# CI and the two Dockerfiles install from (issue #243). Regenerate: docs/CI-GATES.md.
+[dependency-groups]
+build = ["build==1.6.1", "hatchling==1.33.0"]
+coverage = ["coverage==7.17.0"]
+serve = ["gunicorn==26.2.0"]
+audit = ["pip-audit==2.10.1"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["impl/lnpl"]
 force-include = { "mlir/lnpl.irdl.mlir" = "lnpl/assets/mlir/lnpl.irdl.mlir", "mlir/llvm.pin" = "lnpl/assets/mlir/llvm.pin", "kb" = "lnpl/assets/kb" }
