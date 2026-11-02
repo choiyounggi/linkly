@@ -63,8 +63,10 @@ class NoHardcodedLlvmVersionTest(unittest.TestCase):
         ci_text = _read(CI_YML_PATH)
         # 버전을 파생하는 awk/cut 줄 자체는 제외하고, 나머지 어디에도
         # 핀 메이저 버전이 리터럴로 박혀 있지 않아야 한다(D1).
+        # a 40-hex action SHA pin is not a version literal (issue #243)
         body_without_pin_parse_line = "\n".join(
-            line for line in ci_text.splitlines() if "llvm.pin" not in line
+            re.sub(r"@[0-9a-f]{40}", "@<sha>", line)
+            for line in ci_text.splitlines() if "llvm.pin" not in line
         )
         self.assertNotIn(major, body_without_pin_parse_line,
                           "LLVM 메이저 버전(%s)이 하드코딩된 것으로 보인다" % major)
