@@ -142,6 +142,25 @@ agents    run the RFC-0006 agent cycle over a source
 - **breaking**: 기존 서브커맨드 제거·이름 변경, 필수 인자 의미 변경,
   성공 판정을 바꾸는 종료 코드 변경.
 
+## 지원 Python 버전
+
+`pyproject.toml`의 `requires-python = ">=3.11"`이 하한이고, 아래 표의 버전마다
+`ci.yml`의 `gate` 매트릭스 레그가 전체 스위트를 돌린다. 표·`classifiers`·매트릭스가
+같은 집합인지는 `impl/tests/test_python_support_matrix.py`가 검사한다. 업스트림
+상태는 <https://devguide.python.org/versions/> 기준이다(2026-11-02 확인).
+
+| Python | 업스트림 상태 | 업스트림 EOL | CI 레그 |
+|--------|---------------|--------------|---------|
+| 3.11 | security | 2027-10 | `gate (py3.11)` |
+| 3.12 | security | 2028-10 | `gate (py3.12)` |
+| 3.13 | security | 2029-10 | `gate (py3.13)` |
+| 3.14 | bugfix | 2030-10 | `gate (py3.14)` |
+
+- 하한을 올리는 것(표에서 버전을 빼는 것)은 breaking이다 — CHANGELOG `Changed`에
+  고지한다. 새 버전을 더하는 것은 breaking이 아니다.
+- `gate (py3.14)`는 2026-11-02 현재 `main` 브랜치 보호의 required check가 아니다 —
+  등록은 저장소 설정 작업이다([CI-GATES.md](CI-GATES.md)의 "required status check 후보").
+
 ## 이 문서가 다루지 않는 것
 
 - `.lnpl` 언어 어휘(동사/선언) 자체의 확장·축소 — 그 계약은 각 RFC가

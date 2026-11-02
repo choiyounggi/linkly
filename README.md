@@ -449,6 +449,23 @@ without them that number is the same but a few dozen cases error out on the miss
 toolchain. `bash scripts/dev_doctor.sh` exits 0 when the environment is complete, and
 otherwise prints exactly what is missing.
 
+Line and branch coverage come from the advisory `coverage (advisory)` CI job, which runs
+the same test modules as the `gate` legs (`scripts/ci_test_suite.py`) under
+`coverage run --branch`. Locally:
+
+```bash
+.venv/bin/pip install --require-hashes -r requirements-coverage.txt
+PYTHONPATH=impl .venv/bin/python -m coverage run --branch --source=impl/lnpl scripts/ci_test_suite.py
+.venv/bin/python -m coverage json -o coverage.json
+.venv/bin/python scripts/diff_coverage.py --coverage-json coverage.json
+```
+
+Baseline for `impl/lnpl` (2026-11-02, commit 03bc551, Python 3.13.1, coverage 7.17.0, macOS
+with the mode B toolchain on `PATH`): **line coverage 95.12% (13214/13892 statements), branch
+coverage 92.12% (5461/5928 branches)**. Only code the test process runs itself is counted —
+tests that start `python -m lnpl` in a child process add nothing to it. The CI job has
+no mode B toolchain, so its job summary reports its own figure.
+
 `mutation_check.py` removes one specification rule at a time — 77 of them — and
 requires the suite to go red for each. It begins with a **no-op control**: a mutation
 that provably cannot change behaviour, which must *survive*. That control is not

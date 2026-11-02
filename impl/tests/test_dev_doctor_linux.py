@@ -11,6 +11,7 @@ SDKROOT 무시)를 진단한다. Linux에는 그 문제 자체가 없으므로 `
 참고). 진짜 실행 파일 존재 여부로 테스트하면 그런 오차가 없다.
 """
 import os
+import shutil
 import stat
 import tempfile
 import unittest
@@ -129,6 +130,20 @@ class DarwinBranchUnchangedTest(unittest.TestCase):
 
         self.assertNotIn("n/a (Linux)", proc.stdout)
         self.assertNotIn("툴체인을 못 찾음", proc.stdout)
+
+
+class Python313MissingNoteTest(unittest.TestCase):
+    """에러 케이스(issue #246): python3.13이 없으면 3.14 venv 경고가 실측 원인대로 찍힌다."""
+
+    def test_missing_python313_prints_the_measured_cause(self):
+        controlled = os.pathsep.join(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+        self.assertIsNone(shutil.which("python3.13", path=controlled),
+                          "전제: 통제된 PATH에 python3.13이 없어야 이 분기가 돈다")
+        proc = _run_doctor(self, "Darwin", tools=())
+        self.assertIn("python3.13  : 없음", proc.stdout)
+        self.assertIn("libexpat", proc.stdout)
+        self.assertIn("uv venv --python 3.14 --seed", proc.stdout)
+        self.assertNotEqual(proc.returncode, 0)
 
 
 if __name__ == "__main__":

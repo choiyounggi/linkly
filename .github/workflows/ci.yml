@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -164,3 +164,62 @@ jobs:
 
       - name: Audit the lockfiles
         run: pip-audit --require-hashes -r requirements.txt -r requirements-serve.txt -r requirements-coverage.txt -r requirements-audit.txt
+
+  coverage:
+    name: coverage (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Install from lockfile (requirements.txt)
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install --require-hashes -r requirements-coverage.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
+
+      - name: Test suite under coverage (gate's module set, issue #247)
+        run: PYTHONPATH=impl python3 -m coverage run --branch --source=impl/lnpl scripts/ci_test_suite.py
+
+      - name: Coverage reports (xml + json)
+        if: always()
+        run: |
+          python3 -m coverage xml -o coverage.xml
+          python3 -m coverage json -o coverage.json
+
+      - name: Diff of this pull request (impl/lnpl)
+        if: always() && github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git diff --unified=0 --diff-filter=d --no-color "$BASE_SHA" "$GITHUB_SHA" -- impl/lnpl > pr.diff
+
+      - name: Coverage summary (advisory, job summary only)
+        if: always()
+        run: |
+          if [ -f pr.diff ]; then
+            python3 scripts/diff_coverage.py --coverage-json coverage.json --diff pr.diff > coverage-summary.md
+          else
+            python3 scripts/diff_coverage.py --coverage-json coverage.json > coverage-summary.md
+          fi
+          cat coverage-summary.md
+          cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage.json
+            coverage-summary.md
+          retention-days: 30
