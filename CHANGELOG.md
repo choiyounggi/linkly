@@ -62,6 +62,16 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   built without build isolation and installed `--no-deps`), and a new
   `pip-audit (lockfiles)` CI job audits them. `examples/deploy/Dockerfile`
   now pins its base image by digest.
+- Supply chain (issue #243): every GitHub Action in `.github/workflows/` is
+  pinned to a full commit SHA with a `# vX.Y.Z` comment
+  (`impl/tests/test_workflow_action_pins.py` fails on any floating `uses:`),
+  and `.github/dependabot.yml` opens weekly update PRs for the `pip`
+  lockfiles and the `github-actions` pins.
+- Release image (issue #235): the GHCR image is built for `linux/amd64` and
+  `linux/arm64` in one manifest list, with SBOM and provenance per platform;
+  the release job smoke-tests amd64 natively and checks that the arm64 image
+  starts under QEMU before pushing. `docs/RELEASING.md` gives the
+  `docker buildx imagetools inspect` digest check.
 
 ### Changed
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a

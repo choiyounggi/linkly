@@ -198,7 +198,7 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 5,720여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 6,030여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
 **RFC 78편 — 62편 `Accepted`, 13편 `Superseded`(RFC-0000은 RFC-0007로, RFC-0001·0002·0003·0008·0012·0014·0015·0016·0021·0025·0028·0038은 통합본 RFC-0066~0077로 — issue #268), RFC-0034·RFC-0048·RFC-0065는 `Draft`.** RFC-0007은
@@ -352,7 +352,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 5717 tests in 182.524s
+Ran 6029 tests in 207.793s
 OK (skipped=2)
 ```
 

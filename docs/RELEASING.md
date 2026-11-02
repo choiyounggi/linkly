@@ -87,6 +87,21 @@ CHANGELOG, 릴리스 노트 본문)와, 자동화가 실패했을 때의 로컬 
    충돌 경고가 난다. 위 레시피는 로컬에서 실측했다(`docker build`
    성공, 설치 후 `lnpl` 버전 불변, `/-/healthz` 여전히 200). PyPI
    발행의 사전 조건과 실패 복구는 아래 "PyPI 발행" 절을 본다.
+
+   이미지는 `linux/amd64`·`linux/arm64` 두 플랫폼을 한 manifest list로 push하고
+   SBOM·provenance attestation은 플랫폼마다 붙는다(issue #235). amd64는 러너에서
+   네이티브로 위 스모크를 돌리고, arm64는 QEMU 에뮬레이션으로
+   `docker run --platform linux/arm64` 기동(`/-/healthz` 200, 이미지 아키텍처
+   `arm64`, 로그에 `ERROR` 없음)을 확인한 뒤에만 push한다. 런타임 의존성은 해시
+   락파일 `requirements-serve.txt`에서 설치한다(issue #243). 릴리스 뒤 두 플랫폼이
+   실제로 올라갔는지 digest로 확인한다:
+   ```bash
+   docker buildx imagetools inspect ghcr.io/<owner>/linkly:vX.Y.Z
+   ```
+   `Manifests:` 아래 `Platform:` 줄에 `linux/amd64`와 `linux/arm64`가 하나씩,
+   그리고 attestation manifest인 `unknown/unknown`이 두 개 있어야 한다. 플랫폼이
+   하나라도 빠지면 그 태그의 `image` 잡 로그부터 본다.
+
    자동화가 실패하면 수동으로:
    ```
    gh release create vX.Y.Z --title "linkly vX.Y.Z — <한 줄 테마>" \
