@@ -23,7 +23,7 @@ lnpl = "lnpl.cli:main"
 # Pinned exactly, not floated: a new ruff release can add rules to a selected
 # family, which turns a green CI red with no change to this repo's code.
 [project.optional-dependencies]
-lint = ["ruff==0.16.5"]
+lint = ["ruff==0.17.3"]
 
 # Not published (PEP 735): pinned tool inputs for the hashed lockfiles that
 # CI and the two Dockerfiles install from (issue #243). Regenerate: docs/CI-GATES.md.
