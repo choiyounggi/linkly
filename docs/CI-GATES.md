@@ -1,5 +1,7 @@
 # CI 게이트 로스터와 운영 절차
 
+[English](CI-GATES.en.md) | **한국어**
+
 `ci.yml`의 결정론 게이트에 AI 게이트 4종을 얹는다. 이 문서는 그 전체 로스터,
 AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`schemas/ai-gate-verdict.schema.json`
 + `scripts/ai_gate_verdict.py` + `.github/workflows/_ai-gate.yml`), advisory→blocking
