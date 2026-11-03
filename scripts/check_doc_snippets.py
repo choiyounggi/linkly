@@ -20,6 +20,12 @@ exemption. `prelude` compiles the named file's contents ahead of the block's
 own body, for fragments that need earlier context from a real file. A block
 with no marker must compile standalone.
 
+It also checks bilingual parity: every X.md that has an X.en.md companion in
+the same directory must match it in ATX heading count per level, in the
+number of fenced code blocks, and in the text of each fenced block. An
+X.en.md with no X.md beside it is printed as an orphan and is not a
+violation.
+
 Exit codes: 0 pass, 1 violation(s) found, 2 usage/environment error.
 """
 import argparse
@@ -40,6 +46,8 @@ FENCE_START_RE = re.compile(r"^```lnpl\s*$")
 FENCE_END_RE = re.compile(r"^```\s*$")
 MARKER_RE = re.compile(r"^<!--\s*lnpl-check:\s*(.+?)\s*-->\s*$")
 LEADING_DASH_RE = re.compile(r"^[-—]+\s*")
+PARITY_HEADING_RE = re.compile(r"^(#{1,6})\s")
+EN_SUFFIX = ".en.md"
 
 
 class Violation:
@@ -185,6 +193,95 @@ def check_files(files, repo_root):
     return total_blocks, violations
 
 
+def _relative(path, repo_root):
+    try:
+        return path.relative_to(repo_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def doc_structure(path):
+    """Return (heading_counts, fences) of `path` for the bilingual parity check.
+
+    heading_counts maps an ATX level (1-6) to the number of headings outside
+    fenced blocks; a heading needs whitespace after its hashes, so `#113)` is
+    prose. fences is a list of (line, lines): the opening fence's 1-indexed
+    line and every line from the opening fence through the closing one. A
+    fence opens on a line starting with ``` and closes on a bare ``` line; an
+    unclosed fence runs to the end of the file.
+    """
+    heading_counts = {}
+    fences = []
+    current = None
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if current is not None:
+            current[1].append(line)
+            if FENCE_END_RE.match(line):
+                fences.append(current)
+                current = None
+        elif line.startswith("```"):
+            current = (number, [line])
+        else:
+            m = PARITY_HEADING_RE.match(line)
+            if m:
+                level = len(m.group(1))
+                heading_counts[level] = heading_counts.get(level, 0) + 1
+    if current is not None:
+        fences.append(current)
+    return heading_counts, fences
+
+
+def find_parity_pairs(files):
+    """Pair each X.md with its same-directory X.en.md. Returns (pairs, orphans).
+
+    A file in `files` is paired with its sibling on disk even when the sibling
+    is not in `files`, so --changed-only checks the unchanged edition too.
+    """
+    pairs = set()
+    orphans = set()
+    for f in files:
+        if f.name.endswith(EN_SUFFIX):
+            original = f.with_name(f.name[: -len(EN_SUFFIX)] + ".md")
+            if original.is_file():
+                pairs.add((original, f))
+            else:
+                orphans.add(f)
+        elif f.name.endswith(".md"):
+            companion = f.with_name(f.name[: -len(".md")] + EN_SUFFIX)
+            if companion.is_file():
+                pairs.add((f, companion))
+    return sorted(pairs), sorted(orphans)
+
+
+def check_parity(original, companion, repo_root):
+    """Violations of the parity rule between a doc and its .en.md companion."""
+    ko_rel = _relative(original, repo_root)
+    ko_heads, ko_fences = doc_structure(original)
+    en_heads, en_fences = doc_structure(companion)
+    violations = []
+    for level in range(1, 7):
+        ko_n, en_n = ko_heads.get(level, 0), en_heads.get(level, 0)
+        if ko_n != en_n:
+            violations.append(Violation(
+                companion, 1,
+                f"parity with {ko_rel}: H{level} headings {ko_n} in Korean, {en_n} in English",
+            ))
+    if len(ko_fences) != len(en_fences):
+        violations.append(Violation(
+            companion, 1,
+            f"parity with {ko_rel}: fenced blocks {len(ko_fences)} in Korean, "
+            f"{len(en_fences)} in English",
+        ))
+    else:
+        for index, (ko_fence, en_fence) in enumerate(zip(ko_fences, en_fences), 1):
+            if ko_fence[1] != en_fence[1]:
+                violations.append(Violation(
+                    companion, en_fence[0],
+                    f"parity with {ko_rel}: fenced block {index} differs from {ko_rel}:{ko_fence[0]}",
+                ))
+    return violations
+
+
 def _run_git(args, repo_root):
     return subprocess.run(["git"] + args, cwd=str(repo_root), capture_output=True, text=True)
 
@@ -252,6 +349,17 @@ def main(argv=None, repo_root=None):
 
     total_blocks, violations = check_files(files, repo_root)
     print(f"{total_blocks} lnpl block(s) examined")
+
+    pairs, orphans = find_parity_pairs(files)
+    for orphan in orphans:
+        original_name = orphan.name[: -len(EN_SUFFIX)] + ".md"
+        print(
+            f"orphan: {_relative(orphan, repo_root)} has no {original_name} "
+            "in the same directory — parity not checked"
+        )
+    print(f"{len(pairs)} doc pair(s) checked for parity")
+    for original, companion in pairs:
+        violations.extend(check_parity(original, companion, repo_root))
 
     if violations:
         print(f"{len(violations)} violation(s):")

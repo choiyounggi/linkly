@@ -210,6 +210,10 @@ RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영�
 [RFC-0001 Semantic IR](docs/rfc-0001-semantic-ir.en.md)에는 영어 요약이 있다 —
 나머지 스위트가 그것을 기준으로 정의된다.
 
+운영 문서에는 전문 영어판이 있다(영어판과 한국어 원문이 다르면 한국어 본문이 정본이다):
+[serving](docs/serving.en.md), [backends](docs/backends.en.md),
+[compatibility](docs/compatibility.en.md), [CI gates](docs/CI-GATES.en.md).
+
 ---
 
 ## RFC 스위트
@@ -491,6 +495,10 @@ examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
 scripts/validate_ir.py      스키마 검증 + 자기검사
 docs/rfc-0001-semantic-ir.en.md   RFC-0001 영어 요약 (RFC 본문은 한국어)
+docs/serving.en.md          docs/serving.md 영어판 (lnpl serve / WSGI)
+docs/backends.en.md         docs/backends.md 영어판 (capability 어댑터와 백엔드)
+docs/compatibility.en.md    docs/compatibility.md 영어판 (0.x 호환성 정책)
+docs/CI-GATES.en.md         docs/CI-GATES.md 영어판 (CI 게이트 로스터와 운영 절차)
 docs/GLOSSARY.md            용어 정본
 docs/RESEARCH-NOTES.md      설계 결정의 외부 근거
 docs/CONSISTENCY-CHECK.md   교차 정합성 판정(C1~C9)

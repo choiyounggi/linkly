@@ -277,5 +277,142 @@ class ChangedOnlyTest(unittest.TestCase):
             self.assertTrue(cds.is_shallow_repo(clone_root))
 
 
+KO_DOC = "# 제목\n\n## 하나\n\n```bash\necho hi\n```\n"
+EN_DOC = "# Title\n\n## One\n\n```bash\necho hi\n```\n"
+
+
+class BilingualParityTest(unittest.TestCase):
+    """X.md 와 같은 디렉터리의 X.en.md 사이의 구조 일치 검사 (이슈 #253)."""
+
+    def _pair(self, repo_root, ko=KO_DOC, en=EN_DOC):
+        write(repo_root / "docs" / "a.md", ko)
+        write(repo_root / "docs" / "a.en.md", en)
+
+    def test_a_matching_pair_exits_zero_and_is_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._pair(repo_root)
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("1 doc pair(s) checked for parity", out)
+
+    def test_a_heading_added_to_one_edition_only_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._pair(repo_root, en=EN_DOC + "\n## Two\n")
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("docs/a.en.md:1", out)
+            self.assertIn("H2 headings 1 in Korean, 2 in English", out)
+
+    def test_a_fence_missing_in_the_english_edition_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._pair(repo_root, en="# Title\n\n## One\n")
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("fenced blocks 1 in Korean, 0 in English", out)
+
+    def test_a_changed_line_inside_a_fence_fails(self):
+        en = EN_DOC.replace("echo hi", "echo hello")
+        self.assertNotEqual(en, EN_DOC)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._pair(repo_root, en=en)
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("docs/a.en.md:5", out)
+            self.assertIn("fenced block 1 differs from docs/a.md:5", out)
+
+    def test_the_language_switch_line_keeps_parity(self):
+        ko = KO_DOC.replace("\n\n", "\n\n[English](a.en.md) | **한국어**\n\n", 1)
+        self.assertNotEqual(ko, KO_DOC)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._pair(repo_root, ko=ko)
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 0, out)
+
+    def test_hash_lines_inside_a_fence_and_hash_number_prose_are_not_headings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.md"
+            write(path, "# 제목\n\n#113)를 재사용한다\n\n```toml\n# comment\n## also\n```\n")
+            heads, fences = cds.doc_structure(path)
+            self.assertEqual(heads, {1: 1})
+            self.assertEqual(len(fences), 1)
+            self.assertEqual(fences[0][0], 5)
+
+    def test_an_empty_pair_is_parity_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._pair(repo_root, ko="", en="")
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("1 doc pair(s) checked for parity", out)
+
+    def test_a_korean_doc_without_a_companion_is_not_a_violation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            write(repo_root / "docs" / "a.md", KO_DOC)
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("0 doc pair(s) checked for parity", out)
+            self.assertNotIn("orphan", out)
+
+    def test_an_orphan_english_doc_is_reported_and_rc_stays_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            write(repo_root / "docs" / "b.en.md", EN_DOC)
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("orphan: docs/b.en.md has no b.md in the same directory", out)
+
+    def test_an_original_in_another_directory_is_not_paired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            write(repo_root / "rfcs" / "b.md", KO_DOC)
+            write(repo_root / "docs" / "b.en.md", EN_DOC + "\n## Two\n")
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("orphan: docs/b.en.md", out)
+            self.assertIn("0 doc pair(s) checked for parity", out)
+
+    def test_changed_only_checks_the_unchanged_companion_of_a_changed_original(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_repo(repo_root)
+            self._pair(repo_root)
+            base = commit_all(repo_root, "base")
+            write(repo_root / "docs" / "a.md", KO_DOC + "\n## 둘\n")
+            commit_all(repo_root, "korean edition only")
+            rc, out = call_main(["--changed-only", "--base", base], repo_root)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("docs/a.en.md:1", out)
+            self.assertIn("H2 headings 2 in Korean, 1 in English", out)
+
+    def test_changed_only_checks_the_unchanged_original_of_a_changed_translation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_repo(repo_root)
+            self._pair(repo_root)
+            base = commit_all(repo_root, "base")
+            write(repo_root / "docs" / "a.en.md", EN_DOC + "\n## Two\n")
+            commit_all(repo_root, "english edition only")
+            rc, out = call_main(["--changed-only", "--base", base], repo_root)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("docs/a.en.md:1", out)
+            self.assertIn("H2 headings 1 in Korean, 2 in English", out)
+            self.assertNotIn("orphan", out)
+
+    def test_equal_grand_total_different_level_distribution_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._pair(repo_root, ko="# A\n\n# B\n", en="## A\n\n## B\n")
+            rc, out = call_main([], repo_root)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("H1 headings 2 in Korean, 0 in English", out)
+            self.assertIn("H2 headings 0 in Korean, 2 in English", out)
+
+
 if __name__ == "__main__":
     unittest.main()

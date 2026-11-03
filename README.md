@@ -295,6 +295,11 @@ The central one has an English summary:
 [RFC-0001 Semantic IR](docs/rfc-0001-semantic-ir.en.md) — the document the rest of the
 suite is defined against.
 
+The operator docs also have full English editions; where an edition and its Korean
+original disagree, the Korean text is normative: [serving](docs/serving.en.md),
+[backends](docs/backends.en.md), [compatibility](docs/compatibility.en.md) and
+[CI gates](docs/CI-GATES.en.md).
+
 ---
 
 ## The RFC suite
@@ -593,6 +598,10 @@ examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR
 scripts/validate_ir.py      Schema validation + self-test
 docs/rfc-0001-semantic-ir.en.md   English summary of RFC-0001 (the RFCs themselves are Korean)
+docs/serving.en.md          English edition of docs/serving.md (lnpl serve / WSGI)
+docs/backends.en.md         English edition of docs/backends.md (capability adapters and backends)
+docs/compatibility.en.md    English edition of docs/compatibility.md (0.x compatibility policy)
+docs/CI-GATES.en.md         English edition of docs/CI-GATES.md (CI gate roster and procedures)
 docs/GLOSSARY.md            Canonical terminology
 docs/RESEARCH-NOTES.md      External basis for design decisions
 docs/CONSISTENCY-CHECK.md   Cross-consistency verdicts (C1–C9)
