@@ -18,7 +18,7 @@ exit 0이면 준비된 것이다. exit 1이면 출력에 적힌 조치를 그대
 
 | 전제 | 빠뜨렸을 때 보이는 것 |
 |------|------------------------|
-| `python3.13` (system `python3`는 3.14) | `venv`가 `ensurepip`에서 죽어 **pip 없는 venv**가 생긴다. 이후 모든 `pip install`이 불가능한데 에러는 처음 한 번뿐이다 |
+| `python3.13` (Homebrew `python@3.14`의 venv는 깨진다) | `venv`가 `ensurepip`에서 죽어 **pip 없는 venv**가 생긴다 — pip가 `pyexpat`을 import할 때 macOS `/usr/lib/libexpat.1.dylib`에 없는 심볼을 찾기 때문이다(2026-11-02 실측, 3.14.6). 이후 모든 `pip install`이 불가능한데 에러는 처음 한 번뿐이다. 3.14가 필요하면 `uv venv --python 3.14 --seed <경로>` |
 | `.venv`에 `jsonschema` | `scripts/validate_ir.py --self-test`만 실패 — 무관해 보인다 |
 | `.venv`에 `lnpl` 콘솔 스크립트 (`pip install .`) | 훅이 "CLI 없음" 분기로 **우아하게** 빠져 3건이 엉뚱한 이유로 실패한다 |
 | LLVM 툴체인 + `CPATH`/`LIBRARY_PATH` | mode B 테스트가 대량으로 깨진다(실측 7 failures / 62 errors). `main`에서도 똑같이 재현되므로 **회귀가 아니다** |

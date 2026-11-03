@@ -84,8 +84,21 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   the release job smoke-tests amd64 natively and checks that the arm64 image
   starts under QEMU before pushing. `docs/RELEASING.md` gives the
   `docker buildx imagetools inspect` digest check.
+- CI (issue #246): the `gate` matrix adds Python 3.14 (no `continue-on-error`);
+  `pyproject.toml` declares the 3.11–3.14 classifiers (`requires-python` unchanged)
+  and docs/compatibility.md gains a supported-version table
+- CI (issue #247): an advisory `coverage (advisory)` job runs the gate's test modules
+  under `coverage run --branch`, uploads `coverage.xml`/`coverage.json`, and writes the
+  line/branch totals plus the pull request's diff coverage to the job summary
+  (`scripts/diff_coverage.py`); README Verification records the measured baseline
 
 ### Changed
+- `lnpl-mcp` (the MCP Streamable HTTP transport, issue #246 r2): a POST body
+  nested deeper than `MAX_JSON_NESTING_DEPTH` (64) is now rejected with 400
+  `-32700` (PARSE_ERROR) before `json.loads` runs, instead of relying on
+  `json.loads` to raise `RecursionError` — that depended on the Python
+  version, platform and thread, and CPython 3.14 on macOS no longer raises it
+  for some depths that 3.13 did.
 - **Breaking**: `lnpl serve` / `build_app()`: `POST /-/events/<slug>` now refuses a
   CloudEvents `id` longer than 255 bytes (UTF-8) with 400
   `cloudevents-id-too-long` (problem+json, E9) before any repository

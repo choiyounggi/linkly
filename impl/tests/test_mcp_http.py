@@ -461,6 +461,59 @@ class BodyLimitTest(HttpServerCase):
                 self.assertEqual(status, 400)
                 self.assertEqual(self.error_of(body)["code"], code)
 
+    def test_nesting_at_the_depth_ceiling_is_not_rejected_for_depth(self):
+        """issue #246 F1: a body nested exactly to the ceiling reaches the
+        dict check (and fails that, since it is an array) — the depth guard
+        itself did not reject it."""
+        depth = mcp_http.MAX_JSON_NESTING_DEPTH
+        raw = "[" * depth + "]" * depth
+        status, _, body = self.post(None, raw=raw)
+        self.assertEqual(status, 400)
+        error = self.error_of(body)
+        self.assertEqual(error["code"], mcp_server.INVALID_REQUEST)
+        self.assertEqual(error["message"], "a JSON-RPC message must be a single object")
+
+    def test_nesting_one_past_the_ceiling_is_a_parse_error(self):
+        """issue #246 F1: one level deeper than the ceiling is rejected before
+        json.loads ever runs, deterministically on every Python version."""
+        depth = mcp_http.MAX_JSON_NESTING_DEPTH + 1
+        raw = "[" * depth + "]" * depth
+        status, _, body = self.post(None, raw=raw)
+        self.assertEqual(status, 400)
+        self.assertEqual(self.error_of(body)["code"], mcp_server.PARSE_ERROR)
+
+    def test_brackets_inside_a_json_string_do_not_count_toward_depth(self):
+        """issue #246 F1: a string value full of literal '[' is one level of
+        real nesting — it must not be mistaken for 5000 levels."""
+        raw = '{"a": "' + "[" * 5000 + '"}'
+        status, _, body = self.post(None, raw=raw)
+        self.assertEqual(status, 400)
+        error = self.error_of(body)
+        self.assertEqual(error["code"], mcp_server.INVALID_REQUEST)
+        self.assertEqual(error["message"], "missing Mcp-Session-Id header")
+
+    def test_an_escaped_quote_keeps_the_string_open_past_many_brackets(self):
+        """issue #246 r2 F1: `\\"` is a literal quote, not the string's end —
+        the 65 '[' that follow must stay inside the string (real depth 1),
+        not be counted as 65 levels of real nesting."""
+        raw = '{"a": "\\"' + "[" * 65 + '", "b": 1}'
+        status, _, body = self.post(None, raw=raw)
+        self.assertEqual(status, 400)
+        error = self.error_of(body)
+        self.assertEqual(error["code"], mcp_server.INVALID_REQUEST)
+        self.assertEqual(error["message"], "missing Mcp-Session-Id header")
+
+    def test_many_shallow_sibling_objects_do_not_accumulate_depth(self):
+        """issue #246 r2 F2: 65 flat `{}` siblings inside one array is real
+        depth 2 (array, then each object) — depth must fall back to 1
+        between siblings, not keep climbing as if it never closed."""
+        raw = "[" + ",".join(["{}"] * 65) + "]"
+        status, _, body = self.post(None, raw=raw)
+        self.assertEqual(status, 400)
+        error = self.error_of(body)
+        self.assertEqual(error["code"], mcp_server.INVALID_REQUEST)
+        self.assertEqual(error["message"], "a JSON-RPC message must be a single object")
+
     def test_a_body_of_exactly_the_cap_is_accepted(self):
         sid = self.initialize()
         data = json.dumps(compile_call({"text": CLEAN})).encode("utf-8")

@@ -30,6 +30,12 @@ ENDPOINT = "/mcp"
 TOKEN_ENV = "LNPL_MCP_TOKEN"
 MIN_TOKEN_BYTES = 32            # mirrors drivers.MIN_SECRET_BYTES
 MAX_BODY_BYTES = 1 << 20        # same value as wsgi.MAX_BODY_BYTES
+MAX_JSON_NESTING_DEPTH = 64      # JSON-RPC envelopes here (initialize, tools/*, resources,
+                                 # prompts) are a handful of levels deep; nothing legitimate
+                                 # nests past 64. Checked by counting bytes (never recursion)
+                                 # before json.loads runs, so rejection does not depend on
+                                 # whether THIS interpreter/platform/thread raises
+                                 # RecursionError for a given depth (issue #246 F1).
 MAX_SESSIONS = 64
 REQUEST_TIMEOUT_S = 30.0        # per socket read
 TOOL_TIMEOUT_S = 10.0           # wall clock per tools/call
@@ -70,6 +76,37 @@ def origin_allowed(origin):
     if parts.path or parts.query or parts.fragment:
         return False
     return parts.scheme == "http" and parts.hostname in LOOPBACK_ORIGIN_HOSTS
+
+
+def _exceeds_max_nesting(data, limit=MAX_JSON_NESTING_DEPTH):
+    """True if the JSON bytes `data` nest `{`/`[` deeper than `limit`, scanned
+    byte-by-byte (no recursion). Bytes inside a JSON string do not count —
+    the scan tracks string/escape state so a string full of literal '[' is
+    not mistaken for real nesting."""
+    depth = max_depth = 0
+    in_string = False
+    escape_next = False
+    for byte in data:
+        if in_string:
+            if escape_next:
+                escape_next = False
+            elif byte == 0x5C:          # \
+                escape_next = True
+            elif byte == 0x22:          # "
+                in_string = False
+            continue
+        if byte == 0x22:                # "
+            in_string = True
+        elif byte == 0x7B or byte == 0x5B:   # { [
+            depth += 1
+            if depth > max_depth:
+                max_depth = depth
+                if max_depth > limit:
+                    return True
+        elif byte == 0x7D or byte == 0x5D:   # } ]
+            if depth > 0:
+                depth -= 1
+    return max_depth > limit
 
 
 def _tool_error(mid, text):
@@ -329,6 +366,8 @@ class McpRequestHandler(http.server.BaseHTTPRequestHandler):
             return None
         data = self.rfile.read(length)
         try:
+            if _exceeds_max_nesting(data):
+                raise ValueError("JSON nesting exceeds MAX_JSON_NESTING_DEPTH")
             message = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, ValueError, RecursionError):
             self._send_error_json(400, mcp_server.PARSE_ERROR, "invalid JSON")

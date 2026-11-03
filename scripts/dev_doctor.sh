@@ -25,8 +25,10 @@ if command -v python3.13 >/dev/null 2>&1; then
 else
   echo "python3.13  : 없음"
   note "brew install python@3.13"
-  note "system python3는 3.14일 수 있고, 그 venv는 ensurepip에서 죽어 pip 없는"
-  note "venv를 만든다 — 그러면 이후 pip install이 전부 조용히 불가능해진다."
+  note "Homebrew python@3.14(2026-11-02 실측 3.14.6)의 venv는 ensurepip에서 죽는다 — pip가"
+  note "pyexpat을 import할 때 macOS /usr/lib/libexpat.1.dylib에 없는 심볼(_XML_SetAllocTrackerActivationThreshold)을"
+  note "찾는다. pip 없는 venv에선 이후 pip install이 전부 조용히 불가능해진다."
+  note "3.14가 필요하면 uv가 관리하는 CPython을 쓴다: uv venv --python 3.14 --seed <경로>"
   PROBLEMS=1
 fi
 

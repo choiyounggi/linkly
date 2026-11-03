@@ -360,6 +360,22 @@ OK (skipped=2)
 참조). 없으면 개수는 같지만 수십 건이 툴체인 부재로 에러가 난다. `bash scripts/dev_doctor.sh`는
 환경이 갖춰졌으면 exit 0이고, 아니면 무엇이 빠졌는지 그대로 찍어준다.
 
+라인·분기 커버리지는 advisory `coverage (advisory)` CI 잡이 잰다. 그 잡은 `gate` 레그와
+같은 테스트 모듈(`scripts/ci_test_suite.py`)을 `coverage run --branch`로 돌린다. 로컬에서는:
+
+```bash
+.venv/bin/pip install --require-hashes -r requirements-coverage.txt
+PYTHONPATH=impl .venv/bin/python -m coverage run --branch --source=impl/lnpl scripts/ci_test_suite.py
+.venv/bin/python -m coverage json -o coverage.json
+.venv/bin/python scripts/diff_coverage.py --coverage-json coverage.json
+```
+
+`impl/lnpl` 기준선(2026-11-02, 커밋 03bc551, Python 3.13.1, coverage 7.17.0, 모드 B 툴체인이
+`PATH`에 있는 macOS): **라인 커버리지 95.12%(13214/13892 문장), 분기 커버리지 92.12%(5461/5928
+분기)**. 테스트 프로세스가 직접 실행한 코드만 센다 — 자식 프로세스로 `python -m lnpl`을
+띄우는 테스트는 이 수치에 더하지 않는다. CI 잡에는 모드 B 툴체인이 없어서 잡 요약에
+자기 수치를 따로 낸다.
+
 `mutation_check.py`는 명세 규칙을 하나씩 제거한다 — 77종 — 그리고 각각에 대해 스위트가
 빨간불이 되기를 요구한다. 맨 앞에는 **no-op 대조군**이 있다: 동작을 바꿀 수 없음이
 자명한 변형이고, 이것은 반드시 *생존*해야 한다. 이 대조군은 형식이 아니다. 이전 버전의
