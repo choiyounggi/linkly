@@ -2231,7 +2231,9 @@ def _build_parser(subparsers_out=None):
                          "only as a link, never adopted outright")
     sv.add_argument("--metrics", action="store_true",
                     help="expose `/-/metrics` (Prometheus text format: "
-                         "workflow run/duration/step-failure RED signals). "
+                         "workflow run/duration/step-failure, HTTP "
+                         "request/duration, cache-op and idempotency-claim "
+                         "counters, plus outbox/driver gauges). "
                          "Default: off — the path itself does not exist "
                          "and 404s")
     sv.add_argument("--idempotency-ttl", type=int, default=None, metavar="SECONDS",

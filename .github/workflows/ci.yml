@@ -41,7 +41,7 @@ jobs:
           # exercises its mode-B half, so it must NOT gain a skipUnless guard —
           # that would let the coverage evaporate silently on any machine
           # without the toolchain (see AGENTS.md's note on mode B failures).
-          # This job's legs (py3.11/3.12/3.13) have no mode-B toolchain on any
+          # This job's legs (py3.11/3.12/3.13/3.14) have no mode-B toolchain on any
           # of them, so test_repo_state stays excluded here — but it is no
           # longer uncovered: the modeb-linux job below installs the pinned
           # LLVM/MLIR toolchain and runs it directly (issue #161).

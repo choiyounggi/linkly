@@ -101,7 +101,7 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   in its directory is printed as an orphan and does not fail (issue #253).
 
 ### Changed
-- `lnpl-mcp` (the MCP Streamable HTTP transport, issue #246 r2): a POST body
+- `lnpl-mcp` (the MCP Streamable HTTP transport, issue #246): a POST body
   nested deeper than `MAX_JSON_NESTING_DEPTH` (64) is now rejected with 400
   `-32700` (PARSE_ERROR) before `json.loads` runs, instead of relying on
   `json.loads` to raise `RecursionError` — that depended on the Python

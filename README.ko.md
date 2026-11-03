@@ -491,6 +491,8 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
 rfcs/0000~0077              RFC (13편은 Superseded, 62편은 Accepted, 3편은 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
+editors/tree-sitter-lnpl/   생성된 tree-sitter 문법 + 하이라이트 쿼리(직접 손대지 말 것)
+editors/vscode/             VS Code 확장 뼈대: lnpl lsp 진단 + 생성된 TextMate 문법
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
 scripts/validate_ir.py      스키마 검증 + 자기검사

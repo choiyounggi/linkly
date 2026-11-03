@@ -117,18 +117,47 @@ class CoverageJobShapeTest(unittest.TestCase):
         checks = re.search(r"CHECKS='(.+)'", _read(BRANCH_PROTECTION_SCRIPT_PATH)).group(1)
         self.assertNotIn("coverage", checks)
 
+    def _check_ignore(self, path):
+        """`git check-ignore` resolves the ENCLOSING checkout when `cwd` has no
+        `.git` of its own — true for the mutation harness's tree copy
+        (`mutation_check.make_tree` copies the tree under `<repo>/.claude/tmp/`
+        with no `.git`), and that enclosing checkout's own `.gitignore` ignores
+        `.claude/tmp/`, making every path here "ignored" regardless of this
+        repo's own rules. Build a throwaway git repo holding only this repo's
+        root `.gitignore` and run the check there, with every inherited `GIT_*`
+        env var dropped first — that covers `GIT_DIR`/`GIT_WORK_TREE` (would
+        point git back at an enclosing checkout) and the `GIT_CONFIG_PARAMETERS`
+        / `GIT_CONFIG_COUNT`+`GIT_CONFIG_KEY_n`+`GIT_CONFIG_VALUE_n` families
+        (override config files outright, so a stray `core.excludesFile` set
+        through one of them would still apply inside the throwaway repo).
+        `HOME`/`XDG_CONFIG_HOME` are repointed at the throwaway dir and
+        `GIT_CONFIG_GLOBAL=os.devnull` + `GIT_CONFIG_NOSYSTEM=1` are set, so no
+        global or system config — however it would otherwise be found — can
+        contribute a `core.excludesFile` either. What this does NOT cover:
+        nested `.gitignore` files or `.git/info/exclude` of the real checkout
+        (irrelevant here — the five root paths under test have none)."""
+        os.makedirs(CLAUDE_TMP, exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix="gitignore-check-", dir=CLAUDE_TMP)
+        self.addCleanup(shutil.rmtree, tmp, True)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(HOME=tmp, XDG_CONFIG_HOME=tmp, GIT_CONFIG_NOSYSTEM="1",
+                   GIT_CONFIG_GLOBAL=os.devnull)
+        subprocess.run(["git", "init", "-q", tmp], check=True, env=env)
+        shutil.copy(os.path.join(REPO, ".gitignore"), os.path.join(tmp, ".gitignore"))
+        return subprocess.run(["git", "check-ignore", "-q", path], cwd=tmp, env=env)
+
     def test_gitignore_ignores_the_coverage_jobs_data_files(self):
         """issue #247 F2: `git check-ignore` actually ignores the paths the
         coverage job writes at the repo root — a real behavioural check, not
         just that the lines exist in .gitignore's text."""
         for path in (".coverage", ".coverage.123", "coverage.xml", "coverage.json", "htmlcov/"):
             with self.subTest(path=path):
-                proc = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO)
+                proc = self._check_ignore(path)
                 self.assertEqual(proc.returncode, 0)
 
     def test_gitignore_does_not_ignore_a_nested_coverage_json(self):
         """경계값: 루트가 아니면 안 지운다 — 과도한 패턴이 아님을 보장."""
-        proc = subprocess.run(["git", "check-ignore", "-q", "impl/tests/coverage.json"], cwd=REPO)
+        proc = self._check_ignore("impl/tests/coverage.json")
         self.assertEqual(proc.returncode, 1)
 
 
