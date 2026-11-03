@@ -1,5 +1,7 @@
 # 호환성 정책 (0.x)
 
+[English](compatibility.en.md) | **한국어**
+
 linkly는 아직 0.x다 — [Semantic Versioning](https://semver.org/)의 "무엇이든
 바뀔 수 있다"는 0.x 규칙을 그대로 따른다. 이 문서는 그 안에서도 **어느
 표면이 계약이고, 무엇이 바뀌면 [CHANGELOG.md](../CHANGELOG.md)의 `Changed`

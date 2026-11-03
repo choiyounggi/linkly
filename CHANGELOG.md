@@ -91,6 +91,14 @@ see [docs/compatibility.md](docs/compatibility.md) for what 0.x guarantees).
   under `coverage run --branch`, uploads `coverage.xml`/`coverage.json`, and writes the
   line/branch totals plus the pull request's diff coverage to the job summary
   (`scripts/diff_coverage.py`); README Verification records the measured baseline
+- English editions of the four operator docs: `docs/serving.en.md`,
+  `docs/backends.en.md`, `docs/compatibility.en.md` and `docs/CI-GATES.en.md`
+  are full translations (the Korean text stays normative), each Korean original
+  links its English edition on line 3, and both READMEs link all four.
+  `scripts/check_doc_snippets.py` now fails when a doc and its same-directory
+  `.en.md` companion differ in heading count per level, in the number of fenced
+  code blocks, or in the text of any fenced block; an `.en.md` with no original
+  in its directory is printed as an orphan and does not fail (issue #253).
 
 ### Changed
 - `lnpl-mcp` (the MCP Streamable HTTP transport, issue #246 r2): a POST body

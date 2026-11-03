@@ -1,5 +1,7 @@
 # 서빙 — `lnpl serve` / WSGI (이슈 #26, #80)
 
+[English](serving.en.md) | **한국어**
+
 `lnpl serve`는 컴파일된 모듈의 워크플로를 OpenAPI가 규정한 경로에 바인딩하고,
 요청마다 인터프리터(모드 A)를 한 번 실행한다: request body → payload 검증
 (워크플로 자신의 `validate` 스텝, #48 계약) → 실행 → 아래 매핑표에 따른 상태코드.
