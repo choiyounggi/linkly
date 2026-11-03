@@ -24,12 +24,23 @@ MCP 툴은 그 셋을 없앤다. 호출자는 구조화된 `diagnostics` 배열�
 클라이언트가 무엇을 기대했는지 모르는 채로 멈추는 것이 가장 나쁜 실패다.
 """
 
+import contextlib
+import io
 import json
 import os
 import sys
 import traceback
 
 PROTOCOL_VERSION = "2025-06-18"
+# Versions this server answers with (MCP lifecycle: echo a supported request,
+# otherwise answer our own). The HTTP transport rejects any other
+# MCP-Protocol-Version header with 400.
+SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
+
+# Every tool argument that names a server-side file or directory. Refused when
+# the caller is remote (handle(..., allow_paths=False)); the census test in
+# tests/test_mcp_exec_tools.py fails when a new argument is not classified.
+FILESYSTEM_ARGUMENTS = ("path", "root")
 SERVER_NAME = "lnpl"
 
 # JSON-RPC 2.0 표준 오류 코드.
@@ -68,6 +79,39 @@ def _read_source(arguments):
         raise ValueError("파일이 없다: %s" % path)
     with open(path, encoding="utf-8") as fh:
         return fh.read(), path
+
+
+def _load_document(arguments):
+    """`text` or `path` -> (IR document, compile diagnostics, origin) for the
+    execution tools. `path` may be a file or a directory (RFC-0031), and the
+    module name defaults to the CLI's rule so openapi/k8s output matches
+    `lnpl openapi` / `lnpl generate` byte for byte."""
+    text = arguments.get("text")
+    path = arguments.get("path")
+    if (text is None) == (path is None):
+        raise ValueError("`text` 또는 `path` 중 정확히 하나를 주어야 한다 "
+                         "(둘 다 주거나 둘 다 빠뜨렸다)")
+    if not isinstance(text if text is not None else path, str):
+        raise ValueError("`text` and `path` must be strings")
+    _version, parse, lower, _to_records = _lnpl()
+    if text is not None:
+        decls = parse(text)
+        name = arguments.get("module") or "mcp"
+        origin = "<text>"
+    else:
+        if not os.path.exists(path):
+            raise ValueError("파일이 없다: %s" % path)
+        from lnpl.lower import load_sources
+        # Private cli helper, imported on purpose (D17): openapi `info.title`
+        # and the k8s object name embed the module name, so parity with the
+        # CLI depends on this exact rule. The parity tests in
+        # tests/test_mcp_exec_tools.py fail if cli.py changes it.
+        from lnpl.cli import _module_name
+        decls = load_sources([path])
+        name = arguments.get("module") or _module_name([path])
+        origin = path
+    module = lower(decls, name)
+    return module.to_document(), module.diagnostics, origin
 
 
 def tool_compile(arguments):
@@ -183,6 +227,96 @@ def tool_spec(arguments):
     }
 
 
+def tool_run(arguments):
+    """Run one workflow on the fake backend + virtual clock (issue #250).
+    Repository, network, cache and clock are never passed to Interpreter,
+    so it builds its in-memory fakes and the virtual Clock(); the tool has
+    no argument that could select a real one."""
+    from lnpl.interp import Interpreter, refinement_index, sample_payload
+    from lnpl.repo_policy import default_rows
+    payload = arguments.get("payload")
+    if payload is not None and not isinstance(payload, dict):
+        raise ValueError("`payload` must be a JSON object")
+    no_row = arguments.get("no_row", False)
+    if not isinstance(no_row, bool):
+        raise ValueError("`no_row` must be true or false")
+    requested = arguments.get("workflow")
+    if requested is not None and not isinstance(requested, str):
+        raise ValueError("`workflow` must be a string")
+    document, diagnostics, _origin = _load_document(arguments)
+    to_records = _lnpl()[3]
+    ids = [n["id"] for n in document["nodes"] if n["kind"] == "Workflow"]
+    if not ids:
+        raise ValueError("no workflow to run: the source declares no workflow")
+    if not requested:
+        target = ids[0]
+    elif requested in ids:
+        target = requested
+    else:
+        raise ValueError("`workflow` %r is not a workflow of this source "
+                         "(valid: %s)" % (requested, ", ".join(ids)))
+    if payload is None:
+        entities = [n for n in document["nodes"] if n["kind"] == "Entity"]
+        payload = sample_payload(entities, refinement_index(document))
+    rows = {} if no_row else default_rows(document, target, payload)
+    interp = Interpreter(document, repo_rows=rows)
+    result = interp.run_workflow(target, payload)
+    return {"result": result,
+            "trace": interp.trace.to_dict(),
+            "diagnostics": to_records(list(diagnostics) + list(interp.diagnostics))}
+
+
+def tool_openapi(arguments):
+    """The OpenAPI document as TEXT — the exact bytes `lnpl openapi` prints."""
+    from lnpl.openapi import generate
+    document, _diagnostics, _origin = _load_document(arguments)
+    return json.dumps(generate(document), indent=2, ensure_ascii=False) + "\n"
+
+
+GENERATE_NAMES = ("compose", "k8s")
+
+
+def tool_generate(arguments):
+    """compose/k8s files as text; nothing is written (no run_generator, no
+    --out, no entry-point generators). stderr is captured so a skipped
+    capability's warning reaches the caller; redirect_stderr is process-wide,
+    which is safe because stdio serve() is single-threaded and every HTTP
+    tools/call runs in its own child process."""
+    from lnpl import deploy_gen
+    name = arguments.get("generator")
+    if name not in GENERATE_NAMES:
+        raise ValueError("`generator` must be one of: compose, k8s (got %r)" % (name,))
+    options = arguments.get("options")
+    if options is None:
+        options = {}
+    if not isinstance(options, dict):
+        raise ValueError("`options` must be a JSON object of string values")
+    for key, value in options.items():
+        if not isinstance(value, str):
+            raise ValueError("`options.%s` must be a string" % key)
+    document, _diagnostics, _origin = _load_document(arguments)
+    generator = deploy_gen.generate_compose if name == "compose" else deploy_gen.generate_k8s
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        files = generator(document, dict(options))
+    return {"generator": name,
+            "files": {fname: data.decode("utf-8") for fname, data in files.items()},
+            "warnings": [line for line in buf.getvalue().splitlines() if line.strip()]}
+
+
+_TEXT_ARGUMENT = {"type": "string",
+                  "description": "LNPL source as text. Use this to check "
+                                 "a draft before writing it to disk."}
+_SOURCE_PATH_ARGUMENT = {"type": "string",
+                         "description": "Path to a .lnpl file or a directory "
+                                        "of them. Give either `text` or "
+                                        "`path`, not both."}
+_MODULE_ARGUMENT = {"type": "string",
+                    "description": "Module name for the lowered IR "
+                                   "(default: mcp for `text`, the file or "
+                                   "directory name for `path`)."}
+
+
 TOOLS = [
     {
         "name": "lnpl_compile",
@@ -279,6 +413,79 @@ TOOLS = [
             "`loadable: false` rather than raising (issue #134)."),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "lnpl_run",
+        "description": (
+            "Run one workflow of LNPL source on the interpreter's deterministic "
+            "fake backend — in-memory repository, fake network, fake cache, "
+            "virtual clock; no real I/O and nothing written — and return the "
+            "same {result, trace, diagnostics} document `lnpl run --json` "
+            "prints. `diagnostics` is always present (an empty list when "
+            "clean). Use this instead of shelling out to `lnpl run`, whose "
+            "diagnostics go to stderr."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": _TEXT_ARGUMENT,
+                "path": _SOURCE_PATH_ARGUMENT,
+                "module": _MODULE_ARGUMENT,
+                "workflow": {"type": "string",
+                             "description": "Workflow node id to run, e.g. "
+                                            "wf.save (default: the first "
+                                            "workflow)."},
+                "payload": {"type": "object",
+                            "description": "Input payload (default: a sample "
+                                           "payload derived from the "
+                                           "entities)."},
+                "no_row": {"type": "boolean",
+                           "description": "Start from an empty repository "
+                                          "instead of the default seeded rows "
+                                          "(default: false)."},
+            },
+        },
+    },
+    {
+        "name": "lnpl_openapi",
+        "description": (
+            "Return the OpenAPI 3.1 document of LNPL source as text — "
+            "byte-identical to what `lnpl openapi <path>` prints for the same "
+            "file. Nothing is written."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": _TEXT_ARGUMENT,
+                "path": _SOURCE_PATH_ARGUMENT,
+                "module": _MODULE_ARGUMENT,
+            },
+        },
+    },
+    {
+        "name": "lnpl_generate",
+        "description": (
+            "Run the built-in `compose` or `k8s` deployment generator on LNPL "
+            "source and return {generator, files: {name: text}, warnings} — "
+            "the same bytes `lnpl generate <name> --out DIR` writes, plus any "
+            "skipped-capability warnings. Nothing is written. `options` takes "
+            "the `--set` keys as strings (compose: image, port, source, "
+            "postgres_image, redis_image; k8s: image, name, replicas, "
+            "cpu_request, cpu_limit, memory, ingress_host, hpa_min, hpa_max, "
+            "hpa_cpu, pdb, network_policy, egress_cidrs)."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "generator": {"type": "string", "enum": ["compose", "k8s"],
+                              "description": "Which generator to run."},
+                "text": _TEXT_ARGUMENT,
+                "path": _SOURCE_PATH_ARGUMENT,
+                "module": _MODULE_ARGUMENT,
+                "options": {"type": "object",
+                            "additionalProperties": {"type": "string"},
+                            "description": "Generator options as strings, the "
+                                           "keys `--set` accepts."},
+            },
+            "required": ["generator"],
+        },
+    },
 ]
 
 HANDLERS = {
@@ -287,16 +494,24 @@ HANDLERS = {
     "lnpl_spec": tool_spec,
     "lnpl_vocabulary": tool_vocabulary,
     "lnpl_capabilities": tool_capabilities,
+    "lnpl_run": tool_run,
+    "lnpl_openapi": tool_openapi,
+    "lnpl_generate": tool_generate,
 }
 
 
 def _text_content(payload):
+    if isinstance(payload, str):
+        return [{"type": "text", "text": payload}]
     return [{"type": "text", "text": json.dumps(payload, ensure_ascii=False,
                                                 indent=2, sort_keys=True)}]
 
 
-def handle(message):
-    """요청 하나를 처리한다. 알림이면 None을 돌려 아무것도 쓰지 않게 한다."""
+def handle(message, *, allow_paths=True):
+    """요청 하나를 처리한다. 알림이면 None을 돌려 아무것도 쓰지 않게 한다.
+
+    `allow_paths=False` (the HTTP transport) refuses every argument in
+    `FILESYSTEM_ARGUMENTS` before any tool runs."""
     if message.get("jsonrpc") != "2.0":
         return _error(message.get("id"), INVALID_REQUEST,
                       "jsonrpc must be \"2.0\"")
@@ -315,7 +530,8 @@ def handle(message):
             version = "unknown"
         requested = (message.get("params") or {}).get("protocolVersion")
         return _ok(mid, {
-            "protocolVersion": requested or PROTOCOL_VERSION,
+            "protocolVersion": (requested if requested in SUPPORTED_PROTOCOL_VERSIONS
+                                else PROTOCOL_VERSION),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": version},
         })
@@ -331,8 +547,18 @@ def handle(message):
             return _error(mid, INVALID_PARAMS,
                           "unknown tool %r (have: %s)"
                           % (name, ", ".join(sorted(HANDLERS))))
+        arguments = params.get("arguments") or {}
+        if not allow_paths:
+            for key in FILESYSTEM_ARGUMENTS:
+                if key in arguments:
+                    return _ok(mid, {
+                        "content": [{"type": "text",
+                                     "text": "ValueError: argument `%s` is disabled on the "
+                                             "HTTP transport; send the source as `text`" % key}],
+                        "isError": True,
+                    })
         try:
-            payload = handler(params.get("arguments") or {})
+            payload = handler(arguments)
         except Exception as exc:
             # 도구 실행의 실패는 프로토콜 오류가 아니다 — 모델이 읽고 고칠 수
             # 있도록 isError로 되돌린다(MCP 규약).

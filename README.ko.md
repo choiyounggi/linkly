@@ -198,7 +198,7 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 - OpenAPI가 IR에서 생성되고, 골든 시나리오도 마찬가지다 — 손으로 유지하는 파일이 아니라
   컴파일된다. 에이전트 9역할도 전부 구현됐다.
 
-**테스트 5,720여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
+**테스트 6,190여 개 전부 통과**, 그리고 그 스위트가 실제로 실패할 수 있음을 증명하는
 77종 뮤테이션 하네스. 둘 다 [검증](#검증)의 명령으로 재현한다.
 
 **RFC 78편 — 62편 `Accepted`, 13편 `Superseded`(RFC-0000은 RFC-0007로, RFC-0001·0002·0003·0008·0012·0014·0015·0016·0021·0025·0028·0038은 통합본 RFC-0066~0077로 — issue #268), RFC-0034·RFC-0048·RFC-0065는 `Draft`.** RFC-0007은
@@ -209,6 +209,10 @@ workflow Login -> completed  (33ms, correlation_id=cid-0001)
 RFC 본문은 한국어이고, 식별자·키워드·스키마 필드명은 영어다. 중심 문서인
 [RFC-0001 Semantic IR](docs/rfc-0001-semantic-ir.en.md)에는 영어 요약이 있다 —
 나머지 스위트가 그것을 기준으로 정의된다.
+
+운영 문서에는 전문 영어판이 있다(영어판과 한국어 원문이 다르면 한국어 본문이 정본이다):
+[serving](docs/serving.en.md), [backends](docs/backends.en.md),
+[compatibility](docs/compatibility.en.md), [CI gates](docs/CI-GATES.en.md).
 
 ---
 
@@ -352,13 +356,29 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 5717 tests in 182.524s
+Ran 6191 tests in 224.408s
 OK (skipped=2)
 ```
 
 모드 B 테스트에는 MLIR/LLVM 도구가 `PATH`에 있어야 한다([모드 B](#모드-b--네이티브-바이너리)
 참조). 없으면 개수는 같지만 수십 건이 툴체인 부재로 에러가 난다. `bash scripts/dev_doctor.sh`는
 환경이 갖춰졌으면 exit 0이고, 아니면 무엇이 빠졌는지 그대로 찍어준다.
+
+라인·분기 커버리지는 advisory `coverage (advisory)` CI 잡이 잰다. 그 잡은 `gate` 레그와
+같은 테스트 모듈(`scripts/ci_test_suite.py`)을 `coverage run --branch`로 돌린다. 로컬에서는:
+
+```bash
+.venv/bin/pip install --require-hashes -r requirements-coverage.txt
+PYTHONPATH=impl .venv/bin/python -m coverage run --branch --source=impl/lnpl scripts/ci_test_suite.py
+.venv/bin/python -m coverage json -o coverage.json
+.venv/bin/python scripts/diff_coverage.py --coverage-json coverage.json
+```
+
+`impl/lnpl` 기준선(2026-11-02, 커밋 03bc551, Python 3.13.1, coverage 7.17.0, 모드 B 툴체인이
+`PATH`에 있는 macOS): **라인 커버리지 95.12%(13214/13892 문장), 분기 커버리지 92.12%(5461/5928
+분기)**. 테스트 프로세스가 직접 실행한 코드만 센다 — 자식 프로세스로 `python -m lnpl`을
+띄우는 테스트는 이 수치에 더하지 않는다. CI 잡에는 모드 B 툴체인이 없어서 잡 요약에
+자기 수치를 따로 낸다.
 
 `mutation_check.py`는 명세 규칙을 하나씩 제거한다 — 77종 — 그리고 각각에 대해 스위트가
 빨간불이 되기를 요구한다. 맨 앞에는 **no-op 대조군**이 있다: 동작을 바꿀 수 없음이
@@ -471,10 +491,16 @@ IR이 **구문이 아니라 의미**(`BusinessRule` / `Effect` 노드)이고, �
 CHARTER.md                  0단계 비전 문서(원문 보존 — 정본 설계는 rfcs/)
 rfcs/0000~0077              RFC (13편은 Superseded, 62편은 Accepted, 3편은 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
+editors/tree-sitter-lnpl/   생성된 tree-sitter 문법 + 하이라이트 쿼리(직접 손대지 말 것)
+editors/vscode/             VS Code 확장 뼈대: lnpl lsp 진단 + 생성된 TextMate 문법
 examples/login.lnpl         골든 시나리오 소스
 examples/login.lir.json     같은 시나리오의 IR
 scripts/validate_ir.py      스키마 검증 + 자기검사
 docs/rfc-0001-semantic-ir.en.md   RFC-0001 영어 요약 (RFC 본문은 한국어)
+docs/serving.en.md          docs/serving.md 영어판 (lnpl serve / WSGI)
+docs/backends.en.md         docs/backends.md 영어판 (capability 어댑터와 백엔드)
+docs/compatibility.en.md    docs/compatibility.md 영어판 (0.x 호환성 정책)
+docs/CI-GATES.en.md         docs/CI-GATES.md 영어판 (CI 게이트 로스터와 운영 절차)
 docs/GLOSSARY.md            용어 정본
 docs/RESEARCH-NOTES.md      설계 결정의 외부 근거
 docs/CONSISTENCY-CHECK.md   교차 정합성 판정(C1~C9)

@@ -1,0 +1,40 @@
+# schedule.lnpl — token benchmark scenario "schedule" (issue #251).
+# DailyRollup is triggered externally and runs the one RollupService workflow.
+
+capability postgres
+
+entity Report
+    field
+        id UUID
+        total Integer
+
+event DailyRollup on schedule daily at 00:00 UTC
+
+service RollupService
+    policy
+        retry 3
+        timeout 2s
+
+workflow BuildReport
+    find report
+    list report where total > 0
+    set report.total to count report
+    update report
+    spec
+        given
+            valid report
+        when
+            buildReport
+        expect
+            completed
+            effects complete
+            rows Report 1
+    spec
+        given
+            empty repository
+        when
+            buildReport
+        expect
+            failed
+            effects complete
+            rows Report 0

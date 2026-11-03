@@ -114,7 +114,7 @@ jobs:
       !contains(github.event.pull_request.labels.*.name, 'skip-ai-gate')
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # D12: merge-base 계산에 전체 히스토리가 필요하다
 
@@ -349,7 +349,7 @@ jobs:
 
       - name: 판정 환경 준비
         if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
@@ -359,9 +359,13 @@ jobs:
         # `import jsonschema`하는데(런타임 의존성, pyproject.toml), 이 재사용
         # 워크플로에 파이썬 설치·의존성 설치가 없으면 판정 스텝이 임포트
         # 단계에서 죽는다 — advisory 기본값 아래서는 그 죽음이 초록불로
-        # 보인다(리뷰 r1 F1). `ci.yml`과 같은 방식으로 `pip install .`.
+        # 보인다(리뷰 r1 F1). `ci.yml`과 같은 락파일 설치 4줄.
         if: steps.check_secret.outputs.skip != 'true' && steps.changed_files.outputs.count != '0'
-        run: python3 -m pip install --upgrade pip && pip install .
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
 
       # generic-http는 두 번째 러너다(issue #252). 위에서 준비한 3.13에서
       # scripts/ai_gate_http_runner.py를 돌린다. 프롬프트·diff·PR 텍스트(issue #260)는 체크아웃 밖의

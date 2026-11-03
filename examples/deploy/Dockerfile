@@ -15,20 +15,24 @@
 # for how this fits the release procedure.
 
 # --- builder: produce the lnpl wheel (data files included — verified #60) ---
-FROM python:3.13-slim-bookworm AS builder
+FROM python:3.13-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed AS builder
 WORKDIR /src
-COPY --from=repo pyproject.toml README.md LICENSE ./
+COPY --from=repo requirements.txt pyproject.toml README.md LICENSE ./
 COPY --from=repo impl ./impl
 COPY --from=repo mlir ./mlir
 COPY --from=repo kb ./kb
-RUN pip wheel --no-deps --wheel-dir /wheels .
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
+    && pip wheel --no-deps --no-build-isolation --wheel-dir /wheels .
 
 # --- runtime: install the wheel + gunicorn (not a project dependency; this
 # image is the only place it is installed, per docs/serving.md) ---
-FROM python:3.13-slim-bookworm
+FROM python:3.13-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed
 WORKDIR /app
+COPY --from=repo requirements-serve.txt /tmp/
 COPY --from=builder /wheels/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl gunicorn && rm -rf /tmp/*.whl
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements-serve.txt \
+    && pip install --no-cache-dir --no-deps /tmp/*.whl \
+    && rm -rf /tmp/*.whl /tmp/requirements-serve.txt
 COPY --from=repo examples/linkhub.lnpl ./examples/linkhub.lnpl
 
 ENV LNPL_SOURCE=/app/examples/linkhub.lnpl \

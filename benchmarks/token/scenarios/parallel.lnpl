@@ -1,0 +1,47 @@
+# parallel.lnpl — token benchmark scenario "parallel" (issue #251).
+# Restock reads a product, then caches it and creates an order concurrently.
+
+capability postgres
+capability redis
+
+entity Product
+    field
+        id UUID
+        stock Integer
+
+entity Order
+    field
+        id UUID
+        quantity Integer
+
+service FanOutService
+    policy
+        parallel 2
+    performance
+        cache 5m
+
+workflow Restock
+    find product
+    parallel
+    cache product
+    create order
+    merge
+    spec
+        given
+            valid product
+        when
+            restock
+        expect
+            completed
+            effects complete
+            rows Order 1
+            cache written
+    spec
+        given
+            empty repository
+        when
+            restock
+        expect
+            failed
+            effects complete
+            rows Order 0

@@ -1,5 +1,7 @@
 # CI 게이트 로스터와 운영 절차
 
+[English](CI-GATES.en.md) | **한국어**
+
 `ci.yml`의 결정론 게이트에 AI 게이트 4종을 얹는다. 이 문서는 그 전체 로스터,
 AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`schemas/ai-gate-verdict.schema.json`
 + `scripts/ai_gate_verdict.py` + `.github/workflows/_ai-gate.yml`), advisory→blocking
@@ -13,7 +15,7 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 
 | 게이트 | 결정론/AI | 트리거 | 현재 상태 | 무엇을 잡는가 |
 |--------|-----------|--------|-----------|----------------|
-| 테스트 스위트(matrix) | 결정론 | `ci.yml` — `pull_request`, `push: main` | blocking | `impl/tests/` 회귀 |
+| 테스트 스위트(matrix) | 결정론 | `ci.yml` — `pull_request`, `push: main` | blocking | `impl/tests/` 회귀(py3.11·3.12·3.13·3.14 — `gate (py3.14)`는 아직 required가 아니다, issue #246) |
 | RFC lint(`rfc_lint.py`) | 결정론 | `ci.yml` | blocking | RFC-0007 §3 번호·제목, §3 번호 중복·공백, §2.1 Status 어휘, §7 템플릿 섹션(이름·순서), §2.1 CHANGELOG 인용(인용한 RFC가 rfcs/에 있고 Accepted 또는 Superseded — issue #249), §2.2 `Updated-by:` 역링크(Accepted RFC의 `Updates:` 대상마다 — issue #263), §2.2 규칙 7 문서 수(Accepted RFC의 한 절을 읽으려고 여는 문서가 2개 이하, `Updated-by:`마다 절 이름 묶음 — issue #268) |
 | 참조 drift(`gen_plugin_references.py --check`) | 결정론 | `ci.yml` | blocking | 플러그인 스킬 참조 문서가 컴파일러 상수에서 재생성한 것과 다름 |
 | 버전 동기(`check_version_sync.py`) | 결정론 | `ci.yml` | blocking | 루트 `pyproject.toml`과 플러그인 manifest 버전 드리프트 |
@@ -23,9 +25,17 @@ AI 게이트가 산문이 아니라 스키마 검증으로 판정되는 배관(`
 | `golden-approval` | AI | `_ai-gate.yml`(t4) | advisory | 골든 시나리오 변경의 타당성 |
 | `test-quality` | AI | `_ai-gate.yml`(t5) | blocking + required (2026-10-22 승격 — 승격 기준 예외, 아래 "advisory → blocking 승격 절차") | 자기 코드를 자기가 평가하는 테스트(구현/평가 미분리), 가짜 통과 |
 | `prose-factcheck` | AI | `_ai-gate.yml`(t5) | advisory | PR 산문(설명·주석)이 실제 diff와 어긋나는 주장 |
-| 릴리스 워크플로 배선(`test_release_workflow.py`의 `image`·`publish-pypi` 잡과 태그·버전 가드 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 배선 회귀(`environment: pypi`, `id-token: write` 단독 권한, `needs: [build, release]`, `if: false` 부활, `skip-existing` 추가, 액션 SHA 핀), `gates`의 태그·`pyproject.toml` 버전 불일치 미검출 |
+| 릴리스 워크플로 배선(`test_release_workflow.py`의 `image`·`publish-pypi` 잡과 태그·버전 가드 단언) | 결정론 | `release.yml`(태그 push) | blocking(릴리스 전용) | `image` 잡 누락, smoke-before-push 순서, 멀티아키(`platforms: linux/amd64,linux/arm64`, QEMU 액션 SHA 핀이 arm64 빌드·기동 확인·buildx·로그인보다 앞섬, arm64 기동 확인 스크립트의 200·`arm64`·`ERROR` 판정을 스텁으로 실행 검증), 태그 목록(`vX.Y.Z`+`X.Y`, `latest` 없음), `run:` 블록의 `github.` 식 금지, `permissions` 범위, `publish-pypi` 배선 회귀(`environment: pypi`, `id-token: write` 단독 권한, `needs: [build, release]`, `if: false` 부활, `skip-existing` 추가, 액션 SHA 핀), `gates`의 태그·`pyproject.toml` 버전 불일치 미검출 |
 | 요청당 결정적 카운터(`test_perf_counters.py`) | 결정론 | `ci.yml` — 테스트 스위트(matrix) 잡 안의 한 모듈 | blocking(`gate` 잡 경유) | 요청 1건당 DB 연결 생성·닫힘 수, 저장소 문장 수, 드라이버 생성 수의 회귀(예: 요청마다 연결을 하나 더 여는 변경) |
 | 주간 부하 리포트(`load-weekly.yml`) | 결정론 | `load-weekly.yml` — `schedule`(월요일 07:00 UTC) + `workflow_dispatch` | report-only(비-required) | 절대 처리량·지연 추이(gunicorn sync 워커 2개, fake·sqlite 백엔드, 50/100/200/400 rps). 판정으로 쓰지 않는다 |
+| 락파일·설치 불변식(`test_dependency_lockfile.py`) | 결정론 | `ci.yml` — 테스트 스위트(matrix) 잡 안의 한 모듈 | blocking(`gate` 잡 경유) | 네 락파일(`requirements*.txt`)의 해시 누락·범위 핀·헤더 명령 변경·3.11 하한 소실·도구가 다른 락파일로 샘·`pyproject.toml` 그룹 핀과 락파일 핀 불일치, 그리고 워크플로·`docker/Dockerfile`·`examples/deploy/Dockerfile`의 해시 없는 `pip install`/`pip wheel`/`python -m build` 줄(`pip3`·`python3 -m` 표기 포함, 허용 목록 밖)과 두 Dockerfile의 다이제스트 없는 `FROM` |
+| pip-audit(`ci.yml`의 `pip-audit (lockfiles)` 잡) | 결정론 | `ci.yml` — `pull_request`, `push: main` | blocking(비-required — required 등록은 저장소 설정) | 네 락파일의 고정 버전에 공개된 취약점. py3.11에서 돌려 환경 마커가 붙은 `typing-extensions`까지 감사한다 |
+| 액션 SHA 핀 불변식(`test_workflow_action_pins.py`) | 결정론 | `ci.yml` — 테스트 스위트(matrix) 잡 안의 한 모듈 | blocking(`gate` 잡 경유) | `.github/workflows/*.yml`의 외부 액션 `uses:`가 40자 커밋 SHA + `# vX.Y.Z` 주석 형태가 아닌 줄(가변 태그 `@v7`, 브랜치, 짧거나 긴 SHA, 주석 누락)을 파일:줄로 보고. 로컬 재사용 워크플로(`./`)와 주석 줄은 제외 |
+| 커버리지(`ci.yml`의 `coverage (advisory)` 잡) | 결정론 | `ci.yml` — `pull_request`, `push: main` | advisory(비-required, `--fail-under` 없음 — 아래 "coverage 승격 경로") | `impl/lnpl`의 라인·분기 커버리지 총계와 PR이 바꾼 실행 가능 줄의 diff 커버리지를 잡 요약과 `coverage-report` 아티팩트(`coverage.xml`·`coverage.json`·`coverage-summary.md`)로 보고. `scripts/ci_test_suite.py`로 `gate`와 같은 모듈 집합을 `coverage run --branch`로 돌리고, 테스트 프로세스 안에서 실행된 코드만 센다(issue #247). 머지를 막지 않는다 |
+
+락파일: 의존성 핀은 `pyproject.toml`의 `[dependency-groups]`(build·coverage·serve·audit)와 `lint` extra에 있고, 해시 락파일 넷은 `uvx uv@0.11.5 pip compile ... --universal --python-version 3.11 --generate-hashes`로 만든다(명령 전문은 각 파일 둘째 줄). 갱신은 네 명령을 그 순서(requirements.txt → -serve → -coverage → -audit)로 다시 돌리고 `git diff --exit-code requirements.txt requirements-serve.txt requirements-coverage.txt requirements-audit.txt`로 확인한다. `requirements-coverage.txt`는 `coverage (advisory)` 잡이 설치 스텝 둘째 줄 `pip install --require-hashes -r requirements-coverage.txt`로 설치한다(허용 목록에 있는 줄이다).
+
+actionlint·Scorecard: 워크플로 문법·셸 검사는 CI 게이트가 아니라 로컬 확인이다 — `docker run --rm -v "$PWD:/repo:ro" --workdir /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667`가 rc 0이어야 한다. OpenSSF Scorecard `Pinned-Dependencies`는 v5.6.0 바이너리로 확인한다. 작업 트리 루트에서 직접 돌리면 `.venv`의 심볼릭 링크에서 죽으므로, `git ls-files -co --exclude-standard`에서 `.venv/`·`.claude/`를 뺀 사본 디렉터리를 만들어 `scorecard --local=<사본> --checks=Pinned-Dependencies --show-details`로 돌린다. 이때 남는 경고는 배포하지 않는 다음 4건뿐이다(2026-10-29 판정으로 범위 밖): `qa/probe-v0.8/cases/s4-ops-deploy/src/Dockerfile:9`·`:22`(베이스 이미지 digest 없음), `benchmarks/load/i195/run_linux.sh:43`·`:44`(해시 없는 `pip install`). Scorecard가 보지 않는 잔여 하나: `release.yml` `image` 잡의 `docker/setup-qemu-action`이 받는 `tonistiigi/binfmt:latest`는 digest로 고정되지 않은 채 특권 컨테이너로 돈다(로그인 스텝보다 앞서 돌아 레지스트리 자격 증명은 아직 디스크에 없다).
 
 AI 게이트 4종의 체크 이름은 `rfc-conformance / gate`, `golden-approval / gate`,
 `test-quality / gate`, `prose-factcheck / gate`이다(generic-http 호출부는
@@ -135,6 +145,27 @@ approvals를 걸지 않는가") AI 게이트 하나가 두 번째 리뷰어 자�
 
 탈출구는 `skip-ai-gate` 라벨이다(아래 절). 이 예외는 기준을 채운 뒤 이 절을
 실측 수용률로 갱신해 닫는다.
+
+### coverage 승격 경로 (issue #247)
+
+`coverage (advisory)` 잡은 AI 게이트가 아니라 결정론 잡이라 위 수용률 기준을 쓰지
+않는다. 세 단계로 올린다:
+
+1. **advisory(현재)** — 라인·분기 총계와 PR diff 커버리지를 잡 요약과 아티팩트로만
+   보고한다. `--fail-under`가 없고 required check가 아니다. 리포트 스텝은
+   `if: always()`라 테스트가 빨개도 리포트는 남는다.
+2. **래칫** — 조건: `main`에서 coverage 잡이 10회 연속 green이고, 같은 커밋을 다시
+   돌린 총계가 같다(수치가 결정적임을 확인). 그때 coverage 잡에
+   `python3 -m coverage report --fail-under=<하한>` 스텝을 더한다. 하한은 그 10회
+   총계(`coverage report --format=total`이 찍는 정수, 라인+분기 합산) 중 최솟값이다.
+   하한을 올리는 것은 언제든 되고, 내리는 것은 CHANGELOG `Changed` 항목과 함께만 한다.
+3. **required** — 래칫이 오탐 없이 돌면 잡 이름에서 `(advisory)`를 떼고, 그 이름을
+   `scripts/setup_branch_protection.sh`의 `CHECKS`와 아래 "required status check
+   후보"에 더한다(저장소 설정 작업, 사용자 몫).
+
+diff 커버리지는 승격 대상이 아니다 — PR마다 분모가 작아 한 줄로 결과가 뒤집힌다. 위
+숫자(10회, 정수 하한)는 이 프로젝트의 관측치가 아니라 정한 값이다. 래칫 단계에
+들어가면 실측으로 갱신한다.
 
 ## `ANTHROPIC_API_KEY` 등록 절차와 OIDC 대안
 
@@ -260,7 +291,7 @@ required status check로 등록할 후보는 다음과 같다 — GitHub이 실�
 체크런 이름 그대로다(`ci.yml`의 잡 `name:` 필드에서 직접 확인, 추측 아님. AI 게이트의
 이름은 `_ai-gate.yml`의 잡에 `name:`이 없어서 `<호출 잡> / gate`다):
 
-- `gate (py3.11)` / `gate (py3.12)` / `gate (py3.13)` — 테스트 매트릭스(`ci.yml`)
+- `gate (py3.11)` / `gate (py3.12)` / `gate (py3.13)` / `gate (py3.14)` — 테스트 매트릭스(`ci.yml`). `gate (py3.14)`는 2026-11-02 현재 브랜치 보호에 없다 — 첫 green 실행 뒤 `scripts/setup_branch_protection.sh`의 `CHECKS`에 더해 등록한다(저장소 설정 작업, 사용자 몫, issue #246)
 - `lint (ruff)` — ruff 게이트(`ci.yml`)
 - `modeb-linux (test_repo_state under real mode B)` — 실제 mode B 게이트(`ci.yml`)
 - `test-quality / gate` — 승격된 AI 게이트 하나(`ai-gates-quality.yml`의 `test-quality`

@@ -1,5 +1,7 @@
 # capability 어댑터와 실제 백엔드 (이슈 #25)
 
+[English](backends.en.md) | **한국어**
+
 **정본은 코드다.** 계약은 `impl/lnpl/drivers.py`의 세 클래스와 그 docstring이고,
 이 문서는 그것을 사람이 읽는 형태로 옮기면서 **왜 그렇게 정했는지**와
 **무엇을 하지 않는지**를 적는다. 둘이 갈라지면 코드가 옳다.
@@ -1068,8 +1070,11 @@ urlopen이 예외를 던져 0이 아닌 코드로 끝난다([healthcheck·depend
 ### `k8s` — 내장 배포 생성기 (이슈 #189)
 
 `lnpl generate k8s <src.lnpl> --out <dir>`는 `<dir>/k8s.yaml` 하나를 쓴다:
-ConfigMap, Deployment, Service가 이 순서로 `---`로 구분돼 들어 있다.
-Secret 오브젝트는 만들지 않는다.
+ConfigMap, Deployment, Service, 그다음 `on schedule` 이벤트마다 CronJob 하나,
+그다음 옵션으로 켠 Ingress, HorizontalPodAutoscaler, PodDisruptionBudget,
+NetworkPolicy(앱), 마지막으로 CronJob마다 트리거용 NetworkPolicy 하나가 이
+순서로 `---`로 구분돼 한 파일에 들어 있다(이슈 #236). Secret 오브젝트는
+여전히 만들지 않는다.
 
 | 옵션 | 기본값 | 뜻 |
 |------|--------|-----|
@@ -1077,6 +1082,11 @@ Secret 오브젝트는 만들지 않는다.
 | `name` | 모듈 이름(소스 파일 이름) | Deployment·Service의 이름이자 `app.kubernetes.io/name` 라벨 값. DNS-1035 라벨(소문자로 시작, 소문자·숫자·`-`, 영문/숫자로 끝, 63자 이하)이어야 한다. Service 이름이기 때문이며, 어긋나면 고쳐 쓰지 않고 거부한다(`--set name=<label>`으로 지정) |
 | `replicas` | `1` (자리표시자) | 1 이상의 정수. 생성기는 레플리카 수를 모른다 |
 | `cpu_request`, `cpu_limit`, `memory` | 없음 | Kubernetes quantity(`100m`, `0.5`, `256Mi`). 하나도 없으면 `resources:` 없이 BestEffort 주석만 나온다. `memory`는 requests와 limits 양쪽에 들어간다 |
+| `ingress_host` | 없음 | `networking.k8s.io/v1` Ingress를 만든다. DNS-1123 서브도메인(소문자·숫자·`-`·`.`, 레이블은 영숫자로 시작·끝, 253자 이하)이 아니면 거부한다. 경로는 서빙하는 서비스 세그먼트(`/<service>`)마다 `Prefix` 하나 — `/`나 `/-/` 경로는 싣지 않는다 |
+| `hpa_min`, `hpa_max`, `hpa_cpu` | 없음 | 셋을 함께 준다. `autoscaling/v2` HPA(CPU `averageUtilization`). `hpa_min` ≥ 1, `hpa_max` ≥ `hpa_min`, `hpa_cpu` 1-100. `cpu_request`가 필요하고 `replicas`와 함께 쓸 수 없다. 주면 Deployment의 `replicas:` 줄이 빠진다 |
+| `pdb` | `false` | `true`면 `policy/v1` PodDisruptionBudget(`minAvailable: 1`). `true`/`false` 외 값은 거부 |
+| `network_policy` | `false` | `true`면 앱 파드용 기본 거부 NetworkPolicy와 CronJob마다 트리거 파드용 NetworkPolicy. `true`/`false` 외 값은 거부 |
+| `egress_cidrs` | 없음 | 쉼표로 구분한 CIDR 목록(`203.0.113.0/24,2001:db8::/32`). 항목마다 접두 길이 필수·호스트 비트 금지·공백 금지. `network_policy=true` 없이 주면 거부 |
 
 **프로브·종료.** `livenessProbe`는 `/-/healthz`, `readinessProbe`는 `/-/readyz`
 (둘 다 이름 붙은 컨테이너 포트 `http`=8000, 시간 필드는 Kubernetes 기본값 —
@@ -1103,6 +1113,100 @@ kubectl create secret generic <name>-secrets --from-literal=<KEY>=<value>
 선택이므로 만들지 않는다. 알 수 없는 capability는 `compose`와 같은 stderr 한
 줄(`lnpl generate k8s: ...`)로 건너뛴다.
 
+**스케줄 트리거 CronJob (이슈 #236).** `on schedule` 이벤트마다 `batch/v1`
+CronJob 하나를 만든다. 이름은 `<name>-<event-slug>`이고 DNS-1035 라벨이면서
+52자 이하여야 한다(CronJob 컨트롤러가 Job 이름에 11자를 붙인다). 어긋나면 고쳐
+쓰지 않고 거부한다. `schedule`·`timeZone`은 선언에서 온다(`daily at 06:30 UTC` →
+`"30 6 * * *"`, `"UTC"`). `concurrencyPolicy: Forbid`, `backoffLimit: 0`(시간
+초과로 끝난 POST가 이미 워크플로를 실행했을 수 있으므로 자동 재시도하지 않는다),
+`startingDeadlineSeconds: 300`, `activeDeadlineSeconds: 600`. 컨테이너는 앱
+이미지를 `python -B -c`로 실행해 `http://<name>:8000/-/schedules/<event-slug>`
+(Ingress가 아니라 Service)에 `{}`를 POST한다. 소유 서비스가 `security jwt`를
+선언하면 실행마다 `lnpl token --path /-/schedules/<slug>`로 5분짜리 토큰(aud `-`,
+`sub` = CronJob 이름, 역할 = 서비스가 요구하는 역할)을 만들고, 이때
+`LNPL_JWT_SECRET`을 `<name>-secrets`에서 `secretKeyRef`로 읽는다. 이것이 이
+파드가 받는 유일한 Secret 키다(`LNPL_BACKEND`, `LNPL_CACHE`, http `auth` 변수는
+받지 않는다). 하드닝: `automountServiceAccountToken: false`, `runAsNonRoot: true`와
+`runAsUser: 1000`(docker/Dockerfile의 `USER linkly`는 이름이라 kubelet이 숫자 uid
+없이 `runAsNonRoot`를 거부한다), `seccompProfile: RuntimeDefault`,
+`allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`,
+`capabilities.drop: ["ALL"]`. 스크립트는 경로와 HTTP 상태만 출력하고 토큰이나
+키는 어떤 경로로도 출력하지 않는다. 이미지는 0.9.0 다음 lnpl 릴리스 이상이어야
+한다(`lnpl token --path /-/schedules/...` 지원 포함) — 그보다 오래된 이미지는
+매 실행이 rc 2 `is not served`로 끝난다. 서버에 issuer를 쓴다면
+`LNPL_JWT_ISSUER`를 Deployment의 `env`가 아니라 ConfigMap `<name>-config`에
+넣는다(두 파드 모두 `envFrom`으로 읽는다). 그러지 않으면 매 실행이 401이다.
+`LNPL_TOKEN_PROVIDER`가 `hmac`이 아니면 생성된 트리거는 토큰을 만들 수 없다 —
+CronJob을 IdP 클라이언트로 바꾼다.
+
+**트리거 파드가 가진 권한 (보안 모델).** (a) 이 파드는 서버의 유일한 HS256
+서명 키를 가지므로, 파드 안의 프로세스는 어떤 audience·역할·subject·수명의
+토큰이든 만들 수 있다 — `lnpl token`과 검증 쪽 모두 수명 상한이 없다(실측
+`--ttl 365d` → 31536000초). 즉 키를 교체할 때까지 모든 `security jwt` 라우트의
+모든 호출자를 완전히 사칭할 수 있다. (b) 키가 아니라 트리거 토큰이 새면: aud가
+`-`라서 역할이 맞는 모든 인증 필요 `/-/schedules/<slug>`·`/-/events/<slug>`
+라우트가 받아 주고, `/<service>/<workflow>` 라우트는 받지 않으며, 길어야 5분이다.
+(c) 이를 받아들이는 이유: 네임스페이스에 Pod·Deployment·CronJob을 만들 수 있는
+사람은 이미 그 Secret을 읽을 수 있고(Kubernetes Secret 문서), 앱 파드도 같은 키를
+가지며, 트리거 파드는 아무것도 리슨하지 않고 API 토큰도 없다. 완화책: Secret 키
+하나, 서비스 계정 토큰 없음, restricted 파드, `network_policy=true`면 들어오는
+연결 없음·나가는 연결은 kube-dns와 앱 파드 8000번뿐. DNS 질의는 여전히 빠져나갈
+길이고, 이미지나 앱이 침해되면 이 중 어느 것도 도움이 되지 않는다. (d) 교체:
+`<name>-secrets`의 `LNPL_JWT_SECRET` 값을 바꾸고 Deployment를 재시작한다(env는
+파드 시작 때 읽고, env 경로는 키 하나만 싣는다 — 현재+이전 키 교체는
+`lnpl.secrets` 공급자로만 된다). 다음 Job 파드는 새 값을 스스로 읽는다.
+(e) 후속(이 릴리스에 없음): audience `-`에만 통하는 검증 쪽 트리거 전용 키, 라우트별
+트리거 audience.
+
+**Ingress.** 경로는 서빙하는 서비스 세그먼트마다 `Prefix` 하나다. `/-/`
+라우트(스케줄·이벤트 트리거, `/-/healthz`, `/-/readyz`, `/-/metrics`)는 싣지
+않는다 — 스케줄·이벤트 트리거는 서비스가 `security jwt`를 선언하지 않으면 인증이
+없고, 운영 라우트는 인증하지 않기 때문이다. `ingressClassName`과 `tls`는 없다 —
+패치로 넣는다.
+
+**PodDisruptionBudget.** 레플리카가 1개면 `minAvailable: 1`은 자발적 축출을 하나도
+허용하지 않아 노드 drain이 끝나지 않는다(생성된 주석에도 적혀 있다). 레플리카를
+2개 이상 둔다.
+
+**NetworkPolicy의 한계.** 피어는 파드·네임스페이스·IP 블록뿐이라
+`capability http` 엔드포인트 호스트 이름은 표현할 수 없다 — 외부 백엔드는
+`egress_cidrs`로 적는다(`ipBlock`은 클러스터 밖 주소용이다). DNS egress는
+`kube-system`의 `k8s-app: kube-dns` 라벨 파드와 NetworkPolicy를 집행하는 CNI를
+전제한다. NodeLocal DNSCache(169.254.20.10)를 쓰면 kube-dns 규칙이 맞지 않는다 —
+앱 라벨과 트리거 라벨 양쪽에 `169.254.20.10/32`로 UDP/TCP 53을 허용하는 정책을
+직접 더한다. 클러스터 안 백엔드는 직접 추가하는 정책이 필요하다(정책은 더해진다,
+예시는 아래). 앱 정책은 클러스터의 어떤 파드에서든 TCP 8000을 받으므로, 어떤
+파드든 인증 없는 `/-/schedules/<slug>`·`/-/events/<slug>`와 운영 라우트를 부를 수
+있다 — 소유 서비스에 `security jwt`를 선언하거나 직접 만든 정책에서 `from`을
+좁힌다(생성기는 네임스페이스나 인그레스 컨트롤러를 모른다).
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "app-to-postgres"
+spec:
+  podSelector:
+    matchLabels:
+      "app.kubernetes.io/name": "app"
+  policyTypes:
+    - "Egress"
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              "kubernetes.io/metadata.name": "db"
+          podSelector:
+            matchLabels:
+              "app.kubernetes.io/name": "postgres"
+      ports:
+        - protocol: "TCP"
+          port: 5432
+```
+
+redis도 포트 6379로 똑같다. `app`은 `<name>`으로, `db`는 백엔드 네임스페이스로
+바꾼다.
+
 **검사.** 이 환경에서 `kubectl apply --dry-run=client -f k8s.yaml`은
 API 서버 없이 끝나지 않는다: rc 1 `failed to download openapi: Get
 "http://localhost:8080/openapi/v2?timeout=32s"`, `--validate=false`를 줘도
@@ -1111,8 +1215,13 @@ rc 1 `couldn't get current server API group list`(실측, kubectl v1.30.5).
 네트워크에서 받는다):
 
 ```bash
-docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - < k8s.yaml
+docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c -strict -summary -kubernetes-version 1.30.0 - < k8s.yaml
 ```
+
+`tests.test_deploy_generators`의 `KubeconformTest`가 이 명령으로 생성물
+전부(32개 오브젝트)를 검사하고, 일부러 깨뜨린 문서가 `Invalid: 1`로 나오는지도
+확인한다. docker가 없으면 이 테스트는 건너뛰고, `LNPL_REQUIRE_KUBECONFORM=1`이면
+실패한다.
 
 kubeconform은 오브젝트 이름을 검사하지 않는다(실측: `Pg_Redis`를 통과시킴).
 이름은 생성기의 DNS-1035 규칙이 막는다.
@@ -1254,8 +1363,123 @@ may be delivered more than once
   파일시스템 I/O가 더 적을 수 있다
   ([`VACUUM` — SQLite Query Language](https://sqlite.org/lang_vacuum.html)).
 
-둘 다 이 드라이버가 여는 연결과 별개의 연결/프로세스로 실행한다 —
-`SqliteRepositoryDriver`는 백업용 API를 자체로 노출하지 않는다.
+둘 다 이 드라이버가 여는 연결과 별개의 연결/프로세스로 실행한다. 앞의 것(online backup API)을 감싼 커맨드가 아래의 `lnpl db backup`이다.
+
+### sqlite — `lnpl db backup` (이슈 #238)
+
+`lnpl db backup --backend sqlite:<path> --out <path>`는 SQLite online
+backup API로 원본과 별개의 연결을 열어 일관된 사본을 만든다. `serve`가
+쓰는 중에도 안전하다 — 커밋된 행은 `-wal`에만 있어도 사본에 들어가고,
+아직 커밋되지 않은 트랜잭션의 행은 들어가지 않는다. 사본은 언제나 새
+파일이다: 이미 있는 `--out`은 덮어쓰지 않는다. 사본 옆에는 `-wal`/`-shm`
+파일이 남지 않는다. 행을 선언과 대조하지 않으므로 `.lnpl` 소스 인자는
+받지 않는다. 원본은 읽기만 하므로 원본 디렉터리에 쓰기 권한이 없어도
+된다(데이터 볼륨을 `:ro`로 마운트한 백업 사이드카). 단 SQLite는 WAL
+저장소를 읽으려면 `-shm` 파일이 있거나 만들 수 있어야 해서, 쓰는
+프로세스가 모두 끝나 `-shm`이 없는 저장소가 읽기 전용 디렉터리에 있으면
+`cannot read ... as a sqlite database`(rc 2)로 거부된다.
+
+측정: 2026-10-29, `git rev-parse --short HEAD` = cc54829 + t6 작업 트리, Python 3.13.1 / SQLite 3.53.4, `python -m lnpl`(= `lnpl` 콘솔 스크립트)로 실행.
+
+백업 (행 3개가 든 `store.db`):
+
+```bash
+lnpl db backup --backend sqlite:store.db --out backup.db
+```
+
+stdout:
+
+```
+{
+  "out": "backup.db",
+  "rows": 3
+}
+```
+
+stderr는 비어 있고 rc 0이다.
+
+같은 명령을 한 번 더 — `--out`이 이미 있다:
+
+```bash
+lnpl db backup --backend sqlite:store.db --out backup.db
+```
+
+stderr:
+
+```
+error: db backup: --out already exists, refusing to overwrite: 'backup.db'
+```
+
+stdout은 비어 있고 rc 2다.
+
+sqlite가 아닌 백엔드:
+
+```bash
+lnpl db backup --backend fake --out backup2.db
+```
+
+stderr:
+
+```
+error: db backup: backend 'fake' does not support online backup; for postgres use pg_dump (see docs/backends.md §14)
+```
+
+stdout은 비어 있고 rc 2다.
+
+postgres — 메시지는 스킴만 밝히고 DSN(비밀번호 포함)은 옮기지 않는다:
+
+```bash
+lnpl db backup --backend postgres:postgresql://app:example-password@db.invalid/app --out backup2.db
+```
+
+stderr:
+
+```
+error: db backup: backend 'postgres' does not support online backup; for postgres use pg_dump (see docs/backends.md §14)
+```
+
+stdout은 비어 있고 rc 2다.
+
+| rc | 뜻 |
+|----|-----|
+| 0 | 백업 완료 — stdout에 `{"out", "rows"}` JSON (`rows`는 사본의 `lnpl_rows` 행 수) |
+| 1 | 복사 도중 sqlite 오류 — 이번 실행이 만든 부분 파일은 지운다 |
+| 2 | 운영자 오류 — sqlite가 아닌 `--backend`(postgres는 `pg_dump`로 안내), 빈 `--out`, 이미 있는 `--out`이나 그 `-wal`/`-shm`/`-journal`, 없는 부모 디렉터리, 없는 원본, sqlite가 아닌 파일, `lnpl_rows`가 없는 파일, 읽기 전용 디렉터리에서 `-shm` 없이 닫혀 있는 WAL 저장소 |
+
+### 복원 확인
+
+1. 쓰는 프로세스(`serve` 등)를 모두 멈춘다.
+2. `store.db`, `store.db-wal`, `store.db-shm`을 지운다.
+3. 백업 파일을 `store.db`로 복사한다(`cp backup.db store.db`).
+4. 선언과 대조한다 — `[]`와 rc 0이어야 한다 (아래 첫 명령).
+5. 행 수를 확인한다 — 두 번째 명령의 `rows`가 백업 때의 `rows`와 같아야
+   한다. 런타임 이미지에는 `sqlite3` CLI가 없고 `db check`는 불일치만
+   출력하므로 이 커맨드로 센다. 확인 뒤 `verify.db`는 지운다.
+
+```bash
+lnpl db check app.lnpl --backend sqlite:store.db
+```
+
+stdout (stderr는 비어 있고 rc 0):
+
+```
+[]
+```
+
+```bash
+lnpl db backup --backend sqlite:store.db --out verify.db
+```
+
+stdout (stderr는 비어 있고 rc 0):
+
+```
+{
+  "out": "verify.db",
+  "rows": 3
+}
+```
+
+이 절차는 `impl/tests/test_cli_db_backup.py`의 `RestoreRehearsalTest`가 CI에서 매번 실행한다.
 
 ### 연속 복제·PITR — Litestream
 
@@ -1266,6 +1490,8 @@ may be delivered more than once
 가장 가까운 스냅샷을 내려받은 뒤 그 뒤에 기록된 변경을 재생하는 것이다.
 백그라운드 프로세스로 이 sqlite 파일 옆에서 도는 것이라, `lnpl` 쪽
 코드 변경은 없다.
+
+실행 예시는 `examples/deploy/litestream-compose.yml`과 `examples/deploy/litestream.yml`, 복원·확인 명령은 `examples/deploy/README.md`의 "백업과 복원 (이슈 #238)" 절이다.
 
 ### postgres 드라이버 — `pg_dump`/PITR에 위임
 
@@ -1278,6 +1504,8 @@ PITR은 WAL 아카이빙 기반의 별도 절차다 — `pg_dump`/`pg_dumpall`
 ([Continuous Archiving and Point-in-Time Recovery (PITR)](https://www.postgresql.org/docs/current/continuous-archiving.html)).
 이 레포는 그 드라이버를 구현하지 않는다 — `RepositoryDriver` SPI(§8)를
 구현하는 쪽의 책임이다.
+
+`lnpl db backup`은 postgres 백엔드를 위의 rc 2 메시지로 거부한다. 정기 덤프 예시는 `examples/deploy/pg-dump-cronjob.yaml`(Kubernetes CronJob, `pg_dump -Fc`, `concurrencyPolicy: Forbid`)이다.
 
 ## 15. SPI: 외부 이벤트 발행자 등록 (issue #191, RFC-0061)
 

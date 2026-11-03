@@ -16,6 +16,7 @@ BRANCH_PROTECTION_SCRIPT_PATH = os.path.join(
     REPO, "scripts", "setup_branch_protection.sh"
 )
 WORKLOAD_PATH = os.path.join(REPO, "examples", "linkhub.lnpl")
+SERVE_LOCK_PATH = os.path.join(REPO, "requirements-serve.txt")
 
 
 def _read(path):
@@ -58,7 +59,7 @@ class ReportOnlyWiringTest(unittest.TestCase):
     def test_report_reaches_summary_and_artifact_even_on_failure(self):
         text = _read(LOAD_YML_PATH)
         self.assertIn('>> "$GITHUB_STEP_SUMMARY"', text)
-        self.assertIn("uses: actions/upload-artifact@v7", text)
+        self.assertIn("uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2", text)
         self.assertEqual(2, text.count("if: always()"))
 
     def test_boot_failure_is_a_harness_fault_before_any_load(self):
@@ -92,7 +93,8 @@ class WorkloadPinTest(unittest.TestCase):
         text = _read(LOAD_YML_PATH)
         self.assertIn("LNPL_SOURCE: examples/linkhub.lnpl", text)
         self.assertTrue(os.path.isfile(WORKLOAD_PATH))
-        self.assertIn("gunicorn==26.2.0", text)
+        self.assertIn("pip install --require-hashes -r requirements-serve.txt\n", text)
+        self.assertRegex(_read(SERVE_LOCK_PATH), r"(?m)^gunicorn==26\.2\.0 ")
 
 
 class CrossFileNotRequiredCheckTest(unittest.TestCase):

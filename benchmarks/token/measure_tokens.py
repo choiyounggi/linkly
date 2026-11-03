@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""measure_tokens.py — issue #142 token benchmark, deterministic output.
+"""measure_tokens.py — issues #142 and #251 token benchmark, deterministic output.
 
-Prints one JSON object to stdout: source token counts for
-examples/linkhub.lnpl vs equiv/linkhub_fastapi.py, plus edit-token counts
-for the two edit tasks in edits/ (M1: add a field, M2: duplicate-url guard
-attempt). Two runs on an unchanged tree produce byte-identical stdout
+Prints one JSON object to stdout: source token counts for six scenarios
+(checkout, consume, schedule, parallel, cached, linkhub), each as LNPL vs its
+FastAPI port in equiv/, plus edit-token counts for five edit kinds in edits/
+(m1_note_field, m2_duplicate_guard, m3_add_workflow, m4_cached_read,
+m5_timeout_policy). Two runs on an unchanged tree produce byte-identical stdout
 (REPORT.md's numbers are this output, pasted verbatim — see the BEGIN/END
 markers there; hand edits inside them are forbidden).
 
@@ -24,33 +25,28 @@ TOKENIZERS = ("o200k_base", "cl100k_base")
 BASE_DIR = Path(__file__).resolve().parent          # benchmarks/token
 REPO_ROOT = BASE_DIR.parent.parent                   # repo root
 
-SOURCE_FILES = {
-    "lnpl": REPO_ROOT / "examples" / "linkhub.lnpl",
-    "fastapi": BASE_DIR / "equiv" / "linkhub_fastapi.py",
+SCENARIOS = {
+    "checkout": {"lnpl": REPO_ROOT / "examples" / "checkout.lnpl", "fastapi": BASE_DIR / "equiv" / "checkout_fastapi.py"},
+    "consume": {"lnpl": BASE_DIR / "scenarios" / "consume.lnpl", "fastapi": BASE_DIR / "equiv" / "consume_fastapi.py"},
+    "schedule": {"lnpl": BASE_DIR / "scenarios" / "schedule.lnpl", "fastapi": BASE_DIR / "equiv" / "schedule_fastapi.py"},
+    "parallel": {"lnpl": BASE_DIR / "scenarios" / "parallel.lnpl", "fastapi": BASE_DIR / "equiv" / "parallel_fastapi.py"},
+    "cached": {"lnpl": BASE_DIR / "scenarios" / "cached.lnpl", "fastapi": BASE_DIR / "equiv" / "cached_fastapi.py"},
+    "linkhub": {"lnpl": BASE_DIR / "scenarios" / "linkhub.lnpl", "fastapi": BASE_DIR / "equiv" / "linkhub_fastapi.py"},
 }
+EDIT_KINDS = ("m1_note_field", "m2_duplicate_guard", "m3_add_workflow", "m4_cached_read", "m5_timeout_policy")
+EDIT_BASELINES = {"m1_note_field": "linkhub", "m2_duplicate_guard": "linkhub", "m3_add_workflow": "cached",
+                  "m4_cached_read": "consume", "m5_timeout_policy": "schedule"}
 
-EDIT_TASKS = {
-    "m1_note_field": {
-        "lnpl": (
-            BASE_DIR / "edits" / "m1_note_field" / "lnpl_before.lnpl",
-            BASE_DIR / "edits" / "m1_note_field" / "lnpl_after.lnpl",
-        ),
-        "fastapi": (
-            BASE_DIR / "edits" / "m1_note_field" / "fastapi_before.py",
-            BASE_DIR / "edits" / "m1_note_field" / "fastapi_after.py",
-        ),
-    },
-    "m2_duplicate_guard": {
-        "lnpl": (
-            BASE_DIR / "edits" / "m2_duplicate_guard" / "lnpl_before.lnpl",
-            BASE_DIR / "edits" / "m2_duplicate_guard" / "lnpl_after.lnpl",
-        ),
-        "fastapi": (
-            BASE_DIR / "edits" / "m2_duplicate_guard" / "fastapi_before.py",
-            BASE_DIR / "edits" / "m2_duplicate_guard" / "fastapi_after.py",
-        ),
-    },
-}
+
+def _edit_paths(kind):
+    d = BASE_DIR / "edits" / kind
+    return {
+        "lnpl": (d / "lnpl_before.lnpl", d / "lnpl_after.lnpl"),
+        "fastapi": (d / "fastapi_before.py", d / "fastapi_after.py"),
+    }
+
+
+EDIT_TASKS = {kind: _edit_paths(kind) for kind in EDIT_KINDS}
 
 
 def _encodings():
@@ -123,7 +119,8 @@ def build_report():
     encodings = _encodings()
 
     source_tokens = {
-        key: measure_file(path, encodings) for key, path in SOURCE_FILES.items()
+        sid: {side: measure_file(path, encodings) for side, path in sides.items()}
+        for sid, sides in SCENARIOS.items()
     }
 
     edit_tokens = {}
@@ -141,10 +138,25 @@ def build_report():
     }
 
 
+def render_json(report):
+    return json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def extract_report_block(text):
+    """The fenced JSON between REPORT.md's BEGIN marker and its closing fence."""
+    lines = text.splitlines(keepends=True)
+    i = next((n for n, line in enumerate(lines) if "<!-- BEGIN measure_tokens.py output" in line), None)
+    j = None if i is None else next(
+        (n for n in range(i + 1, len(lines)) if lines[n].rstrip("\n") == "```json"), None)
+    k = None if j is None else next(
+        (n for n in range(j + 1, len(lines)) if lines[n].rstrip("\n") == "```"), None)
+    if k is None:
+        raise ValueError("REPORT.md has no measure_tokens.py output block")
+    return "".join(lines[j + 1:k])
+
+
 def main():
-    report = build_report()
-    json.dump(report, sys.stdout, indent=2, sort_keys=True, ensure_ascii=False)
-    sys.stdout.write("\n")
+    sys.stdout.write(render_json(build_report()))
     return 0
 
 

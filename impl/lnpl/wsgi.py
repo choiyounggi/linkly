@@ -27,6 +27,7 @@ import http.client
 import json
 import math
 import os
+import re
 import stat
 import sys
 import threading
@@ -44,9 +45,9 @@ from .drivers import (DriverError, HmacTokenProvider, HttpNetworkDriver,
 from .diagnostics import (ExtensionDiagnosticsError, extension_diagnostic_records,
                           format_lines, format_lines_from_records, to_records)
 from .condition import PAYLOAD_NAMESPACE
-from .interp import (CALLER_NAMESPACE, Interpreter, RunError, _resolve_lookup_key,
-                     caller_view, mask_payload, open_clock, refinement_index,
-                     strip_schema_gen)
+from .interp import (CALLER_NAMESPACE, MASK, Interpreter, RunError, _resolve_lookup_key,
+                     caller_view, mask_payload, masked_field_names, open_clock,
+                     refinement_index, strip_schema_gen)
 from .lexer import LexError
 from .lower import LowerError, load_sources, lower
 from .openapi import generate, _slug
@@ -227,6 +228,24 @@ def _label_value(value):
     return '"%s"' % escaped
 
 
+# issue #237, D3: the one `route` label value for a path no route matches.
+UNMATCHED_ROUTE_LABEL = "unmatched"
+# issue #237, D4: the one `method` label value for a non-RFC 9110 method.
+OTHER_METHOD_LABEL = "other"
+# issue #237, D4: the RFC 9110 method names kept as `method` label values.
+_HTTP_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT",
+                           "OPTIONS", "TRACE", "PATCH"})
+
+
+def _method_label(method):
+    return method if method in _HTTP_METHODS else OTHER_METHOD_LABEL
+
+
+# issue #237, D11: used only through .fullmatch(); "$" under .match() would accept a trailing newline.
+_METRIC_NAME_RE = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
+DRIVER_GAUGE_PREFIX = "lnpl_driver_"
+
+
 class MetricsRegistry:
     """issue #110, D7/D9/D10: the process-level RED registry `--metrics`
     exposes at `/-/metrics`.
@@ -234,19 +253,32 @@ class MetricsRegistry:
     D9: lives ALONGSIDE `Trace.metrics`, not instead of it. That array is
     the per-request `--trace-exporter` (#78) contract and is neither read
     from nor written to here — this registry is populated by reading a
-    COMPLETED request's already-computed `result` (`_respond`), so removing
+    COMPLETED request's already-computed `result`, so removing
     `--trace-exporter` support later could never affect this registry, and
-    vice versa.
+    vice versa. The workflow series are populated from `_respond`; the HTTP
+    series (`lnpl_http_*`) at `LnplWsgiApp._finalize_response`, once per
+    response.
 
     D10: `wsgi` is one thread per request (`_Server(ThreadingMixIn, ...)`,
     serve.py), so every update goes through `_lock` — an unprotected `+=`
     here would lose updates under concurrent requests.
 
-    D7's three: `lnpl_workflow_runs_total{service,workflow,status}`
-    (counter), `lnpl_workflow_duration_seconds{service,workflow}`
-    (histogram), `lnpl_step_failures_total{service,workflow,step,kind}`
-    (counter) — every label already inside `Trace.metric`'s own allowlist
-    (D7: no new label axis).
+    D7 revised (issue #237): seven families —
+    `lnpl_workflow_runs_total{service,workflow,status}`,
+    `lnpl_workflow_duration_seconds{service,workflow}`,
+    `lnpl_step_failures_total{service,workflow,step,kind}`,
+    `lnpl_http_requests_total{route,method,status}`,
+    `lnpl_http_request_duration_seconds{route}`,
+    `lnpl_cache_ops_total{op,result}`,
+    `lnpl_idempotency_claims_total{status}`. A new label axis is allowed
+    only when every value comes from a closed, server-controlled set:
+    `route` is a declared route key or `unmatched`, `method` one of nine
+    RFC 9110 names or `other`, `status` this server's own status codes,
+    `op`/`result` fixed words, the idempotency `status` four words or
+    `other`. `interp.Trace.metric`'s label allowlist is unchanged and still
+    raises `RunError`. `render(gauges)` appends scrape-time gauges
+    (`lnpl_outbox_undelivered`, `lnpl_driver_<name>`) that the app samples;
+    the registry stores none of them.
     """
 
     def __init__(self):
@@ -259,6 +291,12 @@ class MetricsRegistry:
         self._duration_buckets = {}      # (service, workflow) -> [int, ...]
         self._duration_sum = {}          # (service, workflow) -> float
         self._duration_count = {}        # (service, workflow) -> int
+        self._http_requests_total = {}  # (route, method, status) -> int
+        self._http_duration_buckets = {}  # route -> [int, ...]
+        self._http_duration_sum = {}  # route -> float
+        self._http_duration_count = {}  # route -> int
+        self._cache_ops_total = {}  # (op, result) -> int
+        self._idempotency_claims_total = {}  # status -> int
 
     def record_run(self, service, workflow, status, duration_s):
         key = (service, workflow, status)
@@ -278,17 +316,47 @@ class MetricsRegistry:
         with self._lock:
             self._step_failures_total[key] = self._step_failures_total.get(key, 0) + 1
 
-    def render(self):
-        """-> Prometheus text exposition format (D7's RED 3). A stable sort
-        over every series so the same registry state always renders the
-        same text — a scraper (and a test) can parse this, not just count
-        lines."""
+    def record_http_request(self, route, method, status, duration_s):
+        """issue #237: one HTTP response (`LnplWsgiApp._finalize_response`)."""
+        with self._lock:
+            key = (route, method, status)
+            self._http_requests_total[key] = self._http_requests_total.get(key, 0) + 1
+            buckets = self._http_duration_buckets.setdefault(
+                route, [0] * len(_DURATION_BUCKETS))
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                if duration_s <= bound:
+                    buckets[i] += 1
+            self._http_duration_sum[route] = self._http_duration_sum.get(route, 0.0) + duration_s
+            self._http_duration_count[route] = self._http_duration_count.get(route, 0) + 1
+
+    def record_cache_op(self, op, result):
+        with self._lock:
+            key = (op, result)
+            self._cache_ops_total[key] = self._cache_ops_total.get(key, 0) + 1
+
+    def record_idempotency_claim(self, status):
+        with self._lock:
+            self._idempotency_claims_total[status] = (
+                self._idempotency_claims_total.get(status, 0) + 1)
+
+    def render(self, gauges=()):
+        """-> Prometheus text exposition format (D7 revised, issue #237). A
+        stable sort over every series so the same registry state always
+        renders the same text — a scraper (and a test) can parse this, not
+        just count lines. `gauges` is a sequence of `(name, help_text,
+        value)` sampled by the caller, rendered last in the given order."""
         with self._lock:
             runs = dict(self._runs_total)
             failures = dict(self._step_failures_total)
             buckets = {k: list(v) for k, v in self._duration_buckets.items()}
             sums = dict(self._duration_sum)
             counts = dict(self._duration_count)
+            http = dict(self._http_requests_total)
+            http_buckets = {k: list(v) for k, v in self._http_duration_buckets.items()}
+            http_sums = dict(self._http_duration_sum)
+            http_counts = dict(self._http_duration_count)
+            cache_ops = dict(self._cache_ops_total)
+            claims = dict(self._idempotency_claims_total)
         lines = [
             "# HELP lnpl_workflow_runs_total Total workflow runs, by outcome.",
             "# TYPE lnpl_workflow_runs_total counter",
@@ -328,6 +396,57 @@ class MetricsRegistry:
                 "lnpl_step_failures_total{service=%s,workflow=%s,step=%s,kind=%s} %d"
                 % (_label_value(service), _label_value(workflow), _label_value(step),
                    _label_value(kind), failures[(service, workflow, step, kind)]))
+        lines += [
+            "# HELP lnpl_http_requests_total Total HTTP responses, by route template, method and status.",
+            "# TYPE lnpl_http_requests_total counter",
+        ]
+        for route, method, status in sorted(http):
+            lines.append(
+                "lnpl_http_requests_total{route=%s,method=%s,status=%s} %d"
+                % (_label_value(route), _label_value(method),
+                   _label_value(status), http[(route, method, status)]))
+        lines += [
+            "# HELP lnpl_http_request_duration_seconds HTTP response duration, in seconds, by route template.",
+            "# TYPE lnpl_http_request_duration_seconds histogram",
+        ]
+        for route in sorted(http_buckets):
+            bucket_counts = http_buckets[route]
+            for i, bound in enumerate(_DURATION_BUCKETS):
+                lines.append(
+                    "lnpl_http_request_duration_seconds_bucket{route=%s,le=%s} %d"
+                    % (_label_value(route), _label_value(repr(bound)), bucket_counts[i]))
+            lines.append(
+                'lnpl_http_request_duration_seconds_bucket{route=%s,le="+Inf"} %d'
+                % (_label_value(route), http_counts[route]))
+            lines.append(
+                "lnpl_http_request_duration_seconds_sum{route=%s} %s"
+                % (_label_value(route), repr(http_sums[route])))
+            lines.append(
+                "lnpl_http_request_duration_seconds_count{route=%s} %d"
+                % (_label_value(route), http_counts[route]))
+        lines += [
+            "# HELP lnpl_cache_ops_total Cache driver calls made while serving requests, by operation and result.",
+            "# TYPE lnpl_cache_ops_total counter",
+        ]
+        for op, result in sorted(cache_ops):
+            lines.append(
+                "lnpl_cache_ops_total{op=%s,result=%s} %d"
+                % (_label_value(op), _label_value(result), cache_ops[(op, result)]))
+        lines += [
+            "# HELP lnpl_idempotency_claims_total Idempotency-Key claim outcomes, by status.",
+            "# TYPE lnpl_idempotency_claims_total counter",
+        ]
+        for status in sorted(claims):
+            lines.append(
+                "lnpl_idempotency_claims_total{status=%s} %d"
+                % (_label_value(status), claims[status]))
+        for name, help_text, value in gauges:
+            lines.append("# HELP %s %s" % (name, help_text))
+            lines.append("# TYPE %s gauge" % name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                lines.append("%s %d" % (name, value))
+            else:
+                lines.append("%s %s" % (name, repr(float(value))))
         return "\n".join(lines) + "\n"
 
 
@@ -376,6 +495,90 @@ def open_exporter(spec):
         "unknown trace exporter %r (built-in: %s; registered entry-points: %s)"
         % (spec, ", ".join(EXPORTERS),
            ", ".join(_registered_exporter_names()) or "none"))
+
+
+class JsonLinesAuditSink:
+    """issue #241 (t5, D11): the built-in audit sink. `path=None` is
+    `stderr-json` (one `sys.stderr.write` per record, `sys.stderr` looked
+    up at write time); a path is `file:<path>`, opened once with
+    O_APPEND and mode 0o600, one `os.write` per record. One lock per sink
+    serializes this sink's own writes only."""
+
+    def __init__(self, path=None):
+        self._lock = threading.Lock()
+        self._path = path
+        self._fd = None
+        if path is not None:
+            self._fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+
+    def export(self, record):
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        with self._lock:
+            if self._path is None:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+                return
+            if self._fd is None:
+                raise OSError("audit sink is closed")
+            data = line.encode("utf-8")
+            if os.write(self._fd, data) != len(data):
+                raise OSError("short write to audit sink file")
+
+    def close(self):
+        with self._lock:
+            if self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
+
+
+def open_audit_sink(spec):
+    """issue #241 (t5, D10): `--audit-sink`/`LNPL_AUDIT_SINK` -> a sink, or
+    `None` when unset. Exactly two forms; no `lnpl.exporters` lookup (that
+    group's `export()` receives a Trace dict — coordinator ruling r1)."""
+    if spec is None:
+        return None
+    if spec == "stderr-json":
+        return JsonLinesAuditSink()
+    if spec.startswith("file:"):
+        path = spec[len("file:"):]
+        if not path:
+            raise ValueError("--audit-sink file: needs a path")
+        try:
+            return JsonLinesAuditSink(path)
+        except OSError as exc:
+            raise ValueError("audit sink file %r cannot be opened for append: %s"
+                             % (path, exc)) from exc
+    raise ValueError("unknown audit sink %r (accepted: stderr-json, file:<path>)" % spec)
+
+
+AUDIT_ENVIRON_KEY = "lnpl.audit"
+AUDIT_DUE_KINDS = ("workflow", "event-consume")
+
+
+class _AuditContext:
+    """issue #241 (t5, D2): per-request audit facts, carried in
+    `environ[AUDIT_ENVIRON_KEY]`; filled by the auth/run paths, read only
+    by `_finalize_response`."""
+    __slots__ = ("actor", "ops", "replay", "correlation_id", "log_correlation_id",
+                 "trace_id", "span_id", "body")
+
+    def __init__(self):
+        self.actor = None
+        self.ops = None
+        self.replay = False
+        self.correlation_id = None
+        self.log_correlation_id = None
+        self.trace_id = None
+        self.span_id = None
+        self.body = None
+
+
+def _audit_timestamp(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % int((t % 1) * 1000)
+
+
+def _audit_str(value):
+    return value if isinstance(value, str) else None
 
 
 class CursorError(Exception):
@@ -1060,6 +1263,87 @@ def _driver_name(repository):
     return type(repository).__module__ + "." + type(repository).__qualname__
 
 
+class _FinalizeOnClose:
+    """issue #237, D1: wraps a streaming (SSE) body so its response is
+    finalized exactly once — at the stream's end, on the host's `close()`
+    (client disconnect), and also when the host closes it before its first
+    chunk (an unstarted generator's `finally` never runs)."""
+
+    def __init__(self, body, on_done):
+        self._body = body
+        self._it = iter(body)
+        self._on_done = on_done
+        self._finished = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            self._done()
+            raise
+
+    def close(self):
+        try:
+            close = getattr(self._body, "close", None)
+            if callable(close):
+                close()
+        finally:
+            self._done()
+
+    def _done(self):
+        if self._finished:
+            return
+        self._finished = True
+        self._on_done()
+
+
+class _CountingCache:
+    """issue #237, D12: wraps an `Interpreter`'s cache so every driver call
+    it makes while serving a request counts in `lnpl_cache_ops_total`. It
+    covers the three interp.py call sites: the `cached` read-through
+    (get/set), the `CacheAccess` effect (set/get/invalidate) and
+    `_invalidate_read_through` (post-commit invalidation, rollback discard).
+    An exception from the inner call counts `error` and is re-raised
+    unchanged."""
+
+    def __init__(self, inner, registry):
+        self._inner = inner
+        self._registry = registry
+
+    def get(self, key):
+        try:
+            value = self._inner.get(key)
+        except Exception:
+            self._registry.record_cache_op("get", "error")
+            raise
+        self._registry.record_cache_op("get", "miss" if value is None else "hit")
+        return value
+
+    def set(self, key, value, ttl_ms):
+        try:
+            result = self._inner.set(key, value, ttl_ms)
+        except Exception:
+            self._registry.record_cache_op("set", "error")
+            raise
+        self._registry.record_cache_op("set", "ok")
+        return result
+
+    def invalidate(self, key):
+        try:
+            result = self._inner.invalidate(key)
+        except Exception:
+            self._registry.record_cache_op("invalidate", "error")
+            raise
+        self._registry.record_cache_op("invalidate", "ok")
+        return result
+
+    def close(self):
+        return self._inner.close()
+
+
 class LnplWsgiApp:
     """A PEP-3333 callable bound to one compiled document + routing table.
 
@@ -1074,7 +1358,7 @@ class LnplWsgiApp:
                  log_format="text", exporter=None, trust_incoming_trace=False,
                  jwt_secret_env=None, metrics_registry=None,
                  idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
-                 capture_on_failure=False, rate_limit=None):
+                 capture_on_failure=False, rate_limit=None, audit_sink=None):
         self.document = document
         self.nodes = {n["id"]: n for n in document["nodes"]}
         self.routes = routes
@@ -1086,6 +1370,10 @@ class LnplWsgiApp:
         # provider is the opposite — one immutable object, safe to read from
         # every request.
         self.repository_factory = repository_factory
+        self.audit_sink = audit_sink
+        self._audit_masked_names = frozenset().union(*(
+            masked_field_names(_entity_view(document, n))
+            for n in document["nodes"] if n["kind"] == "Entity"))
         self.token_provider = token_provider
         # issue #101: `HttpNetworkDriver` opens/closes its own connection per
         # `call()`, so one instance is safe to share across every request's
@@ -1132,6 +1420,8 @@ class LnplWsgiApp:
         # it is the process-level `MetricsRegistry` `_respond` records
         # into and `_metrics` renders from.
         self.metrics = metrics_registry
+        # issue #237, D21: sampler source -> (last stderr line, UTC date) printed for it.
+        self._gauge_failure_last = {}
         # issue #110, D11: process-level, set only by a SIGTERM handler
         # (serve.py) that does no I/O in the handler itself. `/-/readyz`
         # reads this and nothing else decides it; `/-/healthz` never reads
@@ -1320,10 +1610,141 @@ class LnplWsgiApp:
             self._inflight_decr()
 
     def __call__(self, environ, start_response):
+        """issue #237, D1: this wrapper is the only caller of
+        `_finalize_response`; the route is resolved before `_dispatch` so
+        the pre-dispatch 429/503 carry their real route."""
+        start_t = time.monotonic()
         method = environ.get("REQUEST_METHOD", "GET")
         path_info = environ.get("PATH_INFO", "")
         query = environ.get("QUERY_STRING", "")
         raw_path = path_info + ("?" + query if query else "")
+        route = self._route_label(method, path_info, raw_path)
+        seen = {}
+        audit = _AuditContext()
+        environ[AUDIT_ENVIRON_KEY] = audit
+
+        def recording_start_response(status_line, headers, exc_info=None):
+            seen["status"] = status_line.split(" ", 1)[0]
+            return start_response(status_line, headers, exc_info)
+
+        try:
+            body = self._dispatch(environ, recording_start_response, method,
+                                  path_info, query, raw_path)
+        except BaseException:
+            self._finalize_response(environ, route, seen.get("status", "500"), start_t)
+            raise
+        if isinstance(body, list):
+            audit.body = body
+            self._finalize_response(environ, route, seen.get("status", "500"), start_t)
+            return body
+        return self._finalize_after_stream(body, environ, route, seen, start_t)
+
+    def _route_label(self, method, path_info, raw_path):
+        """issue #237, D2: the bounded `route` label — mirrors `_do_get` /
+        `_do_post` / `_reject_non_post` matching, side-effect free. Every
+        return value is a key of `self.routes` or `UNMATCHED_ROUTE_LABEL`."""
+        if method == "GET":
+            segments = path_info.split("/")
+            if len(segments) == 4 and segments[3]:
+                template = "/%s/%s/{id}" % (segments[1], segments[2])
+                route = self.routes.get(template)
+                if route is not None and route.get("kind") == "get-single":
+                    return template
+                route = self.routes.get(path_info)
+                if route is not None and route.get("kind") == "sse-subscribe":
+                    return path_info
+                return UNMATCHED_ROUTE_LABEL
+            return path_info if path_info in self.routes else UNMATCHED_ROUTE_LABEL
+        return raw_path if raw_path in self.routes else UNMATCHED_ROUTE_LABEL
+
+    def _finalize_response(self, environ, route, status, start_t):
+        """issue #237: the ONE per-response finalization point — called
+        exactly once per response by `__call__` (list body, exception,
+        stream end or close). issue #241 (t5) hooks the audit trail here."""
+        duration_s = time.monotonic() - start_t
+        if self.metrics is not None:
+            self.metrics.record_http_request(
+                route, _method_label(environ.get("REQUEST_METHOD", "GET")),
+                status, duration_s)
+        self._emit_audit(environ, route, status, duration_s)
+
+    def _emit_audit(self, environ, route, status, duration_s):
+        """issue #241 (t5, D12): fail-open — nothing here may raise out of
+        `_finalize_response`, including the diagnostic print (with
+        `stderr-json` the sink failure usually IS a broken stderr)."""
+        if self.audit_sink is None:
+            return
+        cid = None
+        try:
+            record = self._audit_record(environ, route, status, duration_s)
+            if record is None:
+                return
+            cid = record["correlation_id"]
+            self.audit_sink.export(record)
+        except Exception as exc:
+            try:
+                print("serve: audit sink failed (correlation_id=%s): %s" % (cid or "-", exc),
+                      file=sys.stderr)
+            except Exception:
+                pass
+
+    def _audit_record(self, environ, route, status, duration_s):
+        """issue #241 (t5, D1/D4-D9): the record, or None when not due."""
+        method = environ.get("REQUEST_METHOD", "GET")
+        route_def = self.routes.get(route)
+        kind = route_def.get("kind") if route_def is not None else None
+        if not ((method == "POST" and kind in AUDIT_DUE_KINDS) or status in ("401", "403")):
+            return None
+        audit = environ.get(AUDIT_ENVIRON_KEY) or _AuditContext()
+        status_code = int(status)
+        body = {}
+        if status_code != 200 and audit.body is not None:
+            try:
+                parsed = json.loads(b"".join(audit.body))
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                body = parsed
+        resource = []
+        masked_keys = set()
+        for entity, op, key, lookup in (audit.ops or ()):
+            source = "id" if lookup is None else lookup.rsplit(".", 1)[-1]
+            if key is not None and (source in self._audit_masked_names or key in masked_keys):
+                masked_keys.add(key)
+                key = "%s#%s" % (entity, MASK)
+            resource.append({"entity": entity, "op": op, "key": key})
+        return {
+            "record_type": "lnpl.audit",
+            "schema_version": 1,
+            "timestamp": _audit_timestamp(time.time()),
+            "correlation_id": (audit.correlation_id or _audit_str(body.get("correlation_id"))
+                               or audit.log_correlation_id),
+            "trace_id": audit.trace_id,
+            "span_id": audit.span_id,
+            "actor": audit.actor,
+            "action": {"method": method, "route": route, "kind": kind,
+                       "workflow": route_def.get("workflow") if kind in AUDIT_DUE_KINDS else None},
+            "resource": resource,
+            "outcome": {"status": status_code,
+                        "code": "ok" if status_code == 200 else _audit_str(body.get("code")),
+                        "failed_step": _audit_str(body.get("failed_step")),
+                        "replay": audit.replay},
+            "duration_ms": round(duration_s * 1000, 3),
+        }
+
+    def _finalize_after_stream(self, body, environ, route, seen, start_t):
+        return _FinalizeOnClose(body, lambda: self._finalize_response(
+            environ, route, seen.get("status", "500"), start_t))
+
+    def _record_idempotency_claim(self, status):
+        """issue #237, D13: one Idempotency-Key claim outcome; a status
+        string outside the four known words is counted as `other`."""
+        if self.metrics is None:
+            return
+        label = status if status in ("started", "in-progress", "done", "unsupported") else "other"
+        self.metrics.record_idempotency_claim(label)
+
+    def _dispatch(self, environ, start_response, method, path_info, query, raw_path):
         # issue #148, D1/D2: `/-/` ops paths (healthz/readyz/metrics) are
         # exempt from BOTH gates -- a k8s probe getting 429 is worse than
         # the probe that exemption exists to serve reliably, and readyz is
@@ -1394,6 +1815,7 @@ class LnplWsgiApp:
         trace_id, span_id = trace_ctx[:2]
         log_sink = {"trace_id": trace_id, "span_id": span_id}
         captured = {}
+        audit = environ.get(AUDIT_ENVIRON_KEY)
 
         def capture_start_response(status_line, headers, exc_info=None):
             captured["status"] = int(status_line.split(" ", 1)[0])
@@ -1424,18 +1846,18 @@ class LnplWsgiApp:
                 # The SSE generator: log once the stream actually ends.
                 logged = True
                 return self._log_sse_then(body, method, path_info, correlation_id,
-                                          start_t, captured, log_sink)
+                                          start_t, captured, log_sink, audit=audit)
             self._emit_request_log(method, path_info, correlation_id, start_t,
-                                   captured, log_sink)
+                                   captured, log_sink, audit=audit)
             logged = True
             return body
         finally:
             if not logged:
                 self._emit_request_log(method, path_info, correlation_id,
-                                       start_t, captured, log_sink)
+                                       start_t, captured, log_sink, audit=audit)
 
     def _emit_request_log(self, method, path, correlation_id, start_t,
-                          captured, log_sink):
+                          captured, log_sink, audit=None):
         line = {
             "correlation_id": log_sink.get("correlation_id") or correlation_id,
             "method": method,
@@ -1479,16 +1901,30 @@ class LnplWsgiApp:
         captured_input = log_sink.get("input")
         if captured_input is not None:
             line["input"] = captured_input
+        # issue #241 (t5, D15): RFC-0039 §6 present-only — the verified
+        # caller only, never a null placeholder; `effects` is untouched.
+        actor = audit.actor if audit is not None else None
+        if isinstance(actor, dict):
+            if actor.get("subject") is not None:
+                line["subject"] = actor["subject"]
+            if actor.get("role") is not None:
+                line["role"] = actor["role"]
+        if audit is not None:
+            audit.log_correlation_id = line["correlation_id"]
+            if audit.trace_id is None:
+                audit.trace_id = line.get("trace_id")
+            if audit.span_id is None:
+                audit.span_id = line.get("span_id")
         print(json.dumps(line, ensure_ascii=False), file=sys.stderr)
 
     def _log_sse_then(self, generator, method, path, correlation_id, start_t,
-                      captured, log_sink):
+                      captured, log_sink, audit=None):
         try:
             for chunk in generator:
                 yield chunk
         finally:
             self._emit_request_log(method, path, correlation_id, start_t,
-                                   captured, log_sink)
+                                   captured, log_sink, audit=audit)
 
     def _reject_non_post(self, start_response, path_info, raw_path):
         if raw_path in self.routes:                                # M2
@@ -1528,6 +1964,9 @@ class LnplWsgiApp:
                 start_response, header, path_info)
             if response is not None:
                 return None, response
+            audit = environ.get(AUDIT_ENVIRON_KEY)
+            if audit is not None:
+                audit.actor = caller_view(claims)
             response = self._role_accepted(start_response, route, claims)   # M3b
             if response is not None:
                 return None, response
@@ -1623,7 +2062,8 @@ class LnplWsgiApp:
             return body_error
         if kind == "event-consume":
             return self._respond_event_consume(start_response, route, payload,
-                                               claims=claims)
+                                               claims=claims,
+                                               audit=environ.get(AUDIT_ENVIRON_KEY))
         # issue #113, D8/D9: absent by default -- a request with no header
         # takes the exact pre-#113 path through `_run`/`_respond` (D9
         # regression: byte-identical when no key is sent).
@@ -1886,11 +2326,72 @@ class LnplWsgiApp:
         this method, not a branch inside it. Prometheus text exposition
         format, rendered from the process-level registry (D9) — no
         auth (D2), same as healthz/readyz."""
-        payload = self.metrics.render().encode("utf-8")
+        payload = self.metrics.render(self._sample_driver_gauges()).encode("utf-8")
         headers = [("Content-Type", "text/plain; version=0.0.4; charset=utf-8"),
                   ("Content-Length", str(len(payload)))]
         start_response(_status_line(200), headers)
         return [payload]
+
+    def _gauge_failed(self, source, exc):
+        line = "serve: metrics: %s failed (%s): %s" % (source, type(exc).__name__, exc)
+        date = time.strftime("%Y-%m-%d", time.gmtime())
+        if self._gauge_failure_last.get(source) != (line, date):
+            print(line, file=sys.stderr)
+            self._gauge_failure_last[source] = (line, date)
+
+    def _gauge_ok(self, source):
+        self._gauge_failure_last.pop(source, None)
+
+    def _sample_driver_gauges(self):
+        """issue #237, D10/D11/D21: scrape-time gauges from one repository
+        opened and closed per scrape — `lnpl_outbox_undelivered` when the
+        driver implements `outbox_undelivered_count()`, one
+        `lnpl_driver_<name>` per valid entry of its optional `metrics()`
+        dict. A failing method leaves its gauges out (the scrape is still
+        200) and prints its stderr line only when the line or the UTC date
+        changed; sampling itself is never suppressed."""
+        if self.repository_factory is None:
+            return []
+        try:
+            repository = self.repository_factory()
+        except DriverError:
+            return []
+        gauges = []
+        try:
+            count_fn = getattr(repository, "outbox_undelivered_count", None)
+            if callable(count_fn):
+                try:
+                    count = int(count_fn())
+                except Exception as exc:
+                    self._gauge_failed("outbox_undelivered_count", exc)
+                else:
+                    self._gauge_ok("outbox_undelivered_count")
+                    gauges.append(("lnpl_outbox_undelivered",
+                                   "Outbox rows not yet delivered, sampled at scrape time.",
+                                   count))
+            hook = getattr(repository, "metrics", None)
+            if callable(hook):
+                try:
+                    values = hook()
+                except Exception as exc:
+                    self._gauge_failed("metrics()", exc)
+                    values = None
+                else:
+                    self._gauge_ok("metrics()")
+                if isinstance(values, dict):
+                    for key in sorted(k for k in values if isinstance(k, str)):
+                        value = values[key]
+                        name = DRIVER_GAUGE_PREFIX + key
+                        if (not key or isinstance(value, bool)
+                                or not isinstance(value, (int, float))
+                                or (isinstance(value, float) and not math.isfinite(value))
+                                or _METRIC_NAME_RE.fullmatch(name) is None):
+                            continue
+                        gauges.append((name, "Value reported by the repository driver's metrics() hook.",
+                                       value))
+        finally:
+            repository.close()
+        return gauges
 
     def _last_event_id(self, environ, start_response):
         """`Last-Event-ID` header -> the outbox seq to resume after (issue
@@ -2071,11 +2572,15 @@ class LnplWsgiApp:
     def _respond(self, environ, start_response, doc, workflow_id, payload,
                 correlation_id, repository, claims=None, log_sink=None,
                 trace_ctx=None, idempotency_key=None, if_match=None):
+        audit = environ.get(AUDIT_ENVIRON_KEY)
+        if audit is not None:
+            audit.correlation_id = correlation_id
         # issue #228: the driver declares the capability; `_idempotency_mode`
         # (ruling t2 D1 r2) keeps the pre-#228 opt-in for non-driver objects.
         mode = (_idempotency_mode(repository)
                 if idempotency_key is not None else None)
         if mode == "refuse":
+            self._record_idempotency_claim("unsupported")
             return _json_response(
                 start_response, 501,
                 problem(501, "idempotency-unsupported",
@@ -2091,6 +2596,7 @@ class LnplWsgiApp:
             now_ms = int(time.time() * 1000)
             claim_status, stored = repository.idempotency_begin(
                 workflow_id, idempotency_key, now_ms, self.idempotency_ttl_ms)
+            self._record_idempotency_claim(claim_status)
             if claim_status == "in-progress":                       # D8
                 return _json_response(
                     start_response, 409,
@@ -2098,6 +2604,8 @@ class LnplWsgiApp:
                            "a request with this Idempotency-Key is already running",
                            correlation_id=correlation_id))
             if claim_status == "done":                              # D7: replay
+                if audit is not None:
+                    audit.replay = True
                 http_status, body = stored
                 content_type = ("application/json" if http_status == 200
                                 else "application/problem+json")
@@ -2124,6 +2632,10 @@ class LnplWsgiApp:
                              repo_rows=default_rows(doc, workflow_id, payload),
                              correlation_id=correlation_id, repository=repository,
                              network=self.network, cache=self.cache, claims=claims)
+        if audit is not None:
+            audit.ops = interp.repo_ops
+        if self.metrics is not None:
+            interp.cache = _CountingCache(interp.cache, self.metrics)
         # issue #111, D6: computed once, reused for the canonical line's
         # `input_digest` on both the escape path below and the normal
         # completion path — the same masking chokepoint the workflow-start
@@ -2151,6 +2663,9 @@ class LnplWsgiApp:
         interp.trace.trace_link = trace_link
         interp.trace.tracestate = tracestate
         interp.trace.flags = flags
+        if audit is not None:
+            audit.trace_id = trace_id
+            audit.span_id = span_id
         try:
             result = interp.run_workflow(workflow_id, payload)
         except Exception:
@@ -2222,7 +2737,8 @@ class LnplWsgiApp:
             repository.idempotency_finish(workflow_id, idempotency_key, status, body)
         return _json_response(start_response, status, body, content_type=content_type)
 
-    def _respond_event_consume(self, start_response, route, payload, claims=None):
+    def _respond_event_consume(self, start_response, route, payload, claims=None,
+                               audit=None):
         """`POST /-/events/<slug>` — CloudEvents envelope in, `Event.consume`'s
         target workflow run (issue #118). D5 (envelope shape) gates D6
         (idempotency, reusing #113's claim/replay AS-IS) which gates D7 (the
@@ -2248,6 +2764,8 @@ class LnplWsgiApp:
         event_key = payload["id"]
         data = payload.get("data") or {}
         correlation_id = "req-%s" % uuid.uuid4().hex[:12]
+        if audit is not None:
+            audit.correlation_id = correlation_id
 
         factory = self.repository_factory
         repository = factory() if factory is not None else None
@@ -2256,6 +2774,7 @@ class LnplWsgiApp:
             # key, so a driver without the claim set refuses every event.
             mode = _idempotency_mode(repository)
             if mode == "refuse":
+                self._record_idempotency_claim("unsupported")
                 return _json_response(
                     start_response, 501,
                     problem(501, "idempotency-unsupported",
@@ -2271,6 +2790,7 @@ class LnplWsgiApp:
                 now_ms = int(time.time() * 1000)
                 claim_status, stored = repository.idempotency_begin(
                     workflow_id, event_key, now_ms, self.idempotency_ttl_ms)
+                self._record_idempotency_claim(claim_status)
                 if claim_status == "in-progress":
                     return _json_response(
                         start_response, 409,
@@ -2278,6 +2798,8 @@ class LnplWsgiApp:
                                "a request with this CloudEvents id is "
                                "already running", correlation_id=correlation_id))
                 if claim_status == "done":                          # D6 replay
+                    if audit is not None:
+                        audit.replay = True
                     http_status, body = stored
                     content_type = ("application/json" if http_status == 200
                                     else "application/problem+json")
@@ -2288,6 +2810,10 @@ class LnplWsgiApp:
                                  repo_rows=default_rows(self.document, workflow_id, data),
                                  correlation_id=correlation_id, repository=repository,
                                  network=self.network, cache=self.cache, claims=claims)
+            if audit is not None:
+                audit.ops = interp.repo_ops
+            if self.metrics is not None:
+                interp.cache = _CountingCache(interp.cache, self.metrics)
             try:
                 result = interp.run_workflow(workflow_id, data)
             except Exception:
@@ -2374,7 +2900,7 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                   exporter=None, trust_incoming_trace=False,
                   jwt_secret_env=None, metrics=False,
                   idempotency_ttl_ms=DEFAULT_IDEMPOTENCY_TTL_MS,
-                  capture_on_failure=False, rate_limit=None):
+                  capture_on_failure=False, rate_limit=None, audit_sink=None):
     """An already-compiled `document` -> a WSGI callable.
 
     This is the single constructor both `build_app()` (env-var driven, for a
@@ -2427,7 +2953,7 @@ def make_wsgi_app(document, repository_factory=None, token_provider=None,
                        metrics_registry=MetricsRegistry() if metrics else None,
                        idempotency_ttl_ms=idempotency_ttl_ms,
                        capture_on_failure=capture_on_failure,
-                       rate_limit=rate_limit)
+                       rate_limit=rate_limit, audit_sink=audit_sink)
 
 
 # --------------------------------------------------------------------------
@@ -2793,7 +3319,7 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
               idempotency_ttl_s=None, metrics=None, capture_on_failure=None,
               trust_incoming_trace=None, rate_limit=None, cache=None,
               network=None, token_provider=None, jwt_issuer=None,
-              config=None, profile=None, jwt_secret_file=None):
+              config=None, profile=None, jwt_secret_file=None, audit_sink=None):
     """A ready WSGI callable, for a host that calls a zero-argument factory
     — `gunicorn "lnpl.wsgi:build_app()"` (issue #80, D1).
 
@@ -2807,7 +3333,7 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
     LNPL_CLOCK -> LNPL_CACHE (needs the clock; closed on ANY later
     failure, see below) -> LNPL_NETWORK (needs the merged endpoints) ->
     LNPL_LOG_FORMAT -> LNPL_TRACE_EXPORTER -> LNPL_IDEMPOTENCY_TTL_S -> the
-    3 booleans + LNPL_RATE_LIMIT (t187a, unchanged) -> make_wsgi_app.
+    3 booleans + LNPL_RATE_LIMIT (t187a, unchanged) -> LNPL_AUDIT_SINK -> make_wsgi_app.
 
     Every argument omitted falls back to its environment variable:
 
@@ -2830,6 +3356,7 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
       trace_exporter LNPL_TRACE_EXPORTER  built-in `stderr-json`, an
                                            `lnpl.exporters` entry-point name,
                                            or unset (default: no exporting)
+      audit_sink     LNPL_AUDIT_SINK      `stderr-json` or `file:<path>` (issue #241); unset -> no audit records
       idempotency_ttl_s LNPL_IDEMPOTENCY_TTL_S  seconds an `Idempotency-Key`
                                            claim is honored before a repeat
                                            becomes a fresh miss (issue #113,
@@ -3076,6 +3603,13 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
                 except ValueError as exc:
                     raise WsgiConfigError("LNPL_RATE_LIMIT is not a number") from exc
         _validate_rate_limit(rate_limit, "LNPL_RATE_LIMIT")
+        # issue #241 (t5, D14): opened last, so no build_app check after it
+        # can fail with the file open.
+        if audit_sink is None:
+            try:
+                audit_sink = open_audit_sink(_env_or_none("LNPL_AUDIT_SINK"))
+            except ValueError as exc:
+                raise WsgiConfigError(str(exc)) from exc
     except BaseException:
         if cache is not None:
             cache.close()
@@ -3089,4 +3623,5 @@ def build_app(sources=None, backend=None, jwt_secret_env=None, clock=None,
                          metrics=metrics, capture_on_failure=capture_on_failure,
                          trust_incoming_trace=trust_incoming_trace,
                          rate_limit=rate_limit,
-                         jwt_secret_env=jwt_secret_env)
+                         jwt_secret_env=jwt_secret_env,
+                         audit_sink=audit_sink)

@@ -1,0 +1,27 @@
+// generated — do not hand-edit. source: impl/lnpl/grammar.py:render_tree_sitter(). regenerate: python scripts/gen_plugin_references.py
+module.exports = grammar({
+  name: 'lnpl',
+  extras: $ => [/[ \f\v\r]/, $.comment],
+  word: $ => $.identifier,
+  rules: {
+    source_file: $ => seq(optional($.line), repeat(seq($._newline, optional($.line)))),
+    line: $ => seq($._head, repeat($._arg)),
+    _head: $ => choice($.verb, $.top_keyword, $.clause_keyword, $.control_keyword, $.semantic_type, $.comparator, $.arithmetic_op, $.logical_op, $.policy_clause, $.security_clause, $.performance_clause, $.spec_expect, $.identifier),
+    _arg: $ => choice($.top_keyword, $.clause_keyword, $.control_keyword, $.semantic_type, $.comparator, $.arithmetic_op, $.logical_op, $.policy_clause, $.security_clause, $.performance_clause, $.identifier),
+    _newline: $ => /\n/,
+    verb: $ => choice("authenticate", "authorize", "cache", "call", "create", "delete", "emit", "fail", "find", "format", "insert", "invalidate", "list", "load", "note", "publish", "read", "request", "respond", "set", "update", "validate"),
+    top_keyword: $ => choice("entity", "service", "workflow", "event", "capability", "refine"),
+    clause_keyword: $ => choice("field", "goal", "policy", "security", "performance", "database", "expose", "spec", "given", "when", "expect"),
+    control_keyword: $ => choice("repeat", "parallel", "until", "pipeline", "merge"),
+    semantic_type: $ => choice("Address", "Boolean", "Currency", "DateTime", "Decimal", "Email", "File", "GeoLocation", "Html", "Image", "Integer", "Json", "Markdown", "Money", "Password", "Phone", "Text", "UUID"),
+    comparator: $ => choice("<=", ">=", "==", "!=", "<", ">"),
+    arithmetic_op: $ => choice("+", "-", "*", "/"),
+    logical_op: $ => "and",
+    policy_clause: $ => choice("retry", "rollback", "timeout"),
+    security_clause: $ => choice("jwt", "role"),
+    performance_clause: $ => choice("response", "prefetch", "batch"),
+    spec_expect: $ => choice("attempts", "completed", "duration", "effects", "emitted", "error", "failed", "result", "rows", "slo", "steps"),
+    identifier: $ => /[^\s#]+/,
+    comment: $ => token(seq('#', /.*/)),
+  },
+});

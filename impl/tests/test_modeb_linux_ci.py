@@ -4,7 +4,7 @@ GitHub Actions는 로컬에서 실행할 수 없으므로 워크플로 파일의
 텍스트**에 대해 단언한다 (`test_release_workflow.py`와 같은 패턴). 핵심
 회귀는: 캐싱을 도입하지 않는 것(D2, 실측상 직접 다운로드보다 느림),
 버전을 하드코딩하지 않는 것(D1, `mlir/llvm.pin`에서만 파생), `gate` 잡의
-기존 3-매트릭스 구조를 건드리지 않는 것(D7).
+4-매트릭스 구조(3.11–3.14, issue #246)를 건드리지 않는 것(D7).
 """
 import os
 import re
@@ -40,9 +40,9 @@ class ModebLinuxJobExistsTest(unittest.TestCase):
         self.assertIn("LNPL_LLVM_BIN", _read(CI_YML_PATH))
 
     def test_gate_job_matrix_untouched(self):
-        # D7: gate의 3-way 파이썬 매트릭스는 그대로 유지된다.
+        # D7 + issue #246: gate의 파이썬 매트릭스는 3.11–3.14 4-way다.
         text = _read(CI_YML_PATH)
-        self.assertIn('python-version: ["3.11", "3.12", "3.13"]', text)
+        self.assertIn('python-version: ["3.11", "3.12", "3.13", "3.14"]', text)
 
 
 class NoApiCachingTest(unittest.TestCase):
@@ -63,8 +63,10 @@ class NoHardcodedLlvmVersionTest(unittest.TestCase):
         ci_text = _read(CI_YML_PATH)
         # 버전을 파생하는 awk/cut 줄 자체는 제외하고, 나머지 어디에도
         # 핀 메이저 버전이 리터럴로 박혀 있지 않아야 한다(D1).
+        # a 40-hex action SHA pin is not a version literal (issue #243)
         body_without_pin_parse_line = "\n".join(
-            line for line in ci_text.splitlines() if "llvm.pin" not in line
+            re.sub(r"@[0-9a-f]{40}", "@<sha>", line)
+            for line in ci_text.splitlines() if "llvm.pin" not in line
         )
         self.assertNotIn(major, body_without_pin_parse_line,
                           "LLVM 메이저 버전(%s)이 하드코딩된 것으로 보인다" % major)

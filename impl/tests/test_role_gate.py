@@ -601,5 +601,114 @@ class CliMintedTokenAcceptedTest(unittest.TestCase):
                 self.assertEqual(status, 200)
 
 
+def _claims(token):
+    seg = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
+
+
+class ScheduleTokenCliTest(unittest.TestCase):
+    """Issue #236 — `lnpl token --path /-/schedules/<event-slug>` mints the
+    token the generated CronJob sends: aud `-`, `--ttl` honoured, accepted by
+    the real WSGI app at the trigger route."""
+
+    def setUp(self):
+        self._prev_secret = os.environ.get(SECRET_ENV)
+        os.environ[SECRET_ENV] = SECRET.decode()
+        self.addCleanup(self._restore_secret)
+
+    def _restore_secret(self):
+        if self._prev_secret is None:
+            os.environ.pop(SECRET_ENV, None)
+        else:
+            os.environ[SECRET_ENV] = self._prev_secret
+
+    def mint(self, source_text, path, *extra_args):
+        """`mint_via_cli` with `--path` taken from the caller. Returns
+        (rc, stdout_stripped, stderr)."""
+        os.makedirs(CLAUDE_TMP, exist_ok=True)
+        workdir = tempfile.mkdtemp(prefix="lnpl-i236-", dir=CLAUDE_TMP)
+        self.addCleanup(shutil.rmtree, workdir, ignore_errors=True)
+        src_path = os.path.join(workdir, "svc.lnpl")
+        with open(src_path, "w", encoding="utf-8") as fh:
+            fh.write(source_text)
+        out, err = io.StringIO(), io.StringIO()
+        argv = ["token", src_path, "--path", path, "--subject", "u1",
+                "--secret-env", SECRET_ENV] + list(extra_args)
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = cli.main(argv)
+        return rc, out.getvalue().strip(), err.getvalue()
+
+    def _app(self, source, module):
+        return make_wsgi_app(compile_doc(source, module),
+                             token_provider=HmacTokenProvider(SECRET))
+
+    def test_normal_schedule_path_with_role_is_accepted(self):
+        rc, token, err = self.mint(SCHEDULE_ROLE_GATED_SRC, SCHEDULE_PATH,
+                                   "--role", "admin", "--ttl", "5m")
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        claims = _claims(token)
+        self.assertEqual(claims["aud"], "-")
+        self.assertEqual(claims["exp"] - claims["iat"], 300)
+        status, _, _ = post_schedule(self._app(SCHEDULE_ROLE_GATED_SRC, "m236a"), token)
+        self.assertEqual(status, 200)
+
+    def test_error_schedule_path_without_role_warns_and_gets_403(self):
+        rc, token, err = self.mint(SCHEDULE_ROLE_GATED_SRC, SCHEDULE_PATH,
+                                   "--ttl", "5m")
+        self.assertEqual(rc, 0)
+        self.assertIn("requires role 'admin'", err)
+        status, _, _ = post_schedule(self._app(SCHEDULE_ROLE_GATED_SRC, "m236a"), token)
+        self.assertEqual(status, 403)
+
+    def test_normal_no_role_schedule_source(self):
+        rc, token, err = self.mint(SCHEDULE_NO_ROLE_SRC, SCHEDULE_PATH)
+        self.assertEqual(rc, 0)
+        status, _, _ = post_schedule(self._app(SCHEDULE_NO_ROLE_SRC, "m236b"), token)
+        self.assertEqual(status, 200)
+
+    def test_error_unknown_schedule_slug_lists_schedule_paths(self):
+        rc, token, err = self.mint(SCHEDULE_NO_ROLE_SRC, "/-/schedules/no-such")
+        self.assertEqual(rc, 2)
+        self.assertEqual(token, "")
+        self.assertIn("is not served", err)
+        self.assertIn(SCHEDULE_PATH, err)
+
+    def test_error_ambiguous_schedule_is_rc2(self):
+        source = SCHEDULE_NO_ROLE_SRC + "\nworkflow RejectOrder\n    read order\n"
+        rc, token, err = self.mint(source, SCHEDULE_PATH)
+        self.assertEqual(rc, 2)
+        self.assertEqual(token, "")
+        self.assertTrue(err.startswith("error: "), err)
+        self.assertIn("exactly one is required", err)
+
+    def test_boundary_ordinary_paths_unchanged(self):
+        rc, token, err = self.mint(SCHEDULE_NO_ROLE_SRC, "/order-service/approve-order",
+                                   "--ttl", "5m")
+        self.assertEqual(rc, 0)
+        claims = _claims(token)
+        self.assertEqual(claims["aud"], "order-service")
+        self.assertEqual(claims["exp"] - claims["iat"], 300)
+        rc, token, err = self.mint(SCHEDULE_NO_ROLE_SRC, "/order-service/no-such")
+        self.assertEqual(rc, 2)
+        self.assertIn("is not served", err)
+        self.assertNotIn("/-/schedules/", err)
+
+    def test_boundary_other_dash_paths_do_not_merge_schedule_routes(self):
+        # The merge is gated on the `/-/schedules/` prefix, not on `/-/`: a
+        # non-schedule `/-/` path keeps today's error and valid set, and an
+        # ambiguous schedule never blocks it (r1 review F1).
+        ambiguous = SCHEDULE_NO_ROLE_SRC + "\nworkflow RejectOrder\n    read order\n"
+        for source in (SCHEDULE_NO_ROLE_SRC, ambiguous):
+            for path in ("/-/events/x", "/-/healthz"):
+                with self.subTest(path=path, ambiguous=source is ambiguous):
+                    rc, token, err = self.mint(source, path)
+                    self.assertEqual(rc, 2)
+                    self.assertEqual(token, "")
+                    self.assertIn("is not served", err)
+                    self.assertNotIn("/-/schedules/", err)
+                    self.assertNotIn("exactly one is required", err)
+
+
 if __name__ == "__main__":
     unittest.main()

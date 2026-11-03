@@ -165,7 +165,7 @@ The repo doubles as the marketplace and hosts three plugins with different audie
 |--------|----------|----------|
 | [`lnpl`](plugins/lnpl/README.md) | people writing `.lnpl` | vocabulary routing, compile diagnostics on save, spec derivation, a completion gate, KB lookup |
 | [`lnpl-dev`](plugins/lnpl-dev/README.md) | people building linkly itself | environment-prerequisite diagnosis, RFC process lint, the mutation harness's traps |
-| [`lnpl-mcp`](plugins/lnpl-mcp/README.md) | anyone who would rather call the compiler than shell out to it | `lnpl compile` and `kb.route` as MCP tools, returning diagnostics as records instead of stderr prose |
+| [`lnpl-mcp`](plugins/lnpl-mcp/README.md) | anyone who would rather call the compiler than shell out to it | the compiler, spec runner, fake-backend `run`, OpenAPI and compose/k8s generators as 8 MCP tools over stdio or Streamable HTTP, returning diagnostics as records instead of stderr prose |
 
 Contributors install `/plugin install lnpl-dev@linkly` as well.
 
@@ -180,6 +180,24 @@ enough — a hook runs in the agent's process environment, which does not carry 
 > For developers: `lnpl-doctor` and its tests still look for the `lnpl` console
 > script in `.venv`. Run `.venv/bin/pip install .` once after creating the venv,
 > and `pip install --force-reinstall --no-deps .` after editing `impl/lnpl/`.
+
+### Editor support
+
+`lnpl lsp` is a stdio language server (LSP 3.17). For each open `.lnpl` file it publishes the
+compiler's diagnostics with their severity, offers the `unknown-verb` did-you-mean as a Quick Fix,
+and answers hover on a workflow step's verb with a link to the RFC section that defines it. It never
+writes your files. Each document is compiled on its own, so names declared in sibling files of a
+directory module (RFC-0031) show up as errors.
+
+- **VS Code** — [`editors/vscode/`](editors/vscode/): an unpublished extension skeleton
+  (diagnostics + highlighting). Point `lnpl.serverPath` at `.venv/bin/lnpl`; see its README.
+- **tree-sitter** — [`editors/tree-sitter-lnpl/grammar.js`](editors/tree-sitter-lnpl/grammar.js) and
+  [`queries/highlights.scm`](editors/tree-sitter-lnpl/queries/highlights.scm). Run `tree-sitter generate`
+  in that directory; the generated `src/` is git-ignored.
+- Both grammars and the TextMate grammar
+  ([`editors/vscode/syntaxes/lnpl.tmLanguage.json`](editors/vscode/syntaxes/lnpl.tmLanguage.json)) are
+  generated from `impl/lnpl/grammar.py` by `python scripts/gen_plugin_references.py`;
+  `--check` fails when one is stale. Never hand-edit them.
 
 ### Mode B — a native binary
 
@@ -244,7 +262,7 @@ All three roadmap phases are complete.
 - OpenAPI is generated from the IR, and so is the golden scenario — it is compiled,
   not hand-maintained. All nine agent roles are implemented.
 
-**~5,720 tests, all passing**, plus a 77-mutation harness that proves the suite can
+**~6,190 tests, all passing**, plus a 77-mutation harness that proves the suite can
 actually fail. Both are reproduced by the commands under
 [Verification](#verification).
 
@@ -276,6 +294,11 @@ RFC bodies are written in Korean; identifiers, keywords, and schema fields are E
 The central one has an English summary:
 [RFC-0001 Semantic IR](docs/rfc-0001-semantic-ir.en.md) — the document the rest of the
 suite is defined against.
+
+The operator docs also have full English editions; where an edition and its Korean
+original disagree, the Korean text is normative: [serving](docs/serving.en.md),
+[backends](docs/backends.en.md), [compatibility](docs/compatibility.en.md) and
+[CI gates](docs/CI-GATES.en.md).
 
 ---
 
@@ -422,7 +445,7 @@ PYTHONPATH=impl .venv/bin/python -m unittest discover -s impl/tests -t impl
 ```
 
 ```
-Ran 5717 tests in 182.524s
+Ran 6191 tests in 224.408s
 OK (skipped=2)
 ```
 
@@ -430,6 +453,23 @@ The mode B tests need the MLIR/LLVM tools on `PATH` (see [Mode B](#mode-b--a-nat
 without them that number is the same but a few dozen cases error out on the missing
 toolchain. `bash scripts/dev_doctor.sh` exits 0 when the environment is complete, and
 otherwise prints exactly what is missing.
+
+Line and branch coverage come from the advisory `coverage (advisory)` CI job, which runs
+the same test modules as the `gate` legs (`scripts/ci_test_suite.py`) under
+`coverage run --branch`. Locally:
+
+```bash
+.venv/bin/pip install --require-hashes -r requirements-coverage.txt
+PYTHONPATH=impl .venv/bin/python -m coverage run --branch --source=impl/lnpl scripts/ci_test_suite.py
+.venv/bin/python -m coverage json -o coverage.json
+.venv/bin/python scripts/diff_coverage.py --coverage-json coverage.json
+```
+
+Baseline for `impl/lnpl` (2026-11-02, commit 03bc551, Python 3.13.1, coverage 7.17.0, macOS
+with the mode B toolchain on `PATH`): **line coverage 95.12% (13214/13892 statements), branch
+coverage 92.12% (5461/5928 branches)**. Only code the test process runs itself is counted —
+tests that start `python -m lnpl` in a child process add nothing to it. The CI job has
+no mode B toolchain, so its job summary reports its own figure.
 
 `mutation_check.py` removes one specification rule at a time — 77 of them — and
 requires the suite to go red for each. It begins with a **no-op control**: a mutation
@@ -552,10 +592,16 @@ nodes), its lowering path is **MLIR → native**, the knowledge base is a
 CHARTER.md                  Stage-0 vision document (preserved verbatim — the RFCs are canonical)
 rfcs/0000~0077              The RFCs (13 Superseded, 62 Accepted, 3 Draft)
 schemas/lir.schema.json     IR JSON Schema (draft 2020-12)
+editors/tree-sitter-lnpl/   Generated tree-sitter grammar + highlight query (never hand-edit)
+editors/vscode/             VS Code extension skeleton: lnpl lsp diagnostics + generated TextMate grammar
 examples/login.lnpl         Golden scenario source
 examples/login.lir.json     The same scenario as IR
 scripts/validate_ir.py      Schema validation + self-test
 docs/rfc-0001-semantic-ir.en.md   English summary of RFC-0001 (the RFCs themselves are Korean)
+docs/serving.en.md          English edition of docs/serving.md (lnpl serve / WSGI)
+docs/backends.en.md         English edition of docs/backends.md (capability adapters and backends)
+docs/compatibility.en.md    English edition of docs/compatibility.md (0.x compatibility policy)
+docs/CI-GATES.en.md         English edition of docs/CI-GATES.md (CI gate roster and procedures)
 docs/GLOSSARY.md            Canonical terminology
 docs/RESEARCH-NOTES.md      External basis for design decisions
 docs/CONSISTENCY-CHECK.md   Cross-consistency verdicts (C1–C9)

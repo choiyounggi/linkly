@@ -17,3 +17,12 @@ dist/
 # pip; uv is only ever a local convenience runner, so a lockfile here would
 # declare a toolchain the project does not actually use.
 uv.lock
+# tree-sitter build outputs (`tree-sitter generate`) and VS Code extension installs (issue #254)
+editors/tree-sitter-lnpl/src/
+editors/vscode/node_modules/
+# coverage.py data and reports (issue #247) — the coverage CI job uploads them as an artifact
+/.coverage
+/.coverage.*
+/coverage.xml
+/coverage.json
+/htmlcov/

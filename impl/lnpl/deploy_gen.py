@@ -8,12 +8,15 @@ object name after it passed the DNS-1035 rule). See docs/backends.md
 section 12.
 """
 
+import ipaddress
 import re
 import sys
 
 from .drivers import _http_capabilities
 from .generators import GeneratorError
-from .wsgi import _network_targets
+from .openapi import OpenApiError, _schedules, _slug
+from .wsgi import (ServeError, _network_targets, build_routes,
+                   build_schedule_routes)
 
 # The `lnpl serve --grace-period` default (30.0, cli.py) and gunicorn's
 # `graceful_timeout` default 30 s (docs/serving.md "SIGTERM 그레이스풀 드레인").
@@ -24,7 +27,10 @@ SOURCE_PATH = "/srv/lnpl/app.lnpl"
 IMAGE_PLACEHOLDER = "ghcr.io/OWNER/linkly:VERSION"
 ENDPOINT_PLACEHOLDER = "http://endpoint-placeholder.invalid"
 COMPOSE_OPTIONS = ("image", "port", "source", "postgres_image", "redis_image")
-K8S_OPTIONS = ("image", "name", "replicas", "cpu_request", "cpu_limit", "memory")
+K8S_OPTIONS = ("image", "name", "replicas", "cpu_request", "cpu_limit", "memory",
+               "ingress_host", "hpa_min", "hpa_max", "hpa_cpu", "pdb",
+               "network_policy", "egress_cidrs")
+HPA_KEYS = ("hpa_min", "hpa_max", "hpa_cpu")
 MAPPED_CAPABILITIES = ("postgres", "redis", "jwt")
 
 _NAME_RE = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
@@ -32,11 +38,103 @@ _NAME_MAX = 63
 _QUANTITY_RE = re.compile(r"^[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DIGITS_RE = re.compile(r"^[0-9]+$")
+# DNS-1123 subdomain; always used with fullmatch (issue #236, D13).
+_HOST_RE = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*")
+_HOST_MAX = 253
 
 _IMAGE_COMMENT = ("# PLACEHOLDER: set the image with "
                   "--set image=ghcr.io/<owner>/linkly:<X.Y> "
                   "(no latest tag is published).")
 _ENDPOINT_COMMENT = "# PLACEHOLDER: base URL of this network target."
+# Run by the schedule-trigger CronJob as python -B -c (issue #236, D4/D6/D8): mints a per-run token with lnpl token, POSTs {} to the trigger route, and never prints the token or the key.
+TRIGGER_SCRIPT = """import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+path = os.environ["LNPL_TRIGGER_PATH"]
+url = os.environ["LNPL_TRIGGER_BASE"] + path
+headers = {"Content-Type": "application/json"}
+if os.environ.get("LNPL_TRIGGER_AUTH") == "jwt":
+    cmd = [sys.executable, "-B", "-m", "lnpl", "token", os.environ["LNPL_SOURCE"],
+           "--path", path, "--subject", os.environ["LNPL_TRIGGER_SUBJECT"],
+           "--secret-env", "LNPL_JWT_SECRET", "--ttl", "5m"]
+    role = os.environ.get("LNPL_TRIGGER_ROLE", "")
+    if role:
+        cmd += ["--role", role]
+    issuer = os.environ.get("LNPL_JWT_ISSUER", "")
+    if issuer:
+        cmd += ["--jwt-issuer", issuer]
+    try:
+        minted = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        print("trigger failed: %s lnpl token timed out" % path, file=sys.stderr)
+        sys.exit(2)
+    sys.stderr.write(minted.stderr)
+    if minted.returncode != 0:
+        sys.exit(2)
+    token = minted.stdout.strip()
+    if not token or any(c.isspace() or not c.isprintable() for c in token):
+        print("trigger failed: lnpl token printed no usable token", file=sys.stderr)
+        sys.exit(2)
+    headers["Authorization"] = "Bearer " + token
+request = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+try:
+    with urllib.request.urlopen(request, timeout=300) as response:
+        status = response.status
+except urllib.error.HTTPError as exc:
+    print("trigger failed: %s HTTP %d" % (path, exc.code), file=sys.stderr)
+    sys.exit(1)
+except urllib.error.URLError as exc:
+    print("trigger failed: %s unreachable: %s" % (path, exc.reason), file=sys.stderr)
+    sys.exit(1)
+except Exception as exc:
+    print("trigger failed: %s %s" % (path, type(exc).__name__), file=sys.stderr)
+    sys.exit(1)
+print("trigger %s: HTTP %d" % (path, status))
+"""
+# Copy of cli._CRONTAB_EXPR (issue #81, D3): the library must not import the
+# CLI module; a conformance test pins the two tables together (issue #236, D2).
+CRONTAB_EXPR = {
+    "daily": lambda hh, mm: "%d %d * * *" % (mm, hh),
+}
+# docker/Dockerfile: useradd --uid 1000 linkly; USER linkly is a name, and the
+# kubelet refuses runAsNonRoot without a numeric uid (issue #236, D9).
+TRIGGER_UID = 1000
+_CRON_NAME_MAX = 52
+_TRIGGER_RESOURCES_COMMENT = ("# PLACEHOLDER: no resources set for the trigger "
+                              "(BestEffort QoS); add requests with a patch if a "
+                              "ResourceQuota requires them.")
+_TRIGGER_KEY_COMMENT = ("# Schedule trigger: this pod reads LNPL_JWT_SECRET and can mint any "
+                        "token the server accepts; docs/backends.md section 12.")
+_PDB_COMMENT = ("# With 1 replica, minAvailable: 1 allows zero voluntary evictions "
+                "and a node drain never completes; run 2 or more replicas "
+                "(--set replicas=N or hpa_min=N).")
+_NETPOL_COMMENTS = [
+    "# NetworkPolicy peers are pods, namespaces and IP blocks only; a DNS "
+    "host name cannot be matched.",
+    "# Egress is denied except DNS to kube-dns and the CIDRs from --set "
+    "egress_cidrs=...: list external backends (http endpoints, managed "
+    "databases) as CIDRs.",
+    "# In-cluster backends (postgres, redis pods) need a separate "
+    "NetworkPolicy you own; policies are additive. docs/backends.md "
+    "section 12.",
+]
+_DNS_EGRESS_RULE = [
+    "    - to:",
+    "        - namespaceSelector:",
+    "            matchLabels:",
+    '              "kubernetes.io/metadata.name": "kube-system"',
+    "          podSelector:",
+    "            matchLabels:",
+    '              "k8s-app": "kube-dns"',
+    "      ports:",
+    '        - protocol: "UDP"',
+    "          port: 53",
+    '        - protocol: "TCP"',
+    "          port: 53",
+]
 
 
 def yaml_quote(value):
@@ -107,6 +205,131 @@ def check_quantity(key, value):
         raise GeneratorError(
             "option %r must be a Kubernetes quantity such as 100m, 0.5 or "
             "256Mi, got %r" % (key, value))
+
+
+def check_ingress_host(value):
+    if _HOST_RE.fullmatch(value) and len(value) <= _HOST_MAX:
+        return value
+    raise GeneratorError(
+        "k8s option ingress_host=%r is not a DNS-1123 subdomain (lowercase "
+        "letters, digits, '-' and '.'; each label starts and ends with a "
+        "letter or digit; at most %d characters)" % (value, _HOST_MAX))
+
+
+def ingress_segments(document):
+    """The distinct first path segments of the served workflow paths, sorted
+    (issue #236, D13). `/-/` routes are not in `build_routes`, so health,
+    schedule and event triggers never reach the public Ingress."""
+    try:
+        routes = build_routes(document)
+    except (ServeError, OpenApiError) as exc:
+        raise GeneratorError("k8s option ingress_host: %s" % exc)
+    segments = sorted({path.split("/")[1] for path in routes})
+    if not segments:
+        raise GeneratorError(
+            "k8s option ingress_host: the document serves no path, so the "
+            "Ingress would have no rule path")
+    return segments
+
+
+def parse_hpa(options):
+    """-> None, or (min, max, cpu) (issue #236, D14). Check order: partial
+    set, digits, ranges, cpu_request, replicas."""
+    if not any(key in options for key in HPA_KEYS):
+        return None
+    missing = [key for key in HPA_KEYS if key not in options]
+    if missing:
+        raise GeneratorError(
+            "k8s options %s go together; missing: %s"
+            % (", ".join(HPA_KEYS), ", ".join(missing)))
+    for key in HPA_KEYS:
+        if not _DIGITS_RE.fullmatch(options[key]):
+            raise GeneratorError("k8s option %s=%r is not a whole number"
+                                 % (key, options[key]))
+    low, high, cpu = (int(options[key]) for key in HPA_KEYS)
+    if low < 1:
+        raise GeneratorError("k8s option hpa_min=%r must be at least 1"
+                             % options["hpa_min"])
+    if high < low:
+        raise GeneratorError("k8s option hpa_max=%r must be at least hpa_min=%r"
+                             % (options["hpa_max"], options["hpa_min"]))
+    if not 1 <= cpu <= 100:
+        raise GeneratorError("k8s option hpa_cpu=%r must be between 1 and 100 "
+                             "(percent of cpu_request)" % options["hpa_cpu"])
+    if "cpu_request" not in options:
+        raise GeneratorError("k8s options hpa_* need cpu_request: CPU "
+                             "utilization is undefined without a CPU request")
+    if "replicas" in options:
+        raise GeneratorError("k8s option replicas cannot be combined with "
+                             "hpa_min/hpa_max/hpa_cpu: the HPA owns the "
+                             "replica count")
+    return low, high, cpu
+
+
+def parse_flag(options, key):
+    """`true` -> True, `false` or absent -> False, anything else refused
+    (issue #236, D12: a closed literal set)."""
+    value = options.get(key, "false")
+    if value not in ("true", "false"):
+        raise GeneratorError("k8s option %s=%r must be true or false"
+                             % (key, value))
+    return value == "true"
+
+
+def parse_egress_cidrs(options, network_policy):
+    """-> list of normalised CIDR strings (issue #236, D17)."""
+    if "egress_cidrs" not in options:
+        return []
+    if not network_policy:
+        raise GeneratorError("k8s option egress_cidrs needs network_policy=true")
+    cidrs = []
+    for item in options["egress_cidrs"].split(","):
+        try:
+            if not item or item != item.strip() or "/" not in item:
+                raise ValueError(item)
+            network = ipaddress.ip_network(item, strict=True)
+        except ValueError:
+            raise GeneratorError(
+                "k8s option egress_cidrs: %r is not a CIDR (address/prefix, "
+                "no host bits, no spaces)" % item)
+        cidrs.append(str(network))
+    return cidrs
+
+
+def schedule_triggers(document, name):
+    """-> one dict per `on schedule` event, in node order (issue #236, D1,
+    D2, D10): the CronJob name, event name, trigger path, crontab
+    expression, time zone, and the route's `auth` and `role`."""
+    entries = _schedules(document)
+    if not entries:
+        return []
+    try:
+        routes = build_schedule_routes(document)
+    except ServeError as exc:
+        raise GeneratorError("k8s: %s" % exc)
+    nodes = {n["id"]: n for n in document["nodes"]}
+    triggers = []
+    seen = set()
+    for entry in entries:
+        event = nodes[entry["event"]]
+        path = "/-/schedules/" + _slug(event["name"])
+        cron = name + "-" + _slug(event["name"])
+        if not (_NAME_RE.fullmatch(cron) and len(cron) <= _CRON_NAME_MAX):
+            raise GeneratorError(
+                "k8s: schedule event %r gives the CronJob name %r, which must "
+                "be a DNS-1035 label of at most 52 characters (the CronJob "
+                "controller appends 11); rename the event or set --set "
+                "name=<shorter>" % (event["name"], cron))
+        if cron in seen:
+            raise GeneratorError("k8s: two schedule events give the same "
+                                 "CronJob name %r" % cron)
+        seen.add(cron)
+        hh, mm = (int(part) for part in entry["at"].split(":"))
+        triggers.append({"cron": cron, "event": event["name"], "path": path,
+                         "schedule": CRONTAB_EXPR[entry["every"]](hh, mm),
+                         "zone": entry["zone"], "auth": routes[path]["auth"],
+                         "role": routes[path]["role"]})
+    return triggers
 
 
 def check_object_name(value, origin):
@@ -304,7 +527,7 @@ def generate_compose(document, options):
 
 
 def generate_k8s(document, options):
-    """-> {"k8s.yaml": bytes}: ConfigMap, Deployment, Service."""
+    """-> {"k8s.yaml": bytes}: ConfigMap, Deployment, Service, then the opt-in objects of issue #236 (Ingress, HPA, PDB, NetworkPolicy)."""
     check_options("k8s", options, K8S_OPTIONS)
     if "name" in options:
         name = options["name"]
@@ -317,8 +540,25 @@ def generate_k8s(document, options):
     for key in ("cpu_request", "cpu_limit", "memory"):
         if key in options:
             check_quantity(key, options[key])
+    ingress_host = None
+    segments = []
+    if "ingress_host" in options:
+        ingress_host = check_ingress_host(options["ingress_host"])
+        segments = ingress_segments(document)
+    hpa = parse_hpa(options)
+    pdb = parse_flag(options, "pdb")
+    network_policy = parse_flag(options, "network_policy")
+    egress_cidrs = parse_egress_cidrs(options, network_policy)
 
     mapped, unknown = classify_capabilities(document)
+    triggers = schedule_triggers(document, name)
+    for trigger in triggers:
+        if trigger["auth"] and "jwt" not in mapped:
+            raise GeneratorError(
+                "k8s: schedule event %r: its service declares security jwt but "
+                "the document has no capability jwt, so the generated "
+                "Deployment holds no LNPL_JWT_SECRET for the trigger to sign "
+                "with; add capability jwt" % trigger["event"])
     warn_unknown("k8s", unknown)
     endpoints = endpoint_keys(document)
     secret_vars = []
@@ -364,11 +604,12 @@ def generate_k8s(document, options):
         "    " + label,
         "spec:",
     ]
-    if "replicas" not in options:
-        lines.append("  # PLACEHOLDER: replica count is not known to the "
-                     "generator; set with --set replicas=N.")
+    if hpa is None:
+        if "replicas" not in options:
+            lines.append("  # PLACEHOLDER: replica count is not known to the "
+                         "generator; set with --set replicas=N.")
+        lines.append("  replicas: %d" % replicas)
     lines += [
-        "  replicas: %d" % replicas,
         "  selector:",
         "    matchLabels:",
         "      " + label,
@@ -452,4 +693,254 @@ def generate_k8s(document, options):
         "      port: %d" % CONTAINER_PORT,
         '      targetPort: "http"',
     ]
+    for trigger in triggers:
+        lines += _cronjob_lines(name, trigger, image, "image" in options)
+    if ingress_host is not None:
+        lines += _ingress_lines(name, label, ingress_host, segments)
+    if hpa is not None:
+        lines += _hpa_lines(name, label, hpa)
+    if pdb:
+        lines += _pdb_lines(name, label)
+    if network_policy:
+        lines += _app_netpol_lines(name, label, egress_cidrs)
+        for trigger in triggers:
+            lines += _trigger_netpol_lines(name, trigger)
     return _finish("k8s.yaml", lines)
+
+
+def _cronjob_lines(name, trigger, image, image_given):
+    q = yaml_quote
+    cron = trigger["cron"]
+    tl = ['"app.kubernetes.io/name": ' + q(cron),
+          '"app.kubernetes.io/part-of": ' + q(name)]
+    lines = ["---"]
+    if trigger["auth"]:
+        lines.append(_TRIGGER_KEY_COMMENT)
+    lines += [
+        "apiVersion: batch/v1",
+        "kind: CronJob",
+        "metadata:",
+        "  name: " + q(cron),
+        "  labels:",
+        "    " + tl[0],
+        "    " + tl[1],
+        "spec:",
+        "  schedule: " + q(trigger["schedule"]),
+        "  timeZone: " + q(trigger["zone"]),
+        '  concurrencyPolicy: "Forbid"',
+        "  startingDeadlineSeconds: 300",
+        "  jobTemplate:",
+        "    spec:",
+        "      backoffLimit: 0",
+        "      activeDeadlineSeconds: 600",
+        "      template:",
+        "        metadata:",
+        "          labels:",
+        "            " + tl[0],
+        "            " + tl[1],
+        "        spec:",
+        '          restartPolicy: "Never"',
+        "          automountServiceAccountToken: false",
+        "          securityContext:",
+        "            runAsNonRoot: true",
+        "            runAsUser: %d" % TRIGGER_UID,
+        "            seccompProfile:",
+        '              type: "RuntimeDefault"',
+        "          containers:",
+        '            - name: "trigger"',
+    ]
+    if not image_given:
+        lines.append("              " + _IMAGE_COMMENT)
+    lines += [
+        "              image: " + q(image),
+        "              command:",
+        '                - "python"',
+        '                - "-B"',
+        '                - "-c"',
+        "                - " + q(TRIGGER_SCRIPT),
+        "              envFrom:",
+        "                - configMapRef:",
+        "                    name: " + q(name + "-config"),
+        "              env:",
+    ]
+    env_lines = [
+        '                - name: "LNPL_TRIGGER_BASE"',
+        "                  value: " + q("http://%s:%d" % (name, CONTAINER_PORT)),
+        '                - name: "LNPL_TRIGGER_PATH"',
+        "                  value: " + q(trigger["path"]),
+    ]
+    if trigger["auth"]:
+        env_lines += [
+            '                - name: "LNPL_TRIGGER_AUTH"',
+            '                  value: "jwt"',
+            '                - name: "LNPL_TRIGGER_SUBJECT"',
+            "                  value: " + q(cron),
+        ]
+        if trigger["role"] is not None:
+            env_lines += [
+                '                - name: "LNPL_TRIGGER_ROLE"',
+                "                  value: " + q(trigger["role"]),
+            ]
+        env_lines += [
+            '                - name: "LNPL_JWT_SECRET"',
+            "                  valueFrom:",
+            "                    secretKeyRef:",
+            "                      name: " + q(name + "-secrets"),
+            '                      key: "LNPL_JWT_SECRET"',
+        ]
+    lines += env_lines
+    lines += [
+        "              securityContext:",
+        "                allowPrivilegeEscalation: false",
+        "                readOnlyRootFilesystem: true",
+        "                capabilities:",
+        "                  drop:",
+        '                    - "ALL"',
+        "              " + _TRIGGER_RESOURCES_COMMENT,
+        "              volumeMounts:",
+        '                - name: "source"',
+        '                  mountPath: "/srv/lnpl"',
+        "                  readOnly: true",
+        "          volumes:",
+        '            - name: "source"',
+        "              configMap:",
+        "                name: " + q(name + "-source"),
+    ]
+    return lines
+
+
+def _trigger_netpol_lines(name, trigger):
+    q = yaml_quote
+    cron = trigger["cron"]
+    return [
+        "---",
+        "apiVersion: networking.k8s.io/v1",
+        "kind: NetworkPolicy",
+        "metadata:",
+        "  name: " + q(cron),
+        "  labels:",
+        '    "app.kubernetes.io/name": ' + q(cron),
+        '    "app.kubernetes.io/part-of": ' + q(name),
+        "spec:",
+        "  podSelector:",
+        "    matchLabels:",
+        '      "app.kubernetes.io/name": ' + q(cron),
+        "  policyTypes:",
+        '    - "Ingress"',
+        '    - "Egress"',
+        "  egress:",
+    ] + _DNS_EGRESS_RULE + [
+        "    - to:",
+        "        - podSelector:",
+        "            matchLabels:",
+        '              "app.kubernetes.io/name": ' + q(name),
+        "      ports:",
+        '        - protocol: "TCP"',
+        "          port: %d" % CONTAINER_PORT,
+    ]
+
+
+def _ingress_lines(name, label, host, segments):
+    q = yaml_quote
+    lines = [
+        "---",
+        "apiVersion: networking.k8s.io/v1",
+        "kind: Ingress",
+        "metadata:",
+        "  name: " + q(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  rules:",
+        "    - host: " + q(host),
+        "      http:",
+        "        paths:",
+    ]
+    for segment in segments:
+        lines += [
+            "          - path: " + q("/" + segment),
+            '            pathType: "Prefix"',
+            "            backend:",
+            "              service:",
+            "                name: " + q(name),
+            "                port:",
+            '                  name: "http"',
+        ]
+    return lines
+
+
+def _hpa_lines(name, label, hpa):
+    q = yaml_quote
+    low, high, cpu = hpa
+    return [
+        "---",
+        "apiVersion: autoscaling/v2",
+        "kind: HorizontalPodAutoscaler",
+        "metadata:",
+        "  name: " + q(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  scaleTargetRef:",
+        '    apiVersion: "apps/v1"',
+        '    kind: "Deployment"',
+        "    name: " + q(name),
+        "  minReplicas: %d" % low,
+        "  maxReplicas: %d" % high,
+        "  metrics:",
+        '    - type: "Resource"',
+        "      resource:",
+        '        name: "cpu"',
+        "        target:",
+        '          type: "Utilization"',
+        "          averageUtilization: %d" % cpu,
+    ]
+
+
+def _pdb_lines(name, label):
+    return [
+        "---",
+        _PDB_COMMENT,
+        "apiVersion: policy/v1",
+        "kind: PodDisruptionBudget",
+        "metadata:",
+        "  name: " + yaml_quote(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  minAvailable: 1",
+        "  selector:",
+        "    matchLabels:",
+        "      " + label,
+    ]
+
+
+def _app_netpol_lines(name, label, cidrs):
+    lines = ["---"] + _NETPOL_COMMENTS + [
+        "apiVersion: networking.k8s.io/v1",
+        "kind: NetworkPolicy",
+        "metadata:",
+        "  name: " + yaml_quote(name),
+        "  labels:",
+        "    " + label,
+        "spec:",
+        "  podSelector:",
+        "    matchLabels:",
+        "      " + label,
+        "  policyTypes:",
+        '    - "Ingress"',
+        '    - "Egress"',
+        "  ingress:",
+        "    - ports:",
+        '        - protocol: "TCP"',
+        "          port: %d" % CONTAINER_PORT,
+        "  egress:",
+    ] + _DNS_EGRESS_RULE
+    if cidrs:
+        lines.append("    - to:")
+        for cidr in cidrs:
+            lines += [
+                "        - ipBlock:",
+                "            cidr: " + yaml_quote(cidr),
+            ]
+    return lines

@@ -1,0 +1,26 @@
+{
+  "title": "lnpl RED",
+  "uid": "lnpl-red",
+  "schemaVersion": 39,
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {"list": [{"name": "datasource", "type": "datasource", "query": "prometheus"}]},
+  "panels": [
+    {"id": 1, "type": "timeseries", "title": "Rate",
+     "datasource": {"type": "prometheus", "uid": "${datasource}"},
+     "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
+     "fieldConfig": {"defaults": {"unit": "reqps"}, "overrides": []},
+     "targets": [{"refId": "A", "expr": "sum by (route) (rate(lnpl_http_requests_total[5m]))", "legendFormat": "{{route}}"}]},
+    {"id": 2, "type": "timeseries", "title": "Errors",
+     "datasource": {"type": "prometheus", "uid": "${datasource}"},
+     "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
+     "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+     "targets": [
+       {"refId": "A", "expr": "sum by (route) (rate(lnpl_http_requests_total{status=~\"5..\"}[5m])) / sum by (route) (rate(lnpl_http_requests_total[5m]))", "legendFormat": "5xx {{route}}"},
+       {"refId": "B", "expr": "sum by (route) (rate(lnpl_http_requests_total{status=~\"4..\"}[5m])) / sum by (route) (rate(lnpl_http_requests_total[5m]))", "legendFormat": "4xx {{route}}"}]},
+    {"id": 3, "type": "timeseries", "title": "Duration p95",
+     "datasource": {"type": "prometheus", "uid": "${datasource}"},
+     "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
+     "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+     "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le, route) (rate(lnpl_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95 {{route}}"}]}
+  ]
+}

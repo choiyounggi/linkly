@@ -13,11 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
@@ -30,7 +30,7 @@ jobs:
       - name: Install pinned LLVM/MLIR toolchain (apt.llvm.org)
         run: |
           wget -qO "$RUNNER_TEMP/llvm.gpg.key" https://apt.llvm.org/llvm-snapshot.gpg.key
-          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg < "$RUNNER_TEMP/llvm.gpg.key"
+          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg "$RUNNER_TEMP/llvm.gpg.key"
           CODENAME="$(lsb_release -cs)"
           echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/$CODENAME/ llvm-toolchain-$CODENAME-$LLVM_MAJOR main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update -qq
@@ -39,8 +39,12 @@ jobs:
       - name: Export LNPL_LLVM_BIN
         run: echo "LNPL_LLVM_BIN=/usr/lib/llvm-$LLVM_MAJOR/bin" >> "$GITHUB_ENV"
 
-      - name: Install
-        run: python -m pip install --upgrade pip && pip install .
+      - name: Install from lockfile (requirements.txt)
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
 
       - name: Select diff-scoped mutations and run
         run: |
@@ -65,9 +69,9 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
 
@@ -80,7 +84,7 @@ jobs:
       - name: Install pinned LLVM/MLIR toolchain (apt.llvm.org)
         run: |
           wget -qO "$RUNNER_TEMP/llvm.gpg.key" https://apt.llvm.org/llvm-snapshot.gpg.key
-          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg < "$RUNNER_TEMP/llvm.gpg.key"
+          sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg "$RUNNER_TEMP/llvm.gpg.key"
           CODENAME="$(lsb_release -cs)"
           echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/$CODENAME/ llvm-toolchain-$CODENAME-$LLVM_MAJOR main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update -qq
@@ -89,8 +93,12 @@ jobs:
       - name: Export LNPL_LLVM_BIN
         run: echo "LNPL_LLVM_BIN=/usr/lib/llvm-$LLVM_MAJOR/bin" >> "$GITHUB_ENV"
 
-      - name: Install
-        run: python -m pip install --upgrade pip && pip install .
+      - name: Install from lockfile (requirements.txt)
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
 
       # No error-tolerant step attribute here: the run step captures the
       # harness rc itself and always exits 0; the final step below is the

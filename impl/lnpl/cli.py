@@ -48,8 +48,9 @@ from .generators import (GeneratorError, parse_generator_options,
 from .kb import KbError, KnowledgeBase, resolve_pack_roots
 from .openapi import OpenApiError, _slug, generate as generate_openapi
 from .serve import ServeError, WsgiConfigError, build_routes, serve
-from .wsgi import (ExporterError, open_exporter, open_log_format,
-                   resolve_schedule_triggers, _schedule_events,
+from .wsgi import (ExporterError, open_audit_sink, open_exporter, open_log_format,
+                   resolve_schedule_triggers, build_schedule_routes,
+                   _schedule_events,
                    _validate_rate_limit, _merge_endpoint_args,
                    _build_rotating_token_provider, _read_secret_file,
                    _resolve_backend, _resolve_jwt_secret_source)
@@ -856,6 +857,9 @@ def cmd_serve(args):
     if grace_period_s < 0:
         print("error: --grace-period must not be negative", file=sys.stderr)
         return 2
+    audit_sink = _open_audit_sink(getattr(args, "audit_sink", None))
+    if audit_sink is _REJECTED:
+        return 2
 
     factory = None if backend == "fake" else (lambda: open_repository(backend))
     idempotency_ttl_s = getattr(args, "idempotency_ttl", None)
@@ -868,7 +872,8 @@ def cmd_serve(args):
                    idempotency_ttl_ms=(None if idempotency_ttl_s is None
                                        else idempotency_ttl_s * 1000),
                    capture_on_failure=getattr(args, "capture_on_failure", False),
-                   rate_limit=rate_limit, grace_period_s=grace_period_s)
+                   rate_limit=rate_limit, grace_period_s=grace_period_s,
+                   audit_sink=audit_sink)
     host, port = server.server_address[:2]
     # flush: with stdout piped (the normal way to capture the port), a buffered
     # announce line never reaches the reader while serve_forever blocks.
@@ -1323,6 +1328,39 @@ def cmd_db_check(args):
     return 1 if findings else 0
 
 
+def cmd_db_backup(args):
+    """`lnpl db backup --backend sqlite:PATH --out PATH` — an online copy of a
+    sqlite store through the SQLite backup API (issue #238). JSON
+    `{"out", "rows"}` on stdout and rc 0; rc 2 on an operator error (nothing
+    written); rc 1 when sqlite failed mid-copy (the partial copy is removed).
+    """
+    # Local import on purpose: the file-top import block is edited by other tasks.
+    from .sqlite_backup import BackupFailed, BackupRefused, backup_sqlite
+    spec = args.backend
+    if spec == "sqlite" or spec.startswith("sqlite:"):
+        source_raw = spec[len("sqlite:"):]
+    else:
+        # Scheme only: a postgres DSN carries a password.
+        head, sep, _ = spec.partition(":")
+        scheme = head if (sep and head) else (
+            "fake" if spec == "fake" else "<unrecognized>")
+        print("error: db backup: backend '%s' does not support online backup; "
+              "for postgres use pg_dump (see docs/backends.md §14)" % scheme,
+              file=sys.stderr)
+        return 2
+    try:
+        rows = backup_sqlite(source_raw, args.out)
+    except BackupRefused as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    except BackupFailed as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    sys.stdout.write(json.dumps({"out": args.out, "rows": rows}, indent=2,
+                                ensure_ascii=False) + "\n")
+    return 0
+
+
 # Distinguishes "the operator asked for the default in-memory store" (None,
 # which the Interpreter turns into its FakeRepository) from "the selector was
 # rejected" — two answers `open_repository` cannot both return as None.
@@ -1596,6 +1634,16 @@ def _open_trace_exporter(spec):
         return _REJECTED
 
 
+def _open_audit_sink(spec):
+    """`--audit-sink`'s value -> a sink, None for unset, `_REJECTED` on a
+    bad spec or an unopenable file (issue #241)."""
+    try:
+        return open_audit_sink(spec)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return _REJECTED
+
+
 def _token_provider(secret_env, issuer=None, provider_name=None):
     """`--jwt-secret-env`'s value -> a provider, None when unset, `_REJECTED`
     when the named variable is missing or too short (or the selected
@@ -1673,10 +1721,23 @@ def cmd_token(args):
     this prints and the check `lnpl serve` runs read the same function and
     cannot drift. A path the server does not serve is rejected here with the
     served set listed — a token for a path that does not exist would fail at
-    request time with nothing to point at.
+    request time with nothing to point at. A schedule-trigger path
+    (/-/schedules/<event-slug>, issue #236) is served too; its audience is "-"
+    like every /-/ path.
     """
     doc, _, _, _ = _compile(args.source)
     routes = build_routes(doc)
+    if args.path.startswith("/-/schedules/"):
+        # issue #236: `lnpl serve` merges the schedule-trigger routes after
+        # the OpenAPI contract check (make_wsgi_app); merged here only for
+        # this prefix, so an ambiguous schedule never blocks a workflow token.
+        try:
+            schedule_routes = build_schedule_routes(doc)
+        except ServeError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 2
+        routes = dict(routes)
+        routes.update(schedule_routes)
     if args.path not in routes:
         print("error: --path %r is not served (valid: %s)"
               % (args.path, ", ".join(sorted(routes))), file=sys.stderr)
@@ -1871,6 +1932,21 @@ def cmd_grammar(args):
     else:
         sys.stdout.write(_dump(grammar_json_document()))
     return 0
+
+
+def cmd_lsp(args):
+    # Editors spawn this process and speak LSP 3.17 over stdin/stdout (#254).
+    # stdout must carry protocol frames only, so a stray print is sent to
+    # stderr while the server runs; the module is imported here, not at the
+    # file top, to leave the shared import block untouched.
+    from lnpl import lsp
+    out = sys.stdout.buffer
+    saved = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        return lsp.serve(sys.stdin.buffer, out)
+    finally:
+        sys.stdout = saved
 
 
 def cmd_cost(args):
@@ -2069,7 +2145,9 @@ def _build_parser(subparsers_out=None):
     gn.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="generator option (repeatable); compose: image, port, "
                          "source, postgres_image, redis_image; k8s: image, name, "
-                         "replicas, cpu_request, cpu_limit, memory (issue #189)")
+                         "replicas, cpu_request, cpu_limit, memory (issue #189); "
+                         "ingress_host, hpa_min, hpa_max, hpa_cpu, pdb, "
+                         "network_policy, egress_cidrs (issue #236)")
     gn.set_defaults(func=cmd_generate)
 
     sv = sub.add_parser("serve",
@@ -2139,6 +2217,11 @@ def _build_parser(subparsers_out=None):
                          "`lnpl.exporters` entry-points group; omitted, "
                          "nothing is exported (independent of --log-format). "
                          "Falls back to lnpl.toml's `trace_exporter` (issue #114)")
+    sv.add_argument("--audit-sink", default=None, metavar="SPEC",
+                    help="write one audit record per write and per 401/403 "
+                         "response: `stderr-json` or `file:<path>` "
+                         "(append-only JSON Lines, mode 0600); omitted, no "
+                         "audit records (issue #241)")
     sv.add_argument("--trust-incoming-trace", action="store_true",
                     help="adopt an inbound `traceparent` header's trace-id "
                          "for this request (default: off). Off means a "
@@ -2148,7 +2231,9 @@ def _build_parser(subparsers_out=None):
                          "only as a link, never adopted outright")
     sv.add_argument("--metrics", action="store_true",
                     help="expose `/-/metrics` (Prometheus text format: "
-                         "workflow run/duration/step-failure RED signals). "
+                         "workflow run/duration/step-failure, HTTP "
+                         "request/duration, cache-op and idempotency-claim "
+                         "counters, plus outbox/driver gauges). "
                          "Default: off — the path itself does not exist "
                          "and 404s")
     sv.add_argument("--idempotency-ttl", type=int, default=None, metavar="SECONDS",
@@ -2183,7 +2268,9 @@ def _build_parser(subparsers_out=None):
                          "or a single directory (its *.lnpl, filename-sorted — "
                          "RFC-0031, issue #77)")
     tk.add_argument("--path", required=True, metavar="PATH",
-                    help="the served path the token is for, e.g. /shop/checkout")
+                    help="the served path the token is for, e.g. /shop/checkout, "
+                         "or /-/schedules/<event-slug> for a schedule trigger "
+                         "(issue #236)")
     tk.add_argument("--subject", required=True,
                     help="the `sub` claim — who the token speaks for")
     tk.add_argument("--secret-env", required=True, metavar="NAME",
@@ -2278,6 +2365,19 @@ def _build_parser(subparsers_out=None):
                      help="a persistent capability backend, e.g. "
                           "sqlite:./store.db (`fake` has no rows to check)")
     dbc.set_defaults(func=cmd_db_check)
+
+    dbb = db_sub.add_parser("backup",
+                            help="online copy of a sqlite store through "
+                                 "the SQLite backup API (issue #238); "
+                                 "refuses an existing --out and any "
+                                 "non-sqlite backend")
+    dbb.add_argument("--backend", required=True, metavar="sqlite:PATH",
+                     help="the sqlite store to copy, e.g. "
+                          "sqlite:./store.db (postgres: use pg_dump, "
+                          "docs/backends.md §14)")
+    dbb.add_argument("--out", required=True, metavar="PATH",
+                     help="the backup file to create; must not exist")
+    dbb.set_defaults(func=cmd_db_backup)
 
     mg = sub.add_parser("migrate",
                         help="backfill one field onto every row of an "
@@ -2377,6 +2477,10 @@ def _build_parser(subparsers_out=None):
     cst = sub.add_parser("cost",
                          help="print the operation cost-model contract (#164)")
     cst.set_defaults(func=cmd_cost)
+
+    ls = sub.add_parser("lsp",
+                        help="serve the Language Server Protocol over stdio (#254)")
+    ls.set_defaults(func=cmd_lsp)
 
     cap = sub.add_parser("capabilities",
                          help="print the installed-extension catalog — "

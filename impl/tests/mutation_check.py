@@ -487,8 +487,18 @@ TREE_CONTENTS = ("impl", "examples", "qa", "schemas", "scripts", "kb", "rfcs", "
                  # issue #190: test_release_workflow.py reads docker/Dockerfile
                  # for the digest-pin assertion.
                  "docker",
+                 # issue #254: test_plugin_references.py and test_editor_grammars.py read editors/.
+                 "editors",
                  # issue #242: test_governance_files.py reads these root files.
-                 "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md")
+                 "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md",
+                 # issue #243: test_dependency_lockfile.py reads the four
+                 # hashed lockfiles at the repo root.
+                 "requirements.txt", "requirements-serve.txt",
+                 "requirements-coverage.txt", "requirements-audit.txt",
+                 # test_coverage_workflow.py's gitignore tests copy .gitignore
+                 # into an isolated throwaway git repo to test it in isolation
+                 # from whatever checkout encloses this tree copy.
+                 ".gitignore")
 
 
 def make_tree(dest):

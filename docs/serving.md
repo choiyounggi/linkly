@@ -1,5 +1,7 @@
 # 서빙 — `lnpl serve` / WSGI (이슈 #26, #80)
 
+[English](serving.en.md) | **한국어**
+
 `lnpl serve`는 컴파일된 모듈의 워크플로를 OpenAPI가 규정한 경로에 바인딩하고,
 요청마다 인터프리터(모드 A)를 한 번 실행한다: request body → payload 검증
 (워크플로 자신의 `validate` 스텝, #48 계약) → 실행 → 아래 매핑표에 따른 상태코드.
@@ -292,6 +294,12 @@ M21은 `If-Match` 없는 같은 요청이 받는 404(M8b)보다 앞선다.
   메타데이터로부터 crontab 한 줄 또는 systemd `.timer`+`.service` 쌍을
   만든다. 출력은 생성물이고 손으로 고치는 대상이 아니다(헤더에 명시).
 
+**트리거 토큰 (이슈 #236).** `lnpl token <src> --path /-/schedules/<event-slug> --subject <누구> --secret-env LNPL_JWT_SECRET [--role <역할>] [--ttl 5m]`이
+이 라우트용 토큰을 발급한다. 감사(aud)는 `-`다 — `/-/` 아래 모든 경로가 같은 값이라, 이
+토큰은 역할이 맞는 다른 `/-/schedules/`·`/-/events/` 라우트에도 통하고
+`/<service>/<workflow>` 라우트에는 통하지 않는다. `lnpl generate k8s`의 CronJob이 실행마다
+이 명령으로 5분짜리 토큰을 만든다(`docs/backends.md` 12절).
+
 **이벤트→워크플로 연결.** 스케줄 이벤트는 IR에서 어떤 워크플로에도 속하지
 않는다(`lower.py`의 `owner_of`는 워크플로 전용이다). 트리거 표면은 워크플로가
 이미 쓰는 것과 같은 규칙 — "가장 가까이 앞선 `service` 선언"(RFC-0002 A.2 R2)
@@ -532,31 +540,62 @@ readyz로 간다 — 둘을 하나로 합치면 트래픽 차단이면 충분한
 
 `--metrics` 없이 띄우면 `/-/metrics`는 라우팅 테이블에 아예 없다 — **404다,
 "비활성" 본문이 아니다**. 켜면 Prometheus 텍스트 노출 형식(`# HELP`/`# TYPE`
-포함)으로 RED 3종을 낸다:
+포함)으로 아래 지표를 낸다:
 
 | 메트릭 | 종류 | 라벨 |
 |---|---|---|
 | `lnpl_workflow_runs_total` | counter | `service`, `workflow`, `status` |
 | `lnpl_workflow_duration_seconds` | histogram | `service`, `workflow` |
 | `lnpl_step_failures_total` | counter | `service`, `workflow`, `step`, `kind` |
+| `lnpl_http_requests_total` | counter | `route`, `method`, `status` |
+| `lnpl_http_request_duration_seconds` | histogram | `route` |
+| `lnpl_cache_ops_total` | counter | `op`(`get`/`set`/`invalidate`), `result`(`hit`/`miss`/`ok`/`error`) |
+| `lnpl_idempotency_claims_total` | counter | `status`(`started`/`in-progress`/`done`/`unsupported`/`other`) |
+| `lnpl_outbox_undelivered` | gauge | 없음 — 드라이버가 `outbox_undelivered_count()`를 구현할 때만(내장 sqlite는 구현) |
+| `lnpl_driver_<name>` | gauge | 없음 — 드라이버의 선택 훅 `metrics()`가 돌려준 dict의 항목마다 |
 
-**카디널리티 계약(D8).** 위 라벨 값은 전부 컴파일 시점에 알려진, 작고 닫힌
-집합의 이름이다 — 서비스/워크플로/스텝 선언 이름, 그리고 `completed`/
-`failed`나 매핑표의 `code`처럼 작은 고정 열거값. **`correlation_id`,
-엔티티 id, payload 값은 라벨이 될 수 없다** — 무한 카디널리티는 Prometheus
-자체를 무너뜨린다. 이건 새 규칙이 아니라 이미 있던 것의 승격이다:
+**카디널리티 계약(D8, 이슈 #237에서 D7 개정).** 이슈 #110의 D7은 "새 라벨
+축 금지"였다. 그 결과 워크플로 밖에서 끝나는 응답(401/403/404/409/412/429)은
+하나도 집계되지 않았고, 라우트별 SLO 대시보드와 알림을 만들 수 없었다.
+개정한 규칙은 이렇다: **새 라벨 축은 값이 전부 서버가 정하는 닫힌 집합일
+때만 허용한다.** `route`는 선언된 라우트 키(단건 GET은
+`/<svc>/<entity>/{id}` 템플릿)이고, 어느 라우트에도 맞지 않는 경로는 고정값
+`unmatched` 하나로 모인다. `method`는 RFC 9110 메서드 9개 또는 `other`,
+`status`는 이 서버가 내는 상태 코드, `op`/`result`와 멱등 `status`는 고정
+단어다. 그래서 라벨 조합 수는 선언된 라우트 수에 비례할 뿐, 들어오는 요청이
+늘릴 수 없다. **원시 경로, 엔티티 id, `correlation_id`, payload 값은 여전히
+라벨이 될 수 없다** — 무한 카디널리티는 Prometheus 자체를 무너뜨린다.
 `interp.Trace.metric`의 라벨 allowlist(`{module, service, workflow, step,
-kind}`, RFC-0003)가 소스에서부터 이 계약을 막아 왔고, 이 issue의 세 지표는
-전부 그 allowlist 안의 라벨만 쓴다(새 라벨 축 없음). allowlist를 벗어난
-라벨은 여전히 `RunError`다 — 이 issue가 그 판단을 바꾸지 않는다.
+kind}`, RFC-0003)는 바뀌지 않았고, 벗어난 라벨은 여전히 `RunError`다.
+`lnpl_driver_<name>`은 이름 전체가 Prometheus 이름 문법
+`[a-zA-Z_:][a-zA-Z0-9_:]*`에 맞는 항목만 내보내고, 숫자가 아니거나(불리언
+포함) 유한하지 않은 값은 그 항목만 건너뛴다. 훅이나
+`outbox_undelivered_count()`가 예외를 내면 그 지표만 빠지고 스크레이프는
+200이다. stderr 줄(`serve: metrics: <source> failed (...)`)은 내용이 같으면
+UTC 하루에 한 번만 찍힌다.
 
 **적재 위치(D9).** `interp.Trace.metrics`(요청마다 새로 생기는 배열,
 `--trace-exporter`/이슈 #78 계약)는 건드리지 않는다. 그 옆에서, 요청이
-끝날 때(`LnplWsgiApp._respond`) 이미 계산된 `result`를 읽어 **프로세스
-수준**(`wsgi.MetricsRegistry`, 요청 간에 살아남는다)에 더한다 — 두 채널은
-서로 독립이라 한쪽을 껐다고 다른 쪽이 달라지지 않는다. 갱신은
+끝날 때 이미 계산된 결과를 읽어 **프로세스 수준**(`wsgi.MetricsRegistry`,
+요청 간에 살아남는다)에 더한다 — 두 채널은 서로 독립이라 한쪽을 껐다고
+다른 쪽이 달라지지 않는다. 워크플로 지표는 여전히
+`LnplWsgiApp._respond`에서 더한다. HTTP 지표는 응답마다 정확히 한 번,
+`LnplWsgiApp._finalize_response`에서 기록한다 — 디스패치 전에 끝나는
+429/503, 처리 중 예외(500으로 센다), SSE(스트림이 끝나거나 닫힐 때)까지
+포함이다. `/-/healthz`·`/-/readyz`·`/-/metrics` 요청도 세지만, 스크레이프는
+자기 자신의 요청을 담지 않는다(본문을 만든 뒤에 기록한다). 두 게이지는
+스크레이프 때마다 저장소를 하나 열어 읽고 닫는다. 모든 갱신은 하나의
 `threading.Lock`으로 보호한다(D10) — dev 서버는 스레드-퍼-요청이라 락 없는
 `+=`는 동시 요청 아래서 갱신을 잃는다.
+
+오류율과 p95 지연의 PromQL이다 — 대시보드 전체 예시는
+`examples/deploy/grafana-red-dashboard.json`.
+
+```promql
+sum by (route) (rate(lnpl_http_requests_total{status=~"5.."}[5m]))
+  / sum by (route) (rate(lnpl_http_requests_total[5m]))
+histogram_quantile(0.95, sum by (le, route) (rate(lnpl_http_request_duration_seconds_bucket[5m])))
+```
 
 **`build_app()` 경로에서도 켤 수 있다(이슈 #187).** `--metrics`,
 `--trust-incoming-trace`, readyz 검사 ③(살아있는 `--jwt-secret-env`
@@ -739,6 +778,79 @@ grpc·http 수신을 각각 검증한다(span↔OTel semconv 매핑 정본은 �
 `lnpl.wsgi.ExporterError` 하나로 번역되어 나간다 — 원인 예외는 `__cause__`로
 붙어 있다(드라이버 경로의 `DriverError`와 같은 "에러는 한 종류로 나간다"
 원칙).
+
+### 감사 추적 — `--audit-sink` (이슈 #241)
+
+`--audit-sink`(환경 변수 `LNPL_AUDIT_SINK`)를 주면 접속 로그와 **별도로** 감사
+레코드를 한 줄씩 남긴다. `--log-format`과 독립이다(텍스트 모드에서도 남는다).
+
+**무엇을 남기나.** 다음 둘만 남긴다.
+- `workflow`·`event-consume` 라우트에 대한 POST 전부 — 결과와 무관하게(200, 400,
+  401, 403, 404, 409, 412, 413, 422, 429, 500, 501, 503, 504, 멱등 재생 포함)
+- 그 밖의 요청 중 401 또는 403으로 끝난 것
+
+성공한 읽기(GET 200, SSE), 매칭되지 않은 경로(404), 405, `/-/healthz`·`/-/readyz`·
+`/-/metrics`는 남기지 않는다. 판정은 경로 접두어가 아니라 라우트 종류로 한다.
+
+**필드.** 정본은 `schemas/audit-record.schema.json`(draft 2020-12,
+`additionalProperties: false`, 모든 키 필수 — 모르는 값은 `null`).
+
+```json
+{"record_type": "lnpl.audit", "schema_version": 1,
+ "timestamp": "2026-01-02T03:04:05.006Z",
+ "correlation_id": "req-000000000001", "trace_id": null, "span_id": null,
+ "actor": {"subject": "alice", "role": "clerk"},
+ "action": {"method": "POST", "route": "/order-service/approve-order",
+            "kind": "workflow", "workflow": "wf.approve.order"},
+ "resource": [],
+ "outcome": {"status": 403, "code": "forbidden", "failed_step": null, "replay": false},
+ "duration_ms": 1.234}
+```
+
+- `timestamp` — 벽시계 UTC(`time.time()`), 밀리초. 가상 시계가 아니다.
+- `correlation_id` — 실행이 있었으면 그 실행의 id, 없으면 응답 본문의 id,
+  그것도 없으면 JSON 접속 로그 줄의 id, 셋 다 없으면 `null`.
+- `actor` — 검증된 토큰의 `sub`/`role`(`caller_view`). 403에도 실린다. 401,
+  인증 없는 라우트, 토큰 검증기가 없는 배치에서는 `null`. 토큰 문자열과
+  `Authorization` 헤더는 절대 담지 않는다.
+- `action` — 메서드, 라우트 템플릿(구체 URL이 아님), 라우트 종류, 워크플로 노드 id.
+- `resource` — 실행이 실제로 낸 저장소 호출 순서대로 `{entity, op, key}`.
+  `op`는 `read`/`create`/`update`/`delete`/`query`/`persist`, `query`의 `key`는
+  `null`. 캐시가 응답한 읽기도 `read`로 남는다. 실패한 호출도 남는다(결과는
+  `outcome`이 말한다). 키의 출처 필드가 `Password` 계열이면 키는
+  `<entity>#***`로 가려진다(같은 마스킹 규칙, 요청 본문은 담지 않는다).
+- `outcome` — 클라이언트가 받은 상태 코드, 200이면 `code: "ok"`, 아니면 문제
+  본문의 `code`; `failed_step`; 멱등 재생이면 `replay: true`(이때 `resource`는 `[]`).
+
+**싱크.** 정확히 둘.
+- `stderr-json` — 레코드 하나당 stderr 한 줄. stderr는 접속 로그·Trace
+  exporter·진단과 공유되고 그쪽 `print()`와는 직렬화되지 않으므로, 무결성이
+  중요하면 `file:`을 쓴다. `record_type: "lnpl.audit"`으로 구분한다.
+- `file:<path>` — 기동 때 한 번 `O_APPEND`, 모드 `0600`으로 연다. 레코드 하나가
+  `write()` 한 번. gunicorn 다중 워커가 같은 파일에 붙여도 줄 단위로 섞이지
+  않지만 워커 간 순서는 보장하지 않는다. 짧은 쓰기로 마지막 줄이 잘릴 수
+  있으니 읽는 쪽은 `json.loads`에 실패한 줄을 건너뛴다.
+
+`lnpl.exporters` entry-point는 감사 싱크로 쓰지 않는다 — 그 그룹의 `export()`는
+Trace dict를 받는 계약이다. 전용 감사 싱크 SPI는 후속 이슈다.
+
+**실패 모드.** 기동은 fail-closed: 모르는 값, 경로 없는 `file:`, 열 수 없는
+파일이면 `lnpl serve`는 `error: ...`와 함께 rc 2로 포트를 열기 전에 멈추고,
+`build_app()`은 `WsgiConfigError`를 던진다. 요청 처리 중에는 fail-open: 싱크가
+실패해도 응답(상태·헤더·본문)은 바뀌지 않고 stderr에
+`serve: audit sink failed (correlation_id=...): ...` 한 줄이 남는다(그 출력마저
+실패하면 조용히 넘어간다).
+
+**보존·회전·변조 방지.** 운영 쪽 몫이다. `file:`은 회전하지 않는다 —
+logrotate `copytruncate`나 수집기를 쓴다. 해시 체인은 이번에 **보류(deferred)**
+했다: (a) gunicorn N 워커가 한 파일에 붙이므로 체인 하나가 성립하지 않고,
+(b) `stderr-json` 줄은 수집기가 재정렬·유실할 수 있으며, (c) 무결성·보존은
+로그 관리 인프라의 기능이다(OWASP Logging Cheat Sheet, NIST SP 800-92).
+이후 스키마 버전에서 선택 필드로 더할 수 있다.
+
+```bash
+lnpl serve app.lnpl --audit-sink file:/var/log/lnpl/audit.jsonl
+```
 
 ### 환경 변수 (`build_app()` 경유)
 
@@ -982,8 +1094,9 @@ env-var 대응:
 | `LNPL_NETWORK` | `--network` | (미설정 = 기존 해석 그대로: 논리명 target마다 endpoint 매핑을 검사) — `fake`, `http`, 또는 `lnpl.networks` entry-point `<scheme>[:<arg>]` |
 | `LNPL_TOKEN_PROVIDER` | `--token-provider` | `hmac` — 또는 `lnpl.tokens` entry-point 이름. 시크릿은 `hmac`일 때만 읽는다 |
 | `LNPL_JWT_ISSUER` | `--jwt-issuer` | `lnpl` — 기대하는 `iss` 클레임, 임의의 비지 않은 문자열 |
+| `LNPL_AUDIT_SINK` | `--audit-sink` | (미설정 = 감사 레코드 없음) — `stderr-json` 또는 `file:<path>` (이슈 #241) |
 
-표의 마지막 열 변수(`LNPL_METRICS`부터 `LNPL_JWT_ISSUER`까지)는 빈 문자열을
+표의 마지막 열 변수(`LNPL_METRICS`부터 `LNPL_AUDIT_SINK`까지)는 빈 문자열을
 미설정으로 본다 — 그 위의 변수들은 이전 동작 그대로다. 닫힌 목록
 밖의 불리언 표기, 숫자가 아니거나 0 이하·`nan`·`inf`인 `LNPL_RATE_LIMIT`은
 그 변수 이름을 담은 `WsgiConfigError`로 기동이 실패한다. 이슈 #187로 더한

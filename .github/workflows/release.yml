@@ -16,9 +16,9 @@ jobs:
     name: gates (py3.12)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -31,8 +31,12 @@ jobs:
           fi
           echo "tag $GITHUB_REF_NAME matches pyproject.toml version $version"
 
-      - name: Install
-        run: python -m pip install --upgrade pip && pip install .
+      - name: Install from lockfile (requirements.txt)
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip wheel --no-deps --no-build-isolation --wheel-dir dist/ci-wheel .
+          pip install --no-deps dist/ci-wheel/*.whl
+          pip check
 
       - name: Test suite (mode B toolchain excluded — issue #141 phase 1)
         run: |
@@ -83,19 +87,19 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - name: Install build
-        run: python -m pip install --upgrade pip && pip install build
+      - name: Install build tools from lockfile (requirements.txt)
+        run: pip install --require-hashes -r requirements.txt
 
       - name: Build sdist and wheel
-        run: python -m build
+        run: python -m build --no-isolation
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/*
@@ -115,13 +119,13 @@ jobs:
       # https://docs.github.com/en/actions/reference/security/secure-use
       TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist
@@ -152,7 +156,7 @@ jobs:
       TAG: ${{ github.ref_name }}
       REPO_OWNER: ${{ github.repository_owner }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Compute image tags (issue #190)
         id: vars
@@ -195,6 +199,46 @@ jobs:
             exit 1
           fi
 
+      - name: Set up QEMU (arm64 emulation, issue #235)
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Build arm64 image for the start check (issue #235)
+        run: docker build --platform linux/arm64 -f docker/Dockerfile -t linkly-smoke:arm64 .
+
+      - name: arm64 start check under emulation (issue #235)
+        run: |
+          docker run --rm -d --platform linux/arm64 --name linkly-smoke-arm64 -p 8000:8000 \
+            -v "$PWD/examples/linkhub.lnpl:/data/linkhub.lnpl:ro" \
+            -e LNPL_SOURCE=/data/linkhub.lnpl \
+            -e LNPL_BACKEND=fake -e LNPL_CLOCK=virtual \
+            linkly-smoke:arm64
+          arch="$(docker image inspect --format '{{.Architecture}}' linkly-smoke:arm64)"
+          status=000
+          for _ in $(seq 1 30); do
+            status="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:8000/-/healthz || true)"
+            if [ "$status" = "200" ]; then
+              break
+            fi
+            sleep 2
+          done
+          docker logs linkly-smoke-arm64 > smoke-arm64.log 2>&1
+          docker stop linkly-smoke-arm64
+          cat smoke-arm64.log
+          if [ "$arch" != "arm64" ]; then
+            echo "image architecture is $arch, expected arm64"
+            exit 1
+          fi
+          if [ "$status" != "200" ]; then
+            echo "arm64 healthz returned $status, expected 200"
+            exit 1
+          fi
+          if grep -q "ERROR" smoke-arm64.log; then
+            echo "arm64 smoke container log contains an ERROR line"
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -210,11 +254,10 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile
-          # the runner is linux/amd64 only; no QEMU/cross-build setup exists
-          # in this job, so this is stated explicitly rather than left to
-          # buildx's default (the base image's digest is a multi-platform
-          # index, but this job does not build every platform in it).
-          platforms: linux/amd64
+          # both platforms in one manifest list (issue #235): amd64 builds
+          # natively, arm64 under the QEMU registered above; BuildKit attaches
+          # the SBOM and provenance attestations per platform.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.vars.outputs.tags }}
           sbom: true
@@ -234,7 +277,7 @@ jobs:
     permissions:
       id-token: write  # required for PyPI Trusted Publishing (OIDC)
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist

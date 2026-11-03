@@ -634,9 +634,13 @@ class LauncherResolutionTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         responses = [json.loads(line) for line in proc.stdout.splitlines() if line]
         self.assertEqual(len(responses), 2, proc.stdout)
+        expected = ["lnpl_compile", "lnpl_kb_route", "lnpl_spec",
+                    "lnpl_vocabulary", "lnpl_capabilities", "lnpl_run",
+                    "lnpl_openapi", "lnpl_generate"]
         names = {tool["name"] for tool in responses[1]["result"]["tools"]}
-        self.assertEqual(names, {"lnpl_compile", "lnpl_kb_route", "lnpl_spec",
-                                 "lnpl_vocabulary", "lnpl_capabilities"})
+        self.assertEqual(names, set(expected))
+        self.assertEqual([tool["name"] for tool in responses[1]["result"]["tools"]],
+                         expected)
 
     def test_the_fallback_sends_no_reply_to_notifications(self):
         stdin_text = ('{"jsonrpc":"2.0","method":"notifications/initialized"}\n'

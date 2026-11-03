@@ -191,6 +191,16 @@ docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - < <dir>/k
 `test_deploy.py`가 이를 `ComposeGeneratorSmokeTest`(2케이스)와
 `K8sKubeconformTest`(2케이스)로 자동화한다.
 
+## Grafana RED 대시보드 예시 (이슈 #237)
+
+`grafana-red-dashboard.json`은 `/-/metrics`의 HTTP 지표로 그린 RED 대시보드다.
+서버를 `LNPL_METRICS=1`(또는 `lnpl serve --metrics`)로 띄우고, Prometheus가
+`/-/metrics`를 스크레이프하게 둔다. Grafana의 Dashboards → New → Import에 이
+파일을 올리고 `datasource` 변수에 Prometheus 데이터 소스를 고른다. 패널은
+셋이다: Rate(라우트별 초당 요청), Errors(5xx 비율과 4xx 비율을 따로 — 429
+폭주가 보이되 서버 오류로 세지 않는다), Duration p95. `route` 라벨은 선언된
+라우트 템플릿이고, 어느 라우트에도 맞지 않는 경로는 `unmatched`다.
+
 ## 이 참조가 다루지 않는 것
 
 이미지 레지스트리 push는 더 이상 범위 밖이 아니다 — `docker/Dockerfile`과
@@ -202,3 +212,70 @@ docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - < <dir>/k
 "생성기로 만든 compose/k8s" 절을 보라. 워커 풀 관리는 `docs/serving.md`가 이미
 명시한 대로 gunicorn의 책임이지 이 Dockerfile의 책임이 아니다 — TLS
 종단은 위 "TLS 종단" 절의 `nginx.conf`가 참조를 준다.
+
+## 백업과 복원 (이슈 #238)
+
+명령의 출력과 종료 코드는 `docs/backends.md` §14가 정본이다. 이 절은 배포
+파일만 다룬다. 아래 compose 명령은 `docker compose config`로 문법만
+확인했고, 실제 S3 복제·복원은 이 저장소에서 실행하지 않았다.
+
+### sqlite 스냅샷 — `lnpl db backup`
+
+```bash
+docker compose -f examples/deploy/litestream-compose.yml exec app \
+  lnpl db backup --backend sqlite:/data/store.db --out /data/backup-20261029.db
+```
+
+`--out`이 이미 있으면 덮어쓰지 않고 rc 2로 거부한다 — 날짜를 넣은 새 이름을 쓴다.
+
+### 연속 복제 — `litestream-compose.yml` + `litestream.yml`
+
+```bash
+cd examples/deploy
+LITESTREAM_ACCESS_KEY_ID=... LITESTREAM_SECRET_ACCESS_KEY=... \
+LITESTREAM_REPLICA_URL=s3://<bucket>/lnpl/store.db \
+docker compose -f litestream-compose.yml up -d
+```
+
+앱(`LNPL_BACKEND=sqlite:/data/store.db`)과 Litestream 0.5.17이 이름 있는 볼륨
+`lnpl-data`를 같이 쓴다. 호스트와 컨테이너의 OS가 같아야 한다 — 잠금 방식이
+달라서, macOS의 sqlite 파일을 Linux 컨테이너의 Litestream이 복제하면 동작하지
+않는다([Litestream: Running in a Docker container](https://litestream.io/guides/docker/)).
+복제 대상 버킷은 앱과 다른 자격증명으로 둔다 — 같은 자격증명이면 계정 침해
+한 번에 원본과 복제본을 같이 잃는다.
+
+### 복원과 확인
+
+위와 같은 환경 변수를 설정한 셸에서:
+
+```bash
+cd examples/deploy
+docker compose -f litestream-compose.yml stop app
+docker compose -f litestream-compose.yml run --rm litestream \
+  restore -o /data/restored.db /data/store.db
+docker compose -f litestream-compose.yml run --rm --no-deps app \
+  lnpl db check /app/examples/linkhub.lnpl --backend sqlite:/data/restored.db
+docker compose -f litestream-compose.yml run --rm --no-deps app \
+  lnpl db backup --backend sqlite:/data/restored.db --out /data/verify.db
+```
+
+`db check`는 `[]`와 rc 0, `db backup`의 `rows`는 원본에서 뜬 백업의 `rows`와
+같아야 한다. `litestream restore`는 출력 파일이 이미 있으면 실행하지 않으므로
+새 경로(`-o`)로 받는다([Litestream: restore](https://litestream.io/reference/restore/)).
+확인이 끝나면 앱이 멈춘 상태에서 `/data/store.db`, `-wal`, `-shm`을 지우고
+`restored.db`를 `store.db`로 옮긴 뒤 `verify.db`를 지우고 `up -d app`을 한다.
+
+### postgres — `pg-dump-cronjob.yaml`
+
+```bash
+kubectl create secret generic lnpl-pg-dump --from-literal=password='<db password>'
+kubectl apply -f examples/deploy/pg-dump-cronjob.yaml
+```
+
+적용 전에 PVC `lnpl-pg-backups`를 만들고 매니페스트의 `PGHOST`/`PGUSER`/
+`PGDATABASE`를 실제 값으로 바꾼다. 스케줄 `0 3 * * *`(매일 03:00 — `spec.timeZone`이
+없으므로 kube-controller-manager의 시간대 기준)마다 `pg_dump -Fc`로 `/backup/lnpl-<시각>.dump`를 쓰고, 앞 실행이 끝나지 않았으면
+건너뛰며(`concurrencyPolicy: Forbid`) 한 시간이 넘으면 멈춘다
+(`activeDeadlineSeconds: 3600`). 복원은 `pg_restore -d <database> <덤프 파일>`.
+이 PVC는 같은 클러스터 안이라 오프사이트 사본이 아니다 — 덤프를 다른
+자격증명의 저장소로 따로 복사한다.

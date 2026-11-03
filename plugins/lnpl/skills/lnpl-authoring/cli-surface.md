@@ -117,7 +117,7 @@ OpenAPI `x-lnpl-schedules` 메타데이터(기존 생성물)를 소비해 `lnpl 
 | 플래그 | 뜻 |
 |--------|-----|
 | `--out` | 생성된 파일을 쓸 디렉터리(필수) |
-| `--set` | 생성기 옵션 `KEY=VALUE`(반복 가능). compose: image, port, source, postgres_image, redis_image / k8s: image, name, replicas, cpu_request, cpu_limit, memory — `docs/backends.md` §12 |
+| `--set` | 생성기 옵션 `KEY=VALUE`(반복 가능). compose: image, port, source, postgres_image, redis_image / k8s: image, name, replicas, cpu_request, cpu_limit, memory, ingress_host, hpa_min, hpa_max, hpa_cpu, pdb, network_policy, egress_cidrs — `docs/backends.md` §12 |
 
 ### `serve` — OpenAPI 경로에 워크플로를 HTTP로 바인딩 (모드 A, 이슈 #26)
 
@@ -140,8 +140,9 @@ lnpl serve <src>.lnpl [--host 127.0.0.1] [--port 8080]
 | `--log-format` | 접속 로그 형태. `text`(기본, 무음 — 접속 로그 없음) 또는 `json`(요청당 stderr에 JSON 1행: correlation_id/method/path/workflow/status/duration_ms/skipped/diagnostics, 존재할 때만 trace_id/span_id/notes/effects/input_digest). 이슈 #78/#107/#111 |
 | `--capture-on-failure` | 실패/500으로 끝난 실행의 canonical line(json 모드 한정)에 마스킹된 입력 payload 전문을 싣는다. 기본 꺼짐 — 성공한 실행은 켜져 있어도 이 필드가 없다. 이슈 #111 |
 | `--trace-exporter` | 완료된 요청의 Trace를 내보낼 대상. 내장 `stderr-json`, 또는 `lnpl.exporters` entry-points 그룹에 등록된 이름. 안 주면 아무것도 내보내지 않음 — `--log-format`과 독립. 이슈 #78 |
+| `--audit-sink` | 쓰기와 401/403 응답마다 감사 레코드 한 줄. `stderr-json` 또는 `file:<path>`(append-only JSON Lines, 모드 0600). 안 주면 감사 레코드 없음 — `--log-format`과 독립. 이슈 #241 |
 | `--trust-incoming-trace` | 인바운드 `traceparent` 헤더의 trace-id를 이 요청의 trace-id로 채택할지. 기본 꺼짐 — 꺼져 있으면 형식이 깨졌든 신뢰하지 않든 항상 새 trace-id를 채번하고, 받은 값은 link로만 기록한다. 이슈 #107 |
-| `--metrics` | `/-/metrics`를 연다(Prometheus 텍스트 형식의 RED 3종: 워크플로 실행/소요시간/스텝 실패). 기본 꺼짐 — 꺼져 있으면 그 경로 자체가 없어 404다. 이슈 #110 |
+| `--metrics` | `/-/metrics`를 연다(Prometheus 텍스트 형식: 워크플로 실행/소요시간/스텝 실패, HTTP 요청/소요시간, 캐시 작업, idempotency claim 카운터 + outbox/driver 게이지). 기본 꺼짐 — 꺼져 있으면 그 경로 자체가 없어 404다. 이슈 #110, #237 |
 | `--idempotency-ttl` | `Idempotency-Key` 클레임 유지 시간(초). 기본 86400(24h) — 지나면 같은 키가 새 실행으로 취급된다. `--backend fake`에는 효과가 없다(영속 저장소가 없어 클레임을 남길 곳이 없다). 이슈 #113 |
 | `--config` | `lnpl.toml` 경로(이슈 #114). 기본 `./lnpl.toml` — 없으면 이 파일이 없던 때와 바이트 단위로 동일하게 동작한다(회귀 없음). `--config`로 명시한 경로가 없으면 그건 rc 2 에러 |
 | `--profile` | `[default]` 위에 얹을 `lnpl.toml` 프로파일 이름(이슈 #114). `LNPL_PROFILE` 환경변수로도 줄 수 있고 `--profile`이 이긴다. 생략하면 `[default]` 단독 |
@@ -190,6 +191,8 @@ lnpl config check <source...> [--profile NAME] [--config PATH]
 lnpl token <src>.lnpl --path /<service>/<workflow> --subject alice \
            --secret-env LNPL_JWT_SECRET [--ttl 15m] [--role <r>]
 ```
+
+스케줄 트리거용 토큰은 `--path /-/schedules/<event-slug>`로 발급한다(aud `-`, 이슈 #236).
 
 | 플래그 | 뜻 |
 |--------|-----|
@@ -299,6 +302,24 @@ lnpl db check <source...> --backend sqlite:<path>
 `stored-row-shape-mismatch`(warning), 아래 "진단은 어디를 가리키나" 참고.
 `db check`는 그 실시간 진단과 같은 판단 로직(`interp.row_shape_mismatches`,
 `check_semantic_type` 재사용)을 전체 저장소에 훑어 적용한 것뿐이다.
+
+### `db backup` — sqlite 온라인 백업 (이슈 #238)
+
+```
+lnpl db backup --backend sqlite:<path> --out <path>
+```
+
+SQLite online backup API로 일관된 사본을 만든다 — `serve`가 쓰는 중에도
+안전하고, 사본은 `-wal`/`-shm` 없는 파일 하나다. `.lnpl` 소스 인자는 받지
+않는다. stdout은 `{"out": <받은 그대로의 --out>, "rows": <사본의 행 수>}` JSON.
+
+| 플래그 | 뜻 |
+|--------|-----|
+| `--backend` | 필수. `sqlite:<path>`만 유효 — 그 밖의 값은 스킴만 밝히고 rc 2로 거부, postgres는 `pg_dump` 안내 |
+| `--out` | 필수. 아직 없는 파일 경로 — 이미 있으면 덮어쓰지 않고 rc 2 |
+
+rc 0 성공, rc 1 복사 도중 sqlite 오류(부분 파일 삭제), rc 2 운영자 오류.
+메시지 전문과 복원 확인 절차는 `docs/backends.md` §14.
 
 ### `migrate` — 부재 필드 배치 백필 + 스키마 세대 재스탬프 (이슈 #147)
 
@@ -424,6 +445,18 @@ cache get/set·단일 행 조회의 Big-O를 담은 JSON 문서 하나를 낸다
 가 따로 맡는다). 정본 함수는 `impl/lnpl/cost_model.py`의
 `cost_model_document()`이고, `scripts/gen_plugin_references.py`의
 `SCHEMA_RENDERERS`(`schemas/cost-model.json`)가 같은 함수를 공유한다.
+
+### `lsp` — stdio 언어 서버 (LSP 3.17, issue #254)
+
+플래그 없음. 에디터가 띄우는 프로세스다 — stdin/stdout으로 `Content-Length` 프레이밍된
+JSON-RPC 2.0을 주고받는다(LSP 3.17 base protocol). 열린 문서마다 `parse` → `lower` →
+확장 진단(RFC-0042)을 돌려 `textDocument/publishDiagnostics`로 보낸다(error 1, warning 2,
+info 3; 컴파일 실패는 `compile-error` 진단 하나). `unknown-verb`의 `suggestion`(RFC-0026)은
+Quick Fix(`textDocument/codeAction`, kind `quickfix`)로, 워크플로 스텝 동사의 `textDocument/hover`는
+RFC 절 링크로 답한다. 파일에 쓰지 않는다 — 편집은 클라이언트가 적용한다. 문서는 한 파일씩 따로
+컴파일하므로 디렉터리 모듈(RFC-0031)의 형제 파일에 선언된 이름은 오류로 보일 수 있다.
+종료 코드는 `## 종료 코드` 표가 아니라 LSP 규칙을 따른다: `shutdown` 뒤 `exit`(또는 EOF)면 0, 그 밖에는 1.
+VS Code 뼈대는 `editors/vscode/`.
 
 ### `kb` — 지식 베이스 조회 (RFC-0005)
 

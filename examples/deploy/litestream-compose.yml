@@ -1,0 +1,34 @@
+# Litestream sidecar for the sqlite backend (issue #238).
+# Run from examples/deploy:
+#   LITESTREAM_ACCESS_KEY_ID=... LITESTREAM_SECRET_ACCESS_KEY=... \
+#   LITESTREAM_REPLICA_URL=s3://<bucket>/lnpl/store.db \
+#   docker compose -f litestream-compose.yml up -d
+# The app and Litestream share the named volume lnpl-data. Litestream reads
+# /data/store.db and streams its WAL to LITESTREAM_REPLICA_URL (config:
+# litestream.yml, mounted at /etc/litestream.yml). Restore and verification:
+# README.md, section "백업과 복원 (이슈 #238)".
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        repo: ../..
+    environment:
+      LNPL_BACKEND: "sqlite:/data/store.db"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - lnpl-data:/data
+  litestream:
+    image: litestream/litestream:0.5.17
+    command: replicate
+    environment:
+      LITESTREAM_ACCESS_KEY_ID: ${LITESTREAM_ACCESS_KEY_ID:?set LITESTREAM_ACCESS_KEY_ID}
+      LITESTREAM_SECRET_ACCESS_KEY: ${LITESTREAM_SECRET_ACCESS_KEY:?set LITESTREAM_SECRET_ACCESS_KEY}
+      LITESTREAM_REPLICA_URL: ${LITESTREAM_REPLICA_URL:?set LITESTREAM_REPLICA_URL}
+    volumes:
+      - lnpl-data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+volumes:
+  lnpl-data: {}

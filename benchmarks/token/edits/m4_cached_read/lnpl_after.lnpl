@@ -1,0 +1,46 @@
+# consume.lnpl — token benchmark scenario "event consume" (issue #251).
+# OrderPlaced arrives as a CloudEvents envelope and runs FulfillOrder.
+
+capability postgres
+
+entity Order
+    field
+        id UUID
+        status Text
+
+entity Shipment
+    field
+        id UUID
+        status Text
+
+event OrderPlaced
+    consume by FulfillOrder
+
+service FulfillmentService
+    policy
+        retry 3
+    performance
+        cache 5m
+
+workflow FulfillOrder
+    validate order
+    find order cached
+    create shipment
+    spec
+        given
+            valid order
+        when
+            fulfillOrder
+        expect
+            completed
+            effects complete
+            rows Shipment 1
+    spec
+        given
+            empty repository
+        when
+            fulfillOrder
+        expect
+            failed
+            effects complete
+            rows Shipment 0

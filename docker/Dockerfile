@@ -16,16 +16,20 @@
 
 FROM python:3.13-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed AS builder
 WORKDIR /src
-COPY pyproject.toml README.md LICENSE ./
+COPY requirements.txt pyproject.toml README.md LICENSE ./
 COPY impl ./impl
 COPY mlir ./mlir
 COPY kb ./kb
-RUN pip wheel --no-deps --wheel-dir /wheels .
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
+    && pip wheel --no-deps --no-build-isolation --wheel-dir /wheels .
 
 FROM python:3.13-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed
 WORKDIR /app
+COPY requirements-serve.txt /tmp/
 COPY --from=builder /wheels/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl gunicorn && rm -rf /tmp/*.whl
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements-serve.txt \
+    && pip install --no-cache-dir --no-deps /tmp/*.whl \
+    && rm -rf /tmp/*.whl /tmp/requirements-serve.txt
 RUN useradd --system --no-create-home --uid 1000 linkly && chown linkly:linkly /app
 ENV HOME=/app
 USER linkly

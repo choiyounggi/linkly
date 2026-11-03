@@ -16,6 +16,8 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RELEASE_YML_PATH = os.path.join(REPO, ".github", "workflows", "release.yml")
 DOCKERFILE_PATH = os.path.join(REPO, "docker", "Dockerfile")
+QEMU_LINE = ("uses: docker/setup-qemu-action@"
+             "99012661954931238ded8c8b007157a8430204e1 # v4.4.0")
 
 
 def _read():
@@ -83,6 +85,50 @@ def _tag_guard_script():
     start = job_text.index(marker) + len(marker)
     end = job_text.index("\n\n      - ", start)
     return "\n".join(line[10:] for line in job_text[start:end].split("\n")) + "\n"
+
+
+def _arm64_check_script():
+    """The image job's arm64 start-check step script, dedented like
+    `_tag_guard_script` (issue #235).
+    """
+    job_text = _image_job_text()
+    marker = ("      - name: arm64 start check under emulation (issue #235)\n"
+              "        run: |\n")
+    start = job_text.index(marker) + len(marker)
+    end = job_text.index("\n\n      - ", start)
+    return "\n".join(line[10:] for line in job_text[start:end].split("\n")) + "\n"
+
+
+def _run_arm64_check(http_code, arch, log=""):
+    """Run the arm64 start check under `bash -e` with stub `docker`, `curl`
+    and `sleep` on PATH; return (rc, stdout). The stubs are executables, so
+    they live under the repo's .claude/tmp, not the system temp dir.
+    """
+    scratch = os.path.join(REPO, ".claude", "tmp")
+    os.makedirs(scratch, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=scratch) as tmp:
+        bin_dir = os.path.join(tmp, "bin")
+        os.makedirs(bin_dir)
+        stubs = {
+            "docker": ('#!/bin/sh\ncase "$1" in\n  image) echo "$STUB_ARCH" ;;\n'
+                       "  logs) printf '%s\\n' \"$STUB_LOG\" ;;\n  *) : ;;\nesac\n"),
+            "curl": "#!/bin/sh\nprintf '%s' \"$STUB_HTTP\"\n",
+            "sleep": "#!/bin/sh\nexit 0\n",
+        }
+        for name, body in stubs.items():
+            path = os.path.join(bin_dir, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.chmod(path, 0o755)
+        with open(os.path.join(tmp, "step.sh"), "w", encoding="utf-8") as fh:
+            fh.write(_arm64_check_script())
+        proc = subprocess.run(
+            ["bash", "-e", "step.sh"], cwd=tmp,
+            env={"PATH": bin_dir + os.pathsep + os.environ["PATH"],
+                 "STUB_HTTP": http_code, "STUB_ARCH": arch, "STUB_LOG": log},
+            capture_output=True, text=True,
+        )
+    return proc.returncode, proc.stdout
 
 
 def _run_tag_guard(tag, version):
@@ -230,6 +276,57 @@ class ImageJobWiringTest(unittest.TestCase):
         job_text = _image_job_text()
         self.assertIn("sbom: true", job_text)
         self.assertIn("provenance: true", job_text)
+
+    def test_image_is_built_for_amd64_and_arm64(self):
+        job_text = _image_job_text()
+        self.assertIn("platforms: linux/amd64,linux/arm64\n", job_text)
+        self.assertNotIn("platforms: linux/amd64\n", job_text)
+
+    def test_qemu_is_pinned_and_precedes_every_arm64_use(self):
+        job_text = _image_job_text()
+        self.assertIn(QEMU_LINE, job_text)
+        self.assertIn("platforms: arm64\n", job_text)
+        order = [QEMU_LINE, "docker build --platform linux/arm64",
+                 "docker run --rm -d --platform linux/arm64",
+                 "uses: docker/setup-buildx-action", "uses: docker/login-action"]
+        indices = [job_text.index(marker) for marker in order]
+        self.assertEqual(indices, sorted(set(indices)))
+
+    def test_amd64_smoke_stays_native_and_first(self):
+        job_text = _image_job_text()
+        self.assertIn("docker run --rm -d --name linkly-smoke -p 8000:8000", job_text)
+        self.assertLess(job_text.index("docker run --rm -d --name linkly-smoke -p 8000:8000"),
+                        job_text.index(QEMU_LINE))
+
+
+class Arm64StartCheckTest(unittest.TestCase):
+    """issue #235: the arm64 start check's verdicts, by running the step's
+    own script against stub docker/curl/sleep.
+    """
+
+    def test_healthy_arm64_container_passes(self):
+        rc, _out = _run_arm64_check("200", "arm64")
+        self.assertEqual(rc, 0)
+
+    def test_non_200_fails_with_its_status(self):
+        rc, out = _run_arm64_check("500", "arm64")
+        self.assertEqual(rc, 1)
+        self.assertIn("arm64 healthz returned 500, expected 200", out)
+
+    def test_wrong_architecture_fails(self):
+        rc, out = _run_arm64_check("200", "amd64")
+        self.assertEqual(rc, 1)
+        self.assertIn("image architecture is amd64, expected arm64", out)
+
+    def test_never_reachable_fails_after_all_attempts(self):
+        rc, out = _run_arm64_check("000", "arm64")
+        self.assertEqual(rc, 1)
+        self.assertIn("returned 000", out)
+
+    def test_error_log_line_fails(self):
+        rc, out = _run_arm64_check("200", "arm64", "ERROR boom")
+        self.assertEqual(rc, 1)
+        self.assertIn("contains an ERROR line", out)
 
 
 PIN_LINE = ("uses: pypa/gh-action-pypi-publish@"
