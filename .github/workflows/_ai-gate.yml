@@ -315,7 +315,7 @@ jobs:
         # 문자열이 되어 "판정"이 빈 입력으로 exit 2를 내고 "판정 반영"이
         # blocking과 무관하게 실패시키므로, 아래 두 스텝도 함께 고쳤다.
         continue-on-error: true
-        uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1.0.210
+        uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
         with:
           anthropic_api_key: ${{ secrets.anthropic_api_key }}
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
