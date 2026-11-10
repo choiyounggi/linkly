@@ -29,7 +29,7 @@ lint = ["ruff==0.16.5"]
 # CI and the two Dockerfiles install from (issue #243). Regenerate: docs/CI-GATES.md.
 [dependency-groups]
 build = ["build==1.6.1", "hatchling==1.33.0"]
-coverage = ["coverage==7.17.0"]
+coverage = ["coverage==7.17.2"]
 serve = ["gunicorn==26.2.0"]
 audit = ["pip-audit==2.10.1"]
 
